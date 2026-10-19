@@ -18,14 +18,17 @@ HEX = re.compile(r"#([0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?)\b")
 
 #: Words that give a swatch its job, in the order roles are claimed. `muted`
 #: comes before `ink` on purpose: "texto de apoio" is support, not body text.
+#: Each is a stem matched at the start of a word ("escolh" finds "escolha"),
+#: and none names a participant or a subject: those are one film's nouns,
+#: learned from its own palette by `Design.words`.
 ROLE_WORDS: dict[str, tuple[str, ...]] = {
     "background": ("fundo", "background", "ground", "base", "canvas", "bg"),
     "object": ("objeto", "object", "cartão", "cartao", "card", "principal",
                "primary", "item", "elemento", "element"),
     "choice": ("seleção", "selecao", "escolh", "pick", "choice", "choos",
-               "select", "eleit", "jogador", "player", "você", "voce", "you"),
+               "select", "eleit"),
     "positive": ("ganh", "win", "won", "sucesso", "success", "correct", "certo",
-                 "acert", "prêmio", "premio", "prize", "aprovad", "right"),
+                 "acert", "aprovad", "right"),
     "negative": ("perd", "lose", "lost", "los", "erro", "error", "wrong",
                  "errad", "danger", "perigo", "vazi", "empty", "fail", "falh",
                  "reprovad"),
@@ -49,6 +52,11 @@ NOT_VOCABULARY = {
 }
 
 ROLES = tuple(ROLE_WORDS)
+
+#: A role's stems, each anchored at a word start: inside a word they matched
+#: "bright" as `right`, "glossy" as `los` and "layout" as `you`.
+ROLE_STEMS = {role: re.compile(r"(?<!\w)(?:" + "|".join(map(re.escape, stems)) + ")")
+              for role, stems in ROLE_WORDS.items()}
 
 #: The scale, as fractions of the frame height. Monotone by construction.
 TYPE_SCALE = {"caption": 1 / 30, "label": 1 / 24, "body": 1 / 18,
@@ -121,7 +129,7 @@ def assign(swatches: list[Swatch]) -> dict[str, Swatch]:
         for i, swatch in enumerate(swatches):
             if i in taken:
                 continue
-            if any(word in swatch.words for word in ROLE_WORDS[role]):
+            if ROLE_STEMS[role].search(swatch.words):
                 out[role], _ = swatch, taken.add(i)
                 break
     # Position fills what the words left open: a brief lists colours in the

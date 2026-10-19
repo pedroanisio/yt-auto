@@ -509,6 +509,12 @@ class Plan(ImproveCase):
                                      root=self.root)[0]
         self.assertTrue({"--fetch", "--fresh", "--review"} <= set(forced))
 
+    def test_the_estimate_counts_what_runs_before_vfx(self):
+        self.assertEqual(improve.estimate(["vfx", "sound", "build", "render"], None), 10.0)
+        self.assertEqual(improve.estimate(["keyframe", "vfx", "build", "render"], None), 15.0)
+        self.assertEqual(improve.estimate(["vfx"], 7.25), 7.25)
+        self.assertEqual(improve.estimate(["build", "render"], None), 0.7)
+
     def test_script_keeps_the_films_length(self):
         base = ["--project", str(self.root)]
         argv = improve.stage_argvs(["script"], {"script"}, base, quality="final",
@@ -727,6 +733,16 @@ class DryRun(ImproveCase):
         self.assertTrue((self.root / "improve" / "plan.json").is_file())
         self.assertFalse((self.root / "improve.json").exists())
 
+    def test_the_router_sees_what_waits_on_the_operator(self):
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        rows = [("note", "keyframe", "the keyframe (5/10) awaits approval", "yt keyframe --approve"),
+                ("warn", "vfx", "authored without an approved keyframe", "")]
+        self.improver(FakeRunner(self.root), dry_run=True, doctor=lambda p: rows).run()
+        prompt = FakeEngine.json_calls[0]["prompt"]
+        self.assertIn("awaits approval", prompt)
+        self.assertIn("yt keyframe --approve", prompt)
+        self.assertIn("authored without an approved keyframe", prompt)
+
     def test_dry_run_does_not_rescore_a_stale_pass(self):
         pdir = self.start_pass(card(5.0, mechanical=[mech()]))
         os.utime(pdir / "scorecard.json", (900_000_000, 900_000_000))
@@ -787,6 +803,23 @@ class Cli(unittest.TestCase):
         self.assertIn("feedback/", text)
         readme = (ROOT / "README.md").read_text()
         self.assertIn("yt improve", readme)
+
+
+class DoctorNote(ImproveCase):
+    def test_doctor_points_at_improve_while_qa_is_not_ready(self):
+        from ytstudio import doctor
+        self.start_pass(card(5.0))
+        report = doctor.check_project(workspace.Project(self.root))
+        notes = [f for f in report.findings if "yt improve" in f.fix]
+        self.assertEqual(len(notes), 1)
+        self.assertEqual(notes[0].level, "note")
+        self.assertIn("--dry-run", notes[0].fix)
+
+    def test_no_note_once_ready(self):
+        from ytstudio import doctor
+        self.start_pass(card(9.5))
+        report = doctor.check_project(workspace.Project(self.root))
+        self.assertFalse([f for f in report.findings if "yt improve" in f.fix])
 
 
 if __name__ == "__main__":

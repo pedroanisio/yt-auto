@@ -55,6 +55,25 @@ class Universality(unittest.TestCase):
         for noun in ("porta", "door", "bode", "goat", "carro", "car"):
             self.assertNotIn(noun, flat.split(), f"{noun!r} is one film's noun")
 
+    def test_role_words_name_no_participant(self):
+        flat = " ".join(" ".join(ws) for ws in design.ROLE_WORDS.values()).split()
+        for noun in ("jogador", "player", "você", "voce", "you", "prêmio", "premio", "prize"):
+            self.assertNotIn(noun, flat, f"{noun!r} is one film's participant or prize")
+
+    def test_a_stem_matches_only_at_a_word_start(self):
+        r = design.roles(design.parse_palette([
+            {"hex": "#0B0D10", "use": "deep background"},
+            {"hex": "#E8B65C", "use": "bright gold highlight"},
+            {"hex": "#202020", "use": "glossy black casing"},
+            {"hex": "#C0C0C0", "use": "layout guide lines"}]))
+        self.assertEqual(r["accent"], "#E8B65C")       # not `positive` through "b-right"
+        for role, text in (("positive", "bright gold"), ("negative", "glossy black"),
+                           ("negative", "close-up"), ("background", "database")):
+            self.assertIsNone(design.ROLE_STEMS[role].search(text), (role, text))
+        for role, text in (("choice", "a escolha"), ("negative", "lost cause"),
+                           ("positive", "aprovado/ganhar"), ("muted", "texto de apoio")):
+            self.assertIsNotNone(design.ROLE_STEMS[role].search(text), (role, text))
+
     def test_a_film_about_anything_else_still_gets_its_roles(self):
         prose = ("fundo (#111111), candidatos em branco (#EEEEEE), o eleito em azul "
                  "(#2255FF), 'aprovado/ganhar' em verde (#22AA55), 'reprovado/perder' "

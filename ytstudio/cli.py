@@ -17,6 +17,7 @@ Nine stages, each reading what the ones before it wrote:
     yt gate      put the render through the delivery gate
     yt review    write the PDF review sheet, and have the model read it
     yt qa        score the rendered film against the publication bar, per pass
+    yt improve   route QA's findings to the stages that own them, re-run, keep what improves
 
     yt run       all of the above, in order, for one idea
     yt ls        which videos you have, and how far each one got
@@ -52,9 +53,9 @@ import sys
 import claude_engine
 
 from .core import read_json
-from . import (assess, assets, build, doctor, env, gate, house, ideas, keyframe, pilot,
-               props, qa, render, research, retime, review, script, sound, styles, vfx,
-               voice, workspace)
+from . import (assess, assets, build, doctor, env, gate, house, ideas, improve, keyframe,
+               pilot, probes, props, qa, render, research, retime, review, script, sound,
+               styles, vfx, voice, workspace)
 
 #: The stages `yt run` walks, in order.
 PIPELINE = tuple(stage for stage, _ in workspace.STAGES)
@@ -332,10 +333,12 @@ def build_parser() -> argparse.ArgumentParser:
     gate.register(sub, [idea, model, quiet, work])
     review.register(sub, [idea, model, quiet, work])
     qa.register(sub, [idea, model, quiet, work])
+    improve.register(sub, [idea, model, quiet, work])
     doctor.register(sub, [quiet, work])
     assess.register(sub, [model, quiet, work])
     props.register(sub, [quiet, work])
     keyframe.register(sub, [idea, model, quiet, work])
+    probes.register(sub, [model, quiet, work])
     _register_run(sub, [idea, model, quiet, work])
     _register_ls(sub, [work, quiet])
     assets.register(sub, [quiet])

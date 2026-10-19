@@ -118,7 +118,9 @@ Or all of it at once, for one idea:
 | `yt gate` | the delivery verdict: loudness, scopes, frames, caption limits, run on a render host and naming the requirement that stopped it; plus the geometry check (a hero that penetrates the set, or reads merged into it on screen, blocks whatever the tool and the triage said) | one triage call |
 | `yt review` | the PDF review sheet: frames, captions, markers, sources, credits | no model calls |
 | `yt qa` | the scorecard per pass: one frame window per sampled midpoint (the still is its middle frame), a contact sheet, the mechanical findings (flat, clipped, frozen, jump, off-camera, `penetration`: the hero inside a set solid, and `reads-merged`: the hero over a surface on screen with no shadow, from the engine's evaluated geometry and camera), the model's review | one inspection call per pass; one render job per sample, one eval job per pass |
+| `yt improve` | routes each QA finding to the stage that owns it, briefs that stage through `feedback/`, re-runs it and everything downstream, keeps the pass only if it measurably improved | one routing decision per pass, plus the stages it runs |
 | `yt doctor` | every video's state and the command that advances it | no model calls |
+| `yt probe` | the realism probe suite: one neutral brief per class of material, light or motion, composed by an agent coding with the SDK, built and framed by the harness, scored by a different model with each defect's cause | **$1.06** for one probe and one round; up to three author sessions and three reviews per probe |
 
 Those figures are measured on `sonnet`, which is the default; `--model opus`
 costs more. `--effort {low..max}` and `--fallback-model` apply to every call a
@@ -783,6 +785,37 @@ latest verdict. The exit code is 0 only when the film is ready.
 score an earlier pass's frames again, measuring them again without rendering ·
 `--host` / `--local` · `--fresh`
 
+### `yt improve`
+
+The improvement loop of `docs/production.md` §8, so a QA finding no longer
+needs a human to carry it to the stage that owns it. From the latest QA pass
+(scored again first if it is older than the video), plus the gate's blocking
+rows and doctor's fails, every finding is routed to one stage: the measured
+mechanical kinds by their stated owner, the rest by one harness decision that
+also merges duplicates and writes each stage a revision brief. Findings that
+are a wrong fact (`upstream-fact`) or a policy outside the repo (`external`)
+go to a human and are not looped on.
+
+The brief lands in `feedback/<stage>.md`, and the harness puts it into the
+system prompt of every decision and inspection that stage makes, as notes
+that outrank the house standards (`harness.feedback_for`; the prompts a stage
+builds itself use `harness.with_feedback`). Then the earliest routed stage
+runs with `--fresh`, every stage downstream of it runs up to `yt render`, `yt
+gate` and `yt qa` score a new pass, and the pass is kept only if the overall
+improves, no category drops more than 0.5 and no new blocking mechanical
+finding appears. Otherwise the snapshot in `improve/pass-NN/snapshot/` is
+restored. It stops at READY TO PUBLISH, at the pass or budget limit, or when
+a defect survives three briefed passes, and writes `improve.json` and an
+`improve.md` in the shape of the §11 report.
+
+```bash
+yt improve --title X --dry-run                      # the routing, the briefs, the estimate
+yt improve --title X --max-passes 1 --budget-usd 15
+```
+
+`--max-passes N` (3) · `--budget-usd B` (15) · `--target` (9.0) · `--from-pass
+pass-NN` · `--quality draft|preview|final` (final) · `--dry-run`
+
 ### `yt doctor`
 
 Reads what the stages wrote and says what to do next. No model calls, no
@@ -822,6 +855,43 @@ Writes `props/<kind>/<id>/` (the files exactly as served, never opened or
 parsed here) and `props.json` with `id`, `kind`, `file`, `files`, `licence`,
 `credit`, `about` and `source_url` per item. No model calls; the stage takes
 only `--project`, `--title` and its own flags.
+
+### `yt probe`
+
+Measures what the system can make look real. Each probe is a fixed brief
+that names a class (polished and brushed metal, coated surfaces, glass and
+liquid, light through thin material, terrain and distance, emitters, light
+in a medium, macro and depth of field, dense detail, motion) and what must
+read as real. It never says how to get there and names no film.
+
+1. **Compose.** An agent writes a Python program with the sr-core SDK in a
+   workspace that `ytstudio/sdkkit.py` prepares. The workspace holds
+   `srkit.py`, `kit.py`, the SDK's own guide, the engine's capability
+   manifest with every renderer-dependent attribute, and example programs
+   that rendered on the engine.
+2. **Build and frame.** The harness builds the program itself: it runs it
+   twice and refuses a document that changes between runs, checks and
+   validates every document, and writes its provenance. It then renders
+   frames on the still host.
+3. **Review.** A different model scores the frames and names, for every
+   defect, whether the authoring, the engine or an asset caused it.
+4. **Revise.** Under `--bar` the findings go back verbatim to the same
+   author session, for up to `--rounds` revisions.
+
+```bash
+./yt probe --list
+./yt probe --fetch-props                       # a neutral CC0 set under work/.probes/props
+./yt probe --only metal,glass --rounds 1
+./yt probe --model sonnet --reviewer-model opus --jobs 3
+```
+
+**Output**
+
+- `work/.probes/<run>/`: one workspace per probe (program, document,
+  provenance, frames, review), `summary.json` and `summary.md` (score,
+  rounds, change since the last full run, defects by cause).
+- `work/.probes/latest.json` after a run that covered every probe. Its
+  scores join every kit's `ENGINE.md` as measured on this engine.
 
 ### `yt run`
 

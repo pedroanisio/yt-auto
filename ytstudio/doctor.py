@@ -695,6 +695,11 @@ def check_project(project: workspace.Project) -> Report:
                                       "missing": [m for m, _ in missing]}
         for problem, fix in missing:
             report.add("fail", "delivery", problem, fix)
+        if qa_done.get("verdict") and qa_done.get("verdict") != READY_TO_PUBLISH:
+            # QA names an owner per finding; the loop routes them back.
+            report.add("note", "delivery", f"QA {qa_done.get('pass', '')} is not ready: "
+                       "route its findings to their stages and re-run them",
+                       _cmd("improve", project, "--dry-run"))
         if not missing:
             report.add("ok", "delivery", f"{READY_TO_PUBLISH}: a clean final render, "
                        f"gate deliverable, QA {qa_done.get('pass', '')} at "

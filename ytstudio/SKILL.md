@@ -126,8 +126,10 @@ Beside the chain:
 | `yt gate` | the delivery gate (loudness, true peak, scopes, black and frozen frames, captions), run on a render host that has ffprobe and the engine, triaged by the model; `stopped_by` names the requirement that stopped it and the owning stage | `gate.json` |
 | `yt review` | the PDF review sheet, read by the model | `review.pdf`, `review.json` |
 | `yt qa` | the publication scorecard per pass: one frame window per sampled midpoint (one `--frames A..B` job each, the still its middle frame), a contact sheet, the mechanical findings (flat, clipped, frozen, jump, off-camera), then the model's review | `qa/pass-NN/` (`frames/`, `frames/burst/`, `samples.json`, `contact-sheet.png`, `scorecard.json`, `findings.md`), `qa.json` |
+| `yt improve` | the improvement loop of `docs/production.md` §8 as code: routes each QA finding to the stage that owns it, writes that stage a revision brief the harness puts in front of every decision it makes, re-runs the earliest routed stage and everything downstream, scores a new pass, keeps it or restores the snapshot | `feedback/<stage>.md` (+ `.json`), `improve/pass-NN/`, `improve.json`, `improve.md` |
 | `yt doctor` | the toolchain and every video: what is missing, stale or failing, and the command that fixes it. No model. | `--json FILE` |
 | `yt assess` | can a described video be produced at all; proves it with a frame | `work/.assess/<slug>/` |
+| `yt probe` | the realism probe suite: fixed neutral briefs, one per class of material, light or motion, each composed by an agent coding with the SDK through the kit, built and framed by the harness, scored by a different model that names each defect's cause (authoring, engine, asset), revised in the same session while under `--bar` | `work/.probes/<run>/` (`summary.json`, `summary.md`, one workspace per probe), `work/.probes/latest.json` |
 | `yt ls` | which videos exist and how far each got | |
 | `yt assets` | search open catalogues for one shot's footage | |
 | `yt props` | fetch CC0 3D props (glTF models, HDRIs, texture maps) from Poly Haven, by phrase or derived from the script and styles; the vfx brief lists them | `props/<kind>/<id>/`, `props.json` |
@@ -200,7 +202,8 @@ blocking editorial note. It is not a delivery verdict. The order is:
    explain, trace to the owning file, fix at the source, re-render only what
    changed, compare, keep only a measured improvement. One section at a
    time, watched with sound. The same defect surviving three passes means
-   the approach is wrong, not the parameters.
+   the approach is wrong, not the parameters. `yt improve` runs it (below);
+   `yt improve --dry-run` first shows the routing and the briefs.
 4. `yt render --audio-only` once, to prove the mix fits in memory, then
    `yt render --quality final --strict`. Both route to the big host.
 5. `yt gate` (on a render host; `gate.json`'s `stopped_by` says which
@@ -229,10 +232,105 @@ The frame has three bands at 1920x1080, measured from the top: supers and
 credits in rows 0 to 230, the stage in 230 to 820, and captions in 820 to
 1080, where nothing else may enter.
 
+## The improvement loop: `yt improve`
+
+QA names an owner for every finding; `yt improve --title X` routes them
+back. It starts from the latest QA pass (`--from-pass pass-NN` to pick one;
+a pass older than `video.mp4` or `scene.xml` is scored again first), with
+`gate.json`'s blocking rows and `yt doctor`'s fails and warnings beside it.
+
+- **Routing.** Each finding goes to exactly one stage of `workspace.STAGES`,
+  or to `upstream-fact` (a claim the research or screenplay got wrong) or
+  `external` (a policy, licence or approval outside this repo). Those two
+  are listed for a human and never looped on. The mechanical kinds
+  (penetration, reads-merged, flat, clipped, frozen, jump, off_camera) go to
+  their stated owner without the model; the prose ones, whose `owner` is
+  free text, go through one harness decision that also merges duplicates
+  and writes each stage a brief: what must change, how the next pass checks.
+- **Feedback.** `feedback/<stage>.md` (and `.json`) holds the brief with
+  the findings verbatim, timestamps and the pass they came from. Every
+  `Harness` of that stage puts it in its system prompt as revision notes
+  that outrank the house standards, and the prompts a stage builds itself
+  (the vfx planner and authors, the keyframe author, sound, script and
+  styles, the synthesis brief) take it through `harness.with_feedback`. A
+  pass that consumed the notes moves them to `feedback/closed/pass-NN/`.
+- **A pass.** The earliest routed stage with the flags that force a new
+  decision (`--fresh`; `yt vfx --fresh` opens a new `vfx/vNN/`), then every
+  stage downstream up to `yt render` (`--quality`, default final), then `yt
+  gate` and `yt qa`. Research and script run only when routed to them, and a
+  stage the film never ran (no narration, no voice) is left out. What those
+  stages write is snapshotted first under `improve/pass-NN/snapshot/`.
+- **Keep or revert.** Kept when the overall beats the best pass so far, no
+  category drops more than 0.5 and no new blocking mechanical finding
+  appears; otherwise the snapshot is restored (for vfx that means
+  `vfx.json`'s active version; the new `vfx/vNN/` stays on disk).
+- **Stops** at READY TO PUBLISH (or `--target` with nothing blocking), at
+  `--max-passes` (3), when the next pass's estimate (the last pass's cost,
+  or $10 for a vfx pass) exceeds what is left of `--budget-usd` (15), when a
+  defect survives three briefed passes (a mechanical one by kind, shot and
+  objects; a prose one by a cached model decision), or when only human
+  decisions remain.
+- **Report.** `improve.json` (each pass's routing, briefs, argv, scores
+  before and after, keep or revert with the numbers, cost, the stop) and
+  `improve.md` in the shape of `docs/production.md` §11. `yt improve
+  --dry-run` routes, writes the feedback and `improve/plan.json`, prints the
+  plan with its estimated cost, and runs nothing. `tests/test_improve.py`
+  pins all of it.
+
+## Composing with the SDK: the kit and the probes
+
+The owner's rule: the creative part is a model writing code against the
+sr-core SDK (`sr_core.scene`), under the harness's rules. The program is the
+source and the document it saves is its output, so a revision changes the
+program, never the XML. A program can make detail by procedure, compute
+motion from a function and expose the parameter a review will ask about.
+Hand-written XML can do none of that; the 10,841 literal keys of one
+hand-authored world showed the cost.
+
+- **The kit** (`ytstudio/sdkkit.py`). `install(dir)` gives an author's
+  workspace `srkit.py` (`S`, `FRAME`, `save`), `kit.py` (`describe`, `enum`,
+  `build`, `check`, `frame`) and `kit/`. That directory holds sr-core's own
+  `SDK-GUIDE.md`; an `ENGINE.md` with the engine's capability manifest,
+  every attribute the schema documents as renderer-dependent (the path
+  tracer drops clearcoat, sheen, anisotropy, iridescence and dispersion) and
+  the last probe run's scores; and `examples/`, programs that built,
+  validated and rendered on the engine. Their values are placeholders.
+  `AUTHOR_SYSTEM`, `AUTHOR_TOOLS` and `BRIEF` are what a stage hands such an
+  author.
+- **The build.** `python3 kit.py build <program.py>` runs the program twice
+  in fresh interpreters. A document whose bytes differ between the runs is
+  refused: seed every random choice. Every document it saved then goes
+  through the SDK's checks, the harness's rules (`rule:shadow`: a 3D world
+  in which no light casts a shadow) and the engine's validation, and gets
+  `<doc>.provenance.json` (program and document hashes, schema release).
+  `sdkkit.provenance_of(doc)` lapses the moment the document is edited by
+  hand.
+- **Who uses it.** `yt probe` composes through it. The vfx, keyframe and
+  assess authors still write XML by hand; moving them onto the kit is the
+  next step, so until then their documents carry no provenance.
+- **`yt probe`.** `--list` shows the classes, `--only` picks some,
+  `--fetch-props` fills `work/.probes/props/` with a neutral CC0 set.
+  `--reviewer-model` must differ from `--model`: a model never grades its own
+  work.
+  - Each probe gets the first review plus up to `--rounds` (2) revisions
+    while under `--bar` (8), each in the author's resumed session with the
+    findings verbatim.
+  - A run that covered every probe becomes `latest.json`, and the next run
+    shows each score's change against it.
+  - The cause columns show what is the authoring's to fix and what is the
+    engine's. One probe with one round cost $1.06 (author $0.53).
+
 ## Traps already paid for
 
 | Trap | What happens | What to do |
 |---|---|---|
+| `light/@castShadow` defaults to false | every object floats: no contact, no grounding, whatever its y | set it on the light that should ground the scene; the kit's build warns (`rule:shadow`) |
+| A dome lights but is not seen | `environmentVisible` defaults to false: the sky or HDRI lights and reflects, and the background stays black | set `environmentVisible` when the environment is the backdrop |
+| A glTF at the wrong size | the engine imports y-up metre models at 100 scene units per metre with a half turn about x, before the object's scale; scaling by the raw bounds makes it 100 times too big | `kit/examples/model_and_environment.py` reads the bounds, applies the node transforms and grounds the model |
+| A dark metal shows no reflection | a metal's reflectance is its `baseColor`; a dark base swallows the environment and any iridescent film | give a metal a light base colour and let roughness and the environment make the look |
+| Specks around an emitter | the path tracer counts an emissive surface only when a path happens to hit it, never aims at one | light a scene with lights; use emission for what glows |
+| Layered materials vanish | the path tracer ignores clearcoat, sheen, anisotropy, iridescence and dispersion, silently | choose the renderer per shot knowing which it drops (`kit/ENGINE.md`) |
+| `project/@fps` is a string | `fps=30` is refused at construction; it is a rational (`"30000/1001"`) | `fps=str(30)` |
 | `crf` with NVENC | ignored; a default bitrate is used and nothing warns | `yt build` sets `bitrate` and `maxBitrate`; do not add crf |
 | The AAC true-peak pass | the decoded AAC overshoots, the engine pulls the programme down about 1 dB | target and compensation are two numbers; `yt build --loudness` |
 | Limiter after normalise | strong short peaks eat loudness; raising the target cannot fix it | `yt build` brings sfx/stinger/transition cues of 2 s or less down as a group to the master's headroom above the loudest bed (`audio_staging` in build.json); `--no-limiter` makes any remaining shortfall visible |
@@ -350,5 +448,8 @@ them.
   `test_scope`, `test_run_wiring` and `test_skill`; and `test_delivery`
   (doctor's delivery verdict), `test_sound_synth` (the synthesis contract),
   `test_capability_surface` (the full cheat-sheet and the shader example),
-  `test_vfx_continuity` (the side-by-side review, the one account) and
-  `test_lane` (the govern process and its checks).
+  `test_vfx_continuity` (the side-by-side review, the one account),
+  `test_lane` (the govern process and its checks), `test_sdkkit` (the kit,
+  the build's determinism, rules and provenance, the examples) and
+  `test_probes` (the suite, the separate reviewer, the revision loop, the
+  run table).

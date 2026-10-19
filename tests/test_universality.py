@@ -17,7 +17,8 @@ ROOT = Path(__file__).resolve().parent.parent
 #: Nouns of real projects that leaked into shared text before.
 LEAKED = ("paper plane", "paper-plane", "hero-plane", "desk", "keel", "oak",
           "thin paper", "17-27 units", "airborne", "flight path",
-          "três portas", "trocar", "fx-doors")
+          "três portas", "trocar", "fx-doors",
+          "jogador", "prêmio", "premio", "prize")
 
 #: Real names that contain a leaked word and are not about any film.
 ALLOWED = ("pve-desk-1",)
