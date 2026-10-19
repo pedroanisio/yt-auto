@@ -121,6 +121,8 @@ class FakeRunner:
         self.calls.append(list(argv))
         stage = argv[0]
         cost = self.costs.get(stage, 0.0)
+        if stage == "qa" and self.fail.get("qa") == "no-pass":
+            return 1                       # the render host was down: no pass filed
         if stage == "qa":
             if not self.cards:
                 raise AssertionError("qa ran more often than the test scripted")
@@ -666,6 +668,40 @@ class Loop(ImproveCase):
         self.assertEqual(record["passes"][0]["decision"], "failed")
         self.assertEqual(record["stop"]["reason"], "stage-failed")
         self.assertEqual(read_json(self.root / "vfx.json")["authoring"]["version"], "v01")
+
+    def test_a_qa_that_files_no_pass_keeps_the_paid_pass_unjudged(self):
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        runner = FakeRunner(self.root, [], fail={"qa": "no-pass"})
+        record = self.improver(runner).run()
+        p = record["passes"][0]
+        self.assertEqual(p["decision"], "unjudged")
+        self.assertEqual(record["stop"]["reason"], "qa-failed")
+        # Nothing was restored: the new authoring and the new video stand.
+        self.assertEqual(read_json(self.root / "vfx.json")["authoring"]["version"], "v02")
+        self.assertNotEqual((self.root / "video.mp4").read_bytes(), b"original video")
+        self.assertTrue((self.root / "improve" / "pass-01" / "snapshot").is_dir())
+
+    def test_the_next_run_scores_and_keeps_an_unjudged_pass_first(self):
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        self.improver(FakeRunner(self.root, [], fail={"qa": "no-pass"})).run()
+        runner = FakeRunner(self.root, [card(6.0)])
+        record = self.improver(runner, max_passes=1).run()
+        self.assertEqual(runner.stages(), ["qa"])          # only the judging ran
+        p = record["passes"][0]
+        self.assertTrue(p["resumed"])
+        self.assertEqual(p["decision"], "keep")
+        self.assertEqual(record["best"]["pass"], "pass-02")
+        self.assertEqual(record["start"]["pass"], "pass-01")
+        self.assertEqual(read_json(self.root / "vfx.json")["authoring"]["version"], "v02")
+        self.assertTrue((self.root / "feedback" / "closed" / "pass-01" / "vfx.md").is_file())
+
+    def test_the_next_run_reverts_an_unjudged_pass_that_regressed(self):
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        self.improver(FakeRunner(self.root, [], fail={"qa": "no-pass"})).run()
+        record = self.improver(FakeRunner(self.root, [card(4.0)]), max_passes=1).run()
+        self.assertEqual(record["passes"][0]["decision"], "revert")
+        self.assertEqual(read_json(self.root / "vfx.json")["authoring"]["version"], "v01")
+        self.assertEqual((self.root / "video.mp4").read_bytes(), b"original video")
 
     def test_feedback_is_closed_once_a_pass_consumed_it(self):
         self.start_pass(card(5.0, mechanical=[mech()]))

@@ -437,15 +437,50 @@ def provenance_of(doc: Path) -> dict | None:
     return record
 
 
+#: A path-traced camera or a participating medium makes a still heavy in time and
+#: memory; such a still goes to the host an encode would use (the most memory).
+HEAVY = re.compile(r'renderer="pathtrace"|<medium\b')
+
+
+def frame_host(text: str) -> str:
+    """Where a still of this document renders: the still host, or for a heavy
+    document the encode host."""
+    from . import render
+    return render.remote_host(None, "encode" if HEAVY.search(text) else "still")
+
+
+class host_lock:
+    """One kit render per host at a time, across every process on this machine:
+    agents that start frames in the background queue here instead of piling
+    path-traced renders onto one host."""
+
+    def __init__(self, host: str) -> None:
+        name = re.sub(r"[^A-Za-z0-9_.-]+", "_", host or "local")
+        self.path = Path(tempfile.gettempdir()) / f"yt-kit-render-{name}.lock"
+
+    def __enter__(self) -> "host_lock":
+        import fcntl
+        self.fh = open(self.path, "w")
+        fcntl.flock(self.fh, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc) -> None:
+        import fcntl
+        fcntl.flock(self.fh, fcntl.LOCK_UN)
+        self.fh.close()
+
+
 def frame(doc: Path, at: float, *, host: str = "", out_dir: Path | None = None
           ) -> tuple[Path | None, list[str]]:
-    """Render one frame of a document on the still host into frames/ and run
-    the eyeless frame checks on it: (png path or None, findings)."""
+    """Render one frame of a document into frames/ -- on the still host, or on
+    the encode host when it is path traced or has a medium, one kit render per
+    host at a time -- and run the eyeless frame checks: (png path or None, findings)."""
     from . import framecheck, render
     from .vfx import FILE_ATTRS, referenced_files
     doc = Path(doc).resolve()
     data = doc.read_bytes()
     text = data.decode("utf-8", "replace")
+    host = host or frame_host(text)
     # The engine runs where every referenced file can be named below it: a
     # document under vfx/vNN/ that uses ../../props/... ships from the project.
     refs = [Path(os.path.normpath(doc.parent / m.group(1))) for m in
@@ -457,8 +492,9 @@ def frame(doc: Path, at: float, *, host: str = "", out_dir: Path | None = None
     doc_path = doc.relative_to(root).as_posix()
     files = referenced_files(text, doc.parent, root)
     files.pop(doc_path, None)
-    png, message = render.engine_render_still(data, at, host=host, files=files,
-                                              doc_path=doc_path)
+    with host_lock(host):
+        png, message = render.engine_render_still(data, at, host=host, files=files,
+                                                  doc_path=doc_path)
     findings = [line for line in message.splitlines()[1:] if line.strip()]
     if png is None:
         return None, [f"error: frame at {at:g}s of {doc.name} not rendered: "

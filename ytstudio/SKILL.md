@@ -314,7 +314,15 @@ hand-authored world showed the cost.
   work.
   - Each probe gets the first review plus up to `--rounds` (2) revisions
     while under `--bar` (8), each in the author's resumed session with the
-    findings verbatim.
+    findings verbatim. Every round's evidence is kept under `rounds/rNN/`.
+    The probe scores its best round, and a revision that scored lower is put
+    back before the next one: only a measured improvement is kept.
+  - `--resume --name RUN` continues an interrupted run: finished probes keep
+    their rows, unfinished ones start again.
+  - `kit.py frame` renders one still per host at a time, behind a lock on
+    this machine, and sends a path-traced document or one with a medium to
+    the encode host. Such a still takes minutes, and the still host is
+    shared with work that is not ours.
   - A run that covered every probe becomes `latest.json`, and the next run
     shows each score's change against it.
   - The cause columns show what is the authoring's to fix and what is the

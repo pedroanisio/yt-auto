@@ -876,7 +876,9 @@ read as real. It never says how to get there and names no film.
 3. **Review.** A different model scores the frames and names, for every
    defect, whether the authoring, the engine or an asset caused it.
 4. **Revise.** Under `--bar` the findings go back verbatim to the same
-   author session, for up to `--rounds` revisions.
+   author session, for up to `--rounds` revisions. The best round is the
+   probe's score; a revision that scored lower is put back before the next
+   one. `--resume --name RUN` continues an interrupted run.
 
 ```bash
 ./yt probe --list

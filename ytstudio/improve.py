@@ -37,6 +37,9 @@ loop as code:
    new blocking mechanical finding appears; otherwise the snapshot taken
    before the pass (`improve/pass-NN/snapshot/`) is restored. vfx versions
    are kept anyway, so reverting vfx restores `vfx.json`'s active version.
+   A pass whose stages all ran but whose QA filed nothing (a render host
+   down) is `unjudged`: its outputs and snapshot stay, and the next run
+   scores and judges it before anything else.
 6. **Stop** at READY TO PUBLISH (or `--target` with nothing blocking), at
    `--max-passes`, when the next pass's estimate exceeds what is left of
    `--budget-usd`, when a defect survives `SURVIVOR_PASSES` passes that
@@ -82,6 +85,7 @@ TOLERANCE = 0.5
 SURVIVOR_PASSES = 3
 
 IMPROVE_DIR = "improve"
+QA_FAILED = "qa filed no new pass"
 REPORT_JSON, REPORT_MD = "improve.json", "improve.md"
 
 #: What a pass is guessed to cost before one has been measured.
@@ -821,6 +825,45 @@ class Improver:
         self._log("the latest QA pass is missing or older than the video; scoring first")
         return self._qa()
 
+    def _resume(self) -> dict | None:
+        """Judge the last pass of an earlier run whose QA failed: score it
+        now if no pass has scored it, keep it or restore its snapshot."""
+        earlier = read_json(self.root / REPORT_JSON, warn=False) or {}
+        passes = earlier.get("passes") or []
+        if not passes or passes[-1].get("decision") != "unjudged":
+            return None
+        entry = dict(passes[-1], resumed=True)
+        before = self._card(self.root / qa.QA_DIR / str(entry.get("best_before")))
+        if before is None:
+            return None
+        latest = qa.latest_pass(self.root)
+        new = None
+        if (latest is not None and latest.name != before.get("pass")
+                and not self._stale(latest)
+                and int(latest.name.split("-")[1]) > int(str(before["pass"]).split("-")[1])):
+            new = self._card(latest)
+        if new is None:
+            self._log(f"[improve] {entry['name']} was never judged; scoring it first")
+            new = self._qa()
+        if new is None:
+            self.say(f"error: {entry['name']} still has no QA pass; the render host may "
+                     "be down")
+            return None
+        verdict = judge(before, new)
+        entry.update(qa_pass=new["pass"], overall_after=new.get("overall"),
+                     scores_after=new.get("scores"), verdict_after=new.get("verdict"),
+                     deltas=verdict["deltas"], overall_delta=verdict["overall_delta"],
+                     reasons=verdict["reasons"],
+                     decision="keep" if verdict["keep"] else "revert")
+        if not verdict["keep"]:
+            restore(self.root, Path(entry.get("snapshot")
+                                    or self.root / IMPROVE_DIR / entry["name"] / "snapshot"))
+        close_feedback(self.root, entry["name"])
+        self._save_pass(self.root / IMPROVE_DIR / entry["name"], entry)
+        self._log(f"[improve] {entry['name']}: judged now, "
+                  f"{'kept' if verdict['keep'] else 'reverted'}")
+        return {"entry": entry, "start": before, "best": new if verdict["keep"] else before}
+
     # -- defects across passes ---------------------------------------------
 
     def _new_defect(self, f: dict, pass_name: str) -> str:
@@ -894,17 +937,22 @@ class Improver:
                         "target": self.target, "quality": self.quality, "passes": [],
                         "human": [], "start": None, "best": None, "spent_usd": 0.0,
                         "stop": None}
-        card = self._evidence()
+        resumed = None if self.dry_run else self._resume()
+        card = resumed["best"] if resumed else self._evidence()
         if card is None:
             record["stop"] = {"reason": "no-evidence",
                               "detail": "no QA pass could be read or scored"}
             return self._finish(record)
-        record["start"] = _summary(card)
+        record["start"] = _summary(resumed["start"] if resumed else card)
         best = evidence = card
         attempts: dict[str, list[str]] = {}
         last_cost: float | None = None
         findings = self._evidence_findings(card)
         self._assign(card["pass"], findings, set())
+        if resumed:
+            record["passes"].append(resumed["entry"])
+            record["best"] = _summary(best)
+            last_cost = resumed["entry"].get("cost_usd") or None
 
         while True:
             if len(record["passes"]) >= self.max_passes and not self.dry_run:
@@ -984,13 +1032,24 @@ class Improver:
                 entry["argv"].append(["qa", *self.base])
                 new = self._qa()
                 if new is None:
-                    failed = "qa filed no new pass"
+                    failed = QA_FAILED
             cost = sum(stage_cost(self.root, s, before) for s in stages + ["gate"])
             self.spent_stages += cost
             cost += float(((new or {}).get("engine") or {}).get("cost_usd") or 0)
             entry["cost_usd"] = round(cost, 4)
             last_cost = cost or None
 
+            if failed == QA_FAILED:
+                # Every stage ran; only the judging failed (a render host
+                # down, say). The pass is paid for: keep its outputs and the
+                # snapshot, and let the next run score and judge it.
+                entry.update(decision="unjudged", reasons=[failed], snapshot=str(snap))
+                record["stop"] = {"reason": "qa-failed", "detail": f"{failed}; the "
+                                  "pass's outputs are in place and its snapshot is kept: "
+                                  "run `yt improve` again (it scores and judges this pass "
+                                  "first) or `yt qa`"}
+                self._save_pass(pdir, entry)
+                break
             if failed:
                 restore(self.root, snap)
                 entry.update(decision="failed", reasons=[failed])

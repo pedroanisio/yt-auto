@@ -94,6 +94,7 @@ class ProbeCase(unittest.TestCase):
         patches = [mock.patch("ytstudio.render.engine_validate", return_value=[]),
                    mock.patch("ytstudio.render.engine_render_still",
                               return_value=(png_bytes(), "rendered")),
+                   mock.patch.object(sdkkit, "frame_host", return_value="test-host"),
                    mock.patch.object(sdkkit, "engine_manifest",
                                      return_value={"source": "test", "manifest": {
                                          "engine": {"name": "rs", "version": "1"},
@@ -189,6 +190,54 @@ class Run(ProbeCase):
         self.assertEqual([r["score"] for r in row["rounds"]], [4.0, 6.0, 8.5])
         self.assertEqual(row["score"], 8.5)
         self.assertEqual(row["author"]["sessions"], 3)
+
+    def test_a_revision_that_scores_lower_is_put_back_and_the_best_round_counts(self):
+        scores = iter([5.0, 3.0, 4.0])
+        real = FakeEngine.stream
+        versions = iter(["# round 0\n", "# round 1\n", "# round 2\n"])
+
+        def scored(engine, prompt, system=None, resume=None):
+            if "Write" in tuple(engine.config.tools or ()):
+                FakeEngine.program = PROGRAM + next(versions)
+            else:
+                VERDICT["score"] = next(scores)
+            yield from real(engine, prompt, system=system, resume=resume)
+        try:
+            with mock.patch.object(FakeEngine, "stream", scored):
+                self.run_quiet(self.args(only="glass", rounds=2, bar=8.0))
+        finally:
+            VERDICT["score"] = 5.5
+            FakeEngine.program = PROGRAM
+        authors = [s for s in FakeEngine.streams if "Write" in s["tools"]]
+        self.assertIn("below round 0", authors[2]["prompt"])          # told why, and from where
+        run = next(p for p in (self.work / probes.PROBES_DIR).iterdir() if p.is_dir())
+        row = json.loads((run / "summary.json").read_text())["rows"][0]
+        self.assertEqual([r["score"] for r in row["rounds"]], [5.0, 3.0, 4.0])
+        self.assertEqual(row["score"], 5.0)
+        self.assertEqual(row["best_round"], 0)
+        for n in range(3):
+            self.assertTrue((run / "glass" / "rounds" / f"r{n:02d}" / "compose.py").is_file())
+        self.assertIn("# round 0", (run / "glass" / "rounds" / "r00" / "compose.py").read_text())
+
+    def test_resume_keeps_finished_probes_and_restarts_the_rest(self):
+        self.run_quiet(self.args(name="base", only="metal"))
+        (self.work / probes.PROBES_DIR / "base" / "glass").mkdir()       # an unfinished one
+        (self.work / probes.PROBES_DIR / "base" / "glass" / "stale.txt").write_text("x")
+        FakeEngine.streams = []
+        code = self.run_quiet(self.args(name="base", only="metal,glass", resume=True))
+        self.assertEqual(code, 0)
+        authored = {Path(s["cwd"]).name for s in FakeEngine.streams if "Write" in s["tools"]}
+        self.assertEqual(authored, {"glass"})                          # metal was kept
+        self.assertFalse((self.work / probes.PROBES_DIR / "base" / "glass" / "stale.txt").exists())
+        rows = json.loads((self.work / probes.PROBES_DIR / "base" / "summary.json").read_text())["rows"]
+        self.assertEqual([r["probe"] for r in rows], ["metal", "glass"])
+
+    def test_an_existing_run_is_not_overwritten_without_resume(self):
+        self.run_quiet(self.args(name="base", only="metal"))
+        with mock.patch("sys.stderr", io.StringIO()) as err:
+            code = probes.run(self.args(name="base", only="metal"))
+        self.assertEqual(code, 2)
+        self.assertIn("--resume", err.getvalue())
 
     def test_a_model_never_grades_its_own_work(self):
         with mock.patch("sys.stderr", io.StringIO()) as err:

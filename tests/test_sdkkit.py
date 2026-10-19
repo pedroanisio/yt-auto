@@ -233,6 +233,41 @@ class Rules(unittest.TestCase):
             b'<scene><project/><lights><light id="k" type="spot"/></lights></scene>'), [])
 
 
+class Frames(unittest.TestCase):
+    def test_a_heavy_document_renders_where_an_encode_would(self):
+        with mock.patch("ytstudio.render.remote_host", side_effect=lambda a, job: job) as rh:
+            self.assertEqual(sdkkit.frame_host('<camera renderer="pathtrace"/>'), "encode")
+            self.assertEqual(sdkkit.frame_host('<object3D><medium/></object3D>'), "encode")
+            self.assertEqual(sdkkit.frame_host('<camera renderer="raster"/>'), "still")
+        self.assertEqual(rh.call_count, 3)
+
+    def test_renders_on_one_host_never_overlap(self):
+        import threading
+        import time as _time
+        active, peak, lock = [0], [0], threading.Lock()
+
+        def slow(*a, **k):
+            with lock:
+                active[0] += 1
+                peak[0] = max(peak[0], active[0])
+            _time.sleep(0.05)
+            with lock:
+                active[0] -= 1
+            return None, "not rendered"
+        d = Path(tempfile.mkdtemp(prefix="kit-"))
+        self.addCleanup(shutil.rmtree, d, True)
+        doc = d / "a.scene.xml"
+        doc.write_text('<scene><project width="8" height="8" fps="30" duration="1"/></scene>')
+        with mock.patch("ytstudio.render.engine_render_still", side_effect=slow):
+            threads = [threading.Thread(target=sdkkit.frame, args=(doc, 0.5),
+                                        kwargs={"host": "same-host"}) for _ in range(4)]
+            for th in threads:
+                th.start()
+            for th in threads:
+                th.join()
+        self.assertEqual(peak[0], 1)
+
+
 class Renderer(unittest.TestCase):
     def test_the_notes_come_from_the_schemas_documentation(self):
         notes = sdkkit.renderer_notes()

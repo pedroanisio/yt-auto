@@ -272,17 +272,34 @@ def review(run_root: Path, ws: Path, probe: Probe, *, model: str, effort: str | 
     return verdict, h.report()
 
 
+REGRESSED = (
+    "Your last revision scored {last}/10, below round {best_round}'s {best}/10, so the "
+    "program has been put back to round {best_round}'s (keep only a measured improvement). "
+    "Round {best_round}'s findings, verbatim:\n\n{findings}\n\nAnswer them another way "
+    "than the change that lowered the score; build, render, Read the frames again.")
+
+
+def _causes(findings: list[dict]) -> dict:
+    out = {c: 0 for c in CAUSES}
+    for f in findings:
+        out[f.get("cause") if f.get("cause") in CAUSES else "unknown"] += 1
+    return out
+
+
 def run_probe(run_root: Path, probe: Probe, *, args, props_dir: Path | None,
               measured: list[dict] | None) -> dict:
     """Author, build, frame and review one probe; while the score is under the
     bar and rounds remain, the review's findings go back to the same author
-    session verbatim and the probe is built, framed and reviewed again."""
+    session verbatim and the probe is built, framed and reviewed again. Each
+    round's evidence is kept under rounds/rNN/; the probe's result is its best
+    round, and a revision that scored lower is put back before the next one."""
     ws = run_root / probe.id
     started = time.monotonic()
     row: dict = {"probe": probe.id, "what": probe.what, "score": 0.0, "summary": "",
                  "causes": {c: 0 for c in CAUSES}, "rounds": []}
     authors: list[dict] = []
     reviews_cost = 0.0
+    best: dict | None = None
     try:
         prepare(ws, probe, props_dir=props_dir, host=args.host, measured=measured)
         authors.append(author(ws, probe, model=args.model, effort=args.effort,
@@ -293,32 +310,51 @@ def run_probe(run_root: Path, probe: Probe, *, args, props_dir: Path | None,
             row["build_findings"] = built.get("findings", [])[:20]
             if not built["frames"]:
                 # Nothing to look at is a measured outcome, recorded as such.
-                row["score"], row["findings"] = 0.0, []
-                row["summary"] = "no frame to judge: " + (built["error"] or "nothing rendered")
-                row["causes"] = {c: int(c == "authoring") for c in CAUSES}
-                row["rounds"].append({"round": n, "score": 0.0, "built": False})
+                row["rounds"].append({"round": n, "score": 0.0, "built": False,
+                                      "summary": "no frame to judge: "
+                                      + (built["error"] or "nothing rendered")})
+                if best is None:
+                    break
+                current = row["rounds"][-1]
+            else:
+                verdict, report = review(run_root, ws, probe, model=args.reviewer_model,
+                                         effort=args.effort,
+                                         budget_usd=args.review_budget_usd,
+                                         verbose=not args.quiet, name=f"{probe.id}-r{n}")
+                reviews_cost += report["cost_usd"]
+                findings = verdict.get("findings", [])
+                current = {"round": n, "score": float(verdict.get("score") or 0),
+                           "summary": str(verdict.get("summary", "")),
+                           "findings": findings, "causes": _causes(findings)}
+                row["rounds"].append({k: current[k] for k in ("round", "score", "causes")})
+                kept = ws / "rounds" / f"r{n:02d}"
+                if kept.exists():
+                    shutil.rmtree(kept)
+                shutil.copytree(ws / "review", kept)
+                if best is None or current["score"] > best["score"]:
+                    best = current
+            if (best and best["score"] >= args.bar) or n == args.rounds:
                 break
-            verdict, report = review(run_root, ws, probe, model=args.reviewer_model,
-                                     effort=args.effort, budget_usd=args.review_budget_usd,
-                                     verbose=not args.quiet, name=f"{probe.id}-r{n}")
-            reviews_cost += report["cost_usd"]
-            row["score"] = float(verdict.get("score") or 0)
-            row["summary"] = str(verdict.get("summary", ""))
-            row["findings"] = verdict.get("findings", [])
-            row["causes"] = {c: 0 for c in CAUSES}
-            for f in row["findings"]:
-                cause = f.get("cause") if f.get("cause") in CAUSES else "unknown"
-                row["causes"][cause] += 1
-            row["rounds"].append({"round": n, "score": row["score"],
-                                  "causes": dict(row["causes"])})
-            if row["score"] >= args.bar or n == args.rounds:
-                break
-            prompt = REVISE.format(score=row["score"], bar=args.bar,
-                                   findings=json.dumps(row["findings"], ensure_ascii=False,
-                                                       indent=1))
+            if current is best:
+                prompt = REVISE.format(score=current["score"], bar=args.bar,
+                                       findings=json.dumps(current["findings"],
+                                                           ensure_ascii=False, indent=1))
+            else:
+                shutil.copy2(ws / "rounds" / f"r{best['round']:02d}" / PROGRAM, ws / PROGRAM)
+                prompt = REGRESSED.format(last=current["score"], best=best["score"],
+                                          best_round=best["round"],
+                                          findings=json.dumps(best["findings"],
+                                                              ensure_ascii=False, indent=1))
             authors.append(author(ws, probe, model=args.model, effort=args.effort,
                                   budget_usd=args.budget_usd, verbose=not args.quiet,
                                   prompt=prompt, resume=authors[-1].get("session_id")))
+        if best is not None:
+            row.update(score=best["score"], summary=best["summary"],
+                       findings=best["findings"], causes=best["causes"],
+                       best_round=best["round"])
+        elif row["rounds"]:
+            row["summary"] = row["rounds"][-1]["summary"]
+            row["causes"] = {c: int(c == "authoring") for c in CAUSES}
         row["review"] = {"model": args.reviewer_model, "cost_usd": round(reviews_cost, 4)}
     except Exception as exc:          # one probe's failure is that probe's row
         row["error"] = f"{type(exc).__name__}: {exc}"
@@ -389,6 +425,21 @@ def run(args) -> int:
     base = probes_dir(args.work)
     name = args.name or time.strftime("r-%Y%m%d-%H%M%S")
     run_root = base / name
+    done: dict[str, dict] = {}
+    if args.resume:
+        if not args.name or not run_root.is_dir():
+            print("error: --resume continues a run named by --name that exists",
+                  file=sys.stderr)
+            return 2
+        for probe in selected:
+            row = read_json(run_root / probe.id / "probe.json", warn=False)
+            if isinstance(row, dict) and not row.get("error"):
+                done[probe.id] = row
+            elif (run_root / probe.id).exists():
+                shutil.rmtree(run_root / probe.id)     # an unfinished probe starts again
+    elif args.name and run_root.is_dir() and any(run_root.iterdir()):
+        print(f"error: {run_root} exists; pass --resume to continue it", file=sys.stderr)
+        return 2
     run_root.mkdir(parents=True, exist_ok=True)
     props_dir = Path(args.props) if args.props else (base / "props")
     if not (props_dir / "props.json").is_file():
@@ -397,10 +448,15 @@ def run(args) -> int:
     measured = latest_measured(args.work) or None
     print(f"probes: {len(selected)} -> {run_root}" +
           (f" · props {props_dir}" if props_dir else " · no props"), file=sys.stderr)
+    todo = [p for p in selected if p.id not in done]
+    if done:
+        print(f"probes: resuming; kept {', '.join(done)}", file=sys.stderr)
     with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
-        rows = list(pool.map(lambda p: run_probe(run_root, p, args=args,
-                                                 props_dir=props_dir, measured=measured),
-                             selected))
+        fresh = dict(zip([p.id for p in todo],
+                         pool.map(lambda p: run_probe(run_root, p, args=args,
+                                                      props_dir=props_dir, measured=measured),
+                                  todo)))
+    rows = [done.get(p.id) or fresh[p.id] for p in selected]
     before = {r["probe"]: r["score"] for r in (previous or {}).get("rows", [])}
     for r in rows:
         if r["probe"] in before:
@@ -462,11 +518,14 @@ def add_arguments(p: argparse.ArgumentParser, *, shared: bool = True) -> None:
                    help="the realism score that ends the revisions (default 8)")
     p.add_argument("--budget-usd", type=float, default=3.0, help="per author session")
     p.add_argument("--review-budget-usd", type=float, default=1.0, help="per review")
-    p.add_argument("--jobs", type=int, default=3, help="probes composed at once")
+    p.add_argument("--jobs", type=int, default=2, help="probes composed at once")
     p.add_argument("--props", help="a props folder (props.json + props/); default "
                    "work/.probes/props when it exists")
     p.add_argument("--host", default="", help="render host (default: the still host)")
     p.add_argument("--name", help="the run's directory name (default r-<time>)")
+    p.add_argument("--resume", action="store_true",
+                   help="continue the run named by --name: finished probes keep their rows, "
+                        "unfinished ones start again")
 
 
 def dispatch(args) -> int:
