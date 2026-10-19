@@ -187,19 +187,52 @@ def stage_gain(totals: list[float], lo: float, hi: float) -> tuple[float, list[f
     return round(bus, 3), [round(min(hi, max(lo, t - bus)), 3) for t in totals]
 
 
-#: Short effects -- taps, knocks, stingers -- are transients: they set the
+#: Short effects -- impacts, hits, stingers -- are transients: they set the
 #: programme's peaks without carrying its loudness.
 TRANSIENT_KINDS = ("sfx", "stinger", "transition")
 TRANSIENT_SECONDS = 2.0
-#: What a sustained bed's own peaks sit above its level, roughly: the room
-#: the master's ceiling leaves above the integrated target is shared between
-#: the bed's crest and the transients, so this much of it is the bed's.
-#: Measured on a paper-plane mix (taps over a cello pad and room tone): at
-#: 6 dB the limiter still took 0.7 LU; 8 dB landed within the target.
-TRANSIENT_CREST_DB = 8.0
+#: The room the master's ceiling leaves above the integrated target is
+#: shared between the bed's own crest and the transients. The crest belongs
+#: to each film's mix, so it is measured, not fixed: a generic start for the
+#: first build, then corrected by what the last render of this project
+#: measured (`measured_crest`). Nothing here is fitted to any one film.
+DEFAULT_CREST_DB = 6.0
+#: The least room the transients keep above the bed however the crest grows.
+MIN_TRANSIENT_ROOM_DB = 2.0
+#: A measured loudness this close to the target is on target: no correction.
+LOUDNESS_TOLERANCE_LU = 0.5
 
 
-def transient_headroom(loudness: float, true_peak: float) -> float:
+def measured_crest(root: Path, *, target: float, true_peak: float = -1.0
+                   ) -> tuple[float, str]:
+    """The bed crest for this project's next mix, and where it came from.
+
+    When the last build recorded the crest it used and a render made after
+    that build measured the programme's integrated loudness, a shortfall
+    against the target is the share of the ceiling the crest needed beyond
+    it: raise the crest by that much. A mix on target keeps its crest.
+    Without such a pair of measurements, the generic start is used.
+    """
+    build_json, render_json = root / "build.json", root / "render.json"
+    if not (build_json.is_file() and render_json.is_file()):
+        return DEFAULT_CREST_DB, "default"
+    if render_json.stat().st_mtime <= build_json.stat().st_mtime:
+        return DEFAULT_CREST_DB, "default"
+    staging = (read_json(build_json, warn=False) or {}).get("audio_staging") or {}
+    outputs = ((read_json(render_json, warn=False) or {}).get("result") or {}).get("outputs") or []
+    used = staging.get("crest_db")
+    measured = next((o.get("loudness") for o in outputs if o.get("loudness") is not None), None)
+    if used is None or measured is None:
+        return DEFAULT_CREST_DB, "default"
+    shortfall = float(target) - float(measured)
+    if shortfall <= LOUDNESS_TOLERANCE_LU:
+        return round(float(used), 3), "measured"
+    ceiling = (true_peak - target) - MIN_TRANSIENT_ROOM_DB
+    return round(min(ceiling, float(used) + shortfall), 3), "measured"
+
+
+def transient_headroom(loudness: float, true_peak: float, *,
+                       crest: float = DEFAULT_CREST_DB) -> float:
     """How far a transient's peak may sit above the loudest bed.
 
     `normalize` lifts the programme to `loudness`; the limiter then holds
@@ -207,7 +240,7 @@ def transient_headroom(loudness: float, true_peak: float) -> float:
     the sustained level is limited after the lift, and the limiter takes the
     loudness with it (docs/compute.md). The bed's own crest takes a share.
     """
-    return round((true_peak - loudness) - TRANSIENT_CREST_DB, 3)
+    return round((true_peak - loudness) - crest, 3)
 
 
 def transient_shift(rows: list[tuple[str, float, float]], headroom: float
@@ -883,15 +916,18 @@ class SceneBuilder:
                            (level_db(str(cue.get("level") or "")) or 0.0) + trim,
                            kind, window, cue_id])
 
-        # Transients first: the limiter runs after normalisation, so a tap
+        # Transients first: the limiter runs after normalisation, so a hit
         # far above the bed is limited after the lift and the programme loses
         # loudness it never gets back. The short effects come down as a
         # group until the loudest sits within the master's own headroom.
         if self.normalize != "none":
-            headroom = transient_headroom(self.loudness, self.true_peak)
+            crest, crest_from = measured_crest(self.root, target=self.loudness,
+                                               true_peak=self.true_peak)
+            headroom = transient_headroom(self.loudness, self.true_peak, crest=crest)
             shift, bed = transient_shift([(r[3], r[4], r[2]) for r in routed], headroom)
             report["staging"].update({"bed_db": bed, "headroom_db": headroom,
-                                      "shift_db": shift})
+                                      "shift_db": shift, "crest_db": crest,
+                                      "crest_from": crest_from})
             transients = [r for r in routed
                           if r[3] in TRANSIENT_KINDS and r[4] <= TRANSIENT_SECONDS]
             if transients and bed is None:

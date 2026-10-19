@@ -3,7 +3,7 @@
 
     yt keyframe --title monty                 # elements, document, frame, review
     yt keyframe --title monty --approve       # record the approval on disk
-    yt keyframe --title monty --reject "the desk reads as plastic; a warmer key"
+    yt keyframe --title monty --reject "the main surface reads as plastic; a warmer key"
     yt keyframe --title monty --fresh --rounds 3 --bar 8
 
 A studio locks a style frame before animation starts. This stage is that
@@ -541,7 +541,7 @@ def write_brief(ws: Workspace, *, idea: Idea, house_rules: str, direction: dict 
                   "placed as a `<mesh>` asset on an `object3D primitive=\"mesh\"`, never rebuilt "
                   "from primitives; large surfaces carry texture maps (`baseColorMap`, "
                   "`normalMap`, `metallicRoughnessMap`/`occlusionMap`, `uvScaleX`/`uvScaleY`); "
-                  "a flat `baseColor` on a wall or a desk reads as flat-shaded CG.", ""]
+                  "a flat `baseColor` on a wall or any broad surface reads as flat-shaded CG.", ""]
         for title, rows in (("### HDRIs (environment maps)", hdris),
                             ("### Models (glTF with textures)", models),
                             ("### Other files", others)):
@@ -711,7 +711,8 @@ class KeyframeStage:
     def _stream(self, engine, prompt: str) -> int:
         calls = 0
         try:
-            for event in engine.stream(prompt, system=AUTHOR_SYSTEM):
+            system = harness.with_feedback(AUTHOR_SYSTEM, self.root, "keyframe")
+            for event in engine.stream(prompt, system=system):
                 if event.subtype == "tool_use" and event.tool_input:
                     calls += 1
                     what = event.tool_input.get("command") or event.tool_input.get("file_path") or ""

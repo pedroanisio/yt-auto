@@ -51,7 +51,7 @@ from pathlib import Path
 from claude_engine import ClaudeEngine, ClaudeError, EngineConfig, Usage
 from .core import Idea, _key, _merge_usage, compact, wrap
 from .core import write_json as dump_json
-from . import house, workspace
+from . import harness, house, workspace
 from .assess import stack_brief
 
 #: Deliberation stages, as accepted by --deliberate. See the module docstring.
@@ -474,8 +474,9 @@ class Director:
                  context: str = "", modes: set[str] | None = None,
                  keep: int = 0, jobs: int = 3, house: str = "",
                  house_digest: dict | None = None, stack: str = "",
-                 verbose: bool = True) -> None:
+                 verbose: bool = True, root: Path | str | None = None) -> None:
         self.idea = idea
+        self.root = root            # the project, for its open revision notes
         self.model = model
         self.count = count
         self.rich = rich
@@ -500,7 +501,8 @@ class Director:
         """One call on its own engine: threads must not share usage counters."""
         engine = ClaudeEngine(EngineConfig(tools=(), model=self.model))
         try:
-            return engine.ask_json(prompt, schema, system=SYSTEM)
+            return engine.ask_json(prompt, schema, system=harness.with_feedback(
+                SYSTEM, self.root, "styles"))
         finally:
             _merge_usage(self.usage, engine.usage)
 
@@ -922,7 +924,7 @@ def run(args) -> int:
                            else "no `yt assess` verdict for this video; judged against "
                                 "the stack alone"), file=sys.stderr)
     director = Director(
-        idea, house=rules, house_digest=digest, stack=stack,
+        idea, house=rules, house_digest=digest, stack=stack, root=project.root,
         model=args.model, count=args.count, rich=args.rich,
         constraints=constraint_lines(args), modes=modes, keep=args.shortlist,
         jobs=args.jobs, verbose=not args.quiet,

@@ -378,8 +378,9 @@ class SoundDesigner:
                  mood: str = "", library: list[str] | None = None,
                  free_only: bool = False, music: bool = True,
                  house: str = "", house_digest: dict | None = None,
-                 verbose: bool = True) -> None:
+                 verbose: bool = True, root: Path | str | None = None) -> None:
         self.idea = idea
+        self.root = root            # the project, for its open revision notes
         self.model = model
         self.runtime = max(10, runtime)
         self.sections = sections or []
@@ -405,7 +406,8 @@ class SoundDesigner:
     def _ask(self, prompt: str, schema: dict) -> dict:
         engine = ClaudeEngine(EngineConfig(tools=(), model=self.model))
         try:
-            return engine.ask_json(prompt, schema, system=SYSTEM)
+            return engine.ask_json(prompt, schema, system=harness.with_feedback(
+                SYSTEM, self.root, "sound"))
         finally:
             _merge_usage(self.usage, engine.usage)
 
@@ -1024,7 +1026,9 @@ def realise(root: str | Path, data: dict, *, author=None, model: str | None = No
     ws = root / SYNTH_DIR
     ws.mkdir(parents=True, exist_ok=True)
     write_json(ws / "cues.json", targets)
-    (ws / "BRIEF.md").write_text(synth_brief(targets), encoding="utf-8")
+    notes = harness.feedback_for(root, "sound")
+    (ws / "BRIEF.md").write_text(synth_brief(targets) + (f"\n\n{notes}\n" if notes else ""),
+                                 encoding="utf-8")
     automation_root = str(Path(__file__).resolve().parent.parent)
     (ws / "check.py").write_text(
         CHECK_SCRIPT.replace("@AUTOMATION_ROOT@", repr(automation_root)), encoding="utf-8")
@@ -1369,7 +1373,7 @@ def run(args) -> int:
     if rules and not args.quiet:
         print(f"standards: {', '.join(digest['sources'])}", file=sys.stderr)
     designer = SoundDesigner(
-        idea, house=rules, house_digest=digest,
+        idea, house=rules, house_digest=digest, root=project.root,
         model=args.model, runtime=runtime, sections=sections,
         direction=direction_block(direction) if direction else "",
         subject=subject_block(dossier) if dossier else "",

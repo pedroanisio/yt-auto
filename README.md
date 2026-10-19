@@ -109,15 +109,15 @@ Or all of it at once, for one idea:
 | `yt props` | CC0 glTF models, HDRIs and texture maps from Poly Haven under `props/`, listed in `props.json` for the vfx brief | no model calls, no key |
 | `yt keyframe` | the look-lock: one composed 1920x1080 frame of the hero, environment, key light, materials, palette roles, type sample and camera language, each labelled with its source, reviewed and awaiting the operator's approval | one decision, one author session and one vision review per round |
 | `yt voice` | one WAV per shot, measured drift against the script, captions | no model calls; ElevenLabs bills per character, local engines are free |
-| `yt vfx` | every effect specified and costed, then one world `<symbol>` per section with a single camera, its shots as phases, proof frames checked and reviewed, versioned under `vfx/vNN/` | scales with `--per-section`, `--budget-usd` per section, `--revisions` |
+| `yt vfx` | every effect specified and costed, then one world `<symbol>` per section with a single camera, its shots as phases, proof frames checked (frame, camera and geometry: a hero that penetrates a set solid, or that reads merged into one on screen with no shadow, is an error with time, object and depth) and reviewed, versioned under `vfx/vNN/` | scales with `--per-section`, `--budget-usd` per section, `--revisions` |
 | `yt sound` | effects, ambience, score, motifs, mix targets, cue sheet; with `--fetch`, a CC0/CC-BY file per cue from Freesound under `sound/` | **$1.07** for 3 minutes with listen-back |
 | `yt build` | the scene-render document: continuous includes of the authored worlds, model-planned graphics drawn from the design, captions, markers, the mix with the fetched cues on buses per role | one planning call per section |
 | `yt render` | the encoded video, with the engine's report, from a job-scoped directory on a render host | no model calls |
 | `yt retime` | the screenplay's shot lengths, replaced by the measured ones | no model calls |
 | `yt pilot` | 30/60/180-second cuts of the finished film, nested, with what each proves | no model calls |
-| `yt gate` | the delivery verdict: loudness, scopes, frames, caption limits, run on a render host and naming the requirement that stopped it | one triage call |
+| `yt gate` | the delivery verdict: loudness, scopes, frames, caption limits, run on a render host and naming the requirement that stopped it; plus the geometry check (a hero that penetrates the set, or reads merged into it on screen, blocks whatever the tool and the triage said) | one triage call |
 | `yt review` | the PDF review sheet: frames, captions, markers, sources, credits | no model calls |
-| `yt qa` | the scorecard per pass: one frame window per sampled midpoint (the still is its middle frame), a contact sheet, the mechanical findings, the model's review | one inspection call per pass; one render job per sample |
+| `yt qa` | the scorecard per pass: one frame window per sampled midpoint (the still is its middle frame), a contact sheet, the mechanical findings (flat, clipped, frozen, jump, off-camera, `penetration`: the hero inside a set solid, and `reads-merged`: the hero over a surface on screen with no shadow, from the engine's evaluated geometry and camera), the model's review | one inspection call per pass; one render job per sample, one eval job per pass |
 | `yt doctor` | every video's state and the command that advances it | no model calls |
 
 Those figures are measured on `sonnet`, which is the default; `--model opus`
@@ -190,7 +190,7 @@ yt pilot  --scene cut/scene.xml --seconds 30,60      # markers are the shots
 yt gate   --scene s.xml --video v.mp4 --render render.json --captions v.vtt --voice-end 212.4
 yt review --scene cut/scene.xml --engine rs
 yt qa     --scene cut/scene.xml                      # samples from the markers
-yt props  --project DIR "office desk" "studio hdri"  # phrases given, or derived from the project
+yt props  --project DIR "<set piece>" "<hdri>"       # phrases given, or derived from the project
 yt assess "a photoreal droplet, 30 s" --styles styles.json --script script.json
 ```
 
@@ -588,10 +588,12 @@ transient, and the transients come down **as a group** — keeping the
 sheet's balance between them — until the loudest sits
 `transient_headroom` above the loudest bed (anything sustained that is not
 narration). The headroom is derived from the master's own targets: the
-true-peak ceiling minus the loudness target, minus 8 dB for the bed's own
-crest (the figure measured on a paper-plane mix; at 6 dB the limiter still
-took 0.7 LU). `build.json` records it under `audio_staging` (`bed_db`,
-`headroom_db`, `shift_db`, the cues `shifted`) and a note says by how much;
+true-peak ceiling minus the loudness target, minus the bed's own crest.
+The crest is this project's own measurement: the first build starts from a
+generic 6 dB, and once a render exists the build raises it by the shortfall
+that render measured against the target (`measured_crest`; within 0.5 LU is
+on target). `build.json` records it under `audio_staging` (`bed_db`,
+`headroom_db`, `shift_db`, `crest_db`, `crest_from`, the cues `shifted`) and a note says by how much;
 transients with no bed under them are a warning, because the target will be
 missed. Nothing changes the loudness target itself.
 

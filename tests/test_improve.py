@@ -1,0 +1,793 @@
+"""improve.py: QA's findings go back to the stages that own them.
+
+`yt qa` names an owner for every finding; nothing routed them back, so the
+same defects were reported pass after pass. `yt improve` is docs/production.md
+§8 as code: it routes each finding to one stage (the mechanical kinds by
+their stated owner, the prose ones by a model decision under a schema),
+writes each stage a revision brief under `feedback/`, which the harness puts
+in front of every decision that stage makes, re-runs the earliest routed
+stage and everything downstream through a runner seam, scores a new QA pass,
+and keeps it only when it measurably improved (§8.8, §9) -- restoring the
+snapshot otherwise. These tests use no model, no network and no ssh: every
+harness call is a FakeEngine and every stage is a fake runner that writes
+the files a stage would.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
+sys.path.insert(0, str(HERE))
+
+from claude_engine import Usage  # noqa: E402
+from ytstudio import (build, cli, harness, improve, keyframe, qa, script, sound,  # noqa: E402
+                      styles, vfx, workspace)
+from ytstudio.core import Idea, read_json, write_json  # noqa: E402
+
+ROOT = HERE.parent
+
+
+# --------------------------------------------------------------------------- #
+# fakes
+# --------------------------------------------------------------------------- #
+
+class FakeEngine:
+    """Every harness call: records the system prompt, answers by schema."""
+
+    json_calls: list = []
+    route = None          # callable(prompt) -> routing answer
+    same = None           # callable(prompt) -> same-defect answer
+
+    def __init__(self, config):
+        self.config = config
+        self.usage = Usage()
+        self.usage.cost_usd = 0.01
+        self.usage.calls = 1
+
+    def ask_json(self, prompt, schema, system=None):
+        FakeEngine.json_calls.append({"prompt": prompt, "schema": schema, "system": system})
+        props = schema.get("properties", {})
+        if "routes" in props:
+            return (FakeEngine.route or route_all_to("vfx"))(prompt)
+        if "matches" in props:
+            return (FakeEngine.same or (lambda p: {"matches": []}))(prompt)
+        return {k: "" for k in schema.get("required", [])}
+
+    def stream(self, prompt, system=None):
+        FakeEngine.json_calls.append({"prompt": prompt, "system": system})
+        return iter(())
+
+
+def finding_ids(prompt: str) -> list[str]:
+    return re.findall(r'"id": "(F\d+)"', prompt)
+
+
+def route_all_to(stage: str, *, brief=True):
+    def answer(prompt):
+        ids = finding_ids(prompt)
+        return {"routes": [{"finding": i, "stage": stage, "why": "owns it"} for i in ids],
+                "briefs": ([{"stage": stage, "must_change": [f"fix what {stage} owns"],
+                             "check": "the next pass no longer shows it"}] if brief else [])}
+    return answer
+
+
+def mech(kind="penetration", shot="1.4", objects=("hero-x", "table-top"), t=13.0,
+         owner="vfx", severity="blocking"):
+    a, b = objects
+    return {"timestamp": t, "frame": f"t{t}.png", "shot": shot, "owner": owner,
+            "kind": kind, "severity": severity,
+            "problem": f"hero penetrates the set: `{a}` inside `{b}`, up to 4.0 units",
+            "why": "a hero inside a solid reads as a merge", "root_cause": "the keyed path",
+            "fix": "raise the keyed path"}
+
+
+def prose(problem, *, t=5.0, owner="vfx", severity="blocking"):
+    return {"timestamp": t, "frame": f"t{t}.png", "problem": problem, "why": "it reads flat",
+            "root_cause": "the light rig", "owner": owner, "fix": "light it", "severity": severity}
+
+
+def card(overall, *, scores=None, mechanical=(), findings=(), verdict=None, cost=0.1):
+    s = {k: overall for k in qa.CATEGORIES}
+    s.update(scores or {})
+    return {"scores": s, "overall": overall,
+            "verdict": verdict or (qa.READY if overall >= 9.0 else qa.NOT_READY),
+            "findings": list(findings), "mechanical": list(mechanical),
+            "blocking": [f["problem"] for f in list(findings) + list(mechanical)
+                         if f.get("severity") == "blocking"],
+            "bar": [] if overall >= 9.0 else [f"overall {overall} is under 9.0"],
+            "rationale": "because", "engine": {"cost_usd": cost}}
+
+
+class FakeRunner:
+    """Stands in for `yt <stage>`: records argv, writes what the stage would."""
+
+    def __init__(self, root: Path, cards=(), *, costs=None, fail=None):
+        self.root = root
+        self.cards = list(cards)
+        self.costs = costs or {}
+        self.fail = fail or {}
+        self.calls: list[list[str]] = []
+
+    def __call__(self, argv):
+        self.calls.append(list(argv))
+        stage = argv[0]
+        cost = self.costs.get(stage, 0.0)
+        if stage == "qa":
+            if not self.cards:
+                raise AssertionError("qa ran more often than the test scripted")
+            c = dict(self.cards.pop(0))
+            pdir = qa.next_pass(self.root)
+            pdir.mkdir(parents=True)
+            c["pass"] = pdir.name
+            write_json(pdir / "scorecard.json", c)
+            write_json(self.root / "qa.json", {"pass": pdir.name, "verdict": c["verdict"],
+                                               "overall": c["overall"]})
+            return 0 if c["verdict"] == qa.READY else 1
+        if stage == "vfx":
+            data = read_json(self.root / "vfx.json", warn=False) or {}
+            versions = list(data.get("authoring", {}).get("versions", []))
+            new = f"v{len(versions) + 1:02d}"
+            data["authoring"] = {"version": new, "versions": versions + [new]}
+            data["usage"] = {"cost_usd": cost}
+            write_json(self.root / "vfx.json", data)
+        elif stage == "sound":
+            write_json(self.root / "sound.json", {"cues": [], "usage": {"cost_usd": cost},
+                                                  "run": len(self.calls)})
+        elif stage == "build":
+            (self.root / "scene.xml").write_text(f"<scene n='{len(self.calls)}'/>")
+            write_json(self.root / "build.json", {"engine": {"cost_usd": cost},
+                                                  "scene": {"duration": 15, "width": 1920,
+                                                            "height": 1080, "fps": 30},
+                                                  "audio_tracks": 3})
+        elif stage == "render":
+            (self.root / "video.mp4").write_bytes(f"video {len(self.calls)}".encode())
+        elif stage == "gate":
+            write_json(self.root / "gate.json", {"exit": 0, "engine": {"cost_usd": cost}})
+        elif stage == "keyframe":
+            write_json(self.root / "keyframe.json", {"cost_usd": cost})
+        return self.fail.get(stage, 0)
+
+    def stages(self):
+        return [c[0] for c in self.calls]
+
+
+class ImproveCase(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.work = Path(self._tmp.name) / "work"
+        self.root = self.work / "a-test-film"
+        self.root.mkdir(parents=True)
+        self.idea = Idea(title="A test film", genre="cinematic", description="one take")
+        write_json(self.root / "idea.json", {"title": self.idea.title, "genre": "cinematic",
+                                             "description": "one take"})
+        write_json(self.root / "script.json", {"target_seconds": 15, "sections": []})
+        write_json(self.root / "styles.json", {"styles": []})
+        write_json(self.root / "vfx.json", {"authoring": {"version": "v01",
+                                                          "versions": ["v01"]}})
+        write_json(self.root / "sound.json", {"cues": [], "original": True})
+        write_json(self.root / "build.json", {"scene": {"duration": 15, "width": 1920,
+                                                        "height": 1080, "fps": 30},
+                                              "audio_tracks": 3})
+        (self.root / "scene.xml").write_text("<scene original='1'/>")
+        (self.root / "video.mp4").write_bytes(b"original video")
+        old = 1_000_000_000
+        for name in ("scene.xml", "video.mp4"):
+            os.utime(self.root / name, (old, old))
+        self._engine = harness.ENGINE
+        harness.ENGINE = FakeEngine
+        FakeEngine.json_calls, FakeEngine.route, FakeEngine.same = [], None, None
+
+    def tearDown(self):
+        harness.ENGINE = self._engine
+        self._tmp.cleanup()
+
+    def start_pass(self, c, name="pass-01"):
+        pdir = self.root / "qa" / name
+        pdir.mkdir(parents=True, exist_ok=True)
+        write_json(pdir / "scorecard.json", dict(c, **{"pass": name}))
+        write_json(self.root / "qa.json", {"pass": name, "verdict": c["verdict"],
+                                           "overall": c["overall"]})
+        return pdir
+
+    def improver(self, runner, **kw):
+        options = dict(model="sonnet", quiet=True, runner=runner, doctor=lambda p: [],
+                       say=lambda msg: None)
+        options.update(kw)
+        return improve.Improver(workspace.Project(self.root), self.idea, **options)
+
+
+# --------------------------------------------------------------------------- #
+# routing
+# --------------------------------------------------------------------------- #
+
+class Routing(ImproveCase):
+    def test_mechanical_kinds_route_to_their_owner_without_the_model(self):
+        findings = improve.collect(card(5.0, mechanical=[mech(owner="vfx"),
+                                                          mech("flat", "1.1", owner="build")]))
+        # The model tries to send both elsewhere; the stated owner wins.
+        FakeEngine.route = route_all_to("sound")
+        h = harness.Harness(self.root, "improve", verbose=False)
+        routing = improve.route(h, findings, name="route-pass-01")
+        self.assertEqual(routing["routes"]["F1"]["stage"], "vfx")
+        self.assertEqual(routing["routes"]["F2"]["stage"], "build")
+        self.assertEqual(routing["routes"]["F1"]["by"], "mechanical")
+        self.assertEqual(set(routing["stages"]), {"vfx", "build"})
+
+    def test_every_mechanical_kind_is_known(self):
+        for kind in ("penetration", "reads-merged", "flat", "clipped", "frozen", "jump",
+                     "off_camera"):
+            self.assertIn(kind, improve.MECHANICAL_KINDS)
+
+    def test_prose_findings_are_routed_by_the_model(self):
+        findings = improve.collect(card(5.0, findings=[
+            prose("the hero reads flat under the key", owner="scene-render lighting"),
+            prose("the pad is still playing at the touch", owner="audio")]))
+
+        def answer(prompt):
+            return {"routes": [{"finding": "F1", "stage": "vfx", "why": "the light rig"},
+                               {"finding": "F2", "stage": "sound", "why": "the cue sheet"}],
+                    "briefs": [{"stage": "vfx", "must_change": ["key the hero"],
+                                "check": "the hero holds its material"},
+                               {"stage": "sound", "must_change": ["fade by 11.3"],
+                                "check": "no music at the touch"}]}
+
+        FakeEngine.route = answer
+        h = harness.Harness(self.root, "improve", verbose=False)
+        routing = improve.route(h, findings, name="route-pass-01")
+        self.assertEqual(routing["routes"]["F1"]["stage"], "vfx")
+        self.assertEqual(routing["routes"]["F2"]["stage"], "sound")
+        self.assertEqual(routing["stages"]["sound"]["must_change"], ["fade by 11.3"])
+        prompt = FakeEngine.json_calls[0]["prompt"]
+        self.assertIn("scene-render lighting", prompt)        # the free-text owner is shown
+        for stage, _ in workspace.STAGES:
+            self.assertIn(stage, json.dumps(FakeEngine.json_calls[0]["schema"]))
+
+    def test_duplicates_merge_into_the_primary_findings_brief(self):
+        findings = improve.collect(card(5.0, mechanical=[mech()], findings=[
+            prose("the hero sinks into the table at 13s", t=13.0)]))
+        FakeEngine.route = lambda p: {
+            "routes": [{"finding": "F2", "stage": "build", "duplicate_of": "F1",
+                        "why": "same as the measured penetration"}],
+            "briefs": [{"stage": "vfx", "must_change": ["clear the set"], "check": "no merge"}]}
+        h = harness.Harness(self.root, "improve", verbose=False)
+        routing = improve.route(h, findings, name="route-pass-01")
+        self.assertEqual(routing["routes"]["F2"]["stage"], "vfx")      # follows its primary
+        self.assertEqual(routing["routes"]["F2"]["duplicate_of"], "F1")
+        self.assertEqual(list(routing["stages"]), ["vfx"])
+        self.assertEqual(routing["stages"]["vfx"]["findings"], ["F1", "F2"])
+
+    def test_external_and_upstream_findings_go_to_a_human_and_are_not_looped(self):
+        findings = improve.collect(card(5.0, findings=[
+            prose("the gate demands caption cues for a film with no words", owner="gate"),
+            prose("the glide-time claim has no source", owner="research")]))
+        FakeEngine.route = lambda p: {
+            "routes": [{"finding": "F1", "stage": "external", "why": "production_gate policy"},
+                       {"finding": "F2", "stage": "upstream-fact", "why": "a wrong claim"}],
+            "briefs": []}
+        h = harness.Harness(self.root, "improve", verbose=False)
+        routing = improve.route(h, findings, name="route-pass-01")
+        self.assertEqual(routing["stages"], {})
+        self.assertEqual([r["id"] for r in routing["human"]], ["F1", "F2"])
+        self.assertEqual(routing["human"][0]["route"], "external")
+
+    def test_an_unrouted_finding_is_asked_again_once_then_an_error(self):
+        findings = improve.collect(card(5.0, findings=[prose("a"), prose("b", t=6.0)]))
+        FakeEngine.route = lambda p: {"routes": [{"finding": "F1", "stage": "vfx",
+                                                  "why": "x"}], "briefs": []}
+        h = harness.Harness(self.root, "improve", verbose=False)
+        with self.assertRaises(harness.HarnessError):
+            improve.route(h, findings, name="route-pass-01")
+        self.assertEqual(len(FakeEngine.json_calls), 2)
+
+    def test_a_retry_that_routes_everything_is_taken(self):
+        findings = improve.collect(card(5.0, findings=[prose("a"), prose("b", t=6.0)]))
+        answers = [{"routes": [{"finding": "F1", "stage": "vfx", "why": "x"}], "briefs": []},
+                   route_all_to("vfx")(json.dumps([{"id": "F1"}, {"id": "F2"}]))]
+        FakeEngine.route = lambda p: answers.pop(0)
+        h = harness.Harness(self.root, "improve", verbose=False)
+        routing = improve.route(h, findings, name="route-pass-01")
+        self.assertEqual(routing["routes"]["F2"]["stage"], "vfx")
+
+    def test_gate_and_doctor_rows_are_evidence(self):
+        gate = {"exit": 1, "triage": {"blocking": [{"what": "no caption cues",
+                                                    "owner": "voice", "fix": "yt voice"}]}}
+        rows = [("fail", "sound", "the listen-back says not ready", "yt sound --review"),
+                ("ok", "build", "fine", ""), ("fail", "delivery", "QA says NOT READY", "")]
+        found = improve.collect(card(5.0), gate=gate, doctor=rows)
+        self.assertEqual([f["source"] for f in found], ["gate", "doctor"])
+        self.assertEqual(found[1]["owner"], "sound")
+        self.assertEqual(found[1]["severity"], "blocking")
+
+    def test_a_mechanical_fingerprint_is_kind_shot_and_objects(self):
+        a = improve.fingerprint(mech())
+        self.assertEqual(a, "penetration|1.4|hero-x+table-top")
+        self.assertEqual(improve.fingerprint(mech(t=12.5)), a)
+        self.assertNotEqual(improve.fingerprint(mech(shot="1.3")), a)
+        self.assertIsNone(improve.fingerprint(prose("words")))
+
+
+# --------------------------------------------------------------------------- #
+# the feedback channel
+# --------------------------------------------------------------------------- #
+
+FEEDBACK = "THE-NOTE: cast the hero's shadow on the surface it crosses"
+
+
+def plant(root: Path, stage: str, text: str = FEEDBACK) -> None:
+    (root / "feedback").mkdir(exist_ok=True)
+    (root / "feedback" / f"{stage}.md").write_text(text, encoding="utf-8")
+
+
+class Feedback(ImproveCase):
+    def test_files_are_written_with_the_findings_verbatim_and_the_pass(self):
+        c = card(5.3, mechanical=[mech()], findings=[prose("the hero material is plain white", t=9.0)])
+        findings = improve.collect(c)
+        h = harness.Harness(self.root, "improve", verbose=False)
+        routing = improve.route(h, findings, name="route-pass-08")
+        written = improve.write_feedback(self.root, routing, findings, from_pass="pass-08",
+                                         card=c, improve_pass="pass-01")
+        self.assertEqual(written, ["vfx"])
+        md = (self.root / "feedback" / "vfx.md").read_text()
+        self.assertIn("pass-08", md)
+        self.assertIn("the hero material is plain white", md)
+        self.assertIn("`hero-x` inside `table-top`", md)
+        self.assertIn("0:09", md)
+        self.assertIn("fix what vfx owns", md)
+        self.assertIn("the next pass no longer shows it", md)
+        twin = read_json(self.root / "feedback" / "vfx.json")
+        self.assertEqual(twin["from_pass"], "pass-08")
+        self.assertEqual(twin["stage"], "vfx")
+        self.assertEqual(len(twin["findings"]), 2)
+
+    def test_stale_open_feedback_for_an_unrouted_stage_is_removed(self):
+        plant(self.root, "sound")
+        c = card(5.0, mechanical=[mech()])
+        findings = improve.collect(c)
+        h = harness.Harness(self.root, "improve", verbose=False)
+        routing = improve.route(h, findings, name="r")
+        improve.write_feedback(self.root, routing, findings, from_pass="pass-01", card=c,
+                               improve_pass="pass-01")
+        self.assertFalse((self.root / "feedback" / "sound.md").exists())
+
+    def test_closing_moves_the_notes_under_closed(self):
+        plant(self.root, "vfx")
+        write_json(self.root / "feedback" / "vfx.json", {"stage": "vfx"})
+        improve.close_feedback(self.root, "pass-01")
+        self.assertFalse((self.root / "feedback" / "vfx.md").exists())
+        self.assertTrue((self.root / "feedback" / "closed" / "pass-01" / "vfx.md").is_file())
+        self.assertTrue((self.root / "feedback" / "closed" / "pass-01" / "vfx.json").is_file())
+        self.assertEqual(harness.feedback_for(self.root, "vfx"), "")
+
+
+class Injection(ImproveCase):
+    """Each stage's prompts carry its open feedback, and nothing without it."""
+
+    def test_the_harness_puts_the_stages_feedback_in_its_system_prompt(self):
+        plant(self.root, "build")
+        system = harness.Harness(self.root, "build", house="## all\n- rule").system
+        self.assertIn(FEEDBACK, system)
+        self.assertIn("outrank the house standards", system)
+        self.assertLess(system.index("- rule"), system.index(FEEDBACK))
+        self.assertNotIn(FEEDBACK, harness.Harness(self.root, "sound").system)
+
+    def test_no_feedback_no_injection(self):
+        self.assertEqual(harness.feedback_for(self.root, "build"), "")
+        self.assertNotIn("revision notes", harness.Harness(self.root, "build").system)
+        self.assertEqual(harness.with_feedback("SYS", self.root, "vfx"), "SYS")
+        self.assertEqual(harness.with_feedback("SYS", None, "vfx"), "SYS")
+
+    def test_every_decision_and_inspection_sees_it(self):
+        plant(self.root, "voice")
+        h = harness.Harness(self.root, "voice", verbose=False)
+        h.decide("cast", "who reads it?", {"type": "object", "required": []})
+        self.assertIn(FEEDBACK, FakeEngine.json_calls[-1]["system"])
+
+    def test_a_changed_note_asks_again(self):
+        h = harness.Harness(self.root, "build", verbose=False)
+        schema = {"type": "object", "required": []}
+        h.decide("edit", "p", schema)
+        plant(self.root, "build")
+        harness.Harness(self.root, "build", verbose=False).decide("edit", "p", schema)
+        self.assertEqual(len(FakeEngine.json_calls), 2)
+
+    def _planner(self):
+        from ytstudio.research import Dossier
+        bundle = {"idea": self.idea, "outline": {}, "claims": [], "assets": [], "premise": ""}
+        return vfx.VfxPlanner(bundle, Dossier(self.root, self.idea, at=self.root),
+                              vfx.Workspace(self.root), model="sonnet", verbose=False)
+
+    def test_vfx_planning_authoring_and_review_see_it(self):
+        for present in (False, True):
+            if present:
+                plant(self.root, "vfx")
+            FakeEngine.json_calls = []
+            planner = self._planner()
+            planner._ask_json("plan it", {"type": "object", "required": []})
+            planner._stream(FakeEngine(None), 1, "author it")
+            reviewer = harness.Harness(self.root, "vfx", verbose=False)
+            for call in FakeEngine.json_calls:
+                self.assertEqual(FEEDBACK in call["system"], present, call["prompt"])
+            self.assertEqual(FEEDBACK in reviewer.system, present)
+
+    def test_keyframe_authoring_and_review_see_it(self):
+        def renderer(project_root, host, *, verbose=False):
+            return lambda doc, out, at: (True, "fake")
+        with patch.object(keyframe, "RENDERER", renderer):
+            for present in (False, True):
+                if present:
+                    plant(self.root, "keyframe")
+                FakeEngine.json_calls = []
+                stage = keyframe.KeyframeStage(workspace.Project(self.root), self.idea,
+                                               verbose=False)
+                stage._stream(FakeEngine(None), "compose it")
+                self.assertEqual(FEEDBACK in FakeEngine.json_calls[0]["system"], present)
+                self.assertEqual(FEEDBACK in stage._harness("role").system, present)
+
+    def test_sound_script_and_styles_see_it(self):
+        makers = {
+            "sound": lambda: sound.SoundDesigner(self.idea, root=self.root, verbose=False),
+            "script": lambda: script.Screenwriter(self.idea, root=self.root, verbose=False),
+            "styles": lambda: styles.Director(self.idea, root=self.root, verbose=False),
+        }
+        for name, make in makers.items():
+            module = {"sound": sound, "script": script, "styles": styles}[name]
+            for present in (False, True):
+                if present:
+                    plant(self.root, name)
+                FakeEngine.json_calls = []
+                with patch.object(module, "ClaudeEngine", FakeEngine):
+                    make()._ask("decide", {"type": "object", "required": []})
+                self.assertEqual(FEEDBACK in FakeEngine.json_calls[0]["system"], present,
+                                 f"{name} with feedback={present}")
+
+    def test_the_sound_synthesis_brief_carries_it(self):
+        plant(self.root, "sound")
+        data = {"cues": [{"cue_id": "S1", "kind": "sfx", "at": 1.0, "seconds": 1.0,
+                          "query": "a tap"}]}
+        seen = {}
+
+        def author(ws, targets):
+            seen["brief"] = (ws / "BRIEF.md").read_text()
+            return Usage()
+
+        sound.realise(self.root, data, author=author, say=lambda m: None)
+        self.assertIn(FEEDBACK, seen["brief"])
+
+    def test_build_decides_through_the_harness_so_it_sees_it(self):
+        plant(self.root, "build")
+        self.assertIn("Harness(project.root, \"build\"",
+                      (ROOT / "ytstudio" / "build.py").read_text())
+        self.assertIn(FEEDBACK, harness.Harness(self.root, "build").system)
+
+
+# --------------------------------------------------------------------------- #
+# the plan: which stages run, with which flags
+# --------------------------------------------------------------------------- #
+
+class Plan(ImproveCase):
+    def test_earliest_routed_stage_then_everything_downstream(self):
+        self.assertEqual(improve.plan({"sound", "vfx"}, self.root),
+                         ["vfx", "sound", "build", "render"])
+        self.assertEqual(improve.plan({"build"}, self.root), ["build", "render"])
+        self.assertEqual(improve.plan(set(), self.root), [])
+
+    def test_research_and_script_only_when_routed_to_them(self):
+        write_json(self.root / "props.json", {})
+        write_json(self.root / "keyframe.json", {})
+        write_json(self.root / "dossier.json", {})
+        got = improve.plan({"styles"}, self.root)
+        self.assertNotIn("script", got)
+        self.assertNotIn("research", got)
+        self.assertEqual(got[0], "styles")
+        self.assertIn("script", improve.plan({"script"}, self.root))
+
+    def test_a_downstream_stage_the_film_never_ran_is_left_out(self):
+        # No voice.json, no retime.json: the film has no narration.
+        write_json(self.root / "keyframe.json", {})
+        self.assertEqual(improve.plan({"keyframe"}, self.root),
+                         ["keyframe", "vfx", "sound", "build", "render"])
+
+    def test_the_flags_force_a_new_decision_where_routed(self):
+        base = ["--project", str(self.root), "--model", "sonnet", "--quiet"]
+        argv = improve.stage_argvs(["vfx", "sound", "build", "render"], {"vfx"}, base,
+                                   quality="final", root=self.root)
+        self.assertEqual([a[0] for a in argv], ["vfx", "sound", "build", "render"])
+        self.assertIn("--fresh", argv[0])
+        self.assertIn("--fetch", argv[1])
+        self.assertNotIn("--fresh", argv[1])            # not routed: reused
+        self.assertEqual(argv[3][-2:], ["--quality", "final"])
+        forced = improve.stage_argvs(["sound"], {"sound"}, base, quality="draft",
+                                     root=self.root)[0]
+        self.assertTrue({"--fetch", "--fresh", "--review"} <= set(forced))
+
+    def test_script_keeps_the_films_length(self):
+        base = ["--project", str(self.root)]
+        argv = improve.stage_argvs(["script"], {"script"}, base, quality="final",
+                                   root=self.root)[0]
+        self.assertEqual(argv[argv.index("--minutes") + 1], "0.25")
+
+
+# --------------------------------------------------------------------------- #
+# the loop
+# --------------------------------------------------------------------------- #
+
+class Loop(ImproveCase):
+    def test_a_pass_runs_the_chain_then_gate_then_qa_in_order(self):
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        runner = FakeRunner(self.root, [card(6.0)])
+        record = self.improver(runner, max_passes=1).run()
+        self.assertEqual(runner.stages(), ["vfx", "sound", "build", "render", "gate", "qa"])
+        self.assertIn("--fresh", runner.calls[0])
+        self.assertEqual(runner.calls[0][runner.calls[0].index("--project") + 1],
+                         str(self.root))
+        self.assertIn("--quality", runner.calls[3])
+        self.assertEqual(record["passes"][0]["stages"], ["vfx", "sound", "build", "render"])
+
+    def test_keep_on_improvement(self):
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        runner = FakeRunner(self.root, [card(6.0)])
+        record = self.improver(runner, max_passes=1).run()
+        p = record["passes"][0]
+        self.assertEqual(p["decision"], "keep")
+        self.assertEqual((p["overall_before"], p["overall_after"]), (5.0, 6.0))
+        self.assertEqual(record["best"]["pass"], "pass-02")
+        self.assertEqual(read_json(self.root / "vfx.json")["authoring"]["version"], "v02")
+        self.assertEqual((self.root / "video.mp4").read_bytes()[:5], b"video")
+
+    def test_revert_on_regression_restores_the_snapshot(self):
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        runner = FakeRunner(self.root, [card(4.0)])
+        record = self.improver(runner, max_passes=1).run()
+        p = record["passes"][0]
+        self.assertEqual(p["decision"], "revert")
+        self.assertEqual(read_json(self.root / "vfx.json")["authoring"]["version"], "v01")
+        self.assertEqual(read_json(self.root / "vfx.json")["authoring"]["versions"], ["v01"])
+        self.assertEqual((self.root / "video.mp4").read_bytes(), b"original video")
+        self.assertEqual((self.root / "scene.xml").read_text(), "<scene original='1'/>")
+        self.assertTrue(read_json(self.root / "sound.json")["original"])
+        self.assertFalse((self.root / "gate.json").exists())     # it did not exist before
+        self.assertEqual(read_json(self.root / "qa.json")["pass"], "pass-01")
+        self.assertTrue((self.root / "improve" / "pass-01" / "snapshot").is_dir())
+        self.assertEqual(record["best"]["pass"], "pass-01")
+        self.assertTrue(any("overall" in r for r in p["reasons"]))
+
+    def test_a_category_may_drop_by_the_tolerance_but_not_more(self):
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        runner = FakeRunner(self.root, [card(6.0, scores={"voiceover": 4.5})])
+        p = self.improver(runner, max_passes=1).run()["passes"][0]
+        self.assertEqual(p["decision"], "keep")          # dropped exactly 0.5
+
+    def test_a_category_that_drops_more_than_the_tolerance_reverts(self):
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        runner = FakeRunner(self.root, [card(6.0, scores={"voiceover": 4.4})])
+        p = self.improver(runner, max_passes=1).run()["passes"][0]
+        self.assertEqual(p["decision"], "revert")
+        self.assertTrue(any("voiceover" in r for r in p["reasons"]))
+
+    def test_a_new_blocking_mechanical_finding_reverts(self):
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        runner = FakeRunner(self.root, [card(6.0, mechanical=[mech(), mech(
+            "frozen", "1.1", owner="vfx")])])
+        p = self.improver(runner, max_passes=1).run()["passes"][0]
+        self.assertEqual(p["decision"], "revert")
+        self.assertTrue(any("frozen" in r for r in p["reasons"]))
+
+    def test_stop_on_ready(self):
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        runner = FakeRunner(self.root, [card(9.2)])
+        record = self.improver(runner, max_passes=3).run()
+        self.assertEqual(len(record["passes"]), 1)
+        self.assertEqual(record["stop"]["reason"], "ready")
+        self.assertEqual(record["best"]["verdict"], qa.READY)
+
+    def test_stop_on_max_passes(self):
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        runner = FakeRunner(self.root, [card(6.0, mechanical=[mech("flat", "1.2")]),
+                                        card(7.0, mechanical=[mech("clipped", "1.3")])])
+        record = self.improver(runner, max_passes=2).run()
+        self.assertEqual(len(record["passes"]), 2)
+        self.assertEqual(record["stop"]["reason"], "max-passes")
+
+    def test_stop_on_budget_before_a_pass_that_would_exceed_it(self):
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        runner = FakeRunner(self.root, [card(6.0)])
+        record = self.improver(runner, budget_usd=5.0).run()
+        self.assertEqual(runner.calls, [])                # a vfx pass is estimated at $10
+        self.assertEqual(record["stop"]["reason"], "budget")
+        self.assertIn("10", record["stop"]["detail"])
+
+    def test_the_last_pass_cost_is_the_next_estimate(self):
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        runner = FakeRunner(self.root, [card(6.0, mechanical=[mech("flat", "1.2")]),
+                                        card(7.0)], costs={"vfx": 6.0})
+        record = self.improver(runner, budget_usd=12.0, max_passes=3).run()
+        self.assertEqual(len(record["passes"]), 1)
+        self.assertGreaterEqual(record["passes"][0]["cost_usd"], 6.0)
+        self.assertEqual(record["stop"]["reason"], "budget")
+        self.assertGreaterEqual(record["spent_usd"], 6.0)
+
+    def test_a_defect_that_survives_three_passes_stops_the_loop_and_is_named(self):
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        runner = FakeRunner(self.root, [card(5.5, mechanical=[mech()]),
+                                        card(6.0, mechanical=[mech()]),
+                                        card(6.5, mechanical=[mech()]),
+                                        card(7.0, mechanical=[mech()])])
+        record = self.improver(runner, max_passes=5, budget_usd=100).run()
+        self.assertEqual(len(record["passes"]), 3)
+        self.assertEqual(record["stop"]["reason"], "survivor")
+        self.assertIn("penetration|1.4|hero-x+table-top", record["stop"]["detail"])
+
+    def test_a_prose_survivor_is_judged_by_the_model(self):
+        start = card(5.0, findings=[prose("the hero reads flat")])
+        self.start_pass(start)
+        again = [card(5.5 + n / 2, findings=[prose(f"still a flat hero, take {n}")])
+                 for n in range(4)]
+        runner = FakeRunner(self.root, again)
+
+        def same(prompt):
+            ids = re.findall(r'"id": "(D\d+)"', prompt)
+            news = finding_ids(prompt)
+            return {"matches": [{"finding": news[0], "defect": ids[0]}]}
+
+        FakeEngine.same = same
+        record = self.improver(runner, max_passes=5, budget_usd=100).run()
+        self.assertEqual(record["stop"]["reason"], "survivor")
+        self.assertTrue(any("matches" in json.dumps(c.get("schema", {}))
+                            for c in FakeEngine.json_calls))
+
+    def test_a_fixed_defect_resets_its_count(self):
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        runner = FakeRunner(self.root, [card(5.5, mechanical=[mech()]),
+                                        card(6.0, mechanical=[mech("flat", "1.2")]),
+                                        card(6.5, mechanical=[mech()])])
+        record = self.improver(runner, max_passes=3, budget_usd=100).run()
+        self.assertEqual(record["stop"]["reason"], "max-passes")
+
+    def test_a_failing_stage_reverts_and_stops(self):
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        runner = FakeRunner(self.root, [card(6.0)], fail={"build": 1})
+        record = self.improver(runner).run()
+        self.assertEqual(runner.stages(), ["vfx", "sound", "build"])
+        self.assertEqual(record["passes"][0]["decision"], "failed")
+        self.assertEqual(record["stop"]["reason"], "stage-failed")
+        self.assertEqual(read_json(self.root / "vfx.json")["authoring"]["version"], "v01")
+
+    def test_feedback_is_closed_once_a_pass_consumed_it(self):
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        seen = {}
+        inner = FakeRunner(self.root, [card(6.0)])
+
+        def runner(argv):
+            if argv[0] == "vfx":
+                seen["open"] = harness.feedback_for(self.root, "vfx")
+            return inner(argv)
+
+        self.improver(runner, max_passes=1).run()
+        self.assertIn("table-top", seen["open"])
+        self.assertFalse((self.root / "feedback" / "vfx.md").exists())
+        self.assertTrue((self.root / "feedback" / "closed" / "pass-01" / "vfx.md").is_file())
+
+    def test_findings_for_a_human_only_mean_no_stage_runs(self):
+        self.start_pass(card(5.0, findings=[prose("captions demanded", owner="gate")]))
+        FakeEngine.route = lambda p: {"routes": [{"finding": "F1", "stage": "external",
+                                                  "why": "policy"}], "briefs": []}
+        runner = FakeRunner(self.root, [])
+        record = self.improver(runner).run()
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(record["stop"]["reason"], "human")
+        self.assertEqual(record["human"][0]["route"], "external")
+
+    def test_a_stale_pass_is_scored_again_first(self):
+        pdir = self.start_pass(card(5.0, mechanical=[mech()]))
+        old = 900_000_000
+        os.utime(pdir / "scorecard.json", (old, old))
+        runner = FakeRunner(self.root, [card(5.0, mechanical=[mech()]), card(6.0)])
+        record = self.improver(runner, max_passes=1).run()
+        self.assertEqual(runner.stages()[0], "qa")
+        self.assertEqual(record["start"]["pass"], "pass-02")
+
+    def test_no_pass_at_all_is_scored_first(self):
+        runner = FakeRunner(self.root, [card(5.0, mechanical=[mech()]), card(6.0)])
+        record = self.improver(runner, max_passes=1).run()
+        self.assertEqual(runner.stages()[0], "qa")
+        self.assertEqual(record["start"]["pass"], "pass-01")
+
+    def test_from_pass_picks_the_evidence(self):
+        self.start_pass(card(5.0, mechanical=[mech()]), "pass-01")
+        self.start_pass(card(5.5, mechanical=[mech("flat", "1.1", owner="build")]), "pass-02")
+        runner = FakeRunner(self.root, [card(6.0)])
+        record = self.improver(runner, max_passes=1, from_pass="pass-01").run()
+        self.assertEqual(record["start"]["pass"], "pass-01")
+        self.assertEqual(runner.stages()[0], "vfx")
+
+
+class DryRun(ImproveCase):
+    def test_dry_run_routes_and_writes_feedback_but_runs_nothing(self):
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        runner = FakeRunner(self.root, [])
+        out = []
+        record = self.improver(runner, dry_run=True, say=out.append).run()
+        self.assertEqual(runner.calls, [])
+        self.assertTrue((self.root / "feedback" / "vfx.md").is_file())
+        self.assertEqual(record["stop"]["reason"], "dry-run")
+        self.assertEqual(record["plan"]["stages"], ["vfx", "sound", "build", "render"])
+        self.assertGreaterEqual(record["plan"]["estimate_usd"], 10.0)
+        text = "\n".join(out)
+        self.assertIn("vfx", text)
+        self.assertIn("$", text)
+        self.assertTrue((self.root / "improve" / "plan.json").is_file())
+        self.assertFalse((self.root / "improve.json").exists())
+
+    def test_dry_run_does_not_rescore_a_stale_pass(self):
+        pdir = self.start_pass(card(5.0, mechanical=[mech()]))
+        os.utime(pdir / "scorecard.json", (900_000_000, 900_000_000))
+        runner = FakeRunner(self.root, [])
+        self.improver(runner, dry_run=True).run()
+        self.assertEqual(runner.calls, [])
+
+
+class Report(ImproveCase):
+    def test_improve_json_and_md_carry_the_record(self):
+        self.start_pass(card(5.0, mechanical=[mech()],
+                             findings=[prose("pale on pale", severity="minor")]))
+        runner = FakeRunner(self.root, [card(6.0, findings=[prose("pale on pale",
+                                                                    severity="minor")]),
+                                        card(5.0)])
+        self.improver(runner, max_passes=2, budget_usd=100).run()
+        record = read_json(self.root / "improve.json")
+        for key in ("passes", "stop", "start", "best", "spent_usd", "budget_usd", "human"):
+            self.assertIn(key, record)
+        first, second = record["passes"]
+        self.assertEqual(first["decision"], "keep")
+        self.assertEqual(second["decision"], "revert")
+        self.assertIn("vfx", first["routed"])
+        self.assertTrue(first["routed"]["vfx"]["must_change"])
+        self.assertIn("scores_before", first)
+        self.assertIn("scores_after", first)
+        md = (self.root / "improve.md").read_text()
+        for needle in ("Verdict", "NOT READY", "Scorecard", "Changes implemented",
+                       "Remaining issues", "Blocking", "Minor", "Final artifact",
+                       "Publication rationale", "video.mp4", "1920x1080",
+                       "penetration", "pale on pale", "reverted"):
+            self.assertIn(needle, md, needle)
+        # The fixed defect reads timestamp -> problem -> root cause -> correction -> result.
+        self.assertIn("0:13", md)
+        self.assertTrue((self.root / "improve" / "pass-01" / "pass.json").is_file())
+
+
+class Cli(unittest.TestCase):
+    def test_improve_is_a_command_with_its_flags(self):
+        args = cli.build_parser().parse_args(
+            ["improve", "--title", "x", "--max-passes", "2", "--budget-usd", "9",
+             "--target", "8.5", "--dry-run", "--from-pass", "pass-03",
+             "--quality", "draft"])
+        self.assertIs(args.run, improve.run)
+        self.assertEqual((args.max_passes, args.budget_usd, args.target, args.dry_run,
+                          args.from_pass, args.quality), (2, 9.0, 8.5, True, "pass-03", "draft"))
+        defaults = cli.build_parser().parse_args(["improve", "--title", "x"])
+        self.assertEqual((defaults.max_passes, defaults.budget_usd, defaults.target,
+                          defaults.quality), (3, 15.0, 9.0, "final"))
+
+    def test_improve_is_not_a_pipeline_stage(self):
+        self.assertNotIn("improve", [s for s, _ in workspace.STAGES])
+
+    def test_the_manual_documents_it(self):
+        text = (ROOT / "ytstudio" / "SKILL.md").read_text()
+        self.assertIn("`yt improve`", text)
+        self.assertRegex(text, r"\| `yt improve` \|")
+        self.assertIn("feedback/", text)
+        readme = (ROOT / "README.md").read_text()
+        self.assertIn("yt improve", readme)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -295,7 +295,7 @@ class TransientStaging(_Project):
                 for t in mix.findall("audioTrack")}
 
     def test_the_rule_is_derived_from_the_masters_targets(self):
-        self.assertEqual(build.transient_headroom(-14.0, -1.0), 13.0 - build.TRANSIENT_CREST_DB)
+        self.assertEqual(build.transient_headroom(-14.0, -1.0), 13.0 - build.DEFAULT_CREST_DB)
         shift, bed = build.transient_shift(
             [("music", 9, -30.0), ("ambience", 10, -50.0), ("sfx", 8, -34.0),
              ("sfx", 1, -12.0), ("sfx", 1, -22.0)], headroom=7.0)
@@ -357,3 +357,51 @@ class LevelParsing(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MeasuredCrest(unittest.TestCase):
+    """The bed's crest is this film's measurement, not a constant fitted to
+    another film: a generic start, corrected by the last mix's shortfall."""
+
+    def write(self, root, crest, measured, *, render_newer=True):
+        import json, os, time
+        (root / "build.json").write_text(json.dumps(
+            {"audio_staging": {"crest_db": crest}}), encoding="utf-8")
+        (root / "render.json").write_text(json.dumps(
+            {"result": {"outputs": [{"loudness": measured}]}}), encoding="utf-8")
+        now = time.time()
+        built, rendered = (now - 10, now) if render_newer else (now, now - 10)
+        os.utime(root / "build.json", (built, built))
+        os.utime(root / "render.json", (rendered, rendered))
+
+    def test_with_no_measurement_the_generic_start_is_used(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            crest, source = build.measured_crest(Path(tmp), target=-14.0)
+        self.assertEqual((crest, source), (build.DEFAULT_CREST_DB, "default"))
+
+    def test_a_shortfall_raises_the_crest_by_that_much(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.write(Path(tmp), 6.0, -14.9)
+            crest, source = build.measured_crest(Path(tmp), target=-14.0)
+        self.assertAlmostEqual(crest, 6.9, places=3)
+        self.assertEqual(source, "measured")
+
+    def test_a_mix_on_target_keeps_the_crest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.write(Path(tmp), 7.5, -14.2)
+            self.assertEqual(build.measured_crest(Path(tmp), target=-14.0)[0], 7.5)
+
+    def test_a_render_older_than_the_build_is_not_evidence_for_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.write(Path(tmp), 6.0, -17.0, render_newer=False)
+            self.assertEqual(build.measured_crest(Path(tmp), target=-14.0),
+                             (build.DEFAULT_CREST_DB, "default"))
+
+    def test_the_crest_never_eats_the_whole_ceiling(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.write(Path(tmp), 6.0, -40.0)
+            crest = build.measured_crest(Path(tmp), target=-14.0, true_peak=-1.0)[0]
+        self.assertLessEqual(crest, 13.0 - build.MIN_TRANSIENT_ROOM_DB)
+
+    def test_headroom_takes_the_crest_it_is_given(self):
+        self.assertEqual(build.transient_headroom(-14.0, -1.0, crest=9.0), 4.0)

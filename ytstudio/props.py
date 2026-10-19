@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Fetch CC0 3D props for one video: models, HDRIs and textures from Poly Haven.
 
-A 3D film built from primitives alone is a blockout: box desks, extruded
-triangles, emissive planes for windows. This stage supplies what the schema
+A 3D film built from primitives alone is a blockout: boxes for furniture,
+extruded triangles, emissive planes for light sources. This stage supplies what the schema
 can place but no stage could provide -- a glTF model with its textures, an
 HDRI to light a set, PBR texture maps for a surface -- so `yt vfx` can author
 against real assets and list them in its brief.
 
-    yt props --title "..." "office desk" "studio hdri" "oak veneer"
+    yt props --title "..." "<a set piece>" "<a lighting setup> hdri" "<a surface material>"
     yt props --title "..."                # phrases derived from script + styles
     yt props --title "..." --kinds model,hdri --limit 2 --redownload
 
@@ -468,7 +468,7 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
         help="fetch CC0 3D props (models, HDRIs, textures) for a video from Poly Haven",
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("phrase", nargs="*",
-                   help="what to look for ('office desk', 'studio hdri'); default: "
+                   help="what to look for: phrases naming set pieces, HDRIs or materials; default: "
                         "derived from the script's assets and the styles")
     # --project comes from the shared `work` parent; --title is this stage's own.
     p.add_argument("--title", help="a project on disk, or an idea title")

@@ -55,7 +55,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from claude_engine import ClaudeError, EngineConfig, Usage
-from . import framecheck, harness, house, reach, render, workspace
+from . import framecheck, geometry, harness, house, reach, render, workspace
 from .core import Idea, _key, _merge_usage, read_json, slugify, write_json
 from .framecheck import DIM_STD, FLAT_STD, frame_stats, judge_frame  # noqa: F401  (re-exported)
 from .ideas import CHANNEL_STYLES
@@ -501,13 +501,18 @@ def tokens_from(style: dict) -> dict[str, str]:
 #: lights, materials, particles and physics are in the schema too.
 EXAMPLES = """<?xml version="1.0" encoding="UTF-8"?>
 <!-- Every construct here validated and rendered on this engine: the 2D stage in
-     fx-doors, and in fx-room a lit 3D set with a physical camera, materials and
+     fx-stage, and in fx-room a lit 3D set with a physical camera, materials and
      particles, lifted from a rendered project, and in fx-surface a GLSL shader
      effect that ray-casts an analytic liquid surface (shaders/ring-surface.glsl,
      beside this file). pyro, fluid, ocean, fracture, softBody, flock and the
      other effect types exist too; describe them with sr.py. -->
 <scene version="1.3">
   <project width="1920" height="1080" fps="30" duration="16" background="#14213D"/>
+  <!-- a hero that rests on a surface is declared, so the geometry gate checks it
+       touches (not floats, not sinks): "<hero id> <surface id> <seconds>" -->
+  <metadata>
+    <meta name="hero-rests" value="hero-block plinth 0"/>
+  </metadata>
   <styles>
     <token name="background" value="#14213D"/>
     <token name="ink" value="#F2F5F7"/>
@@ -518,17 +523,17 @@ EXAMPLES = """<?xml version="1.0" encoding="UTF-8"?>
   <!-- child order matters in hand-written XML: output comes before assets -->
   <output path="preview.mp4" codec="h264"/>
   <assets>
-    <text id="t-title" text="Três portas" width="1200" height="160" size="72" color="var(--ink)" align="center"/>
-    <text id="t-count" text="190 de 300" width="900" height="200" size="120" color="var(--accent)" align="center"/>
-    <chart id="c-bars" kind="column" width="900" height="500" labels="trocar,ficar" showValues="true">
-      <series name="jogos" values="190 110" color="var(--accent)"/>
+    <text id="t-title" text="A title" width="1200" height="160" size="72" color="var(--ink)" align="center"/>
+    <text id="t-count" text="190 of 300" width="900" height="200" size="120" color="var(--accent)" align="center"/>
+    <chart id="c-bars" kind="column" width="900" height="500" labels="option A,option B" showValues="true">
+      <series name="trials" values="190 110" color="var(--accent)"/>
       <animate property="progress"><key time="0" value="0"/><key time="2" value="1" interpolation="ease-out"/></animate>
     </chart>
   </assets>
   <!-- materials are scene-level, after assets; lights come after the composition -->
   <materials>
     <material id="m-wall" doubleSided="true" baseColor="#B9AE9F" roughness="0.9"/>
-    <material id="m-oak" doubleSided="true" baseColor="#A8743F" roughness="0.6"/>
+    <material id="m-solid" doubleSided="true" baseColor="#6E7B8B" roughness="0.6"/>
     <material id="m-glow" baseColor="#FFF1D0" emissive="#FFF1D0" emissiveStrength="1.3" roughness="0.5"/>
     <material id="m-dust" baseColor="#E8B65C" emissive="#E8B65C" emissiveStrength="1" unlit="true" opacity="0.7" alphaMode="blend"/>
   </materials>
@@ -541,8 +546,11 @@ EXAMPLES = """<?xml version="1.0" encoding="UTF-8"?>
       <object3D id="floor" primitive="plane" material="m-wall" x="50" y="0" z="0" width="900" height="800" rotationX="90"/>
       <object3D id="wall" primitive="plane" material="m-wall" x="0" y="-150" z="400" width="900" height="300"/>
       <object3D id="window" primitive="plane" material="m-glow" x="210" y="-165" z="397" width="180" height="150" castShadow="false"/>
-      <object3D id="desk" primitive="box" material="m-oak" x="210" y="-37.5" z="230" width="180" height="75" depth="180"/>
-      <object3D id="ball" primitive="sphere" material="m-oak" x="150" y="-95" z="200" radius="20">
+      <object3D id="plinth" primitive="box" material="m-solid" x="210" y="-37.5" z="230" width="180" height="75" depth="180"/>
+      <!-- resting: y points down, so the plinth's top is -37.5 - 75/2 = -75 and a 4-high
+           block's centre sits at -75 - 4/2 = -77; it casts a shadow, its grounding cue -->
+      <object3D id="hero-block" primitive="box" material="m-solid" x="230" y="-77" z="210" width="40" height="4" depth="28" rotationY="12"/>
+      <object3D id="ball" primitive="sphere" material="m-solid" x="150" y="-95" z="200" radius="20">
         <animate property="y"><key time="0" value="-95"/><key time="2" value="-180" interpolation="ease-out"/><key time="4" value="-95" interpolation="ease-in"/></animate>
       </object3D>
       <particles3D id="dust" x="-50" y="-125" z="160" emitterShape="box" emitterWidth="400" emitterHeight="140" emitterDepth="260" rate="0" lifetime="60" speed="1.2" speedVariance="1" spread="360" shape="billboard" size="1.2" color="#E8B65C" material="m-dust" maxParticles="200" seed="7" castShadow="false" receiveShadow="false">
@@ -554,7 +562,7 @@ EXAMPLES = """<?xml version="1.0" encoding="UTF-8"?>
     <symbol id="fx-surface" width="1920" height="1080" duration="4">
       <shape id="surface" shape="rect" x="0" y="0" width="1920" height="1080" fill="#000000" effects="fx-ring-surface"/>
     </symbol>
-    <symbol id="fx-doors" width="1920" height="1080">
+    <symbol id="fx-stage" width="1920" height="1080">
       <!-- word-by-word title: presetStart is on the parent timeline -->
       <layer id="l-title" asset="t-title" x="360" y="80">
         <textAnimator preset="word-by-word" presetStart="0.2" presetDuration="1.0" presetEase="cubic-out"/>
@@ -563,13 +571,13 @@ EXAMPLES = """<?xml version="1.0" encoding="UTF-8"?>
       <layer id="l-count" asset="t-count" x="510" y="820">
         <textAnimator preset="counter" presetStart="1" presetDuration="3"/>
       </layer>
-      <!-- the layout engine places explicit children: three doors in a row -->
-      <group id="doors" layout="row" gap="60" justify="center" alignItems="end" x="0" y="300" width="1920" height="420">
-        <shape id="door-1" shape="rounded-rect" width="300" height="400" radius="18" fill="var(--muted)" opacity="0">
+      <!-- the layout engine places explicit children: three cards in a row -->
+      <group id="cards" layout="row" gap="60" justify="center" alignItems="end" x="0" y="300" width="1920" height="420">
+        <shape id="card-1" shape="rounded-rect" width="300" height="400" radius="18" fill="var(--muted)" opacity="0">
           <animate property="opacity"><key time="0.5" value="0"/><key time="1.0" value="1" interpolation="ease-out"/></animate>
         </shape>
-        <shape id="door-2" shape="rounded-rect" width="300" height="400" radius="18" fill="var(--muted)"/>
-        <shape id="door-3" shape="rounded-rect" width="300" height="400" radius="18" fill="var(--accent)"/>
+        <shape id="card-2" shape="rounded-rect" width="300" height="400" radius="18" fill="var(--muted)"/>
+        <shape id="card-3" shape="rounded-rect" width="300" height="400" radius="18" fill="var(--accent)"/>
       </group>
       <!-- a grid of explicit cells, 30 columns -->
       <group id="grid" layout="grid" gridColumns="30" gap="8" x="200" y="100" width="1520" height="120">
@@ -590,7 +598,7 @@ EXAMPLES = """<?xml version="1.0" encoding="UTF-8"?>
   </symbols>
   <composition>
     <instance id="use-room" symbol="fx-room" start="0" end="4"/>
-    <instance id="use-doors" symbol="fx-doors" start="4" end="12"/>
+    <instance id="use-stage" symbol="fx-stage" start="4" end="12"/>
     <instance id="use-surface" symbol="fx-surface" start="12" end="16"/>
   </composition>
   <lights>
@@ -915,6 +923,12 @@ def _envelope(text: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+#: The seam of the geometry gate: `EVAL_RUNNER(doc_path, files=...)` gives a
+#: `runner(times)` that returns the engine's eval frame per time (one job on
+#: a host), or None when no engine is reachable. A test puts a fake here.
+EVAL_RUNNER = geometry.engine_runner
+
+
 def encode_findings(files: dict[str, bytes], doc_path: str, *, start: float, end: float,
                     quality: str = "draft", host: str = "", timeout: float = 600.0
                     ) -> list[str] | None:
@@ -1088,7 +1102,7 @@ def props_findings(doc_text: str, props: list[dict], textures: list[str]
             findings.append(
                 f"note: props: the material maps are generator assets ({', '.join(sorted(set(maps))[:4])}) "
                 f"while texture maps are listed ({', '.join(names[:4])}"
-                + (", ..." if len(names) > 4 else "") + "): a large surface (desk, floor, wall) "
+                + (", ..." if len(names) > 4 else "") + "): a large surface (floor, wall, any broad set piece) "
                 "reads better with a real map")
     return findings, declined
 
@@ -1279,7 +1293,7 @@ class Workspace:
                   "unless the plan lists a cut). Give the symbol `duration` equal to its "
                   "length below and key every animation on that one timeline.", "",
                   "Hero convention: give every object the camera must never lose an id "
-                  "starting with `hero-` (e.g. `hero-plane`); the frame gate reads the "
+                  "starting with `hero-` (e.g. `hero-subject`); the frame gate reads the "
                   "engine's off-camera report and a `hero-` object outside the camera's "
                   "view for a whole shot is an error. Use the prefix only for the "
                   "subject, never for the set.", "",
@@ -1288,7 +1302,33 @@ class Workspace:
                   "warning, and so does this gate. Build only the set the camera sees "
                   "(a room is the walls and floor in frame, not a closed box), key an "
                   "object that is seen in some shots only to exist then (`visible`, "
-                  "`start`/`end` or `condition` on the object3D), and cull the rest.", ""]
+                  "`start`/`end` or `condition` on the object3D), and cull the rest.", "",
+                  "The hero must not pass through the set: the geometry gate evaluates "
+                  f"the world every {geometry.STEP:g} s with the engine (`scene-render eval`) "
+                  "and intersects the hero's box (the `hero-` object with every node "
+                  "parented to it) with every set solid; a penetration deeper than a "
+                  "tenth of the hero's smallest dimension is an error naming the time, "
+                  "the object and the depth. Key its path to clear every set solid: "
+                  "the floor, the walls and the furniture of the set.", "",
+                  "Resting rule: a resting hero's lowest point equals the surface's top. "
+                  "y points down (the floor is y=0, up is negative), so a surface's top "
+                  "is its centre y minus half its height: a box at y=-77 with "
+                  "height=4 has its top at y=-79, not -75 (-75 is its underside). A hero "
+                  "whose lowest point sits 1.5 below its origin rests there at y=-80.5. "
+                  "Declare the rest so the gate also checks it is not floating: "
+                  f"`<metadata><meta name=\"{geometry.REST_META}\" value=\"<hero id> "
+                  "<surface id> <seconds>\"/></metadata>` (examples.scene.xml has one).", "",
+                  "Grounding rule: the gate projects the world through the camera at "
+                  "every step. When the hero lies on screen over a farther surface's top "
+                  f"(over {geometry.OVERLAP_SHARE:.0%} of its own area), a little above it "
+                  f"(under {geometry.CLEARANCE_RATIO:.0%} of its distance from the camera, too "
+                  "little for parallax), with no shadow of it on that surface, for "
+                  f"{geometry.MERGED_SECONDS:g} s or more, it reads as merged into the surface "
+                  "although it is in the air: an error (`reads merged`). Give that frame a "
+                  "cue: a shadow-casting light (castShadow=\"true\") whose direction lands the "
+                  "hero's shadow on the surface in frame, a line of sight lifted toward "
+                  "the surface's plane so the hero is seen against what is behind it, or "
+                  "the hero framed clear of the surface.", ""]
         for w in worlds:
             lines += [f"### `<symbol id=\"{w['id']}\" width=\"{frame[0]}\" height=\"{frame[1]}\" "
                       f"duration=\"{w['seconds']:g}\">` — starts {w['offset']:g}s into the "
@@ -1352,13 +1392,13 @@ class Workspace:
                           "`<object3D primitive=\"mesh\" mesh=\"m-x\" .../>`; the model's own "
                           "textured materials come with it (`materialOverride` to swap one, "
                           "`node` to draw a part). Scale it to the room with width/height/depth."]
-            lines += ["- **Large surfaces carry texture maps**: the desk, the floor, the "
-                      "walls get a material with `baseColorMap` (sRGB colour), `normalMap` "
+            lines += ["- **Large surfaces carry texture maps**: the floor, the walls and "
+                      "every broad set piece get a material with `baseColorMap` (sRGB colour), `normalMap` "
                       "(`normalScale`), `metallicRoughnessMap` and/or `occlusionMap` (the "
                       "_arm_ maps below are ambient-occlusion/roughness/metallic), with "
                       "`uvScaleX`/`uvScaleY` for tiling; a flat `baseColor` on a wall or "
-                      "a desk is what the review calls \"flat-shaded CG\". Thin paper gets "
-                      "`transmission`/`subsurface` so it glows when backlit.",
+                      "any broad surface is what the review calls \"flat-shaded CG\". A thin, "
+                      "translucent material gets `transmission`/`subsurface` so it glows when backlit.",
                       "- The hero may stay a built primitive or extrude when no model fits "
                       "it, but it takes a real material (maps, roughness, translucency) "
                       "and casts a contact shadow.",
@@ -1635,7 +1675,55 @@ class Workspace:
                 rendered += png is not None
                 findings += found
             findings.append(f"note: {rendered} frame(s) rendered under frames/")
+            # The frames show the hero; only the geometry says whether it is
+            # inside a set solid. Same engine, no GPU: eval at every step.
+            findings += self.geometry(name, shots=shots)
         return symbols, findings
+
+    def geometry(self, name: str, *, symbol: str | None = None,
+                 shots: dict[str, list[dict]] | None = None, step: float = geometry.STEP,
+                 runner=None) -> list[str]:
+        """The geometry gate over one document: each 3D symbol's proof
+        document (as `yt build` includes it, under the include id `shot`)
+        is evaluated by the engine every `step` seconds through its shots
+        (`shots` per symbol id, else shots.json, else the symbol's whole
+        life), and every hero group's world box is intersected with every
+        set solid. A penetration is an error naming the time, the hero, the
+        object, the depth and the fix; a declared rest
+        (`<meta name="hero-rests" ...>`) is checked for floating. `runner`
+        replaces EVAL_RUNNER's (a test's seam)."""
+        path = self.dir / name
+        if not path.is_file():
+            return ["error: the author wrote no document"]
+        text = path.read_text(encoding="utf-8", errors="replace")
+        facts = [f for f in symbol_facts(text) if symbol is None or f["id"] == symbol]
+        shots = shots if shots is not None else self._shots()
+        frame = self._frame_from_tokens()
+        extra = referenced_files(text, self.dir, self.root)
+        stem = name[:-len(".scene.xml")] if name.endswith(".scene.xml") else name
+        proof_path = f"{self.rel}/.proof-{stem}.scene.xml"
+        out: list[str] = []
+        for fact in facts:
+            objects = geometry.document_objects(text, symbol=fact["id"], prefix="shot/")
+            if not geometry.hero_groups(objects):
+                continue                      # a 2D symbol, or one with no hero
+            rests = geometry.rests_declared(text, prefix="shot/")
+            held = shots.get(fact["id"]) or [{"label": "", "at": 0.0, "seconds": fact["duration"]}]
+            times = geometry.sample_times(held, step)
+            files = dict(extra)
+            files[f"{self.rel}/{name}"] = text.encode("utf-8")
+            files[proof_path] = proof_document(name, text, fact["id"], frame, fact["duration"],
+                                               fact["background"]).encode("utf-8")
+            run = runner if runner is not None else EVAL_RUNNER(proof_path, files=files)
+            # The proof document hoists the file's <lights> unchanged, so the
+            # evaluated light elements keep these ids; the camera is the
+            # world's own, under the include id `shot`.
+            report = geometry.evaluate(
+                objects, times, run, rests=rests,
+                cameras=geometry.document_cameras(text, symbol=fact["id"], prefix="shot/"),
+                lights=geometry.document_lights(text), frame=frame, step=step)
+            out += geometry.findings(report, symbol=fact["id"], shots=held)
+        return out
 
 
 # --------------------------------------------------------------------------- #
@@ -1697,7 +1785,8 @@ class VfxPlanner:
     def _ask_json(self, prompt: str, schema: dict) -> object:
         engine = harness.ENGINE(EngineConfig(tools=(), model=self.model))
         try:
-            return engine.ask_json(prompt, schema, system=VFX_SYSTEM)
+            return engine.ask_json(prompt, schema, system=harness.with_feedback(
+                VFX_SYSTEM, self.ws.root, "vfx"))
         finally:
             self._account(engine.usage)
 
@@ -1890,7 +1979,8 @@ class VfxPlanner:
         tools_used = 0
         timed_out = False
         try:
-            for event in engine.stream(prompt, system=AUTHOR_SYSTEM):
+            system = harness.with_feedback(AUTHOR_SYSTEM, self.ws.root, "vfx")
+            for event in engine.stream(prompt, system=system):
                 if event.subtype == "tool_use" and event.tool_input:
                     tools_used += 1
                     what = event.tool_input.get("command") or event.tool_input.get("file_path") or ""
@@ -1970,7 +2060,7 @@ class VfxPlanner:
     #: Findings about these are the ones the author keeps answering with
     #: primitives and flat colour; they go back first, as requirements.
     SURFACE_WORDS = re.compile(r"material|translucen|transmission|subsurface|shadow|texture|"
-                               r"grain|paper|lighting|light rig|flat.shaded|environment", re.I)
+                               r"grain|lighting|light rig|flat.shaded|environment", re.I)
 
     @classmethod
     def _review_listing(cls, review: dict | None) -> str:

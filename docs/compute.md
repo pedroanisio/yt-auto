@@ -88,11 +88,11 @@ after the concat) and never used it.
   limiter is what is in charge; the fix is to quieten those effects. `yt build`
   now does that itself: every sfx, stinger or transition cue of 2 s or less
   is a transient, and the transients come down as a group until the loudest
-  sits `truePeak − loudness − 8 dB` above the loudest bed (the 8 dB is the
-  bed's own crest, measured on a paper-plane mix: at 6 dB the limiter still
-  took 0.7 LU). `build.json` records it under `audio_staging`; the build's
-  owner measured the paper plane at −17.2 → −14.9 LUFS with the target
-  untouched. `yt build --no-limiter` exists so any remaining shortfall
+  sits `truePeak − loudness − crest` above the loudest bed. The crest is
+  measured per project: a generic 6 dB on the first build, then raised by the
+  shortfall the last render measured against the target. `build.json`
+  records it under `audio_staging` (`crest_db`, `crest_from`); the target
+  itself never moves. `yt build --no-limiter` exists so any remaining shortfall
   becomes visible instead of being absorbed.
 - **`gain` saturates at +24 dB, per track and per bus** (src-5a, the hard way;
   it is in the schema's own facets, −120 to 24). A cue library at natural

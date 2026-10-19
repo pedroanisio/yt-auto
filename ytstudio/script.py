@@ -38,7 +38,7 @@ from pathlib import Path
 from claude_engine import ClaudeEngine, ClaudeError, EngineConfig, Usage
 from .core import Idea, _merge_usage, read_json, timecode, wrap, write_json
 from .ideas import CHANNEL_STYLES, style_brief
-from . import house, workspace
+from . import harness, house, workspace
 
 #: Narration pace. 150 wpm is an unhurried documentary read; 180 is brisk.
 DEFAULT_WPM = 150
@@ -406,8 +406,9 @@ class Screenwriter:
                  inspo: list[str] | None = None, notes: str = "",
                  lang: str = "", house: str = "",
                  house_digest: dict | None = None,
-                 verbose: bool = True) -> None:
+                 verbose: bool = True, root: Path | str | None = None) -> None:
         self.idea = idea
+        self.root = root            # the project, for its open revision notes
         self.model = model
         self.seconds = max(10, round(minutes * 60))
         self.wpm = wpm
@@ -432,7 +433,8 @@ class Screenwriter:
     def _ask(self, prompt: str, schema: dict) -> dict:
         engine = ClaudeEngine(EngineConfig(tools=(), model=self.model))
         try:
-            return engine.ask_json(prompt, schema, system=SYSTEM)
+            return engine.ask_json(prompt, schema, system=harness.with_feedback(
+                SYSTEM, self.root, "script"))
         finally:
             _merge_usage(self.usage, engine.usage)
 
@@ -975,7 +977,7 @@ def run(args) -> int:
     if rules and not args.quiet:
         print(f"standards: {', '.join(digest['sources'])}", file=sys.stderr)
     writer = Screenwriter(
-        idea, house=rules, house_digest=digest,
+        idea, house=rules, house_digest=digest, root=project.root,
         model=args.model, minutes=args.minutes, wpm=args.wpm,
         sections=args.sections, inspo=split(args.inspo), notes=args.notes,
         lang=args.lang,

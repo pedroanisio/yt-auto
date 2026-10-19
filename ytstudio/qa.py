@@ -56,6 +56,7 @@ import shutil
 import sys
 from pathlib import Path
 
+from . import geometry as geo
 from . import house, reach, workspace
 from . import render as render_stage
 from .build import EVEN_SHOTS, shots_from_scene  # noqa: F401  (standalone sampling)
@@ -407,10 +408,93 @@ def _on_edge(row: dict) -> bool:
     return "hook" in why or "ending" in why
 
 
-def mechanical_findings(samples: list[dict], diagnostics: dict | None = None) -> list[dict]:
+#: Mechanical kinds that block on their own, wherever they sit.
+ALWAYS_BLOCKING = ("penetration", "reads-merged")
+
+
+def merged_by_shot(report: dict | None, shots: list[dict]) -> dict[str, list[dict]]:
+    """The geometry check's `reads_merged` spans under the label of every
+    shot each one overlaps."""
+    if not report or report.get("status") != "ok":
+        return {}
+    step = float(report.get("step") or geo.STEP)
+    out: dict[str, list[dict]] = {}
+    for span in report.get("reads_merged") or []:
+        a, b = float(span["first"]), float(span["last"]) + step
+        for s in shots:
+            at = float(s.get("at", 0) or 0)
+            if at < b and a < at + float(s.get("seconds", 0) or 0):
+                out.setdefault(str(s.get("label", "")), []).append(span)
+    return out
+
+
+def _merged_finding(spans: list[dict]) -> dict:
+    """One sampled shot's `reads-merged` spans as a finding, with the numbers."""
+    longest = max(spans, key=lambda s: s["seconds"])
+    named = "; ".join(
+        f"`{s['hero'].rsplit('/', 1)[-1]}` over `{s['object'].rsplit('/', 1)[-1]}` "
+        f"{s['first']:g}-{s['last']:g}s ({s['seconds']:g}s, {s['overlap']:.0%} of it over the "
+        f"surface, {s['clearance']:.1f} units above it, {s['ratio']:.0%} of the camera distance)"
+        for s in spans)
+    return {
+        "kind": "reads-merged",
+        "problem": f"the hero reads as merged into the set: {named}; no shadow of it "
+                   "falls on the surface",
+        "why": "on screen the hero lies over a farther surface it barely clears, with no "
+               "shadow and too little parallax to place it, so the viewer sees it resting "
+               "in the surface; measured mechanically by projecting the engine's evaluated "
+               "camera and geometry, not judged from the still",
+        "root_cause": "the camera's line of sight grazes the surface while the hero flies "
+                      "just above it, and the shadow-casting light lands the hero's "
+                      "shadow elsewhere",
+        "fix": geo.merged_advice(longest),
+    }
+
+
+def geometry_by_shot(report: dict | None, shots: list[dict]) -> dict[str, list[dict]]:
+    """The geometry check's penetration records (`geometry.check_project`)
+    under the label of the shot each falls in."""
+    if not report or report.get("status") != "ok":
+        return {}
+    spans = [(str(s.get("label", "")), float(s.get("at", 0) or 0),
+              float(s.get("at", 0) or 0) + float(s.get("seconds", 0) or 0)) for s in shots]
+    out: dict[str, list[dict]] = {}
+    for row in report.get("penetrations") or []:
+        t = float(row.get("time", 0))
+        label = next((l for l, a, b in spans if a <= t < b), None)
+        if label is not None:
+            out.setdefault(label, []).append(row)
+    return out
+
+
+def _penetration_finding(records: list[dict]) -> dict:
+    """One sampled shot's merges as a finding: the deepest instance, the
+    pairs, the span, the numbers."""
+    deepest = max(records, key=lambda r: r["depth"])
+    pairs = sorted({(r["hero"], r["object"]) for r in records})
+    times = sorted({float(r["time"]) for r in records})
+    named = "; ".join(f"`{h.rsplit('/', 1)[-1]}` inside `{o.rsplit('/', 1)[-1]}`" for h, o in pairs)
+    return {
+        "kind": "penetration",
+        "problem": f"hero penetrates the set: {named}, up to {deepest['depth']:.1f} units along "
+                   f"{deepest['axis']} at {deepest['time']:g}s, {len(times)} sample(s) from "
+                   f"{times[0]:g}s to {times[-1]:g}s (tolerance {deepest['tolerance']:.1f})",
+        "why": "a hero inside a solid reads as a merge, not a contact; measured "
+               "mechanically from the engine's evaluated frame graph and the "
+               "document's geometry, not judged from the still",
+        "root_cause": "the hero's keyed path (x/y/z, rotation) crosses the set's solids "
+                      "in the authored world",
+        "fix": geo.advice(deepest),
+    }
+
+
+def mechanical_findings(samples: list[dict], diagnostics: dict | None = None,
+                        geometry: dict | None = None, merged: dict | None = None) -> list[dict]:
     """What the measurements already prove, as findings in the scorecard's
     own shape plus `kind` and `shot`. Blocking when on the hook or the
-    ending, or when the same kind is on more than one sampled shot."""
+    ending, or when the same kind is on more than one sampled shot; a
+    `penetration` (`geometry`, records per shot label) and a `reads-merged`
+    (`merged`, spans per shot label) are always blocking and owned by vfx."""
     found: list[dict] = []
     for row in samples:
         base = {"timestamp": row["t"], "frame": row.get("frame", ""),
@@ -478,12 +562,18 @@ def mechanical_findings(samples: list[dict], diagnostics: dict | None = None) ->
                               "diagnostic OFF-CAMERA in render.json)",
                 "fix": "move the camera or the objects so the shot frames what it draws, "
                        "or delete what is never seen"})
+        merges = (geometry or {}).get(base["shot"]) or []
+        if merges:
+            found.append(base | _penetration_finding(merges) | {"owner": "vfx"})
+        reads = (merged or {}).get(base["shot"]) or []
+        if reads:
+            found.append(base | _merged_finding(reads) | {"owner": "vfx"})
     shots_by_kind: dict[str, set] = {}
     for f in found:
         shots_by_kind.setdefault(f["kind"], set()).add(f["shot"])
     edge = {str(row.get("label", "")) for row in samples if _on_edge(row)}
     for f in found:
-        f["severity"] = ("blocking" if f["shot"] in edge
+        f["severity"] = ("blocking" if f["kind"] in ALWAYS_BLOCKING or f["shot"] in edge
                          or len(shots_by_kind[f["kind"]]) > 1 else "minor")
     return found
 
@@ -753,6 +843,18 @@ def engine_renderer(args, scene: str):
 RENDERER = engine_renderer
 
 
+def engine_geometry(args, project, scene: str, shots: list[dict]) -> dict:
+    """The geometry check over the project's scene at `geometry.STEP`
+    steps through every shot, evaluated by the engine on the host a
+    validation would go to (`--host`, `--local` honoured): one job."""
+    return geo.check_project(Path(scene), project.root, shots,
+                             host=render_stage.remote_host(args, "validate"))
+
+
+#: The seam: what `run` checks the geometry with. A test puts a fake here.
+GEOMETRY = engine_geometry
+
+
 def render_frames(args, project, scene: str, samples: list[dict],
                   frames_dir: Path, *, render=None) -> list[str]:
     """One job per sample: its burst window as a single `--frames A..B`
@@ -876,7 +978,16 @@ def run(args) -> int:
     write_json(pass_dir / "samples.json", samples)        # the plan, and now the numbers
     render_report = read_json(project.source("render"), warn=False)
     diagnostics = engine_diagnostics(render_report, build.get("shots", []))
-    mechanical = mechanical_findings(samples, diagnostics=diagnostics)
+    # Does the hero pass through the set? The still cannot say; the
+    # engine's evaluated frame graph and the document's geometry can.
+    sampled = [s for s in build.get("shots", []) if str(s.get("label", "")) in
+               {str(row.get("label", "")) for row in samples}]
+    geometry_report = GEOMETRY(args, project, scene, sampled)
+    if not args.quiet and geometry_report.get("status") != "ok":
+        print(f"warning: geometry not checked: {geometry_report.get('why', '?')}", file=sys.stderr)
+    mechanical = mechanical_findings(samples, diagnostics=diagnostics,
+                                     geometry=geometry_by_shot(geometry_report, build.get("shots", [])),
+                                     merged=merged_by_shot(geometry_report, build.get("shots", [])))
     sheet = contact_sheet(samples, frames_dir, pass_dir / "contact-sheet.png")
     if not args.quiet:
         for f in mechanical:
@@ -926,6 +1037,8 @@ def run(args) -> int:
                        "too_fast_for_captions", "overlaps", "review", "casting")},
         "sound_cues": cues_near, "mix": sound.get("mix"),
         "gate": (gate or {}).get("triage"),
+        "geometry": {k: geometry_report.get(k) for k in
+                     ("status", "why", "evaluated", "worst", "floating", "reads_merged")},
         "treatment": (styles.get("styles") or [{}])[0] if isinstance(
             styles.get("styles"), list) else styles.get("treatment"),
         # How far the authored documents reach into the engine, per `yt vfx`:

@@ -45,7 +45,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import house, workspace
+from . import geometry, house, workspace
 from . import render as render_stage
 from .core import read_json, write_json
 from .harness import Harness, HarnessError, brief
@@ -88,6 +88,74 @@ def exit_code(tool: int, triage: dict) -> int:
     if tool:
         return tool
     return 1 if triage.get("blocking") else 0
+
+
+PENETRATES = "hero penetrates set"
+READS_MERGED = "hero reads merged into set"
+
+
+def engine_geometry(args, project, scene: str, shots: list[dict]) -> dict:
+    """The geometry check over the candidate's scene at `geometry.STEP`
+    steps through every shot (the whole programme with no build): the
+    engine evaluates the frame graph on a render host, one job."""
+    return geometry.check_project(Path(scene), project.root, shots,
+                                  host=render_stage.remote_host(args, "validate"))
+
+
+#: The seam: what `run` checks the geometry with. A test puts a fake here.
+GEOMETRY = engine_geometry
+
+
+def geometry_rows(report: dict | None) -> list[dict]:
+    """The geometry report as blocking triage rows: one per hero and set
+    object, with the worst instance, how many samples and the span, owned
+    by vfx. Nothing when the check found nothing or could not run."""
+    if not report or report.get("status") != "ok":
+        return []
+    rows = []
+    for w in report.get("worst") or []:
+        short = lambda s: str(s).rsplit("/", 1)[-1]  # noqa: E731
+        rows.append({
+            "what": f"{PENETRATES}: `{short(w['hero'])}` inside `{short(w['object'])}` by "
+                    f"{w['depth']:.1f} units along {w['axis']} at {w['time']:g}s, "
+                    f"{w['count']} of {len(report.get('times') or [])} samples between "
+                    f"{w['first']:g}s and {w['last']:g}s (tolerance {w['tolerance']:.1f}"
+                    + ("; bounds approximate" if w.get("approximate") else "") + ")",
+            "owner": "vfx",
+            "fix": f"`yt vfx` (the authored world): {geometry.advice(w, rests=report.get('rests') or [])}; "
+                   "then `yt build` and `yt render`"})
+    for f in report.get("floating") or []:
+        rows.append({
+            "what": f"hero floats above its rest: `{str(f['hero']).rsplit('/', 1)[-1]}` is "
+                    f"{f['gap']:.1f} units above `{str(f['surface']).rsplit('/', 1)[-1]}` at "
+                    f"{f['time']:g}s where it is declared to rest",
+            "owner": "vfx",
+            "fix": "`yt vfx`: lower the final keys so the hero touches the surface; "
+                   "then `yt build` and `yt render`"})
+    for m in report.get("reads_merged") or []:
+        rows.append({
+            "what": f"{READS_MERGED}: `{str(m['hero']).rsplit('/', 1)[-1]}` over "
+                    f"`{str(m['object']).rsplit('/', 1)[-1]}` from {m['first']:g}s to "
+                    f"{m['last']:g}s ({m['seconds']:g}s): {m['overlap']:.0%} of the hero over the "
+                    f"surface on screen, {m['clearance']:.1f} units above it ({m['ratio']:.0%} of "
+                    "the camera distance), no shadow on it",
+            "owner": "vfx",
+            "fix": f"`yt vfx` (the authored world): {geometry.merged_advice(m)}; "
+                   "then `yt build` and `yt render`"})
+    return rows
+
+
+def apply_geometry(triage: dict, report: dict | None) -> dict:
+    """The mechanical verdict over the supervisor's: a penetration is
+    blocking whatever the triage said, so a film with a merge cannot pass."""
+    rows = geometry_rows(report)
+    if not rows:
+        return triage
+    out = dict(triage)
+    have = {r.get("what") for r in out.get("blocking") or []}
+    out["blocking"] = list(out.get("blocking") or []) + [r for r in rows if r["what"] not in have]
+    out["verdict"] = "not deliverable"
+    return out
 
 GATE_HINT = ("production_gate.py was not found. Set PRODUCTION_GATE to it, or "
              "keep the scene-render checkout beside this one.")
@@ -536,6 +604,13 @@ def run(args) -> int:
                       warn=False) or {}
     voice = read_json(project.source("voice", workspace.override(args, "voice")),
                       warn=False) or {}
+    # The tool has no notion of a solid: before anyone triages, the geometry
+    # check says whether the hero passes through the set. Blocking on its own.
+    geo = GEOMETRY(args, project, found["scene"], build.get("shots", []))
+    if geo.get("status") != "ok":
+        print(f"  geometry: not checked ({geo.get('why', '?')})", file=sys.stderr)
+    for row in geometry_rows(geo):
+        print(f"  BLOCKING  {row['what'][:160]}")
     rules, digest = house.for_args(args, project, "gate")
     supervisor = Harness(project.root, "gate", model=args.model, role=ROLE,
                          house=rules, house_digest=digest,
@@ -557,10 +632,18 @@ def run(args) -> int:
                                       "overlaps": voice.get("overlaps", [])}),
             brief("Encode report (summary)", render_stage.summarise(render)
                   if isinstance(render, dict) else render),
+            brief("Geometry check (mechanical: every penetration of a hero into a set solid, "
+                  "and every span where the hero reads merged into a surface on "
+                  "screen, is appended to `blocking` as an item of its own, owner vfx, after your "
+                  "triage; do not restate it and do not overrule it, but let it inform the "
+                  "verdict and the order of the fixes)",
+                  {k: geo.get(k) for k in ("status", "why", "evaluated", "worst", "floating",
+                                           "reads_merged")}),
         ]), TRIAGE_SCHEMA)
     except HarnessError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    triage = apply_geometry(triage, geo)
     print(f"\n  supervisor: {triage['verdict']}")
     for row in triage.get("blocking", []):
         print(f"    BLOCKING  {row.get('what', '')[:90]}")
@@ -576,7 +659,7 @@ def run(args) -> int:
         "idea": {"title": idea.title}, "tool_exit": proc.returncode,
         "mode": "frames" if args.frames else "technical", "host": host or "",
         "command": cmd, "stopped_by": stop, "tool_output": output[-4000:],
-        "triage": triage, "exit": code, "engine": supervisor.report()})
+        "triage": triage, "geometry": geo, "exit": code, "engine": supervisor.report()})
     print(f"wrote {gate_out}", file=sys.stderr)
     if code == 0 and not args.frames:
         print("a perceptual review is still required: this gate is technical; "

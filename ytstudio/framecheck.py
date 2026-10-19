@@ -96,7 +96,7 @@ def judge_frame(png: bytes, at: float, symbol: str, *, clip_share: float = CLIP_
 
 def never_in_view(diagnostics: str | list[str]) -> list[str]:
     """The object3D ids the engine reports as never inside the camera's view,
-    without their include prefix (`shot/desk` -> `desk`), in order, once each."""
+    without their include prefix (`shot/wall` -> `wall`), in order, once each."""
     text = diagnostics if isinstance(diagnostics, str) else "\n".join(diagnostics)
     out: list[str] = []
     for m in OFF_CAMERA.finditer(text):

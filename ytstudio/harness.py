@@ -40,10 +40,19 @@ from claude_engine import (READ_ONLY_TOOLS, ClaudeEngine, ClaudeError,
 from .core import _merge_usage, read_json, write_json
 
 __all__ = ["Harness", "HarnessError", "ENGINE", "READ_ONLY_TOOLS", "ClaudeError",
-           "brief", "missing_fields", "DECISIONS_DIR"]
+           "brief", "missing_fields", "DECISIONS_DIR", "FEEDBACK_DIR",
+           "feedback_for", "with_feedback"]
 
 #: Where a project keeps what the model decided, per stage.
 DECISIONS_DIR = "decisions"
+
+#: Where `yt improve` leaves each stage its open revision brief,
+#: `<project>/feedback/<stage>.md`; a consumed one moves under `closed/`.
+FEEDBACK_DIR = "feedback"
+FEEDBACK_LEAD = ("The operator's revision notes for this pass, which outrank the house "
+                 "standards. Every finding below was seen in the rendered film by the "
+                 "last QA pass; change what they ask for, and keep what they do not "
+                 "mention:\n\n")
 
 #: The tools an inspection may use: it looks, it never changes anything.
 INSPECT_TOOLS = ("Read", "Glob", "Grep")
@@ -65,6 +74,26 @@ def mission() -> str:
         return ("This pipeline creates and composes top-tier YouTube videos on "
                 "scene-render and sr-core, multi-aesthetic according to the "
                 "editorial decisions.")
+
+
+def feedback_for(root: Any, stage: str) -> str:
+    """The stage's open revision notes from `yt improve`, led by what they
+    are, or "" when there are none. Every prompt a stage builds itself
+    (an authoring agent, a planner call) passes through `with_feedback`;
+    a Harness adds it to its own system prompt."""
+    if not root or not stage:
+        return ""
+    try:
+        text = (Path(root) / FEEDBACK_DIR / f"{stage}.md").read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return ""
+    return FEEDBACK_LEAD + text if text else ""
+
+
+def with_feedback(system: str, root: Any, stage: str) -> str:
+    """`system` with the stage's open revision notes after it, if any."""
+    notes = feedback_for(root, stage)
+    return f"{system}\n\n{notes}" if notes else system
 
 
 def brief(title: str, data: Any) -> str:
@@ -180,6 +209,9 @@ class Harness:
         if self.house:
             parts.append("The house standards, which every decision serves:\n"
                          + self.house)
+        notes = feedback_for(self.root, self.stage)
+        if notes:
+            parts.append(notes)
         return "\n\n".join(parts)
 
     def path(self, name: str) -> Path:
