@@ -1,0 +1,161 @@
+"""The pieces every stage shares: an idea, the small helpers, usage accounting.
+
+Lives on its own so that `workspace` can speak about ideas without importing a
+stage, and so no two stages have to import each other to agree what an Idea
+is, how a timecode reads, or what a project directory is called.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import sys
+import textwrap
+import unicodedata
+from dataclasses import asdict, dataclass, field, fields
+from pathlib import Path
+
+from claude_engine import Usage
+
+
+# --------------------------------------------------------------------------- #
+# text
+# --------------------------------------------------------------------------- #
+
+def fold(text: str) -> str:
+    """Text with its accents dropped: "Explicação" -> "Explicacao".
+
+    Latin-script titles have to survive becoming a directory name and a
+    comparison key, so the accent is removed rather than the whole letter.
+    """
+    decomposed = unicodedata.normalize("NFKD", text)
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+
+
+def _key(name: str) -> str:
+    """A loose comparison key: accents folded, everything else dropped."""
+    return re.sub(r"[^a-z0-9]", "", fold(name).lower())
+
+
+def slugify(text: str, limit: int = 60) -> str:
+    """The directory name a project is addressed by, so it has to read well.
+
+    Accents are folded rather than deleted ("Explicação" -> "explicacao", not
+    "explica-o") and the cut lands on a word boundary, unless backing off
+    would throw away more than half the name.
+    """
+    slug = re.sub(r"[^a-z0-9]+", "-", fold(text).lower()).strip("-")
+    if len(slug) > limit:
+        cut = slug[:limit]
+        if slug[limit] != "-":
+            head = cut.rsplit("-", 1)[0]
+            if len(head) >= limit // 2:
+                cut = head
+        slug = cut
+    return slug.strip("-") or "idea"
+
+
+def timecode(seconds: int | float) -> str:
+    """Seconds as m:ss, the way a shot list reads."""
+    seconds = int(round(seconds))
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+def wrap(text: object, pad: str = "", width: int = 78) -> str:
+    """Terminal paragraph: wrapped, with every line indented by `pad`."""
+    return textwrap.fill(str(text), width=width, initial_indent=pad,
+                         subsequent_indent=pad)
+
+
+# --------------------------------------------------------------------------- #
+# files
+# --------------------------------------------------------------------------- #
+
+def compact(obj: object) -> dict:
+    """A dataclass or dict as a dict, with the fields never filled in left out."""
+    row = asdict(obj) if not isinstance(obj, dict) else dict(obj)
+    return {k: v for k, v in row.items() if v not in ("", [], None)}
+
+
+def read_json(path: str | Path | None, *, warn: bool = True,
+              shape: type | tuple[type, ...] = dict):
+    """JSON from disk, or None when there is none to read.
+
+    A directory means its dossier.json. No path at all is not a missing file,
+    so it says nothing; a path that does not exist warns unless `warn` is off.
+    `shape` is what the file must hold -- a dict by default, `list` for a
+    manifest -- and anything else reads as None rather than as a surprise.
+    """
+    if not path:
+        return None
+    file = Path(path)
+    if file.is_dir():
+        file = file / "dossier.json"
+    if not file.exists():
+        if warn:
+            print(f"warning: {file} not found, ignoring", file=sys.stderr)
+        return None
+    try:
+        data = json.loads(file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"warning: cannot read {file} ({exc}), ignoring", file=sys.stderr)
+        return None
+    return data if isinstance(data, shape) else None
+
+
+def write_json(path: str | Path, data: object) -> Path:
+    """Pretty, UTF-8, trailing newline: the one way every stage writes JSON."""
+    target = Path(path)
+    target.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                      encoding="utf-8")
+    return target
+
+
+# --------------------------------------------------------------------------- #
+# the idea
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class Idea:
+    title: str
+    genre: str
+    description: str
+    hook: str = ""
+    length: str = ""
+    keywords: list[str] = field(default_factory=list)
+    score: float | None = None
+    why: str = ""
+
+    @classmethod
+    def from_raw(cls, raw: dict) -> Idea:
+        known = {f.name for f in fields(cls)}
+        clean = {k: v for k, v in raw.items() if k in known and v is not None}
+        # `compact()` drops empty fields on the way out; an idea saved with
+        # no genre or premise must still read back (only the title is required).
+        if "title" in clean:
+            clean.setdefault("genre", "")
+            clean.setdefault("description", "")
+        for key in ("title", "genre", "description", "hook", "length", "why"):
+            if key in clean:
+                clean[key] = str(clean[key]).strip()
+        return cls(**clean)
+
+    def block(self) -> str:
+        """The idea as every stage's prompt opens with it."""
+        bits = [f"Title: {self.title}", f"Genre: {self.genre}",
+                f"Premise: {self.description}"]
+        if self.hook:
+            bits.append(f"Planned hook: {self.hook}")
+        if self.length:
+            bits.append(f"Target length: {self.length}")
+        if self.keywords:
+            bits.append(f"Search intent: {', '.join(self.keywords)}")
+        return "\n".join(bits)
+
+
+# --------------------------------------------------------------------------- #
+# usage
+# --------------------------------------------------------------------------- #
+
+def _merge_usage(target: Usage, src: Usage) -> None:
+    target.merge(src)

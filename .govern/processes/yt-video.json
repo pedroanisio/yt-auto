@@ -1,0 +1,185 @@
+{
+  "version": 1,
+  "name": "yt-video",
+  "description": "a video made with the yt pipeline, idea to delivered film; every stage's check is yt's own evidence for it",
+  "manual": "../../ytstudio/SKILL.md",
+  "setup": [
+    {
+      "commands": {
+        "research": [
+          "{python}",
+          "{repo}/ytstudio/lane.py",
+          "check",
+          "{dir}",
+          "research"
+        ],
+        "styles": [
+          "{python}",
+          "{repo}/ytstudio/lane.py",
+          "check",
+          "{dir}",
+          "styles"
+        ],
+        "script": [
+          "{python}",
+          "{repo}/ytstudio/lane.py",
+          "check",
+          "{dir}",
+          "script"
+        ],
+        "props": [
+          "{python}",
+          "{repo}/ytstudio/lane.py",
+          "check",
+          "{dir}",
+          "props"
+        ],
+        "keyframe": [
+          "{python}",
+          "{repo}/ytstudio/lane.py",
+          "check",
+          "{dir}",
+          "keyframe"
+        ],
+        "voice": [
+          "{python}",
+          "{repo}/ytstudio/lane.py",
+          "check",
+          "{dir}",
+          "voice"
+        ],
+        "retime": [
+          "{python}",
+          "{repo}/ytstudio/lane.py",
+          "check",
+          "{dir}",
+          "retime"
+        ],
+        "vfx": [
+          "{python}",
+          "{repo}/ytstudio/lane.py",
+          "check",
+          "{dir}",
+          "vfx"
+        ],
+        "sound": [
+          "{python}",
+          "{repo}/ytstudio/lane.py",
+          "check",
+          "{dir}",
+          "sound"
+        ],
+        "build": [
+          "{python}",
+          "{repo}/ytstudio/lane.py",
+          "check",
+          "{dir}",
+          "build"
+        ],
+        "render": [
+          "{python}",
+          "{repo}/ytstudio/lane.py",
+          "check",
+          "{dir}",
+          "render"
+        ],
+        "deliver": [
+          "{python}",
+          "{repo}/ytstudio/lane.py",
+          "check",
+          "{dir}",
+          "deliver"
+        ]
+      }
+    }
+  ],
+  "stages": [
+    {
+      "name": "research",
+      "exit": "dossier.json written and `yt doctor` reports no fail for research",
+      "check": "research",
+      "requires": "check"
+    },
+    {
+      "name": "styles",
+      "exit": "styles.json written and `yt doctor` reports no fail for styles",
+      "check": "styles",
+      "requires": "check"
+    },
+    {
+      "name": "script",
+      "exit": "script.json written and `yt doctor` reports no fail for script",
+      "check": "script",
+      "requires": "check"
+    },
+    {
+      "name": "props",
+      "exit": "props.json written and `yt doctor` reports no fail for props",
+      "check": "props",
+      "requires": "check"
+    },
+    {
+      "name": "keyframe",
+      "exit": "keyframe.json written and `yt doctor` reports no fail for keyframe; the operator approved the look (yt keyframe --approve)",
+      "check": "keyframe",
+      "requires": "check"
+    },
+    {
+      "name": "voice",
+      "exit": "voice.json written and `yt doctor` reports no fail for voice",
+      "check": "voice",
+      "requires": "check"
+    },
+    {
+      "name": "retime",
+      "exit": "retime.json written and `yt doctor` reports no fail for retime; the screenplay carries the measured narration timings",
+      "check": "retime",
+      "requires": "check"
+    },
+    {
+      "name": "vfx",
+      "exit": "vfx.json written and `yt doctor` reports no fail for vfx",
+      "check": "vfx",
+      "requires": "check"
+    },
+    {
+      "name": "sound",
+      "exit": "sound.json written and `yt doctor` reports no fail for sound",
+      "check": "sound",
+      "requires": "check"
+    },
+    {
+      "name": "build",
+      "exit": "scene.xml written and `yt doctor` reports no fail for build",
+      "check": "build",
+      "requires": "check"
+    },
+    {
+      "name": "render",
+      "exit": "video.mp4 written and `yt doctor` reports no fail for render",
+      "check": "render",
+      "requires": "check"
+    },
+    {
+      "name": "deliver",
+      "requires": "check",
+      "check": "deliver",
+      "exit": "a clean final render of the whole programme, the delivery gate deliverable and a QA pass at READY TO PUBLISH, both after that render"
+    }
+  ],
+  "gates": [
+    {
+      "name": "script",
+      "stage": "script",
+      "message": "the owner has not approved the screenplay; nothing is recorded or animated before they do"
+    },
+    {
+      "name": "final",
+      "stage": "deliver",
+      "needs": [
+        "script"
+      ],
+      "message": "the owner has not approved the final cut"
+    }
+  ]
+}

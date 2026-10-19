@@ -1,0 +1,38 @@
+{
+  "engine": {
+    "model": "sonnet",
+    "tools": [],
+    "permission_mode": "dontAsk",
+    "max_turns_budget_usd": 1.0
+  },
+  "tasks": [
+    {
+      "name": "analyse",
+      "prompt": "List the 3 most common causes of flaky CI test suites.",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "causes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "cause": {"type": "string"},
+                "signal": {"type": "string"},
+                "fix": {"type": "string"}
+              },
+              "required": ["cause", "signal", "fix"]
+            }
+          }
+        },
+        "required": ["causes"]
+      },
+      "retries": 2
+    },
+    {
+      "name": "runbook",
+      "depends_on": ["analyse"],
+      "prompt": "Write a short triage runbook for an on-call engineer based on:\n{analyse}"
+    }
+  ]
+}

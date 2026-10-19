@@ -1,0 +1,15 @@
+#!/usr/bin/env python3
+"""yt -- the YouTube production pipeline. Run `./yt --help` to start.
+
+A thin launcher: it makes this directory importable so `ytstudio` and
+`claude_engine` are found however and from wherever it is called.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from ytstudio.cli import main  # noqa: E402
+
+raise SystemExit(main())

@@ -1,0 +1,2639 @@
+#!/usr/bin/env python3
+"""Plan the animation for one video and have the model author it for scene-render.
+
+The stack is scene-render and sr-core, and the document is the interface. This
+stage does not own a vocabulary of effects, a set of templates or a single
+default size: the model authors scene-render documents itself, against the
+full schema, through claude_engine. What this stage owns is the plumbing that
+makes that honest -- the brief it writes, the workspace it builds, the checks
+the author runs (the SDK's and the engine's own, on the render host), and the
+map from shot label to symbol that `yt build` includes.
+
+    yt vfx --title monty
+    yt vfx --title monty --inspo "3Blue1Brown,Kurzgesagt" --budget-usd 3
+    yt vfx --title monty --fresh                  # replan and re-author
+    yt render --title monty --scene vfx/<section>.scene.xml   # one section's reel
+
+Stages, cached under raw/: the visual system (10-style), the effects per
+section with the shots each covers (11-effects: the phases one world passes
+through, and the cuts, if any, the section genuinely needs), the authoring
+(12-author: one claude_engine agent per section, working in
+<project>/vfx/vNN/ with `sr.py` to ask the schema, check a document and
+render its proof frames, writing one document with ONE <symbol> per section:
+the shared world -- set, materials, light rig, hero model -- and one camera
+keyed across the section, every shot a phase at its offset), the shot map and
+validation (13-scene, no model), the reach audit (14-reach: which constructs
+each symbol uses against everything the engine offers, and whether a stronger
+one would carry the shot) and the refinement plan (15-plan, which takes the
+audit's upgrades as work).
+
+The frame gate renders a proof frame at each shot's midpoint and judges it
+with `framecheck` (flat, black, clipped, too dark, hero or set out of the
+camera's view); then the model reviews the frames through the harness against
+the publication bar of docs/production.md and scores them 0-10. Under
+`--author-bar` (default 7) the findings go back to the author, up to
+`--revisions` rounds. Every round of authoring lands in a new vfx/vNN/; an
+earlier version is never overwritten, and `--fresh` opens the next one.
+
+Writes into the project: vfx/vNN/<section>.scene.xml for every section,
+vfx.json (plan, totals, the active version, the review rounds and scores, and
+the shot -> {file, symbol} map `yt build` reads), vfx.md, vfx.csv.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import os
+import re
+import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from xml.etree import ElementTree as _ET
+from dataclasses import asdict
+from pathlib import Path
+
+from claude_engine import ClaudeError, EngineConfig, Usage
+from . import framecheck, harness, house, reach, render, workspace
+from .core import Idea, _key, _merge_usage, read_json, slugify, write_json
+from .framecheck import DIM_STD, FLAT_STD, frame_stats, judge_frame  # noqa: F401  (re-exported)
+from .ideas import CHANNEL_STYLES
+from .research import Dossier
+from .scene_sdk import sdk
+from .script import load_script
+
+#: The stack. Stated once, read by the prompts and the reports.
+STACK = "scene-render (Rust engine) + sr-core (schema and SDK)"
+
+#: The mission, as the owner states it: the aesthetic is an editorial variable
+#: decided per video in `yt styles`, never a constant of this stage.
+MISSION = (
+    "This pipeline creates and composes top-tier YouTube videos on scene-render "
+    "and sr-core: visually intense explainers with voice-over, motion graphics, "
+    "2D, 2.5D and 3D, multi-aesthetic according to the editorial decisions. The "
+    "treatment chosen for this video is the variable; the schema -- shapes, "
+    "text, charts, layout groups, symbols, images and video, object3D, cameras, "
+    "lights, materials, particles, physics, fluids, parallax through z -- is "
+    "what it is drawn with. Draw what the treatment calls for, with whatever "
+    "the schema provides, and say when it cannot."
+)
+
+#: Where the authored documents live, under the project: vfx/vNN/, one
+#: directory per round of authoring, the highest number the active one.
+SCENE_DIR = "vfx"
+VERSION_RE = re.compile(r"^v(\d{2,})$")
+
+#: A section's symbol is its world; the id says so.
+WORLD_PREFIX = "world-"
+
+#: The ten categories of docs/production.md section 2, in its order. The
+#: review of proof frames scores what frames can show; the audio categories
+#: are listed so the reviewer names them as not evidenced rather than guesses.
+CATEGORIES = ("visual_quality", "animation_vfx", "cinematography", "editing_pacing",
+              "graphics_overlays", "voiceover", "sound_design", "music_score",
+              "narrative_clarity", "overall_production")
+
+#: Be-especially-critical-of, docs/production.md section 3, as the reviewer reads it.
+CRITICAL_OF = (
+    "generic or obviously synthetic imagery; weak maps and diagrams; fake-looking "
+    "3D; flat lighting; a camera that never moves, or that zooms and pans without "
+    "reason; repetitive parallax; excessive glow and bloom; low-resolution assets; "
+    "inconsistent visual styles between scenes; poor masking and compositing; "
+    "typography that looks templated; overlays that float disconnected from the "
+    "scene; long stretches with no visual evolution; narration describing "
+    "something the picture never demonstrates; transitions with no narrative "
+    "purpose; too much information arriving at once")
+
+#: Tools the authoring agent gets: the files of its workspace and a shell for
+#: `python3 sr.py`. Nothing reaches outside the workspace by design of the brief.
+AUTHOR_TOOLS = ("Read", "Write", "Edit", "Glob", "Grep", "Bash")
+
+#: One authoring call may render proof frames many times; a revision round
+#: that answers a review needs more than the harness's default 900 s.
+AUTHOR_TIMEOUT = 3600.0
+
+FRAME = (1920, 1080)
+HEX = re.compile(r"^#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?$")
+
+VFX_SYSTEM = (
+    "You are a motion-graphics director for a factual YouTube channel whose "
+    "only renderer is scene-render, a declarative engine with a large schema. "
+    "You design the fewest visuals that carry the argument, you say for each "
+    "what the viewer must understand that words alone would not deliver, and "
+    "you give an honest cheaper fallback for every costly one."
+)
+
+AUTHOR_SYSTEM = (
+    "You author scene-render documents. The schema is the truth and the "
+    "document is the deliverable: you ask the schema before you guess "
+    "(`python3 sr.py describe <element>`, `python3 sr.py enum <element> "
+    "<attribute>`), you check every document with `python3 sr.py check "
+    "<file>` -- the SDK's checks and the engine's own validation -- and you "
+    "iterate until it reports 0 errors. Validation cannot see the picture, so "
+    "you then render frames (`python3 sr.py frame <file>`) and look at every "
+    "PNG it writes with the Read tool: a black, flat or wrong frame means the "
+    "document is not done, whatever the validator says. A section is one "
+    "world: one set, one hero model, one light rig and one camera whose path "
+    "is keyed across the whole section, so the shots are phases of a single "
+    "continuous take, never separate builds. You never invent an asset file, "
+    "a font or a value the schema does not accept, and you never write prose "
+    "where the brief asks for a document."
+)
+
+REVIEW_ROLE = (
+    "You are the quality reviewer of docs/production.md looking at an author's "
+    "proof frames before the film is built: one still per shot of one section, "
+    "rendered exactly as `yt build` will include the section's world. You judge "
+    "them by professional standards against the ten categories of the "
+    "publication bar (" + ", ".join(CATEGORIES) + ") and you are especially "
+    "critical of " + CRITICAL_OF + ". Frames cannot evidence voiceover, sound "
+    "design or music; say so and do not score them from guesswork. A 9 is work "
+    "that would not look out of place on a channel people subscribe to; 8 is "
+    "competent and unremarkable; 6 is functional; 3 is a document that renders. "
+    "Every finding names the frame, what is visible, why it lowers quality, and "
+    "the fix in the document's own terms (camera, light, material, animation, "
+    "geometry) that the author can apply without asking you anything."
+)
+
+REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "frames": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "frame": {"type": "string"},
+                    "shot": {"type": "string"},
+                    "seen": {"type": "string"},
+                    "findings": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "category": {"type": "string", "enum": list(CATEGORIES)},
+                                "problem": {"type": "string"},
+                                "fix": {"type": "string"},
+                                "severity": {"type": "string",
+                                             "enum": ["blocking", "major", "minor"]},
+                            },
+                            "required": ["category", "problem", "fix", "severity"],
+                        },
+                    },
+                },
+                "required": ["frame", "seen", "findings"],
+            },
+        },
+        "continuity": {"type": "string"},
+        "not_evidenced": {"type": "array", "items": {"type": "string"}},
+        # Only asked for when an approved keyframe exists: 0-10 fidelity to it.
+        "fidelity": {"type": "number", "minimum": 0, "maximum": 10},
+        "score": {"type": "number", "minimum": 0, "maximum": 10},
+        "summary": {"type": "string"},
+    },
+    "required": ["frames", "score", "summary"],
+}
+
+#: The continuity supervisor: one frame from each section, side by side.
+CONTINUITY_ROLE = (
+    "You are the film's continuity supervisor. You look at one proof frame from "
+    "each section of a film, in film order, each rendered exactly as `yt build` "
+    "will include it, and judge whether they read as one film: the same hero at "
+    "the same scale, material and colour; the same world and light; one grade; a "
+    "camera language that carries across the cuts. A change the editorial "
+    "treatment calls for is not a break, and you say so. Every break names the "
+    "sections it lies between, the one section whose document should change, and "
+    "the fix in that document's own terms (camera, light, material, scale, grade) "
+    "that its author can apply without asking you anything."
+)
+
+CONTINUITY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "one_film": {"type": "boolean"},
+        "score": {"type": "number", "minimum": 0, "maximum": 10},
+        "breaks": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "sections": {"type": "array", "items": {"type": "string"}},
+                    "owner_section": {"type": "string"},
+                    "problem": {"type": "string"},
+                    "fix": {"type": "string"},
+                    "severity": {"type": "string", "enum": ["blocking", "major", "minor"]},
+                },
+                "required": ["sections", "owner_section", "problem", "fix", "severity"],
+            },
+        },
+        "summary": {"type": "string"},
+    },
+    "required": ["one_film", "score", "breaks", "summary"],
+}
+
+#: Effect families, roughly cheapest to most expensive to refine by hand.
+EFFECT_TYPES = ("text-and-callout", "2d-diagram", "data-animation", "map-move",
+                "photo-composite", "stock-treatment", "2d-character",
+                "3d-render", "simulation", "compositing-vfx", "practical")
+
+
+# --------------------------------------------------------------------------- #
+# schemas
+# --------------------------------------------------------------------------- #
+
+STYLE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "look": {"type": "string"},
+        "palette": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "hex": {"type": "string"},
+                    "use": {"type": "string"},
+                },
+                "required": ["name", "hex", "use"],
+            },
+        },
+        "typography": {"type": "string"},
+        "camera_language": {"type": "string"},
+        "transitions": {"type": "string"},
+        "motion_rules": {"type": "array", "items": {"type": "string"}},
+        "avoid": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["look", "palette", "typography", "camera_language",
+                 "transitions", "motion_rules", "avoid"],
+}
+
+EFFECTS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "effects": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "type": {"type": "string", "enum": list(EFFECT_TYPES)},
+                    "shots": {"type": "array", "items": {"type": "string"}},
+                    "conveys": {"type": "string"},
+                    "on_screen": {"type": "string"},
+                    "data_or_claim": {"type": "string"},
+                    "brief": {"type": "string"},
+                    "seconds": {"type": "number"},
+                    "difficulty": {"type": "integer", "minimum": 1, "maximum": 5},
+                    "hours": {"type": "number"},
+                    "technique": {"type": "array", "items": {"type": "string"}},
+                    "inputs": {"type": "array", "items": {"type": "string"}},
+                    "fallback": {"type": "string"},
+                    "risk": {"type": "string"},
+                    "template": {"type": "string"},
+                },
+                "required": ["name", "type", "shots", "conveys", "on_screen",
+                             "brief", "seconds", "difficulty", "hours",
+                             "technique", "fallback"],
+            },
+        },
+        # A section is one continuous world by default; a cut is the exception
+        # the plan has to ask for, by the shot label where the new world starts.
+        "cuts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "before": {"type": "string"},
+                    "why": {"type": "string"},
+                },
+                "required": ["before", "why"],
+            },
+        },
+    },
+    "required": ["effects"],
+}
+
+PLAN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "build_order": {"type": "array", "items": {"type": "string"}},
+        "templates": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "covers": {"type": "string"},
+                    "saves_hours": {"type": "number"},
+                },
+                "required": ["name", "covers", "saves_hours"],
+            },
+        },
+        "cut_first": {"type": "array", "items": {"type": "string"}},
+        "outsource": {"type": "array", "items": {"type": "string"}},
+        "verdict": {"type": "string"},
+    },
+    "required": ["build_order", "templates", "cut_first", "verdict"],
+}
+
+OUTLINE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "runtime": {"type": "string"},
+        "sections": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "heading": {"type": "string"},
+                    "seconds": {"type": "integer"},
+                    "beats": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["heading", "seconds", "beats"],
+            },
+        },
+    },
+    "required": ["runtime", "sections"],
+}
+
+
+# --------------------------------------------------------------------------- #
+# input
+# --------------------------------------------------------------------------- #
+
+def load_dossier(path: Path, idea: Idea) -> dict:
+    """Pull the outline, claims and assets out of a research dossier."""
+    data = json.loads((path / "dossier.json").read_text(encoding="utf-8"))
+    return {
+        "idea": Idea.from_raw(data["idea"]) if data.get("idea") else idea,
+        "outline": data.get("outline") or {},
+        "claims": data.get("claims", []),
+        "assets": data.get("assets", []),
+        "premise": data.get("premise", ""),
+    }
+
+
+def script_sections(path: str | None) -> list[dict]:
+    """The screenplay's sections with their shots, labels and timings."""
+    if not path:
+        return []
+    sections, _ = load_script(path)
+    return [{"heading": s.heading, "seconds": s.actual_seconds or s.seconds,
+             "beats": s.beats,
+             "shots": [{"label": sh.label, "at": sh.at, "seconds": sh.seconds,
+                        "visual": sh.visual, "on_screen": sh.on_screen,
+                        "narration": sh.narration, "asset": sh.asset}
+                       for sh in s.shots]}
+            for s in sections]
+
+
+#: A symbol may fall this far short of its shots before it is an error.
+TIMING_SLACK = 0.25
+
+
+def measured_sections(sections: list[dict], words: dict[str, dict]) -> list[dict]:
+    """The screenplay's sections on the narration's clock.
+
+    `yt script` budgets a shot by words per minute; once `yt voice` has
+    measured the take, that number is the shot's length and the take's
+    position is its `at`, exactly as `yt build` will place it. A silent shot
+    keeps its planned length and follows what came before. The plan is kept
+    beside the measurement (`planned_seconds`, `timed_by`) so a brief can
+    say which clock it is on. The input is not changed.
+    """
+    out: list[dict] = []
+    cursor = 0.0
+    for section in sections:
+        shots: list[dict] = []
+        for shot in section.get("shots") or []:
+            take = words.get(str(shot.get("label")))
+            row = dict(shot)
+            if take and float(take.get("seconds") or 0) > 0:
+                at, seconds = float(take.get("at", 0)), float(take["seconds"])
+                row.update(at=round(at, 3), seconds=round(seconds, 3),
+                           planned_seconds=shot.get("seconds"), timed_by="voice")
+            else:
+                at, seconds = cursor, float(shot.get("seconds") or 1)
+                row.update(at=round(at, 3), seconds=seconds, timed_by="script")
+            shots.append(row)
+            cursor = max(cursor, at + seconds)
+        measured = dict(section, shots=shots)
+        if shots:
+            measured["seconds"] = round(max(s["at"] + s["seconds"] for s in shots)
+                                        - min(s["at"] for s in shots), 3)
+        out.append(measured)
+    return out
+
+
+def voice_words(path: str | None) -> dict[str, dict]:
+    """Per shot label: where the take sits and when each word is spoken.
+
+    A beat should land on a spoken word, not on a fraction of the shot; the
+    author gets the timings the narration itself reported.
+    """
+    data = read_json(path, warn=False) if path else None
+    out: dict[str, dict] = {}
+    for take in (data or {}).get("takes", []):
+        words = [{"w": w.get("text", ""), "s": round(float(w.get("start", 0)), 2)}
+                 for w in take.get("words", [])]
+        out[str(take.get("label"))] = {"at": float(take.get("at", 0)),
+                                       "seconds": float(take.get("seconds", 0)),
+                                       "timing": take.get("timing", "none"),
+                                       "words": words}
+    return out
+
+
+def ident(text: str) -> str:
+    """An xs:ID: letters, digits, dashes, never starting with a digit."""
+    clean = re.sub(r"[^A-Za-z0-9_.-]+", "-", text).strip("-") or "x"
+    return clean if clean[0].isalpha() or clean[0] == "_" else f"fx-{clean}"
+
+
+def tokens_from(style: dict) -> dict[str, str]:
+    """The <styles> tokens the author will reference as var(--name).
+
+    Role names come from the palette's own words; `design.tokens()` supplies
+    them when that module is present, the palette's stated uses otherwise.
+    Every swatch is also available under its own slug, so nothing the style
+    stage chose is unreachable.
+    """
+    try:
+        from . import design  # optional: the standards session's role derivation
+        if hasattr(design, "tokens"):
+            got = {k: v for k, v in design.tokens(style).items() if HEX.match(str(v))}
+            if got:
+                return got
+    except Exception:
+        pass
+    swatches = [c for c in (style or {}).get("palette", []) if HEX.match(str(c.get("hex", "")))]
+    out: dict[str, str] = {}
+
+    def claim(role: str, pattern: str) -> None:
+        for c in swatches:
+            if c["hex"] in out.values():
+                continue
+            if re.search(pattern, c.get("use", "") + " " + c.get("name", ""), re.I):
+                out[role] = c["hex"]
+                return
+
+    claim("background", r"background|\bbg\b|canvas|base|fundo")
+    claim("ink", r"\btext\b|ink|label|type|texto")
+    claim("accent", r"accent|number|key|highlight|hero|destaque|número|numero")
+    claim("muted", r"muted|secondary|dim|grid|support|apoio|secund")
+    for c in swatches:
+        name = slugify(c.get("name", ""), 24)
+        if name and name not in out:
+            out.setdefault(name, c["hex"])
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# the workspace the author works in
+# --------------------------------------------------------------------------- #
+
+#: A document the engine has rendered correctly, construct by construct, in
+#: this project's own tests: tokens, layout groups (explicit children are
+#: laid out; copies from a <repeat> are not), text presets including the
+#: digit counter, a chart with comma-separated labels, a path with its box and
+#: a transparent fill, a connector, a symbol and its instance. It is evidence
+#: of what works, not the limit of what may be used: the 3D stage, cameras,
+#: lights, materials, particles and physics are in the schema too.
+EXAMPLES = """<?xml version="1.0" encoding="UTF-8"?>
+<!-- Every construct here validated and rendered on this engine: the 2D stage in
+     fx-doors, and in fx-room a lit 3D set with a physical camera, materials and
+     particles, lifted from a rendered project, and in fx-surface a GLSL shader
+     effect that ray-casts an analytic liquid surface (shaders/ring-surface.glsl,
+     beside this file). pyro, fluid, ocean, fracture, softBody, flock and the
+     other effect types exist too; describe them with sr.py. -->
+<scene version="1.3">
+  <project width="1920" height="1080" fps="30" duration="16" background="#14213D"/>
+  <styles>
+    <token name="background" value="#14213D"/>
+    <token name="ink" value="#F2F5F7"/>
+    <token name="accent" value="#3DD6FF"/>
+    <token name="muted" value="#8E9BB0"/>
+    <textStyle id="title" size="72" color="var(--ink)" weight="700"/>
+  </styles>
+  <!-- child order matters in hand-written XML: output comes before assets -->
+  <output path="preview.mp4" codec="h264"/>
+  <assets>
+    <text id="t-title" text="Três portas" width="1200" height="160" size="72" color="var(--ink)" align="center"/>
+    <text id="t-count" text="190 de 300" width="900" height="200" size="120" color="var(--accent)" align="center"/>
+    <chart id="c-bars" kind="column" width="900" height="500" labels="trocar,ficar" showValues="true">
+      <series name="jogos" values="190 110" color="var(--accent)"/>
+      <animate property="progress"><key time="0" value="0"/><key time="2" value="1" interpolation="ease-out"/></animate>
+    </chart>
+  </assets>
+  <!-- materials are scene-level, after assets; lights come after the composition -->
+  <materials>
+    <material id="m-wall" doubleSided="true" baseColor="#B9AE9F" roughness="0.9"/>
+    <material id="m-oak" doubleSided="true" baseColor="#A8743F" roughness="0.6"/>
+    <material id="m-glow" baseColor="#FFF1D0" emissive="#FFF1D0" emissiveStrength="1.3" roughness="0.5"/>
+    <material id="m-dust" baseColor="#E8B65C" emissive="#E8B65C" emissiveStrength="1" unlit="true" opacity="0.7" alphaMode="blend"/>
+  </materials>
+  <symbols>
+    <!-- a 3D set: primitives with materials, a physical camera that moves, dust in the light -->
+    <symbol id="fx-room" width="1920" height="1080" duration="4">
+      <camera id="cam" x="-300" y="-45" z="-220" yaw="27" pitch="25" focalLength="50" depthOfField="true" fStop="4" focusDistance="160" near="5" far="4000" active="true">
+        <animate property="x"><key time="0" value="-300"/><key time="4" value="-240" interpolation="ease-in-out"/></animate>
+      </camera>
+      <object3D id="floor" primitive="plane" material="m-wall" x="50" y="0" z="0" width="900" height="800" rotationX="90"/>
+      <object3D id="wall" primitive="plane" material="m-wall" x="0" y="-150" z="400" width="900" height="300"/>
+      <object3D id="window" primitive="plane" material="m-glow" x="210" y="-165" z="397" width="180" height="150" castShadow="false"/>
+      <object3D id="desk" primitive="box" material="m-oak" x="210" y="-37.5" z="230" width="180" height="75" depth="180"/>
+      <object3D id="ball" primitive="sphere" material="m-oak" x="150" y="-95" z="200" radius="20">
+        <animate property="y"><key time="0" value="-95"/><key time="2" value="-180" interpolation="ease-out"/><key time="4" value="-95" interpolation="ease-in"/></animate>
+      </object3D>
+      <particles3D id="dust" x="-50" y="-125" z="160" emitterShape="box" emitterWidth="400" emitterHeight="140" emitterDepth="260" rate="0" lifetime="60" speed="1.2" speedVariance="1" spread="360" shape="billboard" size="1.2" color="#E8B65C" material="m-dust" maxParticles="200" seed="7" castShadow="false" receiveShadow="false">
+        <burst time="0" count="120"/>
+      </particles3D>
+    </symbol>
+    <!-- a shader on a full-frame rect: the effect computes every pixel, so the
+         rect's own fill never shows. The effect lives in <effects>, after <lights> -->
+    <symbol id="fx-surface" width="1920" height="1080" duration="4">
+      <shape id="surface" shape="rect" x="0" y="0" width="1920" height="1080" fill="#000000" effects="fx-ring-surface"/>
+    </symbol>
+    <symbol id="fx-doors" width="1920" height="1080">
+      <!-- word-by-word title: presetStart is on the parent timeline -->
+      <layer id="l-title" asset="t-title" x="360" y="80">
+        <textAnimator preset="word-by-word" presetStart="0.2" presetDuration="1.0" presetEase="cubic-out"/>
+      </layer>
+      <!-- the digits in the text count up to their value -->
+      <layer id="l-count" asset="t-count" x="510" y="820">
+        <textAnimator preset="counter" presetStart="1" presetDuration="3"/>
+      </layer>
+      <!-- the layout engine places explicit children: three doors in a row -->
+      <group id="doors" layout="row" gap="60" justify="center" alignItems="end" x="0" y="300" width="1920" height="420">
+        <shape id="door-1" shape="rounded-rect" width="300" height="400" radius="18" fill="var(--muted)" opacity="0">
+          <animate property="opacity"><key time="0.5" value="0"/><key time="1.0" value="1" interpolation="ease-out"/></animate>
+        </shape>
+        <shape id="door-2" shape="rounded-rect" width="300" height="400" radius="18" fill="var(--muted)"/>
+        <shape id="door-3" shape="rounded-rect" width="300" height="400" radius="18" fill="var(--accent)"/>
+      </group>
+      <!-- a grid of explicit cells, 30 columns -->
+      <group id="grid" layout="grid" gridColumns="30" gap="8" x="200" y="100" width="1520" height="120">
+        <shape id="cell-1" shape="rect" width="40" height="30" fill="var(--accent)"/>
+        <shape id="cell-2" shape="rect" width="40" height="30" fill="var(--muted)"/>
+      </group>
+      <!-- a path needs width/height (its box); an open stroke needs a transparent fill -->
+      <shape id="arrow" shape="path" path="M 960 900 L 1470 820" width="510" height="80" stroke="var(--accent)" strokeWidth="6" markerEnd="arrow" fill="#00000000" trimEnd="0">
+        <animate property="trimEnd"><key time="2" value="0"/><key time="2.8" value="1" interpolation="ease-out"/></animate>
+      </shape>
+      <layer id="l-bars" asset="c-bars" x="510" y="500"/>
+      <group id="nodes">
+        <shape id="n1" shape="ellipse" x="1300" y="300" width="80" height="80" fill="var(--accent)"/>
+        <shape id="n2" shape="ellipse" x="1600" y="600" width="80" height="80" fill="var(--accent)"/>
+        <connector id="n1-n2" from="n1" to="n2" stroke="var(--ink)" markerEnd="arrow"/>
+      </group>
+    </symbol>
+  </symbols>
+  <composition>
+    <instance id="use-room" symbol="fx-room" start="0" end="4"/>
+    <instance id="use-doors" symbol="fx-doors" start="4" end="12"/>
+    <instance id="use-surface" symbol="fx-surface" start="12" end="16"/>
+  </composition>
+  <lights>
+    <light id="sun" type="directional" color="#FFF1D0" intensity="3" yaw="214" pitch="-25" castShadow="true" shadowSoftness="2"/>
+    <light id="fill" type="ambient" color="#6F7C8C" intensity="1.0"/>
+  </lights>
+  <effects>
+    <effect id="fx-ring-surface" type="shader" src="shaders/ring-surface.glsl">
+      <param name="amplitude" value="0.035"/>
+    </effect>
+  </effects>
+</scene>
+"""
+
+#: Shader sources the examples reference, written beside them by `prepare()`.
+#: The engine runs a Shadertoy `mainImage` program in its effect pass:
+#: `iTime`, `iResolution`, `iChannel0` (the node's own pixels), and each
+#: `uniform float` with a `// = default` is overridden by a `<param>` child.
+EXAMPLE_SHADERS = {
+    "shaders/ring-surface.glsl": """\
+// A liquid surface computed per pixel: an analytic height field (the ring wave
+// a drop leaves), its normal, Fresnel reflection of one softbox and refraction
+// of a lit floor. This is the route for water the ocean solver cannot make --
+// a crown, a jet, a pinch-off: the shape is a function of position and time
+// and the camera is a ray, so anything you can write as h(x, z, t) renders.
+uniform float amplitude; // = 0.035
+uniform float speed;     // = 0.45
+
+float height(vec2 p, float t) {
+    float r = length(p);
+    float packet = exp(-pow((r - (0.05 + speed * t)) / 0.16, 2.0));
+    return amplitude * sin(26.0 * r - 6.0 * t) * packet * exp(-0.4 * t);
+}
+
+vec3 sky(vec3 d) {
+    vec3 c = mix(vec3(0.03, 0.05, 0.07), vec3(0.16, 0.23, 0.27), clamp(d.y * 0.5 + 0.5, 0.0, 1.0));
+    float box = exp(-pow((d.x + 0.35) / 0.12, 2.0) - pow((d.y - 0.45) / 0.25, 2.0));
+    return c + vec3(3.0) * box;  // a clear surface reads only by what it reflects
+}
+
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    float t = mod(iTime, 6.0);
+    vec2 uv = (fragCoord - 0.5 * iResolution.xy) / iResolution.y;
+    vec3 ro = vec3(0.0, 1.2, -2.2);
+    vec3 rd = normalize(vec3(uv.x, uv.y - 0.35, 1.4));
+    if (rd.y >= 0.0) { fragColor = vec4(pow(sky(rd), vec3(1.0 / 2.2)), 1.0); return; }
+    float s = -ro.y / rd.y;  // the mean plane, then two Newton steps onto h
+    for (int i = 0; i < 2; i++) {
+        vec3 q = ro + rd * s;
+        s -= (q.y - height(q.xz, t)) / rd.y;
+    }
+    vec3 p = ro + rd * s;
+    vec2 e = vec2(0.002, 0.0);
+    vec3 n = normalize(vec3(height(p.xz - e.xy, t) - height(p.xz + e.xy, t), 2.0 * e.x,
+                            height(p.xz - e.yx, t) - height(p.xz + e.yx, t)));
+    float fres = 0.02 + 0.98 * pow(1.0 - max(dot(-rd, n), 0.0), 5.0);
+    vec3 tr = refract(rd, n, 1.0 / 1.333);
+    vec2 below = p.xz + tr.xz / max(-tr.y, 0.2) * 0.4;  // a floor 0.4 under the surface
+    vec3 floorCol = vec3(0.05, 0.12, 0.14) * (0.6 + 0.4 * smoothstep(0.9, 0.0, length(below)));
+    vec3 col = mix(floorCol, sky(reflect(rd, n)), fres);
+    col = col / (col + 1.0);
+    fragColor = vec4(pow(col, vec3(1.0 / 2.2)), 1.0);
+}
+""",
+}
+
+
+SR_WRAPPER = '''#!/usr/bin/env python3
+"""sr -- ask the scene-render schema, and check a document the way the pipeline does.
+
+    python3 sr.py elements                 every element the schema knows
+    python3 sr.py describe <element>       attributes, types, enums, children
+    python3 sr.py enum <element> <attr>    the values one attribute allows
+    python3 sr.py check <file.scene.xml>   SDK read + check, then the engine's validation
+    python3 sr.py frame <file.scene.xml> [--symbol ID] [--at SECONDS]
+                                           render a proof frame at each shot's midpoint
+                                           (shots.json) the way `yt build` includes the
+                                           symbol; writes frames/*.png -- Read them
+"""
+import json, sys
+sys.path.insert(0, {sr_root!r})
+sys.path.insert(0, {automation_root!r})
+from sr_core import scene as S
+from ytstudio import env as _env
+_env.load({automation_root!r} + "/.env")   # the render hosts live there; `yt` loads it too
+
+
+def frame(argv):
+    from pathlib import Path
+    from ytstudio.vfx import Workspace
+    path = Path(argv[0]).resolve()
+    symbol = at = None
+    i = 1
+    while i < len(argv):
+        if argv[i] == "--symbol" and i + 1 < len(argv):
+            symbol = argv[i + 1]; i += 2
+        elif argv[i] == "--at" and i + 1 < len(argv):
+            at = float(argv[i + 1]); i += 2
+        else:
+            i += 1
+    ws = Workspace.of(path)
+    results = ws.frames(path.name, symbol=symbol, times=[at] if at is not None else None)
+    worst = 0
+    for png, findings in results:
+        print(f"frame: {{png if png else '(not rendered)'}}")
+        for f in findings:
+            print(f"  {{f}}")
+            worst = max(worst, 2 if f.startswith("error") else 1 if f.startswith("warning") else 0)
+    if not results:
+        print("no symbol found in the document")
+        return 1
+    print("\\nnow Read every frame above and judge it against the brief: the hero "
+          "legible and framed, the set lit, one continuous camera; a flat, black "
+          "or empty frame is not a finished shot.")
+    return 1 if worst == 2 else 0
+
+
+def describe(el):
+    d = S.describe(el).to_dict()
+    print(f"<{{el}}>  {{str(d.get('doc', '')).strip()[:400]}}")
+    print("  min version:", d.get("min_version"))
+    for a in d.get("attributes", []):
+        t = a.get("type") or {{}}
+        kind = t.get("enum") or t.get("name") or t.get("base") or "?"
+        if isinstance(kind, list):
+            kind = "|".join(kind[:16]) + (" …" if len(kind) > 16 else "")
+        doc = str(a.get("doc", "")).strip().replace("\\n", " ")[:160]
+        print(f"  @{{a['xml_name']}}: {{kind}}" + (f"  -- {{doc}}" if doc else ""))
+    kids = [c.get("xml_name") or c.get("class_name") for c in (d.get("children") or []) if isinstance(c, dict)]
+    if kids:
+        print("  children:", ", ".join(str(k) for k in kids))
+
+
+def check(path):
+    from ytstudio import render
+    data = open(path, "rb").read()
+    try:
+        doc = S.read(data)
+    except Exception as exc:
+        print(f"error: the document does not parse: {{exc}}"); return 1
+    findings = [str(f) for f in doc.check()]
+    for f in findings:
+        print(f)
+    engine = render.engine_validate(data)
+    if engine is None:
+        print("note: no engine reachable; only the SDK's checks ran")
+    else:
+        for f in engine:
+            print(f)
+    errors = [f for f in findings + (engine or []) if f.startswith("error")]
+    print(f"\\n{{len(errors)}} error(s) · version {{doc.version}}")
+    return 1 if errors else 0
+
+
+cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+if cmd == "elements":
+    print("\\n".join(sorted(S.element_names())))
+elif cmd == "describe" and len(sys.argv) > 2:
+    describe(sys.argv[2])
+elif cmd == "enum" and len(sys.argv) > 3:
+    d = S.describe(sys.argv[2]).to_dict()
+    for a in d.get("attributes", []):
+        if a.get("xml_name") == sys.argv[3]:
+            print(json.dumps((a.get("type") or {{}}).get("enum") or "(free)"))
+elif cmd == "check" and len(sys.argv) > 2:
+    sys.exit(check(sys.argv[2]))
+elif cmd == "frame" and len(sys.argv) > 2:
+    sys.exit(frame(sys.argv[2:]))
+else:
+    print(__doc__)
+'''
+
+#: Elements worth a line in the cheat sheet: the document's skeleton, the 2D
+#: stage, the 3D stage, the simulations. The author can `describe` the rest.
+SHEET_ELEMENTS = ("scene", "project", "styles", "token", "textStyle", "assets",
+                  "text", "image", "video", "chart", "series", "formula",
+                  "mesh", "lottie", "symbols", "symbol", "composition", "group",
+                  "sequence", "layer", "shape", "connector", "repeat", "instance",
+                  "include", "animate", "key", "expression", "textAnimator",
+                  "mask", "transition", "object3D", "camera", "lights", "light",
+                  "materials", "material", "particleEmitter", "particles3D",
+                  "physics", "fluid", "viewport3D", "effect", "markers",
+                  "marker", "output")
+
+
+# --------------------------------------------------------------------------- #
+# the frame gate
+# --------------------------------------------------------------------------- #
+# A document that validates can still render nothing: a camera that frames no
+# object, a light the include does not carry, a solver that refuses its grid.
+# So every symbol is rendered the way `yt build` will include it, at each
+# shot's midpoint, and the frames are judged -- by `framecheck` for what needs
+# no eyes (flat, black, clipped, dark, hero or set out of the camera's view),
+# by the author, who looks at them, and by the review, which scores them.
+
+
+def hoist_lights(doc_text: str) -> str:
+    """The <lights> block of a document, or "" -- an include does not carry it."""
+    m = re.search(r"<lights>.*?</lights>", doc_text, re.S)
+    return m.group(0) if m else ""
+
+
+def symbol_facts(doc_text: str) -> list[dict]:
+    """Every <symbol id> with its duration and background, from the text."""
+    out = []
+    proj = re.search(r"<project\b[^>]*>", doc_text)
+    proj_dur = float(re.search(r'duration="([\d.]+)"', proj.group(0)).group(1)) \
+        if proj and re.search(r'duration="([\d.]+)"', proj.group(0)) else 0.0
+    proj_bg = re.search(r'background="([^"]+)"', proj.group(0)) if proj else None
+    for m in re.finditer(r"<symbol\b[^>]*>", doc_text):
+        tag = m.group(0)
+        sid = re.search(r'\bid="([^"]+)"', tag)
+        if not sid:
+            continue
+        dur = re.search(r'\bduration="([\d.]+)"', tag)
+        bg = re.search(r'\bbackground="([^"]+)"', tag)
+        out.append({"id": sid.group(1),
+                    "duration": float(dur.group(1)) if dur else proj_dur,
+                    "background": bg.group(1) if bg else (proj_bg.group(1) if proj_bg else "#000000")})
+    return out
+
+
+def timing_findings(doc_text: str, required: dict[str, float]) -> list[str]:
+    """Does each symbol span the shots it draws?
+
+    `required` is seconds per symbol id (the end of its last shot). A symbol
+    authored shorter than that is an error: `yt build` will hold its last
+    frame while the narration goes on, which is the picture and the voice
+    out of sync. Animation that stops well before the end is a warning,
+    since a held final frame can be the plan.
+    """
+    found: list[str] = []
+    try:
+        root = _ET.fromstring(doc_text)
+    except _ET.ParseError:
+        return found
+    project = root.find("project")
+    project_seconds = (float(project.get("duration"))
+                       if project is not None and project.get("duration") else None)
+    for symbol in root.iter("symbol"):
+        sid = symbol.get("id")
+        need = required.get(sid) if sid else None
+        if need is None:
+            continue
+        seconds = float(symbol.get("duration")) if symbol.get("duration") else project_seconds
+        last_key = max((float(k.get("time")) for k in symbol.iter("key") if k.get("time")),
+                       default=None)
+        if seconds is not None and seconds + TIMING_SLACK < need:
+            found.append(
+                f"error: symbol {sid} is authored for {seconds:g}s but its shots run "
+                f"{need:g}s: set duration=\"{need:g}\" and key the phases to the "
+                f"narration's words, or the picture ends {need - seconds:.1f}s before "
+                "the voice does")
+        elif last_key is not None and last_key + 1.0 < need:
+            found.append(
+                f"warning: symbol {sid}: the last keyframe is at {last_key:g}s of "
+                f"{need:g}s, so the picture holds still for the final "
+                f"{need - last_key:.1f}s; fine only if the plan says so")
+    return found
+
+
+def proof_document(doc_name: str, doc_text: str, symbol: str, frame: tuple[int, int],
+                   duration: float, background: str) -> str:
+    """The document `yt build` effectively makes for one shot: one include.
+
+    Its lights are hoisted from the authored document because an include does
+    not carry them; `yt build` does the same for the real scene.
+    """
+    lights = hoist_lights(doc_text)
+    return (f'<?xml version="1.0" encoding="UTF-8"?>\n<scene version="1.2">\n'
+            f'  <project width="{frame[0]}" height="{frame[1]}" fps="30" '
+            f'duration="{max(duration, 0.1):g}" background="{background}"/>\n'
+            f'  <output path="proof.mp4" codec="h264"/>\n'
+            f'  <composition>\n    <include id="shot" src="{doc_name}" symbol="{symbol}"/>\n'
+            f'  </composition>\n' + (f"  {lights}\n" if lights else "") + "</scene>\n")
+
+
+#: Attributes that name a local file the engine will open.
+FILE_ATTRS = ("src", "href", "environment", "ies", "proxy", "materialX", "baseColorMap",
+              "normalMap", "metallicRoughnessMap", "occlusionMap", "emissiveMap",
+              "displacementMap")
+MAX_SHIP = 64 * 2**20
+
+
+def referenced_files(doc_text: str, base: Path, root: Path | None = None) -> dict[str, bytes]:
+    """Local files the document references (src=, environment=, the material
+    maps...), keyed as the engine will see them from the project root
+    (`root`; by default the parent of `base`, the document's directory). A
+    glTF/OBJ model travels with its whole directory, since its buffers and
+    textures are named inside it, not in the document."""
+    out: dict[str, bytes] = {}
+    top = (root or base.parent).resolve()
+
+    def ship(path: Path) -> None:
+        try:
+            rel = path.relative_to(top)
+        except ValueError:
+            return
+        if path.is_file() and path.stat().st_size < MAX_SHIP:
+            out[rel.as_posix()] = path.read_bytes()
+
+    pattern = r'\b(?:' + "|".join(FILE_ATTRS) + r')="([^"]+)"'
+    for m in re.finditer(pattern, doc_text):
+        ref = m.group(1)
+        if "://" in ref or ref.startswith("#") or ref.endswith(".scene.xml"):
+            continue
+        path = (base / ref).resolve()
+        ship(path)
+        if path.is_file() and path.suffix.lower() in (".gltf", ".obj", ".usd", ".usda", ".mtl"):
+            for sibling in sorted(path.parent.rglob("*")):
+                ship(sibling)
+    return out
+
+
+def _envelope(text: str) -> dict | None:
+    """The engine's JSON envelope on a command's stdout, or None."""
+    try:
+        start = text.index("{")
+        data = json.loads(text[start:])
+    except (ValueError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def encode_findings(files: dict[str, bytes], doc_path: str, *, start: float, end: float,
+                    quality: str = "draft", host: str = "", timeout: float = 600.0
+                    ) -> list[str] | None:
+    """The engine's findings for one window of a document, from a short draft
+    `encode` of a scratch bundle: the camera analysis (`object3D ... is never
+    inside the camera's view`) is computed only by an encode, never by a
+    still. Lines are `severity: message`; None when no engine is reachable.
+
+    The bundle is shipped and run through render's public job hook
+    (`render.run_job`; a scratch directory is a project as far as it is
+    concerned), so the hosts, the sync and the binary lookup stay in one place.
+    """
+    import subprocess
+    import tempfile
+    host = host or render.remote_host(None, "still")
+    binary = render.engine()
+    if binary is None and not host:
+        return None
+    with tempfile.TemporaryDirectory(prefix="proof-") as tmp:
+        root = Path(tmp)
+        for rel, data in files.items():
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_bytes(data)
+        cmd = ["scene-render", "encode", doc_path, "-o", ".proof.mp4", "--no-upload",
+               "--json", "--report", ".estimate-proof.json", "--start", f"{start:g}",
+               "--end", f"{end:g}", "--quality", quality]
+        try:
+            if host:
+                proc = render.run_job(cmd, root, host, job="proof", verbose=False)
+            else:
+                proc = subprocess.run([str(binary)] + cmd[1:], cwd=root, capture_output=True,
+                                      text=True, timeout=timeout)
+        except (subprocess.SubprocessError, OSError) as exc:
+            return [f"warning: the proof encode of {start:g}-{end:g}s could not run: "
+                    f"{str(exc)[:120]}"]
+        report = _envelope(proc.stdout or "") or read_json(root / ".estimate-proof.json", warn=False)
+    lines = framecheck.report_findings(report)
+    if proc.returncode != 0 and not any(l.startswith("error") for l in lines):
+        tail = (proc.stderr or "").strip().splitlines()[-2:]
+        lines.insert(0, f"warning: the proof encode of {start:g}-{end:g}s exited "
+                        f"{proc.returncode}" + (": " + " | ".join(t.strip()[:120] for t in tail)
+                                               if tail else ""))
+    return lines
+
+
+def frame_times(duration: float) -> list[float]:
+    """Start, middle and end of a symbol, inside its life."""
+    if duration <= 1.0:
+        return [round(duration / 2, 2)]
+    return [round(max(0.2, duration * 0.1), 2), round(duration / 2, 2),
+            round(min(duration - 0.2, duration * 0.9), 2)]
+
+
+def shot_times(shots: list[dict], duration: float, *, apart: float = 1.0) -> list[float]:
+    """Where a symbol's proof frames sit: the midpoint of every shot it holds
+    (`at` is the shot's offset inside the symbol), plus the symbol's own
+    start, middle and end unless a midpoint already sits within `apart`."""
+    mids = [round(float(s["at"]) + float(s["seconds"]) / 2, 2) for s in shots or []]
+    mids = sorted({t for t in mids if 0 < t < duration}) if duration > 0 else sorted(set(mids))
+    for t in frame_times(duration):
+        if all(abs(t - m) >= apart for m in mids):
+            mids.append(t)
+    return sorted(mids)
+
+
+def world_symbols(section: dict, effects: list[dict],
+                  cuts: list[str] | None = None) -> list[dict]:
+    """The symbol(s) one section is authored as: by default ONE world holding
+    every shot of the section at its offset from the section's start, with
+    the section's effects as its phases. A cut (a shot label where a new
+    world has to start) splits the section; the first shot is never a cut.
+
+    Each world: id, start (film time of its first shot), offset (seconds into
+    the section), seconds, shots (label, at within the world, seconds, and
+    the screenplay's words) and phases (the effects whose shots it covers; an
+    effect with no shots belongs to all).
+    """
+    slug = ident(slugify(section.get("heading", "section"), 40))
+    shots = list(section.get("shots") or [])
+    if not shots:
+        return [{"id": f"{WORLD_PREFIX}{slug}", "start": 0, "offset": 0,
+                 "seconds": float(section.get("seconds") or 0),
+                 "shots": [], "phases": list(effects)}]
+    origin = float(shots[0].get("at", 0))
+    labels = [str(s["label"]) for s in shots]
+    cut_at = {c for c in (cuts or []) if c in labels[1:]}
+    runs: list[list[dict]] = [[]]
+    for s in shots:
+        if str(s["label"]) in cut_at and runs[-1]:
+            runs.append([])
+        runs[-1].append(s)
+    out = []
+    for n, run in enumerate(runs, 1):
+        start = float(run[0].get("at", 0))
+        covered = {str(s["label"]) for s in run}
+        world_shots = [dict(s, label=str(s["label"]),
+                            at=round(float(s.get("at", 0)) - start, 3),
+                            seconds=float(s.get("seconds") or 0)) for s in run]
+        phases = [e for e in effects
+                  if not e.get("shots") or covered & set(map(str, e.get("shots", [])))]
+        out.append({"id": f"{WORLD_PREFIX}{slug}" + (f"-{n}" if n > 1 else ""),
+                    "start": round(start, 3), "offset": round(start - origin, 3),
+                    "seconds": round(sum(s["seconds"] for s in world_shots), 3),
+                    "shots": world_shots, "phases": phases})
+    return out
+
+
+def props_items(root: Path) -> list[dict]:
+    """The CC0 props `yt props` fetched into the project (props.json: models,
+    HDRIs, textures), or [] when there is no such file."""
+    data = read_json(Path(root) / "props.json", warn=False)
+    if not isinstance(data, dict):
+        return []
+    return [it for it in data.get("items", []) if isinstance(it, dict) and it.get("file")]
+
+
+TEXTURE_SUFFIXES = (".jpg", ".jpeg", ".png", ".exr", ".tif", ".tiff", ".webp")
+
+#: The author's opt-out: <meta name="props-declined" value="<prop id or kind>: <reason>">.
+DECLINE_META = "props-declined"
+MAP_ATTRS = ("baseColorMap", "normalMap", "metallicRoughnessMap", "occlusionMap")
+
+
+def props_declined(doc_text: str) -> dict[str, str]:
+    """The props the document declines with a reason, from its
+    `<meta name="props-declined" value="<prop id or kind>: <reason>">` entries;
+    an entry without a reason does not count."""
+    out: dict[str, str] = {}
+    for tag in re.findall(r"<meta\b[^>]*>", doc_text):
+        name = re.search(r'\bname="([^"]*)"', tag)
+        value = re.search(r'\bvalue="([^"]*)"', tag)
+        if not name or not value or name.group(1) != DECLINE_META:
+            continue
+        key, sep, why = value.group(1).partition(":")
+        if sep and key.strip() and why.strip():
+            out[key.strip()] = why.strip()
+    return out
+
+
+def props_findings(doc_text: str, props: list[dict], textures: list[str]
+                   ) -> tuple[list[str], dict[str, str]]:
+    """The props rule on one document: a listed HDRI with no light carrying
+    `environment=`, or a listed model with no `<mesh>` asset, is an error
+    naming the unused ids, unless the document declines the kind (or every
+    one of its ids) with a reason; generator maps where texture maps are
+    listed are a note. Returns (findings, declined)."""
+    declined = props_declined(doc_text)
+    findings: list[str] = []
+    if not props:
+        return findings, declined
+
+    def rule(kind: str, used: bool, how: str) -> None:
+        items = [p for p in props if p.get("kind") == kind]
+        if not items or used or kind in declined:
+            return
+        left = [str(p.get("id")) for p in items if str(p.get("id")) not in declined]
+        if left:
+            findings.append(
+                f"error: props: {len(left)} {kind}(s) listed in props.json ({', '.join(left[:8])}"
+                + (", ..." if len(left) > 8 else "") + f") and the document uses none ({how}); "
+                f"use one, or decline it with `<meta name=\"{DECLINE_META}\" value=\"{kind}: "
+                "<why it does not fit the treatment>\"/>` (or one per id) in <metadata>")
+
+    rule("hdri", bool(re.search(r'<light\b[^>]*\benvironment="[^"]+"', doc_text)),
+         'no <light type="dome" environment="<hdr>"> in <lights>')
+    rule("model", bool(re.search(r'<mesh\b[^>]*\bsrc="', doc_text)), "no <mesh> asset")
+    if textures:
+        maps = re.findall(r'\b(?:' + "|".join(MAP_ATTRS) + r')="([^"]+)"', doc_text)
+        names = [Path(t).name for t in textures]
+        if maps and all(m.startswith("#") for m in maps) and not any(n in doc_text for n in names):
+            findings.append(
+                f"note: props: the material maps are generator assets ({', '.join(sorted(set(maps))[:4])}) "
+                f"while texture maps are listed ({', '.join(names[:4])}"
+                + (", ..." if len(names) > 4 else "") + "): a large surface (desk, floor, wall) "
+                "reads better with a real map")
+    return findings, declined
+
+
+def declined_of(authored: list[dict]) -> dict[str, str]:
+    """Every prop declined across the authored documents, for vfx.json."""
+    out: dict[str, str] = {}
+    for doc in authored:
+        out.update(doc.get("props_declined") or {})
+    return out
+
+
+def approved_look(root: Path) -> dict | None:
+    """The operator-approved keyframe (`yt keyframe`): document, frame and
+    elements, for the brief and the review; None when there is none, it is
+    not approved, or its document changed since. Reads keyframe.json's shape
+    directly when the keyframe module is not importable."""
+    root = Path(root)
+    try:
+        from . import keyframe
+        return keyframe.approved_keyframe(root)
+    except ImportError:
+        pass
+    data = read_json(root / "keyframe.json", warn=False)
+    if not isinstance(data, dict) or (data.get("approval") or {}).get("state") != "approved":
+        return None
+    return {"document": data.get("document") or "keyframe/keyframe.scene.xml",
+            "frame": data.get("frame") or "keyframe/keyframe.png",
+            "elements": data.get("elements") or [],
+            "approved_at": str((data.get("approval") or {}).get("at") or ""),
+            "digest": str((data.get("approval") or {}).get("digest") or "")}
+
+
+def prop_textures(root: Path, item: dict) -> list[Path]:
+    """The texture maps shipped beside a model prop (its `textures/` directory,
+    sorted), usable as material maps on any surface; [] for other kinds."""
+    if item.get("kind") != "model":
+        return []
+    folder = (Path(root) / item["file"]).parent / "textures"
+    if not folder.is_dir():
+        return []
+    return sorted(p for p in folder.iterdir() if p.suffix.lower() in TEXTURE_SUFFIXES)
+
+
+class Workspace:
+    """<project>/vfx/vNN/: the author's files for one round of authoring, and
+    the checks it runs. With no version the directory is vfx/ itself."""
+
+    def __init__(self, root: Path, dirname: str = SCENE_DIR,
+                 version: str | None = None) -> None:
+        self.root = Path(root)
+        self.base = self.root / dirname
+        self.version = version
+        self.dir = self.base / version if version else self.base
+        self.dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def rel(self) -> str:
+        """The directory as the project sees it: `vfx` or `vfx/v02`."""
+        return self.dir.relative_to(self.root).as_posix()
+
+    @staticmethod
+    def versions(base: Path) -> list[str]:
+        """The authoring versions under vfx/, lowest first."""
+        if not Path(base).is_dir():
+            return []
+        return sorted((p.name for p in Path(base).iterdir()
+                       if p.is_dir() and VERSION_RE.match(p.name)),
+                      key=lambda v: int(v[1:]))
+
+    def new_version(self) -> str:
+        """Open the next vNN/ under vfx/ and make it this workspace's directory;
+        nothing authored before is touched."""
+        have = self.versions(self.base)
+        n = int(have[-1][1:]) + 1 if have else 1
+        self.version = f"v{n:02d}"
+        self.dir = self.base / self.version
+        self.dir.mkdir(parents=True, exist_ok=True)
+        return self.version
+
+    @classmethod
+    def of(cls, doc_path: Path) -> "Workspace":
+        """The workspace a document lives in: vfx/vNN/<doc> or vfx/<doc>."""
+        here = Path(doc_path).resolve().parent
+        if VERSION_RE.match(here.name):
+            return cls(here.parent.parent, here.parent.name, here.name)
+        return cls(here.parent, here.name)
+
+    def write_shots(self, shots: dict[str, list[dict]]) -> Path:
+        """shots.json: per symbol id, its shots (label, at inside the symbol,
+        seconds), which `sr.py frame` reads to place the proof frames."""
+        path = self.dir / "shots.json"
+        path.write_text(json.dumps(
+            {sid: [{"label": str(s["label"]), "at": s["at"], "seconds": s["seconds"]}
+                   for s in rows] for sid, rows in shots.items()}, indent=1),
+            encoding="utf-8")
+        return path
+
+    def _shots(self) -> dict[str, list[dict]]:
+        data = read_json(self.dir / "shots.json", warn=False)
+        return data if isinstance(data, dict) else {}
+
+    def prepare(self, *, tokens: dict[str, str], frame: tuple[int, int]) -> None:
+        sr_root = str(Path(sdk().__file__).resolve().parents[2])
+        automation_root = str(Path(__file__).resolve().parent.parent)
+        (self.dir / "sr.py").write_text(
+            SR_WRAPPER.format(sr_root=sr_root, automation_root=automation_root),
+            encoding="utf-8")
+        (self.dir / "examples.scene.xml").write_text(EXAMPLES, encoding="utf-8")
+        for rel, code in EXAMPLE_SHADERS.items():
+            (self.dir / rel).parent.mkdir(parents=True, exist_ok=True)
+            (self.dir / rel).write_text(code, encoding="utf-8")
+        (self.dir / "schema.md").write_text(self.cheat_sheet(), encoding="utf-8")
+        (self.dir / "tokens.xml").write_text(
+            "<styles>\n" + "".join(f'  <token name="{k}" value="{v}"/>\n'
+                                   for k, v in tokens.items())
+            + "</styles>\n", encoding="utf-8")
+        (self.dir / "frame.json").write_text(
+            json.dumps({"width": frame[0], "height": frame[1], "fps": 30}), encoding="utf-8")
+
+    @staticmethod
+    def cheat_sheet() -> str:
+        """Generated from the schema at run time, never written by hand."""
+        S = sdk()
+        lines = [f"# scene-render schema, as the SDK describes it", "",
+                 "Ask for anything not here: `python3 sr.py describe <element>`.", ""]
+        for el in SHEET_ELEMENTS:
+            try:
+                d = S.describe(el).to_dict()
+            except Exception:
+                continue
+            lines.append(f"## <{el}>" + (f" — {str(d.get('doc', '')).strip()[:200]}"
+                                           if d.get("doc") else ""))
+            for a in d.get("attributes", []):
+                t = a.get("type") or {}
+                kind = t.get("enum") or t.get("name") or t.get("base") or "?"
+                if isinstance(kind, list):
+                    kind = "|".join(kind)   # every value: a cut list hid effect type="shader"
+                lines.append(f"- @{a['xml_name']}: {kind}")
+            kids = [c.get("xml_name") or c.get("class_name")
+                    for c in (d.get("children") or []) if isinstance(c, dict)]
+            if kids:
+                lines.append("- children: " + ", ".join(str(k) for k in kids))
+            lines.append("")
+        lines += ["## by family", "", reach.families_text(S.element_names()), "",
+                  "## every element", "", ", ".join(sorted(S.element_names())), ""]
+        return "\n".join(lines)
+
+    def brief(self, n: int, *, idea: Idea, house_rules: str, style: dict,
+              tokens: dict[str, str], frame: tuple[int, int], section: dict,
+              effects: list[dict], words: dict[str, dict], assets: list[dict],
+              direction_block: str = "", worlds: list[dict] | None = None) -> Path:
+        """What the author of one section has to make, and the facts it has:
+        one world symbol per section (or per planned cut), its shots as
+        phases at their offsets, the hero convention, the props, the gate."""
+        worlds = worlds if worlds is not None else world_symbols(section, effects)
+        lines = [f"# Section {n}: {section.get('heading', '')}", "",
+                 f"Video: {idea.title}", f"Premise: {idea.description}", "",
+                 f"Frame {frame[0]}x{frame[1]} at 30 fps. This section is authored as "
+                 f"{'ONE symbol' if len(worlds) == 1 else f'{len(worlds)} symbols'}: the "
+                 "world. Times inside a symbol are seconds from the symbol's start; "
+                 "`yt build` includes the world once for its consecutive shots, so "
+                 "symbol time runs continuously through the section and each shot is a "
+                 "phase at the offset given below.", ""]
+        lines += ["## Mission", "", MISSION, ""]
+        if direction_block:
+            lines += ["## Editorial treatment", "", direction_block, ""]
+        if house_rules:
+            lines += ["## Standards", "", house_rules, ""]
+        lines += ["## Visual system", "", style.get("look", ""), "",
+                  f"Type: {style.get('typography', '')}", "",
+                  f"Motion rules: " + " ".join(f"({i}) {r}" for i, r in
+                                              enumerate(style.get("motion_rules", []), 1)), "",
+                  "Tokens (copy tokens.xml into <styles> and reference them as var(--name)):", ""]
+        lines += [f"- --{k}: {v}" for k, v in tokens.items()]
+        if style.get("avoid"):
+            lines += ["", "Avoid: " + "; ".join(style["avoid"])]
+        doc = self.doc_name(n, section)
+        ids = ", ".join(f'`{w["id"]}`' for w in worlds)
+        lines += ["", f"## The world to author ({'one <symbol>' if len(worlds) == 1 else 'these <symbol>s'}: {ids})", "",
+                  "A section is one world: one set, one set of materials, one light rig, "
+                  "one hero model and ONE camera whose path is keyed across the whole "
+                  "symbol. The shots below are phases of that world at their offsets, "
+                  "not separate builds: the hero keeps its size, colour and material "
+                  "from the first phase to the last, the room does not change, and the "
+                  "camera moves through the phases in one continuous path (ease between "
+                  "keys; no jump in position, yaw or focal length at a shot boundary "
+                  "unless the plan lists a cut). Give the symbol `duration` equal to its "
+                  "length below and key every animation on that one timeline.", "",
+                  "Hero convention: give every object the camera must never lose an id "
+                  "starting with `hero-` (e.g. `hero-plane`); the frame gate reads the "
+                  "engine's off-camera report and a `hero-` object outside the camera's "
+                  "view for a whole shot is an error. Use the prefix only for the "
+                  "subject, never for the set.", "",
+                  "Every object3D must be seen: the engine reports each object that is "
+                  "never inside the camera's view, the delivery gate fails on that "
+                  "warning, and so does this gate. Build only the set the camera sees "
+                  "(a room is the walls and floor in frame, not a closed box), key an "
+                  "object that is seen in some shots only to exist then (`visible`, "
+                  "`start`/`end` or `condition` on the object3D), and cull the rest.", ""]
+        for w in worlds:
+            lines += [f"### `<symbol id=\"{w['id']}\" width=\"{frame[0]}\" height=\"{frame[1]}\" "
+                      f"duration=\"{w['seconds']:g}\">` — starts {w['offset']:g}s into the "
+                      f"section ({w['start']:g}s into the film)", "",
+                      "Shots as phases (label · offset inside the symbol · length):", ""]
+            for s in w["shots"]:
+                planned = s.get("planned_seconds")
+                clock = (f" (recorded; the screenplay planned {planned:g}s)"
+                         if s.get("timed_by") == "voice" and planned is not None
+                         and float(planned) != float(s["seconds"]) else "")
+                lines += [f"#### {s['label']} · at {s['at']:g}s · {s['seconds']:g}s{clock}",
+                          f"Picture: {s.get('visual', '')}",
+                          f"Narration: {s.get('narration') or '(none)'}"]
+                if s.get("on_screen"):
+                    lines.append(f"Super: {s['on_screen']}")
+                wd = words.get(s["label"])
+                if wd and wd.get("words"):
+                    lines.append("Words (seconds from the shot's start; add the shot's "
+                                 "offset for symbol time): "
+                                 + " ".join(f"{x['w']}@{x['s']}" for x in wd["words"]))
+                lines.append("")
+            if not w["shots"]:
+                lines += ["(no screenplay yet: one phase per effect, in order)", ""]
+            lines += ["Phases this world must deliver (from the plan; each is a beat "
+                      "inside the one symbol, at the time of the shots it names):", ""]
+            for e in w["phases"]:
+                lines += [f"- **{e['name']}** (`{e['id']}`; shots "
+                          f"{', '.join(e.get('shots', [])) or 'all'}; ~{e.get('seconds')}s)",
+                          f"  Must convey: {e.get('conveys', '')}",
+                          f"  On screen: {e.get('on_screen', '')}"]
+                if e.get("data_or_claim"):
+                    lines.append(f"  Carries: {e['data_or_claim']}")
+                lines += [f"  Brief: {e.get('brief', '')}", ""]
+        usable = [a for a in assets if a.get("file") or a.get("path")]
+        if usable:
+            lines += ["## Files in the project you may use as <image>/<video> src", ""]
+            lines += [f"- {a.get('file') or a.get('path')} — {a.get('title', '')} "
+                      f"({a.get('licence', '')})" for a in usable]
+            lines.append("")
+        props = props_items(self.root)
+        if props:
+            hdris = [it for it in props if it.get("kind") == "hdri"]
+            models = [it for it in props if it.get("kind") == "model"]
+            others = [it for it in props if it.get("kind") not in ("hdri", "model")]
+            lines += ["## Props (CC0, fetched by `yt props`; paths relative to this directory)", "",
+                      "These are the rules, not suggestions; confirm every attribute with "
+                      "`python3 sr.py describe light`, `describe mesh`, `describe object3D` "
+                      "and `describe material` before writing it:", ""]
+            if hdris:
+                lines += ["- **Environment lighting from an HDRI is the default light rig.** "
+                          "Declare `<light id=\"env\" type=\"dome\" environment=\"<hdr path>\" "
+                          "intensity=...>` in <lights> (`environmentVisible=\"false\"` keeps the "
+                          "set as the background) and add one directional key with "
+                          "`castShadow=\"true\"` for the sun; flat ambient fill alone is not "
+                          "a light rig. Pick the HDRI whose light matches the treatment."]
+            if models:
+                lines += ["- **A model that fits a set piece is used as a model**, never "
+                          "rebuilt from primitives: declare `<mesh id=\"m-x\" src=\"<gltf "
+                          "path>\"/>` in <assets> (the schema reads the format from the "
+                          "extension; license/credit go on the asset) and place it with "
+                          "`<object3D primitive=\"mesh\" mesh=\"m-x\" .../>`; the model's own "
+                          "textured materials come with it (`materialOverride` to swap one, "
+                          "`node` to draw a part). Scale it to the room with width/height/depth."]
+            lines += ["- **Large surfaces carry texture maps**: the desk, the floor, the "
+                      "walls get a material with `baseColorMap` (sRGB colour), `normalMap` "
+                      "(`normalScale`), `metallicRoughnessMap` and/or `occlusionMap` (the "
+                      "_arm_ maps below are ambient-occlusion/roughness/metallic), with "
+                      "`uvScaleX`/`uvScaleY` for tiling; a flat `baseColor` on a wall or "
+                      "a desk is what the review calls \"flat-shaded CG\". Thin paper gets "
+                      "`transmission`/`subsurface` so it glows when backlit.",
+                      "- The hero may stay a built primitive or extrude when no model fits "
+                      "it, but it takes a real material (maps, roughness, translucency) "
+                      "and casts a contact shadow.",
+                      "- **This is checked.** A listed HDRI with no light carrying "
+                      "`environment=`, or a listed model with no `<mesh>` asset, is an "
+                      "error. A prop that does not fit the treatment may be declined, but "
+                      "you must say so and why, in the document: "
+                      f"`<metadata><meta name=\"{DECLINE_META}\" value=\"<prop id or kind>: "
+                      "<reason>\"/></metadata>` right after <project>, one entry per "
+                      "declined kind (`hdri`, `model`) or per prop id. The reason is "
+                      "written into vfx.json for the operator; a decline without a "
+                      "reason does not count.", ""]
+            if hdris:
+                lines += ["### HDRIs (environment maps)", ""]
+                for it in hdris:
+                    rel = os.path.relpath(self.root / it["file"], self.dir)
+                    lines.append(f"- `{rel}` — {it.get('about', '')} [{it.get('licence', '')}"
+                                 + (f", {it['credit']}" if it.get("credit") else "") + "]")
+                lines.append("")
+            if models:
+                lines += ["### Models (glTF with textures)", ""]
+                for it in models:
+                    rel = os.path.relpath(self.root / it["file"], self.dir)
+                    lines.append(f"- `{rel}` — {it.get('about', '')} [{it.get('licence', '')}"
+                                 + (f", {it['credit']}" if it.get("credit") else "") + "]")
+                    maps = prop_textures(self.root, it)
+                    if maps:
+                        lines.append("  maps, usable on any surface: "
+                                     + ", ".join(f"`{os.path.relpath(m, self.dir)}`" for m in maps))
+                lines.append("")
+            if others:
+                lines += ["### Other files", ""]
+                for it in others:
+                    rel = os.path.relpath(self.root / it["file"], self.dir)
+                    lines.append(f"- `{rel}` ({it.get('kind', '')}) — {it.get('about', '')} "
+                                 f"[{it.get('licence', '')}"
+                                 + (f", {it['credit']}" if it.get("credit") else "") + "]")
+                lines.append("")
+        look = approved_look(self.root)
+        if look:
+            doc_rel = os.path.relpath(self.root / look["document"], self.dir)
+            png_rel = os.path.relpath(self.root / look["frame"], self.dir)
+            lines += [f"## The approved look (keyframe, approved {look.get('approved_at', '')})", "",
+                      "The operator approved one frame as the film's look. Read both files "
+                      f"first: `{doc_rel}` (the document) and `{png_rel}` (the frame). "
+                      "The approved look: inherit these materials, lights, hero model and "
+                      "camera language; a world that departs from it is wrong. Copy the "
+                      "document's <materials>, <lights> and the hero's geometry into the "
+                      "world as they are, keep its camera language, and change only what "
+                      "the shots require (the camera path, the motion, the set beyond the "
+                      "frame). The review scores fidelity to it.", ""]
+            for el in look.get("elements") or []:
+                if isinstance(el, dict):
+                    lines.append(f"- {el.get('kind', '')}: **{el.get('name', '')}** "
+                                 f"({el.get('source', '')}"
+                                 + (f"; `{el['file']}`" if el.get("file") else "") + ")"
+                                 + (f" — {el['why']}" if el.get("why") else ""))
+            lines.append("")
+        lines += ["## Deliverable", "",
+                  f"Write `{doc}` in this directory: a complete scene-render document "
+                  f"(project, styles with the tokens, assets, materials, symbols -- {ids} "
+                  "exactly, sized to the frame, with the camera, the set, the hero and "
+                  "every phase inside -- a composition that instances the world as a "
+                  "preview, lights, and an output). Children of <scene> must appear in "
+                  "the schema's declared order (project, styles, output, assets, "
+                  "materials, symbols, composition, lights ...); `sr.py check` reports a "
+                  "wrong order as xsd:occurs. Read examples.scene.xml first: every "
+                  "construct in it has rendered correctly on this engine. Ask the schema "
+                  f"with sr.py before guessing an attribute. Then run `python3 sr.py check "
+                  f"{doc}` and fix every error it reports until it says 0 error(s). Time "
+                  "beats to the spoken words given above. Do not create any other file.", "",
+                  "## How your symbol is used, and the frame gate", "",
+                  "`yt build` places the world with one `<include src=... symbol=...>` "
+                  "spanning its consecutive shots. An include carries the symbol, its "
+                  "materials, cameras and assets; it does NOT carry the document's "
+                  "<styles> or <lights>. Declare your <lights> at scene level anyway: the "
+                  "build hoists them, gated to the include's time. The camera inside the "
+                  "symbol is the section's camera; 3D axes are x right, y DOWN, z into "
+                  "the scene, and `target=\"<id>\"` aims a camera at a node (see `sr.py "
+                  "describe camera`).", "",
+                  "Validation cannot see the picture. After check passes, run "
+                  f"`python3 sr.py frame {doc}`: it renders a proof frame at each shot's "
+                  "midpoint (from shots.json) plus the symbol's start and end, the way "
+                  "the build includes it, writes frames/*.png and reports what the "
+                  "engine says: flat, black, clipped or too-dark frames, and every "
+                  "object3D the camera never frames. Read every PNG. A black, flat, "
+                  "empty or wrong frame, a hero out of view, or a hero that changes "
+                  "between frames means the document is not done: fix the camera, the "
+                  "lights, the materials or the geometry and render again (`--symbol ID "
+                  "--at SECONDS` for one frame). A document counts as authored only when "
+                  "check reports 0 errors and every proof frame shows what its shot asks "
+                  "for; a reviewer then scores the frames against the publication bar "
+                  "and sends the findings back to you if they fall short."]
+        path = self.dir / f"brief-{n:02d}.md"
+        path.write_text("\n".join(lines), encoding="utf-8")
+        return path
+
+    @staticmethod
+    def doc_name(n: int, section: dict) -> str:
+        return f"{n:02d}-{slugify(section.get('heading', 'section'), 36)}.scene.xml"
+
+    def frames(self, name: str, *, symbol: str | None = None,
+               times: list[float] | None = None, frame: tuple[int, int] | None = None,
+               jobs: int = 3, shots: dict[str, list[dict]] | None = None
+               ) -> list[tuple[Path | None, list[str]]]:
+        """Render each symbol of a document as `yt build` includes it, at the
+        midpoint of each shot it holds (`shots`, else shots.json, else the
+        symbol's start, middle and end).
+
+        Writes frames/<doc>__<symbol>__<t>s.png and returns (png path or None,
+        findings) per frame: the engine's diagnostics plus framecheck's
+        verdicts (flat, black, clipped, dark; a hero the camera never frames,
+        the set objects out of view, and -- once per symbol, on its first
+        frame -- a camera pointing at nothing). The camera verdicts come from
+        one short draft encode per shot (`encode_findings`), since only an
+        encode computes them; each shot's verdict lands on its midpoint frame.
+        The author looks at the PNGs; this only catches what needs no eyes.
+        """
+        path = self.dir / name
+        if not path.is_file():
+            return [(None, ["error: the author wrote no document"])]
+        text = path.read_text(encoding="utf-8", errors="replace")
+        frame = frame or self._frame_from_tokens()
+        facts = [f for f in symbol_facts(text) if symbol is None or f["id"] == symbol]
+        if not facts:
+            return []
+        shots = shots if shots is not None else self._shots()
+        out_dir = self.dir / "frames"
+        out_dir.mkdir(exist_ok=True)
+        extra = referenced_files(text, self.dir, self.root)
+        stem = name[:-len(".scene.xml")] if name.endswith(".scene.xml") else name
+        objects = {f["id"]: framecheck.symbol_objects(text, f["id"]) for f in facts}
+        jobs_list = [(f, t) for f in facts
+                     for t in (times or shot_times(shots.get(f["id"], []), f["duration"]))]
+
+        def one(fact: dict, t: float) -> tuple[Path | None, list[str], list[str]]:
+            proof = proof_document(name, text, fact["id"], frame, fact["duration"],
+                                   fact["background"])
+            files = dict(extra)
+            files[f"{self.rel}/{name}"] = text.encode("utf-8")
+            png, message = render.engine_render_still(
+                proof.encode("utf-8"), t, files=files,
+                doc_path=f"{self.rel}/.proof-{stem}.scene.xml")
+            lines = message.splitlines()
+            off = framecheck.never_in_view(lines)
+            findings = [l for l in lines[1:] if not l.startswith("warning[E12]")
+                        and not framecheck.OFF_CAMERA.search(l)]
+            findings = [f"{l.split(':', 1)[0]}: frame at {t:g}s of {fact['id']}: "
+                        f"{l.split(':', 1)[1].strip()}" if ":" in l else l for l in findings]
+            findings += framecheck.view_findings(off, objects[fact["id"]],
+                                                 symbol=fact["id"], at=t)
+            if png is None:
+                if not any(f.startswith("error") for f in findings):
+                    findings.insert(0, f"error: frame at {t:g}s of {fact['id']} was not rendered: {lines[0]}")
+                return None, findings, off
+            target = out_dir / f"{stem}__{fact['id']}__{t:g}s.png"
+            target.write_bytes(png)
+            return target, judge_frame(png, t, fact["id"]) + findings, off
+
+        # One encode window per shot of each 3D symbol (the whole symbol when
+        # it has no shots): the only render that reports what the camera
+        # never frames.
+        windows = [(f, s) for f in facts if objects[f["id"]]
+                   for s in (shots.get(f["id"]) or
+                             [{"label": "", "at": 0.0, "seconds": f["duration"]}])]
+
+        def view(fact: dict, shot: dict) -> tuple[list[str] | None, list[str]]:
+            proof_path = f"{self.rel}/.proof-{stem}.scene.xml"
+            files = dict(extra)
+            files[f"{self.rel}/{name}"] = text.encode("utf-8")
+            files[proof_path] = proof_document(name, text, fact["id"], frame, fact["duration"],
+                                               fact["background"]).encode("utf-8")
+            start = max(0.0, float(shot["at"]))
+            end = min(fact["duration"], start + float(shot["seconds"])) if fact["duration"] > 0 \
+                else start + float(shot["seconds"])
+            if end <= start:
+                end = start + 0.1
+            lines = encode_findings(files, proof_path, start=start, end=end)
+            if lines is None:
+                return None, []
+            off = framecheck.never_in_view(lines)
+            mid = round((start + end) / 2, 2)
+            found = [l for l in lines if l.startswith("error") and not framecheck.OFF_CAMERA.search(l)]
+            found += framecheck.view_findings(off, objects[fact["id"]], symbol=fact["id"],
+                                              at=mid, label=str(shot.get("label") or ""))
+            return off, found
+
+        with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+            rendered = list(pool.map(lambda ft: one(*ft), jobs_list))
+            viewed = list(pool.map(lambda fs: view(*fs), windows))
+        out: list[tuple[Path | None, list[str]]] = []
+        first_of: dict[str, int] = {}
+        per_symbol: dict[str, list[list[str]]] = {}
+        stills_off: dict[str, list[list[str]]] = {}
+        for (fact, _), (png, findings, off) in zip(jobs_list, rendered):
+            first_of.setdefault(fact["id"], len(out))
+            stills_off.setdefault(fact["id"], []).append(off)
+            out.append((png, findings))
+        for (fact, shot), (off, found) in zip(windows, viewed):
+            if off is None:
+                continue
+            per_symbol.setdefault(fact["id"], []).append(off)
+            if not found:
+                continue
+            start = float(shot["at"])
+            end = start + float(shot["seconds"])
+            mid = (start + end) / 2
+            inside = [i for i, (f, t) in enumerate(jobs_list)
+                      if f["id"] == fact["id"] and start <= t < end]
+            at = min(inside, key=lambda i: abs(jobs_list[i][1] - mid)) if inside \
+                else first_of[fact["id"]]
+            png, findings = out[at]
+            out[at] = (png, found + findings)
+        for sid in objects:
+            frames_off = per_symbol.get(sid) or [o for o in stills_off.get(sid, []) if o]
+            verdict = framecheck.never_framed(frames_off, objects[sid], symbol=sid)
+            if verdict:
+                png, findings = out[first_of[sid]]
+                out[first_of[sid]] = (png, verdict + findings)
+        return out
+
+    def _frame_from_tokens(self) -> tuple[int, int]:
+        meta = self.dir / "frame.json"
+        if meta.is_file():
+            try:
+                d = json.loads(meta.read_text())
+                return int(d["width"]), int(d["height"])
+            except (ValueError, KeyError, TypeError):
+                pass
+        return (1920, 1080)
+
+    def validate(self, name: str, *, frames: bool = True,
+                 shots: dict[str, list[dict]] | None = None,
+                 props: bool = False) -> tuple[list[str], list[str]]:
+        """(symbol ids present, findings) for one authored document.
+
+        Findings come from the SDK, the engine's validation, the props rule
+        when `props` is set (the section author must use or decline each
+        listed HDRI and model; other stages reuse this check without it)
+        and, when an engine is reachable, from the proof frames of every
+        symbol at its shots' midpoints (`shots` per symbol id, else shots.json).
+        """
+        path = self.dir / name
+        if not path.is_file():
+            return [], ["error: the author wrote no document"]
+        data = path.read_bytes()
+        try:
+            doc = sdk().read(data)
+        except Exception as exc:
+            return [], [f"error: the document does not parse: {str(exc)[:200]}"]
+        findings = [str(f) for f in doc.check()]
+        engine = render.engine_validate(data)
+        if engine is None:
+            findings.append("note: no engine reachable; only the SDK's checks ran")
+        else:
+            findings += engine
+        listed = props_items(self.root) if props else []
+        if listed:
+            textures = [p.as_posix() for it in listed for p in prop_textures(self.root, it)]
+            textures += [str(it["file"]) for it in listed if it.get("kind") == "texture"]
+            findings += props_findings(data.decode("utf-8", "replace"), listed, textures)[0]
+        # find_all() is direct children only; iter() walks the tree.
+        symbols = [str(el.id) for el in doc.iter("symbol") if getattr(el, "id", None)]
+        if shots:
+            # Each symbol has to span its shots, or the build holds its last
+            # frame under the narration. Checked before any frame is spent.
+            required = {sid: max(float(s.get("at", 0)) + float(s.get("seconds", 0))
+                                 for s in rows)
+                        for sid, rows in shots.items() if rows}
+            findings += timing_findings(data.decode("utf-8", "replace"), required)
+        if frames and engine is not None and not any(f.startswith("error") for f in findings):
+            rendered = 0
+            for png, found in self.frames(name, shots=shots):
+                rendered += png is not None
+                findings += found
+            findings.append(f"note: {rendered} frame(s) rendered under frames/")
+        return symbols, findings
+
+
+# --------------------------------------------------------------------------- #
+# the planner
+# --------------------------------------------------------------------------- #
+
+class VfxPlanner:
+    """Plans the visuals, then has the model author them, section by section."""
+
+    def __init__(self, bundle: dict, dossier: Dossier, workspace_dir: Workspace, *,
+                 model: str = "sonnet", inspo: list[str] | None = None,
+                 house: str = "", house_digest: dict | None = None,
+                 per_section: int = 3, jobs: int = 2, budget_usd: float = 3.0,
+                 budget_hours: float | None = None, sections: list[dict] | None = None,
+                 words: dict[str, dict] | None = None, frame: tuple[int, int] = FRAME,
+                 direction: dict | None = None, revisions: int = 2,
+                 author_bar: float = 7.0, fresh: bool = False,
+                 verbose: bool = True) -> None:
+        self.idea: Idea = bundle["idea"]
+        self.bundle = bundle
+        self.dossier = dossier
+        self.ws = workspace_dir
+        self.model = model
+        self.inspo = inspo or []
+        self.house = house
+        self.house_digest = house_digest or {}
+        self.per_section = per_section
+        self.jobs = max(1, jobs)
+        self.budget_usd = budget_usd
+        self.budget_hours = budget_hours
+        self.words = words or {}
+        # Once a take exists, the picture is planned on the narration's
+        # clock, which is the clock `yt build` places it on.
+        self.script = measured_sections(sections or [], self.words)
+        self.frame = frame
+        self.direction = direction or {}
+        self.revisions = max(0, revisions)
+        self.author_bar = float(author_bar)
+        self.fresh = fresh
+        self.verbose = verbose
+        self.usage = Usage()
+        #: Section authors and reviewers run in a pool; each reports here once.
+        self._account_lock = threading.Lock()
+
+    # -- plumbing ----------------------------------------------------------
+
+    def _say(self, msg: str) -> None:
+        if self.verbose:
+            print(msg, file=sys.stderr)
+
+    def _account(self, *usages) -> None:
+        """Book agents' usage into the stage's one account, from any thread.
+        Each agent is booked once, when its work ends: an engine's usage is
+        cumulative, so booking it after every call would count it again."""
+        with self._account_lock:
+            for usage in usages:
+                _merge_usage(self.usage, usage)
+
+    def _ask_json(self, prompt: str, schema: dict) -> object:
+        engine = harness.ENGINE(EngineConfig(tools=(), model=self.model))
+        try:
+            return engine.ask_json(prompt, schema, system=VFX_SYSTEM)
+        finally:
+            self._account(engine.usage)
+
+    def _stage(self, name: str, work) -> object:
+        if not self.fresh:
+            cached = self.dossier.load(name)
+            if cached is not None:
+                self._say(f"[{name}] cached")
+                return cached
+        self._say(f"[{name}] running")
+        data = work()
+        self.dossier.save(name, data)
+        return data
+
+    def _reference(self) -> str:
+        if not self.inspo:
+            return ""
+        known = [f"- {n}: {CHANNEL_STYLES[_key(n)]}"
+                 for n in self.inspo if _key(n) in CHANNEL_STYLES]
+        unknown = [n for n in self.inspo if _key(n) not in CHANNEL_STYLES]
+        parts = []
+        if known:
+            parts.append("Visual reference -- match how these channels look and "
+                         "move:\n" + "\n".join(known))
+        if unknown:
+            parts.append("Also reference the visual style of: " + ", ".join(unknown) + ".")
+        return "\n\n".join(parts)
+
+    def _direction_block(self) -> str:
+        """The editorial treatment `yt styles` chose: the aesthetic for this video."""
+        styles = self.direction.get("styles") or []
+        if not styles:
+            return ("No treatment has been chosen yet (`yt styles` has not run); "
+                    "choose the treatment each effect needs and say which.")
+        parts = ["The editorial treatment for this video, best first "
+                 f"(from `yt styles`; message: {self.direction.get('message', '')}):"]
+        for n, st in enumerate(styles[:4], 1):
+            line = f"{n}. {st.get('name', '')} (fit {st.get('fit', '?')}/10): {st.get('shows_well', '')}"
+            for key in ("palette", "typography", "motion", "sound"):
+                if st.get(key):
+                    line += f"\n   {key}: {st[key]}"
+            for shot in st.get("shots", [])[:5]:
+                line += f"\n   planned shot: {shot}"
+            parts.append(line)
+        if self.direction.get("combination"):
+            parts.append(f"How they combine: {self.direction['combination']}")
+        return "\n".join(parts)
+
+    @staticmethod
+    def vocabulary() -> str:
+        """The engine's elements by family, for the planner who specifies
+        effects before any author opens the schema. Empty if no SDK."""
+        try:
+            return reach.families_text(sdk().element_names())
+        except Exception:
+            return ""
+
+    def _idea_block(self) -> str:
+        bits = [f"Title: {self.idea.title}", f"Genre: {self.idea.genre}",
+                f"Premise: {self.bundle.get('premise') or self.idea.description}"]
+        if self.idea.length:
+            bits.append(f"Target length: {self.idea.length}")
+        # Every prompt in this stage starts here, so the standards ride along.
+        return "\n".join(bits) + (f"\n\n{self.house}" if self.house else "")
+
+    # -- stages ------------------------------------------------------------
+
+    def outline(self) -> dict:
+        if self.script:
+            return {"runtime": "", "sections": self.script}
+        existing = self.bundle.get("outline") or {}
+        if existing.get("sections"):
+            return existing
+        return self._stage("09-outline", lambda: self._ask_json(
+            f"{self._idea_block()}\n\n"
+            "There is no script outline yet. Sketch one: 6-9 sections with a "
+            "heading, a runtime in seconds and 2-4 beats each, totalling the "
+            "target length. Open on something concrete.",
+            OUTLINE_SCHEMA))
+
+    def style(self) -> dict:
+        numbers = [c for c in self.bundle["claims"] if c.get("number")][:12]
+        return self._stage("10-style", lambda: self._ask_json(
+            f"{self._idea_block()}\n\n{self._reference()}\n\n"
+            "Numbers this video has to put on screen:\n"
+            + "\n".join(f"- {c['number']}: {c['claim'][:110]}" for c in numbers)
+            + "\n\nDefine the visual system before any shot is built: the look "
+            "in one paragraph, a palette of 4-6 colours as hex with what each "
+            "is for -- say which is the background, which is for text, which "
+            "accent is reserved for the single most important number, which is "
+            "muted for grids and secondary marks -- typography, camera "
+            "language, how transitions work, 4-6 motion rules an animator can "
+            "follow literally, and what to avoid. The palette must survive "
+            "YouTube compression and read for colour-blind viewers: never "
+            "carry meaning by red/green alone.",
+            STYLE_SCHEMA))
+
+    def _section_effects(self, section: dict, style: dict) -> dict:
+        claims = self.bundle["claims"]
+        heading = section.get("heading", "")
+        quoted = [c for c in claims
+                  if any(c["claim"][:40] in used for used in section.get("claims_used", []))]
+        if not quoted:
+            quoted = [c for c in claims if c.get("number")][:4]
+        shots = section.get("shots") or []
+        shot_lines = "\n".join(
+            f"- {s['label']} ({s['seconds']}s): {s['visual'][:160]}"
+            + (f" | super: {s['on_screen'][:60]}" if s.get("on_screen") else "")
+            for s in shots) or "- (no screenplay yet; leave `shots` empty)"
+        prompt = (
+            f"{self._idea_block()}\n\n"
+            f"Visual system:\n{json.dumps(style, indent=2, ensure_ascii=False)[:1400]}\n\n"
+            f"SECTION: {heading} ({section.get('seconds', 0)}s)\n"
+            "Beats:\n" + "\n".join(f"- {b}" for b in section.get("beats", []))
+            + f"\n\nIts shots, by label:\n{shot_lines}"
+            + "\n\nFacts available for this section:\n"
+            + ("\n".join(f"- {c.get('number', '')} {c['claim'][:120]}"
+                         for c in quoted[:6]) or "- none specific")
+            + f"\n\n{MISSION}\n\n{self._direction_block()}\n\n"
+            + ("The engine's vocabulary, by family -- specify with it; the treatment "
+               "decides which families carry this video, and a flat treatment still "
+               f"has motion, depth and post to draw on:\n{self.vocabulary()}\n\n"
+               if self.vocabulary() else "")
+            + "A separate author will build this section as ONE scene-render "
+            "symbol: the world -- one set, one light rig, one hero model and one "
+            "camera keyed across the whole section -- and the effects you "
+            "specify are the phases that world passes through, at the time of "
+            "the shots each names. So the brief must say exactly what is on "
+            "screen, where, in which treatment (3D with a camera move, a flat "
+            "diagram, a photoreal simulation, a composite over footage -- as the "
+            "chosen treatment says), with which numbers and in what order, which "
+            "spoken words the beats land on, and how the camera arrives from the "
+            "previous phase. Only when the section genuinely needs a cut -- a "
+            "different place or scale no camera move can bridge -- list in `cuts` "
+            "the shot label where the new world starts and why; the default is "
+            "none, one continuous take.\n\n"
+            f"Specify at most {self.per_section} effects for this section. "
+            "Each one: what the viewer must understand that words alone would "
+            "not deliver, what is literally on screen, the exact number or "
+            "claim it carries, which shot labels it covers (one effect may "
+            "cover several consecutive shots; every shot should be covered), "
+            "how long it holds in seconds (match the shots), a brief an author "
+            "can build from without asking you anything, difficulty 1-5 and "
+            "hours to refine the authored version by hand, the technique as "
+            "steps, inputs it needs, a cheaper fallback, the risk of "
+            "misleading. In `template` name the shared rig when one build "
+            "serves several shots; same wording each time."
+        )
+        answer = self._ask_json(prompt, EFFECTS_SCHEMA)
+        effects = answer.get("effects", [])
+        known = {s["label"] for s in shots}
+        for effect in effects:
+            effect["section"] = heading
+            effect["id"] = ident(slugify(f"{heading}-{effect['name']}", 48))
+            effect["shots"] = [s for s in effect.get("shots", []) if s in known]
+        cuts = [c for c in answer.get("cuts", []) or []
+                if isinstance(c, dict) and c.get("before") in known]
+        return {"section": heading, "seconds": section.get("seconds", 0),
+                "effects": effects, "cuts": cuts}
+
+    def effects(self, outline: dict, style: dict) -> list[dict]:
+        sections = outline.get("sections", [])
+
+        def work() -> list[dict]:
+            self._say(f"  {len(sections)} sections, {self.jobs} at a time")
+            with ThreadPoolExecutor(max_workers=self.jobs) as pool:
+                futures = [pool.submit(self._section_effects, s, style) for s in sections]
+                out = []
+                for section, future in zip(sections, futures):
+                    try:
+                        got = future.result()
+                        self._say(f"    {section.get('heading', '')[:52]}: "
+                                  f"{len(got['effects'])} effects")
+                        out.append(got)
+                    except ClaudeError as exc:
+                        self._say(f"    {section.get('heading', '')[:52]}: failed ({exc})")
+                return out
+        return self._stage("11-effects", work)
+
+    # -- the author --------------------------------------------------------
+
+    @staticmethod
+    def _worlds(section: dict, group: dict) -> list[dict]:
+        """The world symbol(s) of one section, with the plan's cuts applied."""
+        cuts = [c.get("before") for c in group.get("cuts", []) or [] if isinstance(c, dict)]
+        return world_symbols(section, group.get("effects", []), cuts=cuts)
+
+    def _stream(self, engine, n: int, prompt: str) -> tuple[int, bool]:
+        """Run the authoring agent once: (tool calls, whether it timed out)."""
+        tools_used = 0
+        timed_out = False
+        try:
+            for event in engine.stream(prompt, system=AUTHOR_SYSTEM):
+                if event.subtype == "tool_use" and event.tool_input:
+                    tools_used += 1
+                    what = event.tool_input.get("command") or event.tool_input.get("file_path") or ""
+                    self._say(f"    [{n}] {event.tool_name}: {str(what)[:90]}")
+        except ClaudeError as exc:
+            timed_out = "timed out" in str(exc).lower()
+            self._say(f"    [{n}] author failed: {exc}")
+        return tools_used, timed_out
+
+    def _review(self, reviewer, n: int, name: str, section: dict,
+                worlds: list[dict], round_no: int) -> dict | None:
+        """The model looks at the proof frames of one document and scores
+        them against the publication bar; None when no frame was rendered."""
+        stem = name[:-len(".scene.xml")]
+        frames_dir = self.ws.dir / "frames"
+        pngs = sorted(frames_dir.glob(f"{stem}__*.png")) if frames_dir.is_dir() else []
+        if not pngs:
+            return None
+        by_world = {w["id"]: w for w in worlds}
+        evidence = []
+        for png in pngs:
+            parts = png.stem.split("__")
+            sid = parts[1] if len(parts) > 2 else ""
+            try:
+                t = float(parts[-1].rstrip("s"))
+            except ValueError:
+                t = 0.0
+            shot = next((s for s in by_world.get(sid, {}).get("shots", [])
+                         if s["at"] <= t < s["at"] + s["seconds"]), None)
+            evidence.append({"frame": f"frames/{png.name}", "symbol": sid, "at": t,
+                             "shot": shot["label"] if shot else "",
+                             "should_show": shot.get("visual", "") if shot else
+                             "(between shots: the world's own start or end)"})
+        prompt = "\n\n".join([
+            f"Review round {round_no} of section {n} (\"{section.get('heading', '')}\") of "
+            f"\"{self.idea.title}\". Read every PNG listed under `frames/` -- each is one "
+            "proof frame of the section's world, rendered as `yt build` will include it, "
+            "at the midpoint of the shot named -- and judge each against the shot it "
+            "belongs to, then the frames together for continuity: the same hero at the "
+            "same size, colour and material; the same room and light; one camera on one "
+            "path. Then give a provisional score 0-10 for the section as it would read in "
+            "the finished film, by the publication bar.",
+            harness.brief("Frames to Read, and what each should show", evidence),
+            harness.brief("The section's shots (label, offset, length, picture)",
+                          [{"label": s["label"], "at": s["at"], "seconds": s["seconds"],
+                            "visual": s.get("visual", ""), "on_screen": s.get("on_screen", "")}
+                           for w in worlds for s in w["shots"]]),
+            harness.brief("The phases the world must deliver",
+                          [{"id": e["id"], "name": e.get("name"), "shots": e.get("shots"),
+                            "conveys": e.get("conveys"), "on_screen": e.get("on_screen")}
+                           for w in worlds for e in w["phases"]]),
+            "The editorial treatment:\n" + self._direction_block(),
+            "Every finding must carry a fix the author can apply in the document: which "
+            "camera key, light, material, animation or geometry to change, and to what.",
+        ])
+        look = approved_look(self.ws.root)
+        if look:
+            prompt += "\n\n" + "\n\n".join([
+                harness.brief("The approved look (the operator approved this keyframe as the "
+                              "film's look)", {
+                                  "frame": str(self.ws.root / look["frame"]),
+                                  "document": str(self.ws.root / look["document"]),
+                                  "elements": look.get("elements", [])}),
+                "Read the approved frame first. Score `fidelity` 0-10: how faithfully the "
+                "proof frames inherit its materials, lights, hero model and camera "
+                "language. A world that departs from the approved look is wrong, whatever "
+                "else it does well: name every departure as a finding with the fix being "
+                "to copy the keyframe's construct, and do not score the section above its "
+                "fidelity."])
+        try:
+            return reviewer.inspect(f"review-{self.ws.version or 'v00'}-{n:02d}-r{round_no}",
+                                    prompt, REVIEW_SCHEMA, cwd=self.ws.dir)
+        except harness.HarnessError as exc:
+            self._say(f"    [{n}] review failed: {exc}")
+            return None
+
+    #: Findings about these are the ones the author keeps answering with
+    #: primitives and flat colour; they go back first, as requirements.
+    SURFACE_WORDS = re.compile(r"material|translucen|transmission|subsurface|shadow|texture|"
+                               r"grain|paper|lighting|light rig|flat.shaded|environment", re.I)
+
+    @classmethod
+    def _review_listing(cls, review: dict | None) -> str:
+        """The review's findings as requirements for the next round, verbatim
+        (problem and fix), the material / translucency / shadow ones first."""
+        if not review:
+            return ""
+        lines = [f"The reviewer scored the frames {review.get('score', '?')}/10: "
+                 f"{review.get('summary', '')}"]
+        if review.get("continuity"):
+            lines.append(f"Continuity: {review['continuity']}")
+        rows = []
+        for fr in review.get("frames", []):
+            for f in fr.get("findings", []):
+                text = f"{f.get('category', '')} {f.get('problem', '')} {f.get('fix', '')}"
+                rows.append((0 if cls.SURFACE_WORDS.search(text) else 1,
+                             f"- [{f.get('severity', '')}] {fr.get('frame', '')} (shot "
+                             f"{fr.get('shot', '?')}, {f.get('category', '')}): "
+                             f"{f.get('problem', '')}\n  REQUIRED FIX: {f.get('fix', '')}"))
+        rows.sort(key=lambda r: r[0])
+        lines += ["", "Requirements for this round (verbatim from the review; each must be "
+                  "answered in the document, material and light first, and the answer "
+                  "must be visible in the proof frames):"]
+        lines += [r[1] for r in rows]
+        return "\n".join(lines)
+
+    def _author_one(self, n: int, section: dict, group: dict,
+                    style: dict, tokens: dict[str, str]) -> dict:
+        """One agent, one section, one document: the world, its proof frames,
+        the review, and the revision rounds the bar asks for."""
+        effects = group.get("effects", [])
+        worlds = self._worlds(section, group)
+        shots = {w["id"]: w["shots"] for w in worlds}
+        brief = self.ws.brief(n, idea=self.idea, house_rules=self.house, style=style,
+                              tokens=tokens, frame=self.frame, section=section,
+                              effects=effects, words=self.words,
+                              assets=self.bundle.get("assets", []),
+                              direction_block=self._direction_block(), worlds=worlds)
+        name = self.ws.doc_name(n, section)
+        engine = harness.ENGINE(EngineConfig(
+            tools=AUTHOR_TOOLS, model=self.model, permission_mode="dontAsk",
+            cwd=self.ws.dir, max_turns_budget_usd=self.budget_usd, timeout=AUTHOR_TIMEOUT))
+        reviewer = harness.Harness(self.ws.root, "vfx", model=self.model, role=REVIEW_ROLE,
+                                   house=self.house, house_digest=self.house_digest,
+                                   fresh=self.fresh, verbose=self.verbose, timeout=1800.0)
+        ids = ", ".join(w["id"] for w in worlds)
+        prompt = (f"Read {brief.name}, then examples.scene.xml and schema.md, and "
+                  f"author {name} as the brief says: the world symbol ({ids}) with every "
+                  f"shot as a phase. Check it with `python3 sr.py check {name}` and fix "
+                  f"every error; then `python3 sr.py frame {name}` and Read every frame it "
+                  "writes until each shows its shot. When check reports 0 error(s) and the "
+                  "frames show the shots, reply with one line: the file name and the "
+                  "symbol ids it holds.")
+        tools_used, _ = self._stream(engine, n, prompt)
+        rounds: list[dict] = []
+
+        def gate(round_no: int) -> tuple[list[str], list[str], dict | None]:
+            symbols, findings = self.ws.validate(name, shots=shots, props=True)
+            errors = [f for f in findings if f.startswith("error")]
+            review = None if errors else self._review(reviewer, n, name, section, worlds, round_no)
+            score = float(review["score"]) if review and review.get("score") is not None else None
+            rounds.append({"round": round_no, "symbols": symbols, "errors": len(errors),
+                           "score": score, "fidelity": (review or {}).get("fidelity"),
+                           "review": review, "timed_out": False,
+                           "findings": [f for f in findings if not f.startswith("note")]})
+            self._say(f"    [{n}] {name} round {round_no}: {len(symbols)} symbol(s), "
+                      f"{len(errors)} error(s)"
+                      + (f", review {score:g}/10" if score is not None else ", no review")
+                      + f", {tools_used} tool call(s)")
+            return symbols, findings, review
+
+        symbols, findings, review = gate(0)
+        revisions = 0
+        while revisions < self.revisions:
+            errors = [f for f in findings if f.startswith("error")]
+            score = rounds[-1]["score"]
+            short = score is not None and score < self.author_bar
+            if not errors and not short:
+                break
+            # The gate or the reviewer found what the author did not look at;
+            # send it back with the findings, once per allowed round.
+            revisions += 1
+            why = errors[0][:100] if errors else f"review {score:g}/10 under the bar {self.author_bar:g}"
+            self._say(f"    [{n}] revision {revisions}: {why}")
+            listing = "\n".join(f"- {f}" for f in findings if not f.startswith("note"))
+            prompt = (f"{name} is not done."
+                      + (f" The gate reports:\n{listing}\n\n" if listing else "\n\n")
+                      + (self._review_listing(review) + "\n\n" if review else "")
+                      + f"Fix the document -- the same world, one camera, the hero kept -- "
+                      f"run `python3 sr.py check {name}` until it reports 0 error(s), then "
+                      f"`python3 sr.py frame {name}` and Read every frame it writes; "
+                      "iterate until every frame shows its shot and the findings above "
+                      "are answered. Reply with one line.")
+            doc_path = self.ws.dir / name
+            before = doc_path.read_bytes() if doc_path.is_file() else None
+            used, timed_out = self._stream(engine, n, prompt)
+            tools_used += used
+            if timed_out:
+                # The agent was cut off mid-edit: keep the document the last
+                # gate judged, record the round as timed out, and stop; a
+                # half-edited document is not something to re-gate silently.
+                if before is not None:
+                    doc_path.write_bytes(before)
+                prev = rounds[-1]
+                rounds.append(dict(prev, round=revisions, timed_out=True))
+                self._say(f"    [{n}] revision {revisions} timed out after {AUTHOR_TIMEOUT:g}s; "
+                          "the previous document is kept")
+                break
+            symbols, findings, review = gate(revisions)
+        final = self.ws.dir / name
+        text = final.read_text(encoding="utf-8", errors="replace") if final.is_file() else ""
+        self._account(engine.usage, reviewer.usage)
+        return {"n": n, "section": section.get("heading", ""),
+                "file": f"{self.ws.rel}/{name}", "version": self.ws.version,
+                "symbols": symbols, "findings": findings, "tool_calls": tools_used,
+                "props_declined": props_declined(text),
+                "worlds": [{"id": w["id"], "start": w["start"], "seconds": w["seconds"],
+                            "shots": [s["label"] for s in w["shots"]],
+                            "phases": [e["id"] for e in w["phases"]]} for w in worlds],
+                "revisions": revisions, "rounds": rounds,
+                "score": rounds[-1]["score"] if rounds else None,
+                "review": rounds[-1]["review"] if rounds else None,
+                "cost_usd": round(engine.usage.cost_usd + reviewer.usage.cost_usd, 4),
+                "engine": reviewer.report()}
+
+    def author(self, outline: dict, effects: list[dict], style: dict,
+               tokens: dict[str, str]) -> list[dict]:
+        """One agent per section, in a new vfx/vNN/; the previous version stays."""
+        sections = outline.get("sections", [])
+        by_heading = {s["section"]: s for s in effects}
+
+        def work() -> list[dict]:
+            version = self.ws.new_version()
+            self.ws.prepare(tokens=tokens, frame=self.frame)
+            jobs = [(n, s, by_heading.get(s.get("heading", ""), {}))
+                    for n, s in enumerate(sections, 1)]
+            jobs = [j for j in jobs if j[2].get("effects")]
+            shots: dict[str, list[dict]] = {}
+            for _, s, group in jobs:
+                for w in self._worlds(s, group):
+                    shots[w["id"]] = w["shots"]
+            self.ws.write_shots(shots)
+            self._say(f"  authoring {len(jobs)} section(s) into {self.ws.rel}/ ({version}), "
+                      f"{self.jobs} at a time, up to ${self.budget_usd:g} each, "
+                      f"bar {self.author_bar:g}/10, {self.revisions} revision(s)")
+            with ThreadPoolExecutor(max_workers=self.jobs) as pool:
+                futures = [pool.submit(self._author_one, n, s, group, style, tokens)
+                           for n, s, group in jobs]
+                return [f.result() for f in futures]
+        return self._stage("12-author", work)
+
+    def continuity(self, authored: list[dict]) -> dict:
+        """One proof frame from each section, side by side: do they read as
+        one film? Each section was reviewed alone, so a hero that changes
+        size or a grade that shifts at every boundary passes every section
+        review; this is the review that sees it."""
+        def work() -> dict:
+            frames: list[dict] = []
+            cwd: Path | None = None
+            for doc in authored:
+                path = self.ws.root / doc["file"]
+                stem = path.name[:-len(".scene.xml")]
+                pngs = sorted((path.parent / "frames").glob(f"{stem}__*.png"))
+                if not pngs:
+                    continue
+                cwd = cwd or path.parent
+                if path.parent != cwd:
+                    continue
+                png = pngs[len(pngs) // 2]
+                frames.append({"section": doc.get("section", ""), "document": path.name,
+                               "frame": f"frames/{png.name}"})
+            if len(frames) < 2:
+                return {"skipped": "fewer than two sections have proof frames",
+                        "frames": frames, "breaks": []}
+            reviewer = harness.Harness(self.ws.root, "vfx", model=self.model,
+                                       role=CONTINUITY_ROLE, house=self.house,
+                                       house_digest=self.house_digest, fresh=self.fresh,
+                                       verbose=self.verbose, timeout=1800.0)
+            prompt = "\n\n".join([
+                f"Read every PNG listed under `frames/` -- one proof frame from each "
+                f"section of \"{self.idea.title}\", in film order -- and judge them "
+                "together: do they read as one film? Then score 0-10 how well the "
+                "sections hold together as one film, by the publication bar.",
+                harness.brief("Frames to Read, in film order", frames),
+                "The editorial treatment:\n" + self._direction_block(),
+                "A break names the sections it lies between, the one section whose "
+                "document should change, and the fix in that document's terms.",
+            ])
+            try:
+                result = reviewer.inspect(f"continuity-{self.ws.version or 'v00'}", prompt,
+                                          CONTINUITY_SCHEMA, cwd=cwd)
+            except harness.HarnessError as exc:
+                self._say(f"  continuity review failed: {exc}")
+                return {"error": str(exc)[:300], "frames": frames, "breaks": []}
+            finally:
+                self._account(reviewer.usage)
+            breaks = result.get("breaks") or []
+            self._say(f"  continuity: {result.get('score')}/10, "
+                      f"{'one film' if result.get('one_film') else 'not one film'}, "
+                      f"{len(breaks)} break(s)")
+            return dict(result, frames=frames,
+                        cost_usd=round(reviewer.usage.cost_usd, 4))
+        return self._stage("12-continuity", work)
+
+    def scene_map(self, effects: list[dict], authored: list[dict]) -> dict:
+        """Shot label -> {file, symbol}, from what was actually written: every
+        shot of a section goes to its world symbol, and each effect is a
+        phase of it (`phases`: effect id -> symbol id). A document authored
+        the old way, one symbol per effect, still maps by effect id."""
+        by_label: dict[str, dict] = {}
+        symbols: dict[str, dict] = {}
+        phases: dict[str, str] = {}
+        dropped: dict[str, str] = {}
+        docs = {d["section"]: d for d in authored}
+        for group in effects:
+            doc = docs.get(group["section"])
+            if doc is not None:
+                errors = [f for f in doc["findings"] if f.startswith("error")]
+                present = set(doc["symbols"])
+                for w in doc.get("worlds") or []:
+                    if w["id"] in present and not errors:
+                        symbols[w["id"]] = {"file": doc["file"], "shots": list(w["shots"]),
+                                            "name": w["id"], "phases": list(w.get("phases", []))}
+                        for label in w["shots"]:
+                            by_label.setdefault(label, {"file": doc["file"], "symbol": w["id"]})
+            for effect in group["effects"]:
+                eid = effect["id"]
+                if doc is None:
+                    dropped[eid] = "no document was authored for its section"
+                    continue
+                world = next((w for w in doc.get("worlds") or []
+                              if eid in w.get("phases", []) and w["id"] in symbols), None)
+                if world is not None:
+                    phases[eid] = world["id"]
+                    continue
+                if eid not in present:
+                    dropped[eid] = ("its world symbol has engine errors: " + errors[0][:140]
+                                    if errors and doc.get("worlds")
+                                    else "the author wrote no symbol with this id")
+                    continue
+                if errors:
+                    dropped[eid] = "its document has engine errors: " + errors[0][:140]
+                    continue
+                symbols[eid] = {"file": doc["file"], "shots": effect.get("shots", []),
+                                "name": effect.get("name", "")}
+                for label in effect.get("shots", []):
+                    by_label.setdefault(label, {"file": doc["file"], "symbol": eid})
+        return {"stack": STACK, "files": [d["file"] for d in authored],
+                "symbols": symbols, "phases": phases, "by_label": by_label,
+                "dropped": dropped,
+                "findings": {d["file"]: d["findings"] for d in authored},
+                "cost_usd": round(sum(d.get("cost_usd", 0) for d in authored), 2)}
+
+    def reach(self, effects: list[dict], scene: dict) -> dict:
+        """How far the authored documents reach into the engine, and whether
+        each effect uses the strongest construct for what it must convey.
+
+        The usage and the family coverage are computed; the verdicts are the
+        model's. With nothing authored there is nothing to judge, and no call.
+        """
+        authored = [e for s in effects for e in s["effects"] if authored_as(scene, e["id"])]
+        files = sorted({authored_as(scene, e["id"])["file"] for e in authored})
+
+        def work() -> dict:
+            if not authored:
+                return {"usage": None, "report": None, "audit": None,
+                        "reason": "nothing was authored, so there is nothing to audit"}
+            texts = {}
+            for file in files:
+                path = self.ws.root / file
+                try:
+                    texts[file] = path.read_text(encoding="utf-8")
+                except OSError as exc:
+                    texts[file] = f"<unreadable error='{exc}'/>"
+            usage = reach.usage_of(texts)
+            # A phase is judged by the constructs of the world it lives in.
+            for eid, wid in (scene.get("phases") or {}).items():
+                usage["symbols"].setdefault(eid, usage["symbols"].get(wid, {}))
+            names = sdk().element_names()
+            rep = reach.report(usage, names, reach.manifest())
+            audit = self._ask_json(reach.prompt(
+                idea_block=self._idea_block(), direction_block=self._direction_block(),
+                mission=MISSION, effects=authored, usage=usage, rep=rep,
+                element_names=names), reach.REACH_SCHEMA)
+            return {"usage": usage, "report": rep, "audit": audit, "reason": ""}
+        return self._stage("14-reach", work)
+
+    def plan(self, effects: list[dict], totals: dict, scene: dict,
+             reach_data: dict | None = None) -> dict:
+        flat = [e for s in effects for e in s["effects"]]
+        audit = (reach_data or {}).get("audit") or {}
+        upgrades = {e["id"]: e for e in audit.get("effects", [])
+                    if e.get("verdict") == "upgrade"}
+        listing = "\n".join(
+            f"- [{e['type']}, d{e['difficulty']}, {e['hours']}h, "
+            f"{'authored' if authored_as(scene, e['id']) else 'NOT authored'}"
+            + (f", reach: upgrade to {', '.join(upgrades[e['id']].get('upgrade_to', []))} "
+               f"(gain {upgrades[e['id']].get('gain', 0)}/5)" if e['id'] in upgrades else "")
+            + f"] {e['name']} ({e['section']}; shots {', '.join(e.get('shots', [])) or '-'})"
+            for e in flat)
+        budget = (f"The refinement budget is {self.budget_hours} hours; the plan "
+                  f"currently needs {totals['hours']:.0f}. "
+                  if self.budget_hours else "")
+        reach_line = ""
+        if audit:
+            reach_line = (f"The reach audit scored these documents "
+                          f"{audit.get('reach', {}).get('score', '?')}/10 against what the "
+                          f"engine offers: {audit.get('reach', {}).get('summary', '')} "
+                          "An effect marked `upgrade` has a stronger construct named; "
+                          "treat the upgrade as refinement work, ordered by its gain. ")
+        return self._stage("15-plan", lambda: self._ask_json(
+            f"{self._idea_block()}\n\nEvery specified visual, and whether the "
+            f"author produced a valid scene-render symbol for it:\n{listing}\n\n"
+            f"Totals: {totals['hours']:.0f} hours over {totals['count']} "
+            f"effects, {totals['seconds']:.0f}s of animated screen time.\n\n"
+            f"{budget}{reach_line}Now plan the refinement. The authored symbols render "
+            "today; the hours are what it takes to make them good, and an "
+            "effect not authored has to be either authored by hand or cut. "
+            "Give the order to work in and why, the templates worth building "
+            "once and reusing with the hours each saves, which effects to cut "
+            "first and what replaces them, anything worth outsourcing, and a "
+            "one-sentence verdict on whether this is finishable as specified.",
+            PLAN_SCHEMA))
+
+    # -- run ---------------------------------------------------------------
+
+    def run(self) -> dict:
+        outline = self.outline()
+        style = self.style()
+        tokens = tokens_from(style)
+        effects = self.effects(outline, style)
+        authored = self.author(outline, effects, style, tokens)
+        continuity = self.continuity(authored)
+        scene = self.scene_map(effects, authored)
+        self.dossier.save("13-scene", scene)
+        totals = summarise(effects)
+        reached = self.reach(effects, scene)
+        plan = self.plan(effects, totals, scene, reached)
+        version = next((d.get("version") for d in authored if d.get("version")), self.ws.version)
+        return {
+            "idea": asdict(self.idea),
+            "stack": STACK,
+            "runtime": outline.get("runtime", ""),
+            "style": style,
+            "tokens": tokens,
+            "sections": effects,
+            "authoring": {"version": version,
+                          "dir": f"{SCENE_DIR}/{version}" if version else SCENE_DIR,
+                          "versions": Workspace.versions(self.ws.base),
+                          "files": [d["file"] for d in authored],
+                          "author_bar": self.author_bar, "revisions": self.revisions,
+                          "scores": {d["file"]: d.get("score") for d in authored},
+                          "props_declined": declined_of(authored),
+                          "keyframe": approved_look(self.ws.root)},
+            "authored": authored,
+            "continuity": continuity,
+            "scene": scene,
+            "totals": totals,
+            "reach": reached,
+            "plan": plan,
+            "inspo": self.inspo,
+            "house": self.house_digest,
+            "usage": asdict(self.usage),
+        }
+
+
+def authored_as(scene: dict, effect_id: str) -> dict | None:
+    """The symbol row an effect was authored in -- its world when it is a
+    phase, its own symbol the old way -- with `id`, or None if not authored."""
+    symbols = scene.get("symbols") or {}
+    sid = (scene.get("phases") or {}).get(effect_id, effect_id)
+    row = symbols.get(sid)
+    return dict(row, id=sid) if row else None
+
+
+def summarise(sections: list[dict]) -> dict:
+    """Arithmetic stays in Python: models are unreliable at adding up."""
+    flat = [e for s in sections for e in s["effects"]]
+    by_type: dict[str, dict] = {}
+    by_difficulty: dict[int, dict] = {}
+    templates: dict[str, dict] = {}
+    for effect in flat:
+        name = (effect.get("template") or "").strip().lower()
+        if not name:
+            continue
+        row = templates.setdefault(name, {"shots": 0, "hours": 0.0})
+        row["shots"] += 1
+        row["hours"] += float(effect.get("hours") or 0)
+    shared = {k: v for k, v in templates.items() if v["shots"] > 1}
+    for effect in flat:
+        for bucket, key in ((by_type, effect.get("type", "?")),
+                            (by_difficulty, int(effect.get("difficulty", 0)))):
+            row = bucket.setdefault(key, {"count": 0, "hours": 0.0, "seconds": 0.0})
+            row["count"] += 1
+            row["hours"] += float(effect.get("hours") or 0)
+            row["seconds"] += float(effect.get("seconds") or 0)
+    return {
+        "count": len(flat),
+        "hours": sum(float(e.get("hours") or 0) for e in flat),
+        "seconds": sum(float(e.get("seconds") or 0) for e in flat),
+        "reusable": sum(v["shots"] for v in shared.values()),
+        "templates": dict(sorted(shared.items(), key=lambda kv: -kv[1]["shots"])),
+        "by_type": dict(sorted(by_type.items(), key=lambda kv: -kv[1]["hours"])),
+        "by_difficulty": {str(k): by_difficulty[k] for k in sorted(by_difficulty)},
+    }
+
+
+# --------------------------------------------------------------------------- #
+# output
+# --------------------------------------------------------------------------- #
+
+def _label_key(label: str) -> list:
+    return [int(p) if p.isdigit() else p for p in label.split(".")]
+
+
+def write_vfx(dossier: Dossier, data: dict) -> list[Path]:
+    style, totals, plan = data["style"], data["totals"], data["plan"]
+    idea = data["idea"]
+    scene = data.get("scene") or {}
+    symbols = scene.get("symbols", {})
+    dropped = scene.get("dropped", {})
+    authoring = data.get("authoring") or {}
+    authored_count = sum(1 for s in data["sections"] for e in s["effects"]
+                         if authored_as(scene, e.get("id", "")))
+    md = [f"# Visual plan — {idea['title']}", "",
+          f"*Authored for {STACK}: one document per section under "
+          f"`{authoring.get('dir', SCENE_DIR)}/`, one `<symbol>` per section -- the world, "
+          "every shot a phase of it; `yt build` includes it as one continuous take.*", ""]
+    if data.get("inspo"):
+        md += [f"*Visual reference: {', '.join(data['inspo'])}*", ""]
+    md += [f"**{totals['count']} effects · {authored_count} authored and engine-valid in "
+           f"{len(symbols)} symbol(s) · {len(scene.get('by_label', {}))} shots covered · "
+           f"{totals['hours']:.0f} hours to refine · authoring cost ${scene.get('cost_usd', 0)}**",
+           "", f"> {plan.get('verdict', '')}", ""]
+    if authoring.get("version"):
+        scores = ", ".join(f"`{Path(f).name}` {s if s is not None else '—'}/10"
+                           for f, s in (authoring.get("scores") or {}).items())
+        md += [f"*Active version `{authoring['version']}` of "
+               f"{', '.join(authoring.get('versions') or [authoring['version']])}; "
+               f"review bar {authoring.get('author_bar')}/10, up to "
+               f"{authoring.get('revisions')} revision(s); scores: {scores or '—'}*", ""]
+    glance = reach.summary(data.get("reach"))
+    if glance:
+        audit = data["reach"]["audit"]
+        md += ["## Reach", "",
+               f"**{glance['score']}/10** -- {glance['summary']}", "",
+               "| family | used / available |", "|---|---|"]
+        md += [f"| {fam} | {cov} |" for fam, cov in glance["coverage"].items()]
+        md += ["", "| effect | verdict | uses | upgrade to | gain | why |",
+               "|---|---|---|---|---|---|"]
+        md += [f"| `{e['id']}` | {e['verdict']} | {', '.join(e.get('current', []))} | "
+               f"{', '.join(e.get('upgrade_to', [])) or '—'} | {e.get('gain', 0)}/5 | "
+               f"{str(e.get('why', ''))[:160]} |" for e in audit.get("effects", [])]
+        if audit.get("unused_worth_using"):
+            md += ["", "### Unused, and worth using", ""]
+            md += [f"- `{u['construct']}` in {u['where']}: {u['why']}"
+                   for u in audit["unused_worth_using"]]
+        if glance["caveats"]:
+            md += ["", "### The engine only approximates or reports", ""]
+            md += [f"- `{c['construct']}`: {c['status']}"
+                   + (f" when {', '.join(c['when'])}" if c.get("when") else "")
+                   + (f" -- {c['note']}" if c.get("note") else "")
+                   for c in data["reach"]["report"]["caveats"]]
+        md.append("")
+    elif (data.get("reach") or {}).get("reason"):
+        md += ["## Reach", "", f"*{data['reach']['reason']}*", ""]
+    md += ["## The look", "", style.get("look", ""), ""]
+    md += ["### Tokens", "", "| token | hex |", "|---|---|"]
+    md += [f"| `var(--{k})` | `{v}` |" for k, v in data.get("tokens", {}).items()]
+    md += ["", f"**Type.** {style.get('typography', '')}", "",
+           f"**Camera.** {style.get('camera_language', '')}", "",
+           f"**Transitions.** {style.get('transitions', '')}", "",
+           "### Motion rules", ""]
+    md += [f"{n}. {r}" for n, r in enumerate(style.get("motion_rules", []), 1)]
+    if style.get("avoid"):
+        md += ["", "### Avoid", ""] + [f"- {a}" for a in style["avoid"]]
+
+    md += ["", "## Effects by section", ""]
+    for section in data["sections"]:
+        hours = sum(float(e.get("hours") or 0) for e in section["effects"])
+        md += [f"### {section['section']} ({section['seconds']}s · {hours:.1f}h)", ""]
+        for effect in section["effects"]:
+            stars = ("●" * int(effect.get("difficulty", 0))
+                     + "○" * (5 - int(effect.get("difficulty", 0))))
+            eid = effect.get("id", "")
+            row = authored_as(scene, eid)
+            state = (f"authored in `{row['file']}` as "
+                     + (f"a phase of `{row['id']}`" if row["id"] != eid else f"`{eid}`")
+                     if row else "**not authored** — " + dropped.get(eid, "no document")[:160])
+            md += [f"#### {effect['name']}",
+                   f"`{effect['type']}` · {stars} · {effect.get('seconds', 0)}s · "
+                   f"{effect.get('hours', 0)}h · shots "
+                   f"{', '.join(effect.get('shots', [])) or '—'}"
+                   + (f"  · template: **{effect['template']}**"
+                      if (effect.get("template") or "").strip().lower()
+                      in totals.get("templates", {}) else ""),
+                   "", f"*{state}*", "",
+                   f"**Conveys.** {effect.get('conveys', '')}", "",
+                   f"**On screen.** {effect.get('on_screen', '')}", "",
+                   f"**Brief.** {effect.get('brief', '')}", ""]
+            if effect.get("data_or_claim"):
+                md += [f"**Carries.** {effect['data_or_claim']}", ""]
+            if effect.get("technique"):
+                md += ["**Technique.**", ""]
+                md += [f"{n}. {s}" for n, s in enumerate(effect["technique"], 1)] + [""]
+            md += [f"**Cheaper fallback.** {effect.get('fallback', '')}", ""]
+            if effect.get("risk"):
+                md += [f"**Risk.** {effect['risk']}", ""]
+
+    md += ["## Authored documents", ""]
+    for doc in data.get("authored", []):
+        errors = [f for f in doc.get("findings", []) if f.startswith("error")]
+        rounds = doc.get("rounds") or []
+        md += [f"- `{doc['file']}` — {len(doc.get('symbols', []))} symbol(s), "
+               f"{len(errors)} error(s), {doc.get('tool_calls', 0)} tool calls, "
+               f"{doc.get('revisions', 0)} revision(s)"
+               + (f", review {doc['score']:g}/10" if doc.get("score") is not None else "")
+               + f", ${doc.get('cost_usd', 0)}; preview: `yt render --scene {doc['file']}`"]
+        md += [f"  - round {r.get('round')}: {r.get('errors', 0)} error(s)"
+               + (f", {r['score']:g}/10 — {str((r.get('review') or {}).get('summary', ''))[:140]}"
+                  if r.get("score") is not None else ", no review")
+               for r in rounds]
+        md += [f"  - {e[:160]}" for e in errors[:4]]
+    md += ["", "| shot | symbol | document |", "|---|---|---|"]
+    for label, hit in sorted(scene.get("by_label", {}).items(), key=lambda kv: _label_key(kv[0])):
+        md += [f"| {label} | `{hit['symbol']}` | `{hit['file']}` |"]
+    if dropped:
+        md += ["", "### Not authored", ""]
+        md += [f"- `{eid}` — {why[:200]}" for eid, why in dropped.items()]
+    md += ["", "## Cost", "", "| effect type | count | hours | screen time |",
+           "|---|---|---|---|"]
+    md += [f"| {name} | {row['count']} | {row['hours']:.1f} | {row['seconds']:.0f}s |"
+           for name, row in totals["by_type"].items()]
+    if totals.get("templates"):
+        md += ["", "### Shared rigs (each serves more than one shot)", "",
+               "| template | shots | hours as specified |", "|---|---|---|"]
+        md += [f"| {name} | {row['shots']} | {row['hours']:.1f} |"
+               for name, row in totals["templates"].items()]
+    md += ["", "## Refinement plan", "", "### Order", ""]
+    md += [f"{n}. {step}" for n, step in enumerate(plan.get("build_order", []), 1)]
+    if plan.get("templates"):
+        md += ["", "### Build once, reuse", ""]
+        md += [f"- **{t['name']}** — {t['covers']} (saves ~{t['saves_hours']}h)"
+               for t in plan["templates"]]
+    if plan.get("cut_first"):
+        md += ["", "### Cut first if short on time", ""] + [f"- {c}" for c in plan["cut_first"]]
+    if plan.get("outsource"):
+        md += ["", "### Worth outsourcing", ""] + [f"- {o}" for o in plan["outsource"]]
+    md += ["", f"*{Usage(**data['usage'])}*", ""]
+
+    written = [dossier.write("vfx.md", "\n".join(md)),
+               write_json(dossier.dir / "vfx.json", data)]
+    rows = [{"section": s["section"],
+             **{k: v for k, v in e.items() if not isinstance(v, (list, dict))},
+             "shots": ", ".join(e.get("shots", [])),
+             "technique": " | ".join(e.get("technique", [])),
+             "inputs": "; ".join(e.get("inputs", [])),
+             "authored": "yes" if authored_as(scene, e.get("id", "")) else "no"}
+            for s in data["sections"] for e in s["effects"]]
+    if rows:
+        cols = sorted({k for r in rows for k in r})
+        path = dossier.dir / "vfx.csv"
+        with open(path, "w", encoding="utf-8", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=cols)
+            writer.writeheader()
+            writer.writerows({c: r.get(c, "") for c in cols} for r in rows)
+        written.append(path)
+    return written
+
+
+# --------------------------------------------------------------------------- #
+# cli
+# --------------------------------------------------------------------------- #
+
+def register(sub, parents=()) -> argparse.ArgumentParser:
+    p = sub.add_parser(
+        "vfx", parents=list(parents),
+        help="plan the animation and have the model author it for scene-render",
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--inspo", default="",
+                   help="comma-separated channels to match visually")
+    p.add_argument("--per-section", type=int, default=3,
+                   help="effects per section (default 3)")
+    p.add_argument("--jobs", type=int, default=2,
+                   help="sections planned and authored in parallel (default 2)")
+    p.add_argument("--budget-usd", type=float, default=3.0, dest="budget_usd",
+                   help="spend cap for authoring one section (default 3)")
+    p.add_argument("--budget-hours", type=float,
+                   help="refinement hours available; shapes what to cut")
+    p.add_argument("--width", type=int, default=FRAME[0], help="frame width (1920)")
+    p.add_argument("--height", type=int, default=FRAME[1], help="frame height (1080)")
+    p.add_argument("--revisions", type=int, default=2,
+                   help="rounds the author gets to fix what the frame gate and the "
+                        "review find (default 2)")
+    p.add_argument("--author-bar", type=float, default=7.0, dest="author_bar",
+                   help="provisional review score (0-10) under which the frames go "
+                        "back to the author (default 7)")
+    p.add_argument("--fresh", action="store_true",
+                   help="redo every stage, authoring included, into the next vfx/vNN/ "
+                        "instead of reusing cached ones")
+    # Standalone use: hand it the files instead of a project.
+    workspace.add_inputs(p, "script", "voice", "styles")
+    p.set_defaults(run=run)
+    return p
+
+
+def run(args) -> int:
+    idea, project = workspace.resolve(args, inputs=("script", "voice", "styles"))
+    if project.has("dossier"):
+        bundle = load_dossier(project.root, idea)
+    else:
+        if not args.quiet:
+            print("no research in this project; planning from the idea alone",
+                  file=sys.stderr)
+        bundle = {"idea": idea, "outline": {}, "claims": [], "assets": [], "premise": ""}
+    dossier = Dossier(project.root, bundle["idea"], at=project.root)
+    sections = script_sections(project.source("script", workspace.override(args, "script")))
+    words = voice_words(project.source("voice", workspace.override(args, "voice")))
+    direction = read_json(project.source("styles", workspace.override(args, "styles")),
+                          warn=False) or {}
+    verbose = not args.quiet
+    if verbose:
+        print(f"planning visuals for {STACK}: {bundle['idea'].title}\n  -> {dossier.dir}"
+              + ("" if sections else "\n  (no screenplay yet: effects will not map to shots)")
+              + ("" if words else "\n  (no narration yet: beats cannot land on spoken words)"),
+              file=sys.stderr)
+    if render.engine() is None and not render.remote_host(args):
+        print("warning: no engine reachable (RS_RENDER_HOST unset, no local binary); "
+              "documents will pass only the SDK's checks", file=sys.stderr)
+
+    rules, digest = house.for_args(args, project, "vfx")
+    if rules and verbose:
+        print(f"standards: {', '.join(digest['sources'])}", file=sys.stderr)
+    planner = VfxPlanner(
+        bundle, dossier, Workspace(project.root), model=args.model, house=rules,
+        house_digest=digest,
+        inspo=[s.strip() for s in args.inspo.split(",") if s.strip()],
+        per_section=args.per_section, jobs=args.jobs, budget_usd=args.budget_usd,
+        budget_hours=args.budget_hours, sections=sections, words=words,
+        frame=(args.width, args.height), direction=direction,
+        revisions=args.revisions, author_bar=args.author_bar, fresh=args.fresh,
+        verbose=verbose)
+    try:
+        data = planner.run()
+    except ClaudeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    scene = data["scene"]
+    for eid, why in scene["dropped"].items():
+        print(f"  not authored: {eid}: {why[:160]}", file=sys.stderr)
+    written = write_vfx(dossier, data)
+    print(f"\n{dossier.dir}/")
+    for path in written:
+        print(f"  {path.name}")
+    for file in scene["files"]:
+        print(f"  {file}")
+    totals = data["totals"]
+    glance = reach.summary(data.get("reach"))
+    print(f"\n{totals['count']} effects · {len(scene['symbols'])} authored · "
+          f"{len(scene['by_label'])} shots covered · {totals['hours']:.0f}h to refine"
+          + (f" · {len(scene['dropped'])} not authored" if scene["dropped"] else "")
+          + (f" · reach {glance['score']}/10, {len(glance['upgrades'])} upgrade(s)"
+             if glance else ""))
+    print(f"{planner.usage}", file=sys.stderr)
+    return 1 if scene["dropped"] and not scene["symbols"] else 0

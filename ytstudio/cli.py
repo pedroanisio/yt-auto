@@ -1,0 +1,364 @@
+"""yt -- take a YouTube video from an idea to a rendered cut.
+
+Nine stages, each reading what the ones before it wrote:
+
+    yt ideas     invent and rank video ideas, deduplicated against a store
+    yt research  turn one idea into a sourced dossier, with licensed footage
+    yt styles    rank the visual treatments that can carry its message
+    yt script    write the full AV screenplay, shot by shot
+    yt keyframe  lock the look: one composed frame of the film's elements, for approval
+    yt voice     record the narration, measure it, caption it
+    yt vfx       plan the animation and have the model author it for scene-render
+    yt sound     spot the effects, ambience, score and mix against it
+    yt build     compile all of it into a scene-render document
+    yt render    hand the document to the engine
+    yt retime    write the measured narration timings back into the script
+    yt pilot     cut a short pilot at full fidelity, for approval
+    yt gate      put the render through the delivery gate
+    yt review    write the PDF review sheet, and have the model read it
+    yt qa        score the rendered film against the publication bar, per pass
+
+    yt run       all of the above, in order, for one idea
+    yt ls        which videos you have, and how far each one got
+    yt doctor    check the toolchain and every video, and say what to do next
+    yt assess    ask whether a described video can be produced, and prove it with a frame
+    yt assets    search open catalogues for one shot's footage
+    yt props     fetch CC0 3D props (models, HDRIs, textures) for a video from Poly Haven
+
+Everything for one video lives in `work/<slug>/`, so stages chain without
+passing paths -- and every stage also runs on its own, handed files
+(`yt pilot --scene cut.xml`, `yt build --script s.json --out cut.xml`):
+
+    yt ideas --niche "semiconductor manufacturing" --count 20
+    yt research --title lithography
+    yt styles --title lithography --rich
+    yt script --title lithography --minutes 12 --polish --verify
+    yt sound --title lithography --review
+
+`--title` matches a project already on disk, an idea in `work/ideas.json`, or
+is taken as the title itself. Pass `--project DIR` to point at one directly,
+`--work DIR` to keep videos somewhere other than `./work`, and `-` to read one
+idea as JSON on stdin. Every stage writes its own files into the project and
+also prints to stdout, so `--json`/`--md`/`--csv` are only for sending a copy
+somewhere else.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+
+import claude_engine
+
+from .core import read_json
+from . import (assess, assets, build, doctor, env, gate, house, ideas, keyframe, pilot,
+               props, qa, render, research, retime, review, script, sound, styles, vfx,
+               voice, workspace)
+
+#: The stages `yt run` walks, in order.
+PIPELINE = tuple(stage for stage, _ in workspace.STAGES)
+
+
+def _flags(*specs) -> argparse.ArgumentParser:
+    parent = argparse.ArgumentParser(add_help=False)
+    for args, kwargs in specs:
+        parent.add_argument(*args, **kwargs)
+    return parent
+
+
+def _parents() -> dict[str, argparse.ArgumentParser]:
+    """The flags shared across stages, defined once."""
+    return {
+        "quiet": _flags(
+            (("--quiet",), dict(action="store_true",
+                                help="no progress on stderr")),
+            (("--env-file",), dict(dest="env_file", metavar="FILE",
+                                   help="API keys to load (default: "
+                                        "$YT_ENV_FILE, ./_tmp/do_not_delete.env, "
+                                        "./.env, ~/.config/pals-notes/.env)")),
+            (("--house",), dict(metavar="FILE",
+                                help="the channel's standards (default: "
+                                     "<work>/house.md and the project's own)")),
+            (("--no-house",), dict(action="store_true", dest="no_house",
+                                   help="ignore the standards for this run"))),
+        "model": _flags(
+            (("--model",), dict(default="sonnet",
+                                help="model: fable | opus | sonnet | haiku | a "
+                                     "full id (default sonnet)")),
+            (("--effort",), dict(choices=["low", "medium", "high", "xhigh", "max"],
+                                 help="reasoning effort for every call this run "
+                                      "makes (default: $CLAUDE_ENGINE_EFFORT, "
+                                      "then the claude CLI's own setting)")),
+            (("--fallback-model",), dict(dest="fallback_model", metavar="MODEL",
+                                         help="model(s) to try when --model is "
+                                              "overloaded; comma-separated, in "
+                                              "order ($CLAUDE_ENGINE_FALLBACK_MODEL)"))),
+        "work": _flags(
+            (("--work",), dict(default=workspace.DEFAULT_WORK, metavar="DIR",
+                               help="where videos are kept "
+                                    f"(default ./{workspace.DEFAULT_WORK})")),
+            (("--project",), dict(metavar="DIR",
+                                  help="one video's directory, instead of "
+                                       "--work plus a title"))),
+        "idea": _flags(
+            (("stdin",), dict(nargs="?", choices=["-"], default=None,
+                              help="read one idea (or a list) as JSON on stdin")),
+            (("--from",), dict(dest="source", metavar="FILE",
+                               help="ideas.json to pick from "
+                                    "(default <work>/ideas.json)")),
+            (("--index",), dict(type=int,
+                                help="1-based idea to pick (default 1)")),
+            (("--title",), dict(help="a project on disk, an idea title, or a "
+                                     "substring of either")),
+            (("--genre",), dict(help="genre, when passing an idea by hand")),
+            (("--description",), dict(help="premise, when passing an idea by hand"))),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# the whole pipeline
+# --------------------------------------------------------------------------- #
+
+def _register_run(sub, parents: list) -> None:
+    p = sub.add_parser(
+        "run", parents=parents, help="run every stage for one idea, in order",
+        description="Research, direct, write and score one video in one go. A "
+                    "stage whose output is already in the project is skipped "
+                    "unless named in --redo.",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--minutes", type=float, default=10.0,
+                   help="target runtime for the script (default 10)")
+    p.add_argument("--skip", default="", metavar="STAGES",
+                   help=f"comma-separated stages to leave out: {', '.join(PIPELINE)}")
+    p.add_argument("--redo", default="", metavar="STAGES",
+                   help="comma-separated stages to run again even though their "
+                        "output exists, or 'all'")
+    p.add_argument("--quick", action="store_true",
+                   help="skip the quality passes (deliberation, polish, "
+                        "fact-check, listen-back) for a cheaper first draft")
+    p.set_defaults(run=_run_pipeline)
+
+#: Stages that take only the project and the quiet flag: no model, no idea
+#: flags, because they decide nothing and fetch from open catalogues.
+PROJECT_ONLY = ("props",)
+
+
+def run_extras(args, *, redo: set) -> dict[str, list[str]]:
+    """The flags `yt run` adds to each stage: the quality passes unless
+    --quick, a fresh research when it is redone, and the fetches that turn a
+    design into files (props, the sound cues)."""
+    quick = getattr(args, "quick", False)
+    return {
+        # --redo means run again, which for research means ignoring its
+        # cached stages too, or the "rerun" would just replay them.
+        "research": ["--fresh"] if redo & {"research", "all"} and not quick else [],
+        "styles": ["--rich"] + ([] if quick else ["--deliberate", "critique"]),
+        "script": ["--minutes", str(args.minutes)]
+                  + ([] if quick else ["--polish", "--verify"]),
+        "props": [],
+        # The look is locked once per set of inputs; a redo means pick and
+        # compose again, not replay the cached decision.
+        "keyframe": ["--fresh"] if redo & {"keyframe", "all"} else [],
+        "voice": [],
+        # The screenplay takes the narration's measured lengths before
+        # anything is authored against it.
+        "retime": [],
+        # vfx caches its own stages by name, so a redo without --fresh would
+        # replay the earlier authoring against the clock it was asked to fix.
+        "vfx": ["--fresh"] if redo & {"vfx", "all"} else [],
+        "sound": ["--fetch"] + ([] if quick else ["--review"]),
+        "build": [],
+        "render": ["--quality", "draft"] if quick else [],
+    }
+
+
+def stage_argv(stage: str, base: list[str], extra: dict[str, list[str]]) -> list[str]:
+    """The argv for one stage of `yt run`: the shared flags plus its own, or
+    only --project/--quiet for a stage that accepts nothing else."""
+    if stage in PROJECT_ONLY:
+        kept, skip = [], False
+        for n, flag in enumerate(base):
+            if skip:
+                skip = False
+                continue
+            if flag == "--project":
+                kept += [flag, base[n + 1]]
+                skip = True
+            elif flag == "--quiet":
+                kept.append(flag)
+        return [stage, *kept, *extra.get(stage, [])]
+    return [stage, *base, *extra.get(stage, [])]
+
+
+def settle_retime(code: int, project: workspace.Project, run_stage, *,
+                  say=lambda msg: print(msg, file=sys.stderr)) -> int:
+    """Act on retime's verdict before anything is planned on the clock.
+
+    `rerecord` is plumbing: the takes are recorded again and the screenplay
+    reconciled once more. `rewrite`, or a read sent back twice, is the
+    editor's work, so the run stops with retime's code and the hint printed.
+    """
+    if code != retime.UNSETTLED:
+        return code
+    back = retime.unsettled(read_json(project.path("retime"), warn=False) or {})
+    if back.get("rewrite") or not back.get("rerecord"):
+        say("the editor sent a line back to the screenplay; fix it and run again")
+        return code
+    labels = ",".join(back["rerecord"])
+    say(f"\n== voice: recording {labels} again, as the editor asked")
+    code = run_stage("voice", ["--redo", labels])
+    if code:
+        return code
+    say("\n== retime: reconciling the new read")
+    code = run_stage("retime", [])
+    if code == retime.UNSETTLED:
+        say("the read was sent back twice; settle it by hand (yt voice --redo, "
+            "yt script) and run again")
+    return code
+
+
+def _run_pipeline(args) -> int:
+    split = lambda s: [p.strip() for p in s.split(",") if p.strip()]  # noqa: E731
+    skip, redo = set(split(args.skip)), set(split(args.redo))
+    if unknown := (skip | redo) - set(PIPELINE) - {"all"}:
+        print(f"error: unknown stage(s) {', '.join(sorted(unknown))}; pick from "
+              f"{', '.join(PIPELINE)}", file=sys.stderr)
+        return 1
+
+    idea, project = workspace.resolve(args)
+    parser = build_parser()
+    base = ["--project", str(project.root), "--model", args.model]
+    if args.effort:
+        base += ["--effort", args.effort]
+    if args.fallback_model:
+        base += ["--fallback-model", args.fallback_model]
+    if args.quiet:
+        base.append("--quiet")
+
+    extra = run_extras(args, redo=redo)
+    artifacts = dict(workspace.STAGES)
+
+    print(f"{idea.title}\n  -> {project.root}", file=sys.stderr)
+    for stage in PIPELINE:
+        if stage in skip:
+            print(f"\n== {stage}: skipped", file=sys.stderr)
+            continue
+        if (project.has(artifacts[stage]) and "all" not in redo
+                and stage not in redo):
+            print(f"\n== {stage}: already done ({artifacts[stage]}); "
+                  "--redo to run it again", file=sys.stderr)
+            continue
+        print(f"\n== {stage}", file=sys.stderr)
+        stage_args = parser.parse_args(stage_argv(stage, base, extra))
+        code = stage_args.run(stage_args)
+        if stage == "retime":
+            def run_one(name: str, extra_argv: list[str]) -> int:
+                one = parser.parse_args(stage_argv(name, base, {name: extra_argv}))
+                return one.run(one)
+            code = settle_retime(code, project, run_one)
+        if code:
+            print(f"\n{stage} exited {code}; stopping here", file=sys.stderr)
+            return code
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# what have I got
+# --------------------------------------------------------------------------- #
+
+def _register_ls(sub, parents: list) -> None:
+    p = sub.add_parser(
+        "ls", parents=parents, help="list videos and how far each one got",
+        description="One line per video in the work directory, newest first.")
+    p.add_argument("--files", action="store_true",
+                   help="also list every file in each project")
+    p.set_defaults(run=_list_projects)
+
+
+def _list_projects(args) -> int:
+    work = workspace.work_dir(args)
+    found = workspace.projects(work)
+    ideas_file = work / workspace.IDEAS_FILE
+    if ideas_file.exists():
+        try:
+            rows = json.loads(ideas_file.read_text(encoding="utf-8"))
+            print(f"{len(rows)} idea(s) in {ideas_file}")
+        except (OSError, ValueError):
+            pass
+    if not found:
+        print(f"no videos in {work}/ yet. Start with:\n"
+              '  yt ideas --niche "your topic"\n'
+              "  yt research --index 1")
+        return 0
+
+    width = max(len(p.root.name) for p in found)
+    for project in found:
+        done = project.done()
+        marks = "  ".join(("+ " if stage in done else "- ") + stage
+                          for stage in PIPELINE)
+        print(f"{project.root.name:<{width}}   {marks}")
+        if args.files:
+            for file in sorted(project.root.iterdir()):
+                print(f"    {file.name}" + ("/" if file.is_dir() else ""))
+    print(f"\n{len(found)} video(s) in {work}/")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# entry point
+# --------------------------------------------------------------------------- #
+
+def build_parser() -> argparse.ArgumentParser:
+    shared = _parents()
+    quiet, model, work, idea = (shared["quiet"], shared["model"],
+                                shared["work"], shared["idea"])
+    parser = argparse.ArgumentParser(
+        prog="yt", description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="stage", metavar="<stage>", required=True)
+
+    ideas.register(sub, [model, quiet, work])
+    research.register(sub, [idea, model, quiet, work])
+    styles.register(sub, [idea, model, quiet, work])
+    script.register(sub, [idea, model, quiet, work])
+    voice.register(sub, [idea, model, quiet, work])
+    vfx.register(sub, [idea, model, quiet, work])
+    sound.register(sub, [idea, model, quiet, work])
+    build.register(sub, [idea, model, quiet, work])
+    render.register(sub, [idea, model, quiet, work])
+    retime.register(sub, [idea, model, quiet, work])
+    pilot.register(sub, [idea, model, quiet, work])
+    gate.register(sub, [idea, model, quiet, work])
+    review.register(sub, [idea, model, quiet, work])
+    qa.register(sub, [idea, model, quiet, work])
+    doctor.register(sub, [quiet, work])
+    assess.register(sub, [model, quiet, work])
+    props.register(sub, [quiet, work])
+    keyframe.register(sub, [idea, model, quiet, work])
+    _register_run(sub, [idea, model, quiet, work])
+    _register_ls(sub, [work, quiet])
+    assets.register(sub, [quiet])
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    # Effort and fallback apply to every engine a stage builds, including the
+    # ones that bypass the harness, so they are process-wide defaults rather
+    # than one more argument threaded through each stage.
+    claude_engine.set_defaults(effort=getattr(args, "effort", None),
+                               fallback_model=getattr(args, "fallback_model", None))
+    for name, path in env.load(getattr(args, "env_file", None)):
+        if not getattr(args, "quiet", False):
+            # The name, never the value.
+            print(f"env: {name} from {path}", file=sys.stderr)
+    try:
+        return args.run(args)
+    except KeyboardInterrupt:
+        print("\ninterrupted", file=sys.stderr)
+        return 130
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

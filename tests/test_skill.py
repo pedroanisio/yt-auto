@@ -1,0 +1,99 @@
+"""ytstudio/SKILL.md is the operator's manual and the source of truth for how
+the pipeline is run; .claude/skills/yt/SKILL.md is a link to it. These tests
+fail when the link breaks, when the manual stops naming a stage or a command
+the CLI has, or when its frontmatter would stop it loading as a skill.
+"""
+
+from __future__ import annotations
+
+import re
+import sys
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from ytstudio import cli, workspace  # noqa: E402
+
+SOURCE = ROOT / "ytstudio" / "SKILL.md"
+LINK = ROOT / ".claude" / "skills" / "yt" / "SKILL.md"
+
+
+def frontmatter(text: str) -> dict[str, str]:
+    m = re.match(r"---\n(.*?)\n---\n", text, re.S)
+    if not m:
+        return {}
+    out = {}
+    for line in m.group(1).splitlines():
+        key, _, value = line.partition(":")
+        out[key.strip()] = value.strip()
+    return out
+
+
+def subparsers() -> dict:
+    parser = cli.build_parser()
+    for action in parser._actions:
+        if getattr(action, "choices", None) and action.dest == "stage":
+            return dict(action.choices)
+    raise AssertionError("the yt parser has no <stage> subcommands")
+
+
+def subcommands() -> list[str]:
+    return list(subparsers())
+
+
+#: A code span that runs one command: `yt render --quality final --strict`.
+COMMAND_SPAN = re.compile(r"`yt ([a-z]+)((?: [^`]*)?)`")
+
+
+class Skill(unittest.TestCase):
+    def setUp(self):
+        self.text = SOURCE.read_text(encoding="utf-8")
+
+    def test_the_source_is_in_the_package_and_the_skill_links_to_it(self):
+        self.assertTrue(SOURCE.is_file(), SOURCE)
+        self.assertTrue(LINK.is_symlink(), f"{LINK} should be a link to {SOURCE}")
+        self.assertEqual(LINK.resolve(), SOURCE.resolve())
+        self.assertEqual(LINK.read_text(encoding="utf-8"), self.text)
+
+    def test_frontmatter_names_and_describes_the_skill(self):
+        fm = frontmatter(self.text)
+        self.assertEqual(fm.get("name"), "yt")
+        self.assertGreater(len(fm.get("description", "")), 80)
+        self.assertIn("yt", fm["description"])
+
+    def test_every_pipeline_stage_is_named(self):
+        for stage, artifact in workspace.STAGES:
+            self.assertIn(f"`yt {stage}`", self.text, f"stage {stage!r} is not in the manual")
+            self.assertIn(f"`{workspace.ARTIFACTS[artifact]}`", self.text,
+                          f"{stage}'s artifact {workspace.ARTIFACTS[artifact]!r} is not in the manual")
+
+    def test_every_cli_command_is_named(self):
+        for command in subcommands():
+            self.assertIn(f"`yt {command}`", self.text, f"command {command!r} is not in the manual")
+
+    def test_every_flag_the_manual_cites_exists_on_that_command(self):
+        commands = subparsers()
+        cited = 0
+        for command, rest in COMMAND_SPAN.findall(self.text):
+            self.assertIn(command, commands, f"`yt {command}` is not a yt command")
+            known = {o for a in commands[command]._actions for o in a.option_strings}
+            for flag in re.findall(r"--[a-z][a-z-]*", rest):
+                cited += 1
+                self.assertIn(flag, known, f"`yt {command}` has no {flag}")
+        self.assertGreater(cited, 5, "the manual cites almost no flags; the pattern is broken")
+
+    def test_the_manual_says_where_its_truth_lives(self):
+        self.assertIn("ytstudio/SKILL.md", self.text)
+        self.assertIn(".claude/skills/yt/SKILL.md", self.text)
+        self.assertIn("tests/test_skill.py", self.text)
+
+    def test_the_manual_keeps_the_delivery_order_and_the_bar(self):
+        for needle in ("--quality final --strict", "READY TO PUBLISH", "9.0", "8.5",
+                       "docs/production.md", "docs/compute.md", "RS_RENDER_HOSTS"):
+            self.assertIn(needle, self.text, needle)
+
+
+if __name__ == "__main__":
+    unittest.main()

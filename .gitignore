@@ -1,0 +1,8 @@
+*.pyc
+_tmp/*
+work/*
+.claude/
+.env
+.claude/settings.local.json
+__pycache__/
+.vscode/settings.json
