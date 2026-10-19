@@ -814,7 +814,8 @@ yt improve --title X --max-passes 1 --budget-usd 15
 ```
 
 `--max-passes N` (3) · `--budget-usd B` (15) · `--target` (9.0) · `--from-pass
-pass-NN` · `--quality draft|preview|final` (final) · `--dry-run`
+pass-NN` · `--quality draft|preview|final` (final) · `--dry-run` · `--resume` (run
+the last failed pass again from the stage that failed, once its cause is fixed)
 
 ### `yt doctor`
 

@@ -668,6 +668,8 @@ class Loop(ImproveCase):
         self.assertEqual(record["passes"][0]["decision"], "failed")
         self.assertEqual(record["stop"]["reason"], "stage-failed")
         self.assertEqual(read_json(self.root / "vfx.json")["authoring"]["version"], "v01")
+        attempt = self.root / "improve" / "pass-01" / "attempt"
+        self.assertEqual(read_json(attempt / "vfx.json")["authoring"]["version"], "v02")
 
     def test_a_qa_that_files_no_pass_keeps_the_paid_pass_unjudged(self):
         self.start_pass(card(5.0, mechanical=[mech()]))
@@ -702,6 +704,53 @@ class Loop(ImproveCase):
         self.assertEqual(record["passes"][0]["decision"], "revert")
         self.assertEqual(read_json(self.root / "vfx.json")["authoring"]["version"], "v01")
         self.assertEqual((self.root / "video.mp4").read_bytes(), b"original video")
+
+    def _failed_render(self):
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        first = FakeRunner(self.root, [], fail={"render": 1}, costs={"vfx": 3.0})
+        return self.improver(first).run()
+
+    def test_resume_runs_a_failed_pass_again_from_the_stage_that_failed(self):
+        self._failed_render()
+        runner = FakeRunner(self.root, [card(6.0)])
+        record = self.improver(runner, resume=True, max_passes=1).run()
+        self.assertEqual(runner.stages(), ["render", "gate", "qa"])     # nothing re-authored
+        p = record["passes"][0]
+        self.assertTrue(p["resumed"])
+        self.assertEqual(p["decision"], "keep")
+        self.assertEqual(read_json(self.root / "vfx.json")["authoring"]["version"], "v02")
+        self.assertEqual(record["best"]["pass"], "pass-02")
+        self.assertGreaterEqual(record["spent_usd"], 3.0)               # the earlier spend counts
+        self.assertTrue((self.root / "feedback" / "closed" / "pass-01" / "vfx.md").is_file())
+
+    def test_resume_without_the_attempts_files_replays_vfx_from_its_cache(self):
+        import shutil
+        self._failed_render()
+        shutil.rmtree(self.root / "improve" / "pass-01" / "attempt")
+        runner = FakeRunner(self.root, [card(6.0)])
+        self.improver(runner, resume=True, max_passes=1).run()
+        self.assertEqual(runner.stages(), ["vfx", "sound", "build", "render", "gate", "qa"])
+        self.assertNotIn("--fresh", runner.calls[0])                     # replayed, not authored
+        first = read_json(self.root / "improve" / "pass-01" / "pass.json")["previous_attempt"]
+        self.assertEqual(runner.calls[1], first["argv"][1])             # sound as the pass ran it
+
+    def test_resume_that_regresses_restores_the_snapshot(self):
+        self._failed_render()
+        record = self.improver(FakeRunner(self.root, [card(4.0)]), resume=True,
+                               max_passes=1).run()
+        self.assertEqual(record["passes"][0]["decision"], "revert")
+        self.assertEqual(read_json(self.root / "vfx.json")["authoring"]["version"], "v01")
+        self.assertEqual((self.root / "video.mp4").read_bytes(), b"original video")
+
+    def test_resume_with_nothing_failed_runs_nothing_and_keeps_the_record(self):
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        self.improver(FakeRunner(self.root, [card(6.0)]), max_passes=1).run()
+        saved = (self.root / "improve.json").read_text()
+        runner = FakeRunner(self.root, [])
+        record = self.improver(runner, resume=True).run()
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(record["stop"]["reason"], "resume-failed")
+        self.assertEqual((self.root / "improve.json").read_text(), saved)
 
     def test_feedback_is_closed_once_a_pass_consumed_it(self):
         self.start_pass(card(5.0, mechanical=[mech()]))
@@ -821,10 +870,11 @@ class Cli(unittest.TestCase):
         args = cli.build_parser().parse_args(
             ["improve", "--title", "x", "--max-passes", "2", "--budget-usd", "9",
              "--target", "8.5", "--dry-run", "--from-pass", "pass-03",
-             "--quality", "draft"])
+             "--quality", "draft", "--resume"])
         self.assertIs(args.run, improve.run)
         self.assertEqual((args.max_passes, args.budget_usd, args.target, args.dry_run,
-                          args.from_pass, args.quality), (2, 9.0, 8.5, True, "pass-03", "draft"))
+                          args.from_pass, args.quality, args.resume),
+                         (2, 9.0, 8.5, True, "pass-03", "draft", True))
         defaults = cli.build_parser().parse_args(["improve", "--title", "x"])
         self.assertEqual((defaults.max_passes, defaults.budget_usd, defaults.target,
                           defaults.quality), (3, 15.0, 9.0, "final"))

@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
 import sys
 import wave
@@ -365,7 +366,23 @@ def shots_from_scene(document: bytes) -> list[dict]:
             for n in range(EVEN_SHOTS)]
 
 
-def hoisted(path: Path) -> dict:
+#: The file-valued attributes of what the build hoists out of an included
+#: document (xs:anyURI in the schema): a light's IES profile and environment
+#: map, a text style's font. Paints carry no file and tokens are values.
+HOISTED_FILES = {"light": ("ies", "environment"), "textStyle": ("fontFile",)}
+_URL = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+
+
+def rebase(value: str, src_dir: Path, scene_dir: Path) -> str:
+    """A path written relative to `src_dir`, rewritten relative to
+    `scene_dir`; an absolute path, a URL or an empty value is left alone."""
+    if not value or Path(value).is_absolute() or _URL.match(value):
+        return value
+    return Path(os.path.relpath(os.path.normpath(Path(src_dir) / value),
+                                os.path.normpath(scene_dir))).as_posix()
+
+
+def hoisted(path: Path, scene_dir: Path | None = None) -> dict:
     """What an included document declares that an <include> does not carry.
 
     The engine lights included content with the including document's lights
@@ -373,9 +390,22 @@ def hoisted(path: Path) -> dict:
     styles, and the schema allows <lights> and <styles> at scene level only.
     So the builder lifts them: every <light> and <token> of the file, with
     any children the light carries noted, because those are not copied.
+    A hoisted element's file paths (`HOISTED_FILES`) were written relative
+    to the authored file; with `scene_dir` they are rebased to the scene
+    that now declares them, or the engine looks for them beside the scene.
     """
     out = {"lights": [], "tokens": [], "text_styles": [], "paints": [],
            "findings": []}
+    src_dir = Path(path).parent
+
+    def carried(element) -> dict:
+        row = dict(element.attrib)
+        if scene_dir is not None:
+            for key in HOISTED_FILES.get(element.tag, ()):
+                if row.get(key):
+                    row[key] = rebase(row[key], src_dir, Path(scene_dir))
+        return row
+
     try:
         tree = ElementTree.parse(path)
     except (OSError, ElementTree.ParseError) as exc:
@@ -389,7 +419,7 @@ def hoisted(path: Path) -> dict:
                 out["paints"].append((paint.get("id"),
                                       ElementTree.tostring(paint, encoding="unicode")))
     for light in root.iter("light"):
-        row = dict(light.attrib)
+        row = carried(light)
         if len(light):
             out["findings"].append(
                 f"warning: {path.name}: light {row.get('id', '?')!r} has its own "
@@ -401,7 +431,7 @@ def hoisted(path: Path) -> dict:
             out["tokens"].append((token.get("name"), token.get("value")))
     for style in root.iter("textStyle"):
         if style.get("id"):
-            out["text_styles"].append(dict(style.attrib))
+            out["text_styles"].append(carried(style))
     return out
 
 
@@ -1194,7 +1224,9 @@ class SceneBuilder:
         for include_id, file, start, end in includes:
             info = parsed.get(file)
             if info is None:
-                info = parsed[file] = hoisted(self.root / file)
+                # The scene is written at the project root, beside the
+                # includes' `src` paths, so that is where hoisted paths point.
+                info = parsed[file] = hoisted(self.root / file, scene_dir=self.root)
                 lifted += info["findings"]
                 wanted_paints = []
                 for paint_id, canonical in info["paints"]:

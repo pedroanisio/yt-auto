@@ -15,7 +15,8 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-MODULES = sorted((ROOT / "ytstudio").glob("*.py")) + [ROOT / "claude_engine.py"]
+MODULES = sorted((ROOT / "ytstudio").glob("*.py")) + [ROOT / "claude_engine.py",
+                                                    ROOT / "codex_engine.py"]
 
 
 def _targets(node: ast.AST) -> set[str]:

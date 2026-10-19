@@ -276,6 +276,15 @@ a pass older than `video.mp4` or `scene.xml` is scored again first), with
   --dry-run` routes, writes the feedback and `improve/plan.json`, prints the
   plan with its estimated cost, and runs nothing. `tests/test_improve.py`
   pins all of it.
+- **When a pass breaks.** A stage that fails restores the snapshot, keeps
+  what the attempt wrote under `improve/pass-NN/attempt/` and leaves the
+  notes open; once the cause is fixed, `yt improve --resume` runs that pass
+  again from the failed stage (the attempt's files put back, or the stages
+  before it replayed, vfx from its own stage cache without `--fresh`, so
+  nothing is authored twice), with the earlier spend counted. A pass whose
+  stages all ran but whose `yt qa` filed nothing (a render host down) is
+  `unjudged`: its outputs stay, and the next `yt improve` scores and judges
+  it first.
 
 ## Composing with the SDK: the kit and the probes
 

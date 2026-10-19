@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 import time
 from dataclasses import dataclass, field
@@ -41,7 +42,7 @@ from .core import _merge_usage, read_json, write_json
 
 __all__ = ["Harness", "HarnessError", "ENGINE", "READ_ONLY_TOOLS", "ClaudeError",
            "brief", "missing_fields", "DECISIONS_DIR", "FEEDBACK_DIR",
-           "feedback_for", "with_feedback"]
+           "feedback_for", "with_feedback", "use_engine", "ENGINE_NAME"]
 
 #: Where a project keeps what the model decided, per stage.
 DECISIONS_DIR = "decisions"
@@ -63,6 +64,30 @@ ENGINE: Callable[[EngineConfig], Any] = ClaudeEngine
 
 class HarnessError(RuntimeError):
     """The model could not be asked, or did not answer the question."""
+
+
+#: Which CLI `ENGINE` drives, by name. Anything but "claude" is part of a
+#: decision's cache key, so a Claude answer is never served for Codex.
+ENGINE_NAME = "claude"
+
+
+def use_engine(name: str) -> None:
+    """Run every harness call on `name`: "claude" (claude_engine, the
+    default) or "codex" (codex_engine, the OpenAI Codex CLI). `YT_ENGINE`
+    in the environment picks it at import."""
+    global ENGINE, ENGINE_NAME
+    if name == "claude":
+        ENGINE = ClaudeEngine
+    elif name == "codex":
+        import codex_engine
+        ENGINE = codex_engine.CodexEngine
+    else:
+        raise HarnessError(f"unknown engine {name!r} (claude | codex)")
+    ENGINE_NAME = name
+
+
+if os.environ.get("YT_ENGINE"):
+    use_engine(os.environ["YT_ENGINE"])
 
 
 def mission() -> str:
@@ -192,8 +217,10 @@ class Harness:
         """What a decision was asked with, for its cache digest: the model,
         and the effort when one is set. Effort changes the answer, so a
         different effort is a different question; no effort keeps the
-        digests of decisions made before it existed."""
-        return f"{self.model}@{self.effort}" if self.effort else self.model
+        digests of decisions made before it existed. Another engine than
+        claude is named too (`sonnet~codex`)."""
+        asked = f"{self.model}@{self.effort}" if self.effort else self.model
+        return asked if ENGINE_NAME == "claude" else f"{asked}~{ENGINE_NAME}"
 
     # -- plumbing ----------------------------------------------------------
 

@@ -86,6 +86,10 @@ SURVIVOR_PASSES = 3
 
 IMPROVE_DIR = "improve"
 QA_FAILED = "qa filed no new pass"
+#: Stages whose own cache replays an attempt: vfx keeps every planning and
+#: authoring step by name, so run without --fresh it re-materialises the
+#: last run's version instead of authoring a new one.
+REPLAYS = ("vfx",)
 REPORT_JSON, REPORT_MD = "improve.json", "improve.md"
 
 #: What a pass is guessed to cost before one has been measured.
@@ -707,6 +711,7 @@ class Improver:
                  effort: str | None = None, fallback_model: str | None = None,
                  max_passes: int = 3, budget_usd: float = 15.0, target: float = 9.0,
                  dry_run: bool = False, from_pass: str | None = None,
+                 resume: bool = False,
                  quality: str = "final", quiet: bool = False,
                  runner: Callable[[list[str]], int] | None = None,
                  doctor: Callable[[workspace.Project], list[tuple]] | None = None,
@@ -722,6 +727,7 @@ class Improver:
         self.budget = float(budget_usd)
         self.target = float(target)
         self.dry_run = dry_run
+        self.resume = resume
         self.from_pass = from_pass
         self.quality = quality
         self.quiet = quiet
@@ -849,6 +855,11 @@ class Improver:
             self.say(f"error: {entry['name']} still has no QA pass; the render host may "
                      "be down")
             return None
+        self.spent_stages += float(earlier.get("spent_usd") or 0)
+        return self._settle(entry, before, new)
+
+    def _settle(self, entry: dict, before: dict, new: dict) -> dict:
+        """Keep or revert a pass judged outside the loop, close its notes."""
         verdict = judge(before, new)
         entry.update(qa_pass=new["pass"], overall_after=new.get("overall"),
                      scores_after=new.get("scores"), verdict_after=new.get("verdict"),
@@ -860,9 +871,89 @@ class Improver:
                                     or self.root / IMPROVE_DIR / entry["name"] / "snapshot"))
         close_feedback(self.root, entry["name"])
         self._save_pass(self.root / IMPROVE_DIR / entry["name"], entry)
-        self._log(f"[improve] {entry['name']}: judged now, "
+        self._log(f"[improve] {entry['name']}: judged, "
                   f"{'kept' if verdict['keep'] else 'reverted'}")
         return {"entry": entry, "start": before, "best": new if verdict["keep"] else before}
+
+    def _rerun_failed(self) -> dict | None:
+        """`--resume`: run the last pass of an earlier run again from the stage
+        that failed, after the cause was fixed. The attempt's own files are
+        put back when they were kept; otherwise the stages before the failure
+        run again, a stage that replays from its own cache (`REPLAYS`)
+        without --fresh, so nothing expensive is authored twice. The earlier
+        spend counts against the budget."""
+        earlier = read_json(self.root / REPORT_JSON, warn=False) or {}
+        passes = earlier.get("passes") or []
+        if not passes or passes[-1].get("decision") != "failed":
+            self.say(f"error: --resume needs a {REPORT_JSON} whose last pass failed")
+            return None
+        last = passes[-1]
+        stages = list(last.get("stages") or [])
+        failed_at = next((st for st in stages if (last.get("exit") or {}).get(st)), None)
+        before = self._card(self.root / qa.QA_DIR / str(last.get("best_before")))
+        if failed_at is None or before is None:
+            self.say("error: the failed pass names no failing stage or no pass it started from")
+            return None
+        self.spent_stages += float(earlier.get("spent_usd") or 0)
+        name = last["name"]
+        pdir = self.root / IMPROVE_DIR / name
+        argvs = stage_argvs(stages, set(last.get("routed") or {}), self.base,
+                            quality=self.quality, root=self.root)
+        start = stages.index(failed_at)
+        attempt = pdir / "attempt"
+        if (attempt / "snapshot.json").is_file():
+            restore(self.root, attempt)
+            steps = list(zip(stages, argvs))[start:]
+        else:
+            steps = [(st, [x for x in argv if x != "--fresh"]
+                      if n < start and st in REPLAYS else argv)
+                     for n, (st, argv) in enumerate(zip(stages, argvs))]
+        paid = [st for st, argv in steps if not (st in REPLAYS and "--fresh" not in argv)]
+        guess = estimate(paid, None)
+        remaining = self.budget - self.spent
+        if guess > remaining:
+            self.say(f"error: resuming {name} is estimated at ${guess:.2f} and "
+                     f"${remaining:.2f} of ${self.budget:.2f} is left")
+            return None
+        entry = dict(last, resumed=True, exit={}, argv=[], previous_attempt=last,
+                     estimate_usd=guess)
+        self._log(f"[improve] resuming {name} from {steps[0][0]} ({failed_at} failed before)")
+        stamps = _stamps(self.root)
+        failed = None
+        for stage, argv in steps:
+            entry["argv"].append(argv)
+            code = self._run(argv)
+            entry["exit"][stage] = code
+            if code:
+                failed = f"{stage} exited {code}"
+                break
+        new = None
+        if failed is None:
+            entry["argv"].append(["gate", *self.base])
+            entry["exit"]["gate"] = self._run(["gate", *self.base])
+            entry["argv"].append(["qa", *self.base])
+            new = self._qa()
+        cost = sum(stage_cost(self.root, st, stamps) for st, _ in steps) + stage_cost(
+            self.root, "gate", stamps)
+        self.spent_stages += cost
+        cost += float(((new or {}).get("engine") or {}).get("cost_usd") or 0)
+        entry["cost_usd"] = round(float(last.get("cost_usd") or 0) + cost, 4)
+        snap = pdir / "snapshot"
+        if failed:
+            snapshot(self.root, stages + ["gate", "qa"], attempt)
+            restore(self.root, snap)
+            entry.update(decision="failed", reasons=[failed], attempt=str(attempt))
+            self._save_pass(pdir, entry)
+            return {"entry": entry, "start": before, "best": before,
+                    "stop": {"reason": "stage-failed", "detail": f"{failed} again; the "
+                             "snapshot was restored and the notes left open"}}
+        if new is None:
+            entry.update(decision="unjudged", reasons=[QA_FAILED], snapshot=str(snap))
+            self._save_pass(pdir, entry)
+            return {"entry": entry, "start": before, "best": before,
+                    "stop": {"reason": "qa-failed", "detail": f"{QA_FAILED}; run "
+                             "`yt improve` again to judge it"}}
+        return self._settle(entry, before, new)
 
     # -- defects across passes ---------------------------------------------
 
@@ -937,7 +1028,18 @@ class Improver:
                         "target": self.target, "quality": self.quality, "passes": [],
                         "human": [], "start": None, "best": None, "spent_usd": 0.0,
                         "stop": None}
-        resumed = None if self.dry_run else self._resume()
+        if self.resume:
+            resumed = self._rerun_failed()
+            if resumed is None:
+                record["stop"] = {"reason": "resume-failed",
+                                  "detail": "nothing to resume; see the error above"}
+                return record
+            if resumed.get("stop"):
+                record.update(start=_summary(resumed["start"]), best=_summary(resumed["best"]),
+                              passes=[resumed["entry"]], stop=resumed["stop"])
+                return self._finish(record)
+        else:
+            resumed = None if self.dry_run else self._resume()
         card = resumed["best"] if resumed else self._evidence()
         if card is None:
             record["stop"] = {"reason": "no-evidence",
@@ -1051,10 +1153,14 @@ class Improver:
                 self._save_pass(pdir, entry)
                 break
             if failed:
+                # What the attempt wrote is kept beside the snapshot, for the
+                # diagnosis; the project goes back to the best pass.
+                snapshot(self.root, stages + ["gate", "qa"], pdir / "attempt")
                 restore(self.root, snap)
-                entry.update(decision="failed", reasons=[failed])
+                entry.update(decision="failed", reasons=[failed], attempt=str(pdir / "attempt"))
                 record["stop"] = {"reason": "stage-failed", "detail": f"{failed}; the "
-                                  "snapshot was restored and the notes left open"}
+                                  "snapshot was restored (the attempt's files are in "
+                                  f"{IMPROVE_DIR}/{name}/attempt/) and the notes left open"}
                 self._save_pass(pdir, entry)
                 break
 
@@ -1309,6 +1415,9 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                    help="the QA pass to start from (default the latest)")
     p.add_argument("--quality", choices=["draft", "preview", "final"], default="final",
                    help="render quality of each pass's encode (default final)")
+    p.add_argument("--resume", action="store_true",
+                   help="run the last failed pass again from the stage that failed, "
+                        "once its cause is fixed, replaying what came before it")
     p.set_defaults(run=run)
     return p
 
@@ -1321,6 +1430,7 @@ def run(args) -> int:
                         fallback_model=getattr(args, "fallback_model", None),
                         max_passes=args.max_passes, budget_usd=args.budget_usd,
                         target=args.target, dry_run=args.dry_run, from_pass=args.from_pass,
+                        resume=args.resume,
                         quality=args.quality, quiet=args.quiet, house_rules=rules,
                         house_digest=digest)
     try:
