@@ -60,6 +60,12 @@ came from breaking one of them.
    include at a cleaned copy, `vfx/vNN/<section>.include.scene.xml`, with
    the tokens inlined and those sections dropped, so the engine raises no
    E12 warning. The authored file is never written.
+   **Text is pinned to a shipped font file.** `yt build` resolves every text
+   node's family/weight/style to `ytstudio/fonts` (`fonts.py`), copies the
+   file into the project's `fonts/`, adds the `<font>` asset, and treats a
+   family it has no file for as an `error:` finding. Author with a shipped
+   family (Inter, Inter Display, Lora, Liberation, DejaVu); a brand face
+   such as JetBrains Mono or IBM Plex fails the build, it does not fall back.
 8. **A placeholder is disqualifying,** not deductible. While any remain the
    verdict is NOT READY whatever the other scores say.
 9. **Nothing heavy runs on this workstation.** Renders, encodes, mixes and
