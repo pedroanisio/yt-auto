@@ -42,7 +42,7 @@ from .core import _merge_usage, read_json, write_json
 
 __all__ = ["Harness", "HarnessError", "ENGINE", "READ_ONLY_TOOLS", "ClaudeError",
            "brief", "missing_fields", "DECISIONS_DIR", "FEEDBACK_DIR",
-           "feedback_for", "with_feedback", "use_engine", "ENGINE_NAME"]
+           "feedback_for", "with_feedback", "use_engine", "ENGINE_NAME", "build_engine"]
 
 #: Where a project keeps what the model decided, per stage.
 DECISIONS_DIR = "decisions"
@@ -60,6 +60,15 @@ INSPECT_TOOLS = ("Read", "Glob", "Grep")
 
 #: The engine class; tests replace it with a fake.
 ENGINE: Callable[[EngineConfig], Any] = ClaudeEngine
+
+
+def build_engine(config: EngineConfig, bound: Any = None) -> Any:
+    """The engine for `config`: whatever `ENGINE` is now (claude, or codex under
+    YT_ENGINE). `bound` is the caller's own `ClaudeEngine` name; only when a test
+    replaced it with something else does that replacement win."""
+    if bound is not None and bound is not ClaudeEngine:
+        return bound(config)
+    return ENGINE(config)
 
 #: Every `claude -p` session a stage starts refuses cross-session messages.
 #: Without it an interactive session on the machine sees each one as a peer,

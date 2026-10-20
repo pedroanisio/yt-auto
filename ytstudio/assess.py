@@ -30,7 +30,7 @@ import sys
 from pathlib import Path
 
 from claude_engine import ClaudeEngine, ClaudeError, EngineConfig
-from . import render, sdkkit, workspace
+from . import harness, render, sdkkit, workspace
 from .core import Idea, _key, read_json, slugify, write_json
 from .vfx import MISSION, STACK, Workspace
 
@@ -219,9 +219,9 @@ def prepare(ws: Workspace, *, description: str, facts: dict, project_context: st
 
 
 def investigate(ws: Workspace, *, model: str, budget_usd: float, verbose: bool) -> dict:
-    engine = ClaudeEngine(EngineConfig(
+    engine = harness.build_engine(EngineConfig(
         tools=AGENT_TOOLS, model=model, permission_mode="dontAsk", cwd=ws.dir,
-        max_turns_budget_usd=budget_usd, timeout=1500.0))
+        max_turns_budget_usd=budget_usd, timeout=1500.0), ClaudeEngine)
     texts: list[str] = []
     calls = 0
     try:
@@ -242,7 +242,7 @@ def investigate(ws: Workspace, *, model: str, budget_usd: float, verbose: bool) 
         if verbose:
             print("  assessment.json missing or incomplete; extracting the verdict",
                   file=sys.stderr)
-        extractor = ClaudeEngine(EngineConfig(tools=(), model=model))
+        extractor = harness.build_engine(EngineConfig(tools=(), model=model), ClaudeEngine)
         try:
             verdict = extractor.ask_json(
                 "From this investigation, fill the verdict exactly as the schema asks, "

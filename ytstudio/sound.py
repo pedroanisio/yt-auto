@@ -404,7 +404,8 @@ class SoundDesigner:
             print(msg, file=sys.stderr)
 
     def _ask(self, prompt: str, schema: dict) -> dict:
-        engine = ClaudeEngine(EngineConfig(tools=(), model=self.model))
+        engine = harness.build_engine(
+            EngineConfig(tools=(), model=self.model), ClaudeEngine)
         try:
             return engine.ask_json(prompt, schema, system=harness.with_feedback(
                 SYSTEM, self.root, "sound"))

@@ -499,7 +499,8 @@ class Director:
 
     def _ask(self, prompt: str, schema: dict) -> dict:
         """One call on its own engine: threads must not share usage counters."""
-        engine = ClaudeEngine(EngineConfig(tools=(), model=self.model))
+        engine = harness.build_engine(
+            EngineConfig(tools=(), model=self.model), ClaudeEngine)
         try:
             return engine.ask_json(prompt, schema, system=harness.with_feedback(
                 SYSTEM, self.root, "styles"))

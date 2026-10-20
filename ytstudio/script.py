@@ -561,7 +561,8 @@ class Screenwriter:
         if ("shots" in schema.get("properties", {}) and self.draft_effort
                 and not claude_engine.default_for("effort")):
             effort = self.draft_effort
-        engine = ClaudeEngine(EngineConfig(tools=(), model=self.model, effort=effort))
+        engine = harness.build_engine(
+            EngineConfig(tools=(), model=self.model, effort=effort), ClaudeEngine)
         try:
             return engine.ask_json(prompt, schema, system=harness.with_feedback(
                 SYSTEM, self.root, "script"))

@@ -35,7 +35,7 @@ from pathlib import Path
 
 from claude_engine import ClaudeEngine, ClaudeError, EngineConfig, Usage
 
-from . import workspace
+from . import harness, workspace
 from .core import Idea, _key, _merge_usage, compact, wrap
 from .core import write_json as dump_json
 
@@ -258,7 +258,7 @@ class Generator:
 
     def _engine(self) -> ClaudeEngine:
         """A fresh engine per worker: threads must not share usage counters."""
-        return ClaudeEngine(EngineConfig(**asdict(self.config)))
+        return harness.build_engine(EngineConfig(**asdict(self.config)), ClaudeEngine)
 
     def _say(self, msg: str) -> None:
         if self.verbose:
@@ -546,7 +546,7 @@ def run(args) -> int:
     if args.rank:
         if not args.quiet:
             print("ranking...", file=sys.stderr)
-        ranker = ClaudeEngine(config)
+        ranker = harness.build_engine(config, ClaudeEngine)
         try:
             ideas = rank(ranker, ideas, niche=args.niche)
         except ClaudeError as exc:
