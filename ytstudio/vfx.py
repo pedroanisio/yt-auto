@@ -61,7 +61,7 @@ from .framecheck import DIM_STD, FLAT_STD, frame_stats, judge_frame  # noqa: F40
 from .ideas import CHANNEL_STYLES
 from .research import Dossier
 from .scene_sdk import sdk
-from .script import load_script
+from .script import Shot, load_script, visible_text
 
 #: The stack. Stated once, read by the prompts and the reports.
 STACK = "scene-render (Rust engine) + sr-core (schema and SDK)"
@@ -370,6 +370,21 @@ def load_dossier(path: Path, idea: Idea) -> dict:
     }
 
 
+def shot_super(shot: dict) -> str:
+    """The words a viewer reads in a shot (a screenplay dict), not its direction."""
+    return visible_text(Shot.from_raw(shot))
+
+
+def super_lines(shot: dict) -> list[str]:
+    """Brief lines for a shot's super: the words, then the direction labelled as such."""
+    words = shot.get("super") or ""
+    direction = str(shot.get("on_screen") or "").strip()
+    lines = [f"Super (the words a viewer reads): {words}"] if words else []
+    if direction and " ".join(direction.split()) != " ".join(str(words).split()):
+        lines.append(f"Direction for the super (not text on screen): {direction}")
+    return lines
+
+
 def script_sections(path: str | None) -> list[dict]:
     """The screenplay's sections with their shots, labels and timings."""
     if not path:
@@ -379,7 +394,7 @@ def script_sections(path: str | None) -> list[dict]:
              "beats": s.beats,
              "shots": [{"label": sh.label, "at": sh.at, "seconds": sh.seconds,
                         "visual": sh.visual, "on_screen": sh.on_screen,
-                        "narration": sh.narration, "asset": sh.asset}
+                        "super": visible_text(sh), "narration": sh.narration, "asset": sh.asset}
                        for sh in s.shots]}
             for s in sections]
 
@@ -1458,8 +1473,7 @@ class Workspace:
                 lines += [f"#### {s['label']} · at {s['at']:g}s · {s['seconds']:g}s{clock}",
                           f"Picture: {s.get('visual', '')}",
                           f"Narration: {s.get('narration') or '(none)'}"]
-                if s.get("on_screen"):
-                    lines.append(f"Super: {s['on_screen']}")
+                lines += super_lines(s)
                 wd = words.get(s["label"])
                 if wd and wd.get("words"):
                     lines.append("Words (seconds from the shot's start; add the shot's "
@@ -2014,7 +2028,7 @@ class VfxPlanner:
         shots = section.get("shots") or []
         shot_lines = "\n".join(
             f"- {s['label']} ({s['seconds']}s): {s['visual'][:160]}"
-            + (f" | super: {s['on_screen'][:60]}" if s.get("on_screen") else "")
+            + (f" | super: {s['super'][:60]}" if s.get("super") else "")
             for s in shots) or "- (no screenplay yet; leave `shots` empty)"
         prompt = (
             f"{self._idea_block()}\n\n"
@@ -2154,7 +2168,8 @@ class VfxPlanner:
             harness.brief("Frames to Read, and what each should show", evidence),
             harness.brief("The section's shots (label, offset, length, picture)",
                           [{"label": s["label"], "at": s["at"], "seconds": s["seconds"],
-                            "visual": s.get("visual", ""), "on_screen": s.get("on_screen", "")}
+                            "visual": s.get("visual", ""), "super": s.get("super", ""),
+                            "direction_for_super": s.get("on_screen", "")}
                            for w in worlds for s in w["shots"]]),
             harness.brief("The phases the world must deliver",
                           [{"id": e["id"], "name": e.get("name"), "shots": e.get("shots"),

@@ -62,6 +62,7 @@ from . import render as render_stage
 from .build import EVEN_SHOTS, shots_from_scene  # noqa: F401  (standalone sampling)
 from .core import read_json, timecode, write_json
 from .harness import Harness, HarnessError, brief
+from .script import Shot, visible_text
 
 QA_DIR = "qa"
 READY, NOT_READY = "READY TO PUBLISH", "NOT READY"
@@ -142,6 +143,12 @@ SCORECARD_SCHEMA = {
 # --------------------------------------------------------------------------- #
 # sampling
 # --------------------------------------------------------------------------- #
+
+def super_fields(shot: dict) -> dict:
+    """What a reviewer sees of a shot's super: the words, and the direction apart."""
+    return {"super": visible_text(Shot.from_raw(shot)) if shot else "",
+            "direction": shot.get("on_screen", "")}
+
 
 def frame_name(t: float) -> str:
     ms = int(round(float(t) * 1000))
@@ -1007,7 +1014,7 @@ def run(args) -> int:
             "timestamp": row["t"], "why_sampled": row["why"],
             "shot": row["label"], "section": row["section"],
             "visual": str(shot.get("visual", ""))[:300],
-            "on_screen": shot.get("on_screen", ""),
+            **super_fields(shot),
             "narration": str(shot.get("narration", ""))[:300],
             "drawn_by": row.get("asset", ""),
             "take": {k: take.get(k) for k in ("seconds", "planned_seconds", "cps")
