@@ -173,6 +173,58 @@ def scope_for(idea: Idea) -> dict:
     return dict(SCOPES["explainer"])
 
 
+#: A film this long (or longer, or of unknown length) is researched at the
+#: full scale the scopes were written for; shorter ones shrink from it.
+FULL_SCALE_SECONDS = 600
+FULL_SHOTS = 14
+MIN_SHOTS = 6
+#: Claims worth keeping for a one-minute film, and what each further minute adds.
+CLAIMS_FIRST_MINUTE = 40
+CLAIMS_PER_MINUTE = 20
+
+_LENGTH = re.compile(
+    r"(?P<clock>\d+:\d{2})|"
+    r"(?P<a>\d+(?:\.\d+)?)(?:\s*[-–]\s*(?P<b>\d+(?:\.\d+)?))?\s*"
+    r"(?P<unit>hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b", re.I)
+
+
+def runtime_seconds(length: str | None) -> int | None:
+    """The target runtime an idea's free-text length names, or None.
+
+    Reads "60 seconds", "90s", "8-12 min" (the middle), "10:00" and "1 hour".
+    """
+    m = _LENGTH.search(length or "")
+    if not m:
+        return None
+    if m["clock"]:
+        mins, secs = m["clock"].split(":")
+        return int(mins) * 60 + int(secs)
+    value = float(m["a"])
+    if m["b"]:
+        value = (value + float(m["b"])) / 2
+    return round(value * {"h": 3600, "m": 60, "s": 1}[m["unit"].lower()[0]])
+
+
+def runtime_plan(idea: Idea, scope_depth: int) -> dict:
+    """Questions, shots and a claim ceiling for the idea's target runtime.
+
+    Everything shrinks linearly from the full-scale values as the film gets
+    shorter than ten minutes; ten minutes, more, or no stated length plans
+    exactly as before (no claim ceiling, scope depth, 14 shots).
+    """
+    seconds = runtime_seconds(idea.length)
+    if seconds is None or seconds >= FULL_SCALE_SECONDS:
+        return {"depth": scope_depth, "shots": FULL_SHOTS, "claims": None}
+    minutes = max(seconds, 60) / 60
+    share = (minutes - 1) / (FULL_SCALE_SECONDS / 60 - 1)
+    claims = CLAIMS_FIRST_MINUTE + CLAIMS_PER_MINUTE * (minutes - 1)
+    return {
+        "depth": max(2, min(scope_depth, 2 + round((scope_depth - 2) * share))),
+        "shots": MIN_SHOTS + round((FULL_SHOTS - MIN_SHOTS) * share),
+        "claims": round(claims / 5) * 5,
+    }
+
+
 COMMONS_API = "https://commons.wikimedia.org/w/api.php"
 
 MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
@@ -507,7 +559,7 @@ class Researcher:
     def __init__(self, idea: Idea, dossier: Dossier, *, model: str = "sonnet",
                  depth: int | None = None, jobs: int = 3, budget: float | None = None,
                  fresh: bool = False, verbose: bool = True,
-                 shot_count: int = 14, per_shot: int = 2,
+                 shot_count: int | None = None, per_shot: int = 2,
                  asset_sources: tuple[str, ...] = yt_assets.DEFAULT_SOURCES,
                  allow_sa: bool = False, agentic_assets: bool = False,
                  user_agent: str = DEFAULT_USER_AGENT) -> None:
@@ -516,12 +568,15 @@ class Researcher:
         self.model = model
         # The genre sets the plan; an explicit --depth still wins.
         self.scope = scope_for(idea)
-        self.depth = depth or self.scope["depth"]
+        # The film's length scales it down; an explicit --depth/--shots wins.
+        plan = runtime_plan(idea, self.scope["depth"])
+        self.depth = depth or plan["depth"]
+        self.claim_ceiling = plan["claims"]
         self.jobs = max(1, jobs)
         self.budget = budget
         self.fresh = fresh
         self.verbose = verbose
-        self.shot_count = shot_count
+        self.shot_count = shot_count or plan["shots"]
         self.per_shot = per_shot
         self.asset_sources = asset_sources
         self.allow_sa = allow_sa
@@ -658,7 +713,9 @@ class Researcher:
     def claims(self, notes: list[dict]) -> dict:
         return self._stage("03-claims", lambda: self._ask_json(
             f"{self._idea_block()}\n\nResearch notes:\n\n{self._notes_block(notes)}\n\n"
-            + self.scope["claims"],
+            + self.scope["claims"]
+            + (f" The film is short: keep about {self.claim_ceiling} claims "
+               "at most, the strongest ones." if self.claim_ceiling else ""),
             CLAIMS_SCHEMA))
 
     def sources(self, notes: list[dict]) -> dict:
@@ -1364,15 +1421,16 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
     p.add_argument("--depth", type=int, default=None,
                    help=f"research questions to pursue (default {DEFAULT_DEPTH}, or "
                         f"{SCOPES['cinematic']['depth']} for a wordless or "
-                        "cinematic piece)")
+                        "cinematic piece; fewer for a film under ten minutes)")
     p.add_argument("--jobs", type=int, default=3,
                    help="questions researched in parallel (default 3)")
     p.add_argument("--budget", type=float, metavar="USD",
                    help="hard spend cap per engine call")
     p.add_argument("--download", action="store_true",
                    help="fetch freely licensed assets into the project")
-    p.add_argument("--shots", type=int, default=14, metavar="N",
-                   help="visuals to plan for (default 14)")
+    p.add_argument("--shots", type=int, default=None, metavar="N",
+                   help="visuals to plan for (default 14 for a ten-minute film, "
+                        "fewer for a shorter one)")
     p.add_argument("--per-shot", type=int, default=2, metavar="N",
                    help="assets to find per shot (default 2)")
     p.add_argument("--asset-sources", default=",".join(yt_assets.DEFAULT_SOURCES),
