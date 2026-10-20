@@ -378,6 +378,24 @@ hand-authored world showed the cost.
     round, so a last revision that crashes, breaks the build or scores lower
     falls back to that round. A section whose authoring raises becomes an
     error record; the other sections are kept.
+  - Money is budgeted per section and per stage (`vfx.SpendBudget`):
+    `--budget-usd` (15) covers one section's author sessions and its
+    reviews, `--stage-budget-usd` (default: that times the sections) covers
+    all of them, and the estimate prints before the first agent starts.
+    Each session's cap is what the budgets leave minus the review that
+    follows it; a section that cannot pay another session and review stops
+    ("budget") and ends on its best reviewed round, and the run prints
+    spend against budget per section and for the stage (`budget` in each
+    record). A session is told its cap (`sdkkit.budget_line`, and `kit.py`
+    prints the budget left via `SRKIT_BUDGET_FILE`); at 80% of it
+    `sdkkit.stream_round(budget_usd=)` stops the stream and resumes it once
+    for the build and a still, as the 80% clock does, instead of letting
+    the CLI's hard cap end it with exit 1. Spend is metered from the
+    stream's usage and `PRICES`. An unpriced model (no price is configured
+    for it) runs its first session with `--max-budget-usd` at 80% of the
+    grant; on the CLI's `error_max_budget_usd` the reported cost is counted
+    once and the session is resumed once for the build and a still with the
+    rest of the grant.
   - `yt vfx --sections 2,3` re-authors only those sections into the next
     `vfx/vNN/` and carries the others forward from the active version
     (`carried_from`, $0). Continuity, reach and plan are then redone.

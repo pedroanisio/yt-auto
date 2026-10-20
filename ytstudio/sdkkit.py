@@ -36,7 +36,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from claude_engine import ClaudeError
+from claude_engine import ClaudeError, _partial_cost
 
 from . import framecheck
 from .scene_sdk import sdk
@@ -520,13 +520,136 @@ def finish_prompt(program: str = "the program", document: str = "the document",
             "reply with one line. Do it now; start nothing new.")
 
 
-def stream_round(engine, prompt: str, *, system: str, resume=False, finish: str | None = None):
+#: The share of a session's dollar cap at which an author is stopped and asked to build
+#: and render what it has, as the clock does at CUTOFF.
+BUDGET_CUTOFF = 0.8
+
+#: The result subtype the claude CLI ends a session with at its `--max-budget-usd`.
+BUDGET_STOP = "error_max_budget_usd"
+
+#: The environment variable by which the kit learns what is left of the session's cap: the
+#: path of a small JSON file `stream_round` keeps current.
+BUDGET_FILE_VAR = "SRKIT_BUDGET_FILE"
+BUDGET_FILE = ".srkit-budget"
+
+#: Less than this left of the cap, a finish call could not build and render anything.
+MIN_FINISH_USD = 0.25
+
+_TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_read_input_tokens",
+               "cache_creation_input_tokens")
+
+
+def budget_line(cap: float) -> str:
+    """What the author is told of its session's money, as it is told its time."""
+    return (f"## Your budget\n\nThis session may spend ${cap:g}. At {BUDGET_CUTOFF:.0%} "
+            f"(${cap * BUDGET_CUTOFF:.2f}) you are stopped and asked to build the current "
+            "program and render a still of it, which is then reviewed; what is not built by "
+            "then is lost. `kit.py` prints the budget left on every build and frame.\n")
+
+
+def budget_left_line(env: dict | None = None) -> str:
+    """What `kit.py` prints beside the time left: the session's money left, or nothing
+    when no budget file is set (a person running the kit by hand)."""
+    path = (os.environ if env is None else env).get(BUDGET_FILE_VAR)
+    try:
+        state = json.loads(Path(path).read_text(encoding="utf-8"))
+        left, cap = float(state["left"]), float(state["cap"])
+    except (TypeError, ValueError, KeyError, OSError):
+        return ""
+    if left <= 0:
+        return "budget left: none: build and render what you have now"
+    return (f"budget left: ${left:.2f} of ${cap:g} for this session; keep a program that "
+            "builds and a still you have looked at")
+
+
+class _Meter:
+    """The dollars a session has spent so far, from the stream's per-message usage
+    (the latest per message id), priced as the engine prices a cut-off call. A call
+    whose model has no price is not metered here: `stream_round` runs it under the
+    mark as the CLI's own budget instead."""
+
+    def __init__(self, cap: float, path: Path | None):
+        self.cap, self.path, self.done = cap, path, 0.0
+        self.seen: dict[str, tuple[str | None, dict]] = {}
+        self.write()
+
+    def note(self, event) -> None:
+        raw = getattr(event, "raw", None) or {}
+        if raw.get("type") == "result":         # the call ended: its cost is known
+            self.done += float(raw.get("total_cost_usd") or self.call_spent() or 0.0)
+            self.seen.clear()
+        elif raw.get("type") == "assistant":
+            inner = raw.get("message") or {}
+            if isinstance(inner.get("usage"), dict):
+                self.seen[str(inner.get("id") or len(self.seen))] = (
+                    inner.get("model"), inner["usage"])
+        self.write()
+
+    def tokens(self) -> dict[str, int]:
+        total = dict.fromkeys(_TOKEN_KEYS, 0)
+        for _, usage in self.seen.values():
+            for key in _TOKEN_KEYS:
+                total[key] += int(usage.get(key) or 0)
+        return total
+
+    def call_spent(self) -> float | None:
+        cost = 0.0
+        for model, usage in self.seen.values():
+            part = _partial_cost({k: int(usage.get(k) or 0) for k in _TOKEN_KEYS}, model)
+            if part is None:
+                return None
+            cost += part
+        return cost
+
+    def spent(self) -> float:
+        return self.done + (self.call_spent() or 0.0)
+
+    def left(self) -> float:
+        return max(0.0, self.cap - self.spent())
+
+    def at_mark(self) -> bool:
+        return (bool(self.seen) and self.call_spent() is not None
+                and self.spent() >= BUDGET_CUTOFF * self.cap)
+
+    def book(self, engine) -> None:
+        """The stream was abandoned at the mark, so the engine saw no end to book:
+        book what it spent as a cut-off call."""
+        cost = self.call_spent()
+        if not self.seen or cost is None:
+            return
+        lock = getattr(engine, "_lock", None)
+        if lock is not None:
+            with lock:
+                engine.usage.add_partial(self.tokens(), cost=cost, estimated=True)
+        else:
+            engine.usage.add_partial(self.tokens(), cost=cost, estimated=True)
+        self.done += cost
+        self.seen.clear()
+        self.write()
+
+    def write(self) -> None:
+        if self.path is None:
+            return
+        try:
+            self.path.write_text(json.dumps({"left": round(self.left(), 4), "cap": self.cap}),
+                                 encoding="utf-8")
+        except OSError:
+            pass
+
+
+def stream_round(engine, prompt: str, *, system: str, resume=False, finish: str | None = None,
+                 budget_usd: float | None = None):
     """One author round: yield the engine's events, as `engine.stream` does, with the
     clock kept. The session's timeout is the 80% mark of the round's budget; the
     deadline reaches the kit through `SRKIT_DEADLINE`. A session cut off at the mark
     is resumed once with `finish` (build and render the current program) and the time
     left of the budget; a failure before the mark, any other failure, no session to
-    resume or no time left is raised as it was."""
+    resume or no time left is raised as it was.
+
+    With `budget_usd`, the session's dollar cap is the call's hard cap and the spend is
+    metered; at BUDGET_CUTOFF of the cap the stream is stopped and the session resumed
+    once with `finish` and the rest of the cap, the same way. What is left is written
+    where the kit reads it (`SRKIT_BUDGET_FILE`)."""
     config = getattr(engine, "config", None)
     if config is None:              # an engine that carries no clock is simply streamed
         yield from engine.stream(prompt, system=system, **({"resume": resume} if resume else {}))
@@ -536,20 +659,75 @@ def stream_round(engine, prompt: str, *, system: str, resume=False, finish: str 
     deadline = started + round_budget(timeout) if timeout else None
     if deadline is not None:
         config.env = dict(config.env or {}, **{DEADLINE_VAR: f"{deadline:.0f}"})
+    meter = None
+    if budget_usd:
+        config.max_turns_budget_usd = budget_usd
+        cwd = getattr(config, "cwd", None)
+        meter = _Meter(float(budget_usd), Path(cwd) / BUDGET_FILE if cwd else None)
+        if meter.path is not None:
+            config.env = dict(config.env or {}, **{BUDGET_FILE_VAR: str(meter.path)})
+    # A model with no configured price cannot be metered on the stream. The CLI
+    # enforces the budget itself, so its session runs under the mark and the CLI's
+    # own budget stop (with the exact cost it reports) is the mark.
+    staged = meter is not None and _partial_cost(
+        {"output_tokens": 1}, getattr(config, "model", None)) is None
+    if staged:
+        config.max_turns_budget_usd = BUDGET_CUTOFF * float(budget_usd)
+    marked = stopped = False
+    left = None
     try:
-        yield from engine.stream(prompt, system=system, **({"resume": resume} if resume else {}))
-        return
+        stream = engine.stream(prompt, system=system, **({"resume": resume} if resume else {}))
+        try:
+            for event in stream:
+                if meter is not None:
+                    meter.note(event)
+                yield event
+                if staged and event.type == "result" and event.subtype == BUDGET_STOP:
+                    stopped = True
+                if meter is not None and meter.at_mark():
+                    marked = True
+                    break
+        finally:
+            if hasattr(stream, "close"):
+                stream.close()
+        if not (marked or stopped):
+            return
     except ClaudeError as exc:
         reached = timeout and now() - started >= 0.95 * timeout
         session = getattr(engine, "session_id", None)
         left = deadline - now() if deadline is not None else 0.0
-        if not (reached and "timed out" in str(exc).lower() and session and left >= MIN_FINISH):
-            raise
-    config.timeout = left
+        if stopped:             # the CLI's exit 1 after its budget result
+            if not (session and left >= MIN_FINISH and meter.left() >= MIN_FINISH_USD):
+                raise
+        else:
+            if not (reached and "timed out" in str(exc).lower() and session
+                    and left >= MIN_FINISH):
+                raise
+            if meter is not None and meter.left() < MIN_FINISH_USD:
+                raise
+    if marked or stopped:
+        if marked:
+            meter.book(engine)      # a CLI stop is no cut-off call: the engine booked it
+        left = deadline - now() if deadline is not None else None
+        if (not getattr(engine, "session_id", None) or meter.left() < MIN_FINISH_USD
+                or (left is not None and left < MIN_FINISH)):
+            if stopped:
+                raise ClaudeError("the session stopped on its budget with too little left "
+                                  "to finish")
+            return
+    if meter is not None:
+        config.max_turns_budget_usd = meter.left()
+    if left is not None:
+        config.timeout = left
     try:
-        yield from engine.stream(finish or finish_prompt(), system=system, resume=True)
+        for event in engine.stream(finish or finish_prompt(), system=system, resume=True):
+            if meter is not None:
+                meter.note(event)
+            yield event
     finally:
         config.timeout = timeout
+        if meter is not None:
+            config.max_turns_budget_usd = budget_usd
 
 
 # --------------------------------------------------------------------------- #
@@ -997,6 +1175,9 @@ def _print_time_left() -> None:
     line = time_left_line()
     if line:
         print(f"\n{line}")
+    line = budget_left_line()
+    if line:
+        print(line if time_left_line() else f"\n{line}")
 
 
 def _precheck(path: Path) -> int:

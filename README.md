@@ -498,8 +498,16 @@ construct left unused. The planner and the author both see the whole
 vocabulary, and `examples.scene.xml` now proves a lit 3D set with a physical
 camera and particles alongside the 2D constructs.
 
-`--per-section` · `--jobs` · `--budget-usd` per section · `--budget-hours` ·
-`--width` · `--height` · `--revisions` · `--author-bar` · `--inspo` · `--fresh`
+`--budget-usd` (15) is one section's budget for its author sessions and its
+reviews together, and `--stage-budget-usd` caps all sections (default: the
+section budget times the sections). The run prints its estimate before any
+agent starts and its spend against both budgets after; a section that cannot
+pay another session and review stops and keeps its best reviewed round. An
+author is told its session's cap, and at 80% of it is asked for its build and
+a still (as at 80% of its time) rather than being cut off with exit 1.
+
+`--per-section` · `--jobs` · `--budget-usd` per section · `--stage-budget-usd` ·
+`--budget-hours` · `--width` · `--height` · `--revisions` · `--author-bar` · `--inspo` · `--fresh`
 
 ### `yt sound`
 
