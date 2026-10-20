@@ -283,6 +283,7 @@ class Media:
     licence: str = ""
     credit: str = ""
     kind: str = "image"
+    about: str = ""          # what the research kept the file for
 
 
 def local_media(project_root: Path, dossier: dict | None) -> list[Media]:
@@ -304,7 +305,8 @@ def local_media(project_root: Path, dossier: dict | None) -> list[Media]:
         out.append(Media(path=row["file"], title=row.get("title", ""),
                          licence=row.get("licence") or asset.get("licence", ""),
                          credit=asset.get("credit_line", ""),
-                         kind=asset.get("kind", "image")))
+                         kind=asset.get("kind", "image"),
+                         about=str(asset.get("use_for", ""))[:200]))
     return out
 
 

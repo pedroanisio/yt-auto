@@ -34,8 +34,11 @@ every stage on opus, started 2026-10-19 20:47 (-03).
 | keyframe, second run, review 1 → approved | 7 min | review $1.43 | 5.5/10, harsher than the first run's 6.5 on a stronger look (real molecular surface); stopped before revision 2 and approved by the operator to save 30-60 min: the remaining findings are per-shot craft the vfx authors and reviewer handle |
 | keyframe total | 3 h 21 min | ≈ $16 | two runs; of that, ~65 min were author sessions killed by the call timeout and ~45 min a still host refusing SSH |
 | vfx planning (style, effects) | 14 min | | 4 sections planned with the screenplay's fact-check flags as constraints |
-| vfx authoring, 4 sections at once (`--jobs 4`) | running | up to $3 each | started 13:10; the kit renders one still per host and there are two hosts, so four authors share two still slots |
-| sound (fetch + synth + review), beside vfx | running | | |
+| vfx authoring, 4 sections at once (`--jobs 4`) | 2 h 33 min (13:10 → 15:43) | **$88.43** for the whole stage (29 opus calls, 2.06 M output and 71 M cache-read tokens) | final scores 6 / none / 4 / 5 against a bar of 7; three sections lost round 0 to the brief/gate duration bug, two authors crashed (exit 1), one final round broke its document; reviews cost $1.35-2.65 each and two revisions moved scores by 0 to +1; "up to $3 each" bounded no section's real spend |
+| build | ~3 min | small | crashed first on `Media.about` (fixed); then not publishable: section 2 blocked, six supers flagged by the direction-counting legibility check |
+| draft render, 2 slices | 18 min (15:48 → 16:06) | $0 | 64.3 s at draft across both hosts, mixed once; the joined encode wrote no `render.json`, which the gate reads |
+| vfx `--sections 2,3` | running | | re-author the crashed and the weakest section into v02; 1 and 4 carried forward |
+| sound (fetch + synth + review), beside vfx | 42 min | $5.75 | 38 cues on the measured clock, Freesound CC0 fills plus procedural synthesis for the rest; 254k output tokens; its own review says "not ready yet" (10 important flags) and, like the script's fact-check, only reports |
 | keyframe, second run, revision 1 | 34 min | author ≤ $4 | lightened the surface (a good still at 12:20), then kept tuning; the session hit the 1,800 s timeout again; the still host (.13) refused SSH for about 45 min (an unrelated process, then a reboot), so stills hung; the stage rendered the program itself and sent it to review |
 
 ## What slows an ultra-quality run, and the fix
@@ -54,7 +57,8 @@ every stage on opus, started 2026-10-19 20:47 (-03).
    full `yt script` re-run (about 30 min and $4.50); two were needed.
    *Proposed:* a verify-then-revise loop inside the stage, like polish: apply
    the smallest fix to each important or blocking line, re-check only those
-   shots, stop when nothing important is left.
+   shots, stop when nothing important is left. `yt sound --review` has the
+   same shape: ten important findings with exact fixes, none applied.
 4. **The script saw 60 of 193 claims.** The cut was by confidence alone, so
    claims the outline was built on fell out and the fact-check called their
    lines unsourced. *Done:* `script.research_block` always includes the
@@ -174,6 +178,46 @@ every stage on opus, started 2026-10-19 20:47 (-03).
     last shot, and the two differ by the breaths between measured takes.
     *Done:* `vfx.world_span(shots)` gives both numbers, and a test pins that
     the brief's number passes the gate.
-21. **Messages to headless sessions.** A session list shows the pipeline's
+21. **Authors run out mid-revision.** Two of the four opus section authors
+    ended with "claude exited with code 1" (section 3 in round 0, section 2
+    in its final revision), most likely the $3 per-section budget: an opus
+    author spends it on research, stills and two revisions. A crashed final
+    round leaves no review and a document out of step with its program.
+    *Proposed:* size the budget from the measured spend of a revision, and
+    let an author that nears its budget stop at its last good build.
+22. **A worse final round replaces a better one.** vfx keeps whatever the
+    last round left: earlier rounds are overwritten in place, and nothing
+    restores the best-scoring round when the final one scores lower or
+    breaks (section 2: round 1 reviewed 4/10, final round no symbol and no
+    review). The probe suite already keeps only a measured improvement.
+    *Proposed:* vfx keeps each round's program and document and promotes the
+    best-reviewed one, as `yt probe` does. *Done:* every gated round is kept
+    under `vfx/vNN/rounds/<stem>/rNN/`, the section ends on its best-reviewed
+    round, and a crashed or worse final round falls back to it; a section
+    whose author raises no longer aborts the others.
+23. **The per-section budget is not the section's cost.** `--budget-usd 3`
+    caps one authoring session, but each revision resumes in a session with
+    its own cap, the reviews are billed apart, and four sections in parallel
+    multiply all of it: the stage came to $88.43 against a nominal $12.
+    *Proposed:* one budget per section covering its author sessions and its
+    reviews, a stage budget over all sections, and the planner's estimate
+    printed before authoring starts.
+24. **A failed section cannot be redone alone.** `12-author` is cached as
+    one unit: a single section whose author crashed leaves `yt vfx` with
+    replay-all or `--fresh`-all (here ~$88 and 2.5 h to fix one of four),
+    and `yt build` blocks the whole film on it. *Done:* `yt vfx --sections N`
+    re-authors only those sections into the next version, carries the rest
+    forward at $0 and recomputes continuity, reach and plan.
+25. **A latent crash in the build's media path.** `build.py` read
+    `Media.about`, a field the dataclass never had; it fired the first time
+    research downloads reached a build. *Done:* the field exists, filled
+    from the asset's `use_for`, with a regression test.
+26. **A sliced encode leaves no report.** `render.encode_sliced` joins the
+    slices and the one mix, but writes no `render.json`; the gate, `yt
+    doctor`'s delivery verdict and `yt qa` read it, so the delivery encode
+    has to run unsliced on one host, slower, to be judged at all. *Proposed:*
+    the sliced encode writes the same `render.json` (the slices' engine
+    reports merged, the mix's loudness, the joined file's duration).
+27. **Messages to headless sessions.** A session list shows the pipeline's
    own `claude -p` calls next to people's sessions; a message to one lands in
    a model mid-answer. *Done:* operators message only long-lived sessions.
