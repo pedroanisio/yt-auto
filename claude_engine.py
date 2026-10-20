@@ -127,6 +127,33 @@ class ClaudeExecutionError(ClaudeError):
         self.transient = transient
 
 
+#: USD per 1M tokens (`input`, `cached_input`, `output`, optional
+#: `cache_creation`) by model id, used only to estimate the cost of a call
+#: that timed out (its `result` event, which carries the real cost, never
+#: arrived). Empty: no price is guessed. Fill it with
+#: $CLAUDE_PRICES='{"model": {"input": .., "cached_input": .., "output": ..}}'.
+PRICES: dict[str, dict[str, float]] = {}
+
+
+def _partial_cost(tokens: dict[str, int], model: str | None) -> float | None:
+    """The estimated cost of `tokens` on `model`, None when it has no price."""
+    table = dict(PRICES)
+    raw = os.environ.get("CLAUDE_PRICES")
+    if raw:
+        try:
+            table.update(json.loads(raw))
+        except ValueError:
+            pass
+    row = table.get(model or "")
+    if not row:
+        return None
+    return (tokens.get("input_tokens", 0) * row.get("input", 0)
+            + tokens.get("cache_read_input_tokens", 0) * row.get("cached_input", 0)
+            + tokens.get("cache_creation_input_tokens", 0)
+            * row.get("cache_creation", row.get("input", 0))
+            + tokens.get("output_tokens", 0) * row.get("output", 0)) / 1_000_000
+
+
 # --------------------------------------------------------------------------- #
 # value objects
 # --------------------------------------------------------------------------- #
@@ -145,6 +172,32 @@ class Usage:
     #: The same counters per model that actually answered (the CLI's
     #: `modelUsage`), so a fallback model's share is visible.
     by_model: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: Calls cut off by their timeout, whose spend came from the stream's
+    #: per-message usage (no `result` event arrived). It is already inside
+    #: the totals above; these say how much of it, and whether the cost is
+    #: an estimate from PRICES (`timed_out_cost_estimated`) or unknown (0).
+    timed_out_calls: int = 0
+    timed_out_tokens: dict[str, int] = field(default_factory=dict)
+    timed_out_cost_usd: float = 0.0
+    timed_out_cost_estimated: bool = False
+
+    def add_partial(self, tokens: dict, *, cost: float | None = None,
+                    estimated: bool = False) -> None:
+        """Book a call that was cut off: tokens from its stream, `cost` when
+        it could be priced. Counted as a call, and marked as timed out."""
+        names = {"input_tokens": "input_tokens", "output_tokens": "output_tokens",
+                 "cache_read_input_tokens": "cache_read_tokens",
+                 "cache_creation_input_tokens": "cache_creation_tokens"}
+        for src, dst in names.items():
+            n = int(tokens.get(src) or 0)
+            setattr(self, dst, getattr(self, dst) + n)
+            self.timed_out_tokens[dst] = self.timed_out_tokens.get(dst, 0) + n
+        self.cost_usd += cost or 0.0
+        self.timed_out_cost_usd += cost or 0.0
+        self.timed_out_cost_estimated = self.timed_out_cost_estimated or (
+            estimated and cost is not None)
+        self.timed_out_calls += 1
+        self.calls += 1
 
     def add(self, result: dict) -> None:
         u = result.get("usage") or {}
@@ -176,6 +229,12 @@ class Usage:
         self.cost_usd += other.cost_usd
         self.calls += other.calls
         self.duration_ms += other.duration_ms
+        self.timed_out_calls += other.timed_out_calls
+        self.timed_out_cost_usd += other.timed_out_cost_usd
+        self.timed_out_cost_estimated = (self.timed_out_cost_estimated
+                                         or other.timed_out_cost_estimated)
+        for key, n in other.timed_out_tokens.items():
+            self.timed_out_tokens[key] = self.timed_out_tokens.get(key, 0) + n
         for model, src in other.by_model.items():
             row = self.by_model.setdefault(model, {k: type(v)() for k, v in src.items()})
             for key, value in src.items():
@@ -781,6 +840,10 @@ class ClaudeEngine:
             watchdog.daemon = True
             watchdog.start()
 
+        #: Per-message usage seen so far, latest per message id: what a
+        #: stream cut off before its `result` event has spent.
+        spent: dict[str, tuple[str | None, dict]] = {}
+
         stderr_parts: list[str] = []
         drain = threading.Thread(
             target=lambda: stderr_parts.append(proc.stderr.read() or ""),
@@ -802,6 +865,7 @@ class ClaudeEngine:
                     message = json.loads(line)
                 except json.JSONDecodeError:
                     continue  # stray non-JSON line; ignore
+                self._note_spend(message, spent)
                 yield from self._normalise(message)
         except GeneratorExit:
             abandoned = True
@@ -819,6 +883,7 @@ class ClaudeEngine:
                 print(stderr, file=sys.stderr, end="")
             if not abandoned:
                 if timed_out.is_set():
+                    self._book_timed_out(spent)
                     raise ClaudeExecutionError(
                         f"claude timed out after {cfg.timeout}s",
                         returncode=code, stderr=stderr.strip(), transient=True)
@@ -826,6 +891,34 @@ class ClaudeEngine:
                     raise ClaudeExecutionError(
                         f"claude exited with code {code}",
                         returncode=code, stderr=stderr.strip())
+
+    @staticmethod
+    def _note_spend(message: dict, spent: dict) -> None:
+        """Remember an assistant message's usage; a result supersedes them all."""
+        if message.get("type") == "result":
+            spent.clear()
+        elif message.get("type") == "assistant":
+            inner = message.get("message") or {}
+            if isinstance(inner.get("usage"), dict):
+                key = str(inner.get("id") or len(spent))
+                spent[key] = (inner.get("model"), inner["usage"])
+
+    def _book_timed_out(self, spent: dict) -> None:
+        """A timeout ends the stream with no `result`: book what it spent."""
+        if not spent:
+            return
+        tokens: dict[str, int] = {}
+        cost: float | None = 0.0
+        for model, usage in spent.values():
+            mine = {k: int(usage.get(k) or 0) for k in (
+                "input_tokens", "output_tokens", "cache_read_input_tokens",
+                "cache_creation_input_tokens")}
+            for k, n in mine.items():
+                tokens[k] = tokens.get(k, 0) + n
+            part = _partial_cost(mine, model)
+            cost = None if part is None or cost is None else cost + part
+        with self._lock:
+            self.usage.add_partial(tokens, cost=cost, estimated=cost is not None)
 
     def _normalise(self, message: dict) -> Iterator[Event]:
         """Turn one stream-json message into zero or more `Event`s."""
