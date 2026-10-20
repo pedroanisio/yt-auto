@@ -47,6 +47,7 @@ import csv
 import json
 import os
 import re
+import shutil
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -1047,6 +1048,23 @@ def shot_times(shots: list[dict], duration: float, *, apart: float = 1.0) -> lis
     return sorted(mids)
 
 
+def passes_gate(record: dict) -> bool:
+    """A section record that passed its gate and was reviewed."""
+    return (record.get("score") is not None
+            and not [f for f in record.get("findings") or [] if str(f).startswith("error")])
+
+
+def keeps_previous(before: dict, attempt: dict) -> bool:
+    """Whether an earlier version's section beats a new attempt at it: the new
+    one failed its gate or went unreviewed while the earlier passed, or both
+    passed and the earlier scored higher. A tie keeps the new attempt."""
+    if not passes_gate(before):
+        return False
+    if not passes_gate(attempt):
+        return True
+    return float(before["score"]) > float(attempt["score"])
+
+
 def world_span(shots: list[dict]) -> float:
     """How long a world runs: to the end of its last shot, the gaps between
     takes included. The brief states it and the timing gate requires it, from
@@ -1308,6 +1326,101 @@ class Workspace:
         if VERSION_RE.match(here.name):
             return cls(here.parent.parent, here.parent.name, here.name)
         return cls(here.parent, here.name)
+
+    #: Where every gated round of a section is kept: rounds/<stem>/rNN/.
+    ROUNDS_DIR = "rounds"
+
+    def _section_files(self, name: str) -> list[str]:
+        stem = name[:-len(".scene.xml")]
+        return [name, f"{stem}.py", f"{stem}.provenance.json"]
+
+    def keep_round(self, name: str, round_no: int) -> Path | None:
+        """Copy what a gated round judged -- program, document, provenance and
+        proof frames -- under rounds/<stem>/rNN/, so it can be promoted later."""
+        if not (self.dir / name).is_file():
+            return None
+        stem = name[:-len(".scene.xml")]
+        kept = self.dir / self.ROUNDS_DIR / stem / f"r{round_no:02d}"
+        if kept.exists():
+            shutil.rmtree(kept)
+        (kept / "frames").mkdir(parents=True)
+        for rel in self._section_files(name):
+            if (self.dir / rel).is_file():
+                shutil.copy2(self.dir / rel, kept / rel)
+        for png in (self.dir / "frames").glob(f"{stem}__*.png"):
+            shutil.copy2(png, kept / "frames" / png.name)
+        return kept
+
+    def restore_round(self, name: str, round_no: int) -> bool:
+        """Put a kept round back as the section's program, document,
+        provenance and proof frames; False when it was never kept."""
+        stem = name[:-len(".scene.xml")]
+        kept = self.dir / self.ROUNDS_DIR / stem / f"r{round_no:02d}"
+        if not (kept / name).is_file():
+            return False
+        for rel in self._section_files(name):
+            if (kept / rel).is_file():
+                shutil.copy2(kept / rel, self.dir / rel)
+            else:
+                (self.dir / rel).unlink(missing_ok=True)
+        frames = self.dir / "frames"
+        frames.mkdir(exist_ok=True)
+        for png in frames.glob(f"{stem}__*.png"):
+            png.unlink()
+        for png in (kept / "frames").glob("*.png"):
+            shutil.copy2(png, frames / png.name)
+        return True
+
+    def carry_section(self, record: dict, n: int) -> dict | None:
+        """Copy a section authored in an earlier version into this one --
+        program, document, provenance, brief, proof frames and kept rounds --
+        and return its record pointing here; None when its document is gone."""
+        src_doc = self.root / str(record.get("file") or "")
+        if not src_doc.is_file():
+            return None
+        src, name = src_doc.parent, src_doc.name
+        stem = name[:-len(".scene.xml")]
+        for rel in self._section_files(name) + [f"brief-{n:02d}.md"]:
+            if (src / rel).is_file():
+                shutil.copy2(src / rel, self.dir / rel)
+        (self.dir / "frames").mkdir(exist_ok=True)
+        for png in (src / "frames").glob(f"{stem}__*.png"):
+            shutil.copy2(png, self.dir / "frames" / png.name)
+        if (src / self.ROUNDS_DIR / stem).is_dir():
+            shutil.copytree(src / self.ROUNDS_DIR / stem, self.dir / self.ROUNDS_DIR / stem,
+                            dirs_exist_ok=True)
+        program = self.dir / f"{stem}.py"
+        return dict(record, file=f"{self.rel}/{name}", version=self.version,
+                    program=f"{self.rel}/{program.name}" if program.is_file() else "",
+                    carried_from=record.get("version"),
+                    carried_cost_usd=record.get("cost_usd", 0.0), cost_usd=0.0)
+
+    def keep_previous(self, before: dict, attempt: dict, n: int) -> dict | None:
+        """Put an earlier version's section back in place of a worse new
+        attempt: the attempt's kept rounds move to rounds/<stem>.attempt/ and
+        its proof frames are cleared, then the earlier files are carried in."""
+        name = Path(str(attempt.get("file") or "")).name
+        if not name.endswith(".scene.xml"):
+            return None
+        stem = name[:-len(".scene.xml")]
+        rounds = self.dir / self.ROUNDS_DIR / stem
+        if rounds.is_dir():
+            aside = self.dir / self.ROUNDS_DIR / f"{stem}.attempt"
+            if aside.exists():
+                shutil.rmtree(aside)
+            rounds.rename(aside)
+        for png in (self.dir / "frames").glob(f"{stem}__*.png"):
+            png.unlink()
+        carried = self.carry_section(before, n)
+        if carried is None:
+            return None
+        carried.pop("carried_from", None)
+        carried.pop("carried_cost_usd", None)
+        errors = [f for f in attempt.get("findings") or [] if f.startswith("error")]
+        return dict(carried, kept_from=before.get("version"),
+                    cost_usd=attempt.get("cost_usd", 0.0),
+                    attempt={"version": attempt.get("version"), "score": attempt.get("score"),
+                             "best_round": attempt.get("best_round"), "errors": errors[:5]})
 
     def write_shots(self, shots: dict[str, list[dict]]) -> Path:
         """shots.json: per symbol id, its shots (label, at inside the symbol,
@@ -1875,7 +1988,7 @@ class VfxPlanner:
                  words: dict[str, dict] | None = None, frame: tuple[int, int] = FRAME,
                  direction: dict | None = None, revisions: int = 2,
                  author_bar: float = 7.0, fresh: bool = False,
-                 verbose: bool = True) -> None:
+                 verbose: bool = True, sections_only: set[int] | None = None) -> None:
         self.idea: Idea = bundle["idea"]
         self.bundle = bundle
         self.dossier = dossier
@@ -1898,6 +2011,11 @@ class VfxPlanner:
         self.author_bar = float(author_bar)
         self.fresh = fresh
         self.verbose = verbose
+        #: Sections to re-author (1-based); the others are carried forward from
+        #: the active version, and what depends on the authoring is redone.
+        self.sections_only = set(sections_only or ())
+        self._stale = ({"12-author", "12-continuity", "14-reach", "15-plan"}
+                       if self.sections_only else set())
         self.usage = Usage()
         #: Section authors and reviewers run in a pool; each reports here once.
         self._account_lock = threading.Lock()
@@ -1925,7 +2043,7 @@ class VfxPlanner:
             self._account(engine.usage)
 
     def _stage(self, name: str, work) -> object:
-        if not self.fresh:
+        if not self.fresh and name not in self._stale:
             cached = self.dossier.load(name)
             if cached is not None:
                 self._say(f"[{name}] cached")
@@ -2287,6 +2405,7 @@ class VfxPlanner:
                            "score": score, "fidelity": (review or {}).get("fidelity"),
                            "review": review, "timed_out": False,
                            "findings": [f for f in findings if not f.startswith("note")]})
+            self.ws.keep_round(name, round_no)
             self._say(f"    [{n}] {name} round {round_no}: {len(symbols)} symbol(s), "
                       f"{len(errors)} error(s)"
                       + (f", review {score:g}/10" if score is not None else ", no review")
@@ -2338,6 +2457,21 @@ class VfxPlanner:
                           "the previous document is kept")
                 break
             symbols, findings, review = gate(revisions)
+        # Keep only a measured improvement: the section ends on its best
+        # reviewed round, so a last revision that crashed, broke the build or
+        # scored lower falls back to it instead of to nothing.
+        best = max((r for r in rounds if r["score"] is not None and not r["errors"]
+                    and not r.get("timed_out")), key=lambda r: (r["score"], r["round"]),
+                   default=None)
+        last = next((r for r in reversed(rounds) if not r.get("timed_out")), None)
+        promoted = None
+        if best is not None and last is not None and best["round"] != last["round"]:
+            if self.ws.restore_round(name, best["round"]):
+                promoted = best["round"]
+                symbols, review = best["symbols"], best["review"]
+                findings = list(best["findings"])
+                self._say(f"    [{n}] round {best['round']} ({best['score']:g}/10) was the "
+                          f"best; its program and document are kept")
         final = self.ws.dir / name
         text = final.read_text(encoding="utf-8", errors="replace") if final.is_file() else ""
         self._account(engine.usage, reviewer.usage)
@@ -2351,8 +2485,11 @@ class VfxPlanner:
                             "shots": [s["label"] for s in w["shots"]],
                             "phases": [e["id"] for e in w["phases"]]} for w in worlds],
                 "revisions": revisions, "rounds": rounds,
-                "score": rounds[-1]["score"] if rounds else None,
-                "review": rounds[-1]["review"] if rounds else None,
+                "best_round": promoted if promoted is not None else (last or {}).get("round"),
+                "score": (best["score"] if promoted is not None
+                          else rounds[-1]["score"] if rounds else None),
+                "review": (best["review"] if promoted is not None
+                           else rounds[-1]["review"] if rounds else None),
                 "cost_usd": round(engine.usage.cost_usd + reviewer.usage.cost_usd, 4),
                 "timed_out_usage": timed_out_usage(engine.usage),
                 "engine": reviewer.report()}
@@ -2362,6 +2499,12 @@ class VfxPlanner:
         """One agent per section, in a new vfx/vNN/; the previous version stays."""
         sections = outline.get("sections", [])
         by_heading = {s["section"]: s for s in effects}
+
+        previous = {}
+        if self.sections_only:
+            for rec in self.dossier.load("12-author") or []:
+                if isinstance(rec, dict) and rec.get("n") is not None:
+                    previous[int(rec["n"])] = rec
 
         def work() -> list[dict]:
             version = self.ws.new_version()
@@ -2374,14 +2517,59 @@ class VfxPlanner:
                 for w in self._worlds(s, group):
                     shots[w["id"]] = w["shots"]
             self.ws.write_shots(shots)
+            carried: list[dict] = []
+            if self.sections_only:
+                for n, s, group in list(jobs):
+                    if n in self.sections_only or n not in previous:
+                        continue
+                    record = self.ws.carry_section(previous[n], n)
+                    if record is not None:
+                        carried.append(record)
+                        jobs.remove((n, s, group))
+                self._say(f"  carrying section(s) {', '.join(str(r['n']) for r in carried) or 'none'} "
+                          f"forward from {', '.join(sorted({str(r.get('carried_from')) for r in carried})) or '-'}")
             self._say(f"  authoring {len(jobs)} section(s) into {self.ws.rel}/ ({version}), "
                       f"{self.jobs} at a time, up to ${self.budget_usd:g} each, "
                       f"bar {self.author_bar:g}/10, {self.revisions} revision(s)")
             with ThreadPoolExecutor(max_workers=self.jobs) as pool:
-                futures = [pool.submit(self._author_one, n, s, group, style, tokens)
-                           for n, s, group in jobs]
-                return [f.result() for f in futures]
+                futures = [(job, pool.submit(self._author_one, job[0], job[1], job[2], style,
+                                             tokens)) for job in jobs]
+                authored = []
+                for (n, s, group), future in futures:
+                    try:
+                        authored.append(future.result())
+                    except Exception as exc:     # one section's failure is that section's record
+                        self._say(f"    [{n}] the section's authoring failed: {exc}")
+                        authored.append(self._failed_record(n, s, group, exc))
+            # A section re-authored on request competes with the version it
+            # replaces: the new one is kept only if it is at least as good.
+            for i, record in enumerate(authored):
+                before = previous.get(record["n"]) if self.sections_only else None
+                if before is not None and keeps_previous(before, record):
+                    kept = self.ws.keep_previous(before, record, record["n"])
+                    if kept is not None:
+                        self._say(f"    [{record['n']}] the new attempt "
+                                  f"({record.get('score')}) is worse than {before.get('version')}'s "
+                                  f"({before.get('score')}); that version is kept")
+                        authored[i] = kept
+            return sorted(carried + authored, key=lambda r: r["n"])
         return self._stage("12-author", work)
+
+    def _failed_record(self, n: int, section: dict, group: dict, exc: Exception) -> dict:
+        """What is recorded for a section whose authoring raised: nothing it
+        wrote is trusted, and the build and the doctor see why."""
+        name = self.ws.doc_name(n, section)
+        worlds = self._worlds(section, group)
+        return {"n": n, "section": section.get("heading", ""),
+                "file": f"{self.ws.rel}/{name}", "version": self.ws.version, "program": "",
+                "provenance": None, "symbols": [], "tool_calls": 0, "props_declined": {},
+                "findings": [f"error: the authoring of section {n} failed: "
+                             f"{type(exc).__name__}: {str(exc)[:300]}"],
+                "worlds": [{"id": w["id"], "start": w["start"], "seconds": w["seconds"],
+                            "shots": [s["label"] for s in w["shots"]],
+                            "phases": [e["id"] for e in w["phases"]]} for w in worlds],
+                "revisions": 0, "rounds": [], "best_round": None, "score": None,
+                "review": None, "cost_usd": 0.0}
 
     def continuity(self, authored: list[dict]) -> dict:
         """One proof frame from each section, side by side: do they read as
@@ -2832,6 +3020,11 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
     p.add_argument("--fresh", action="store_true",
                    help="redo every stage, authoring included, into the next vfx/vNN/ "
                         "instead of reusing cached ones")
+    p.add_argument("--sections", metavar="N[,M]",
+                   help="re-author only these sections (1-based, as in 02-...) into the next "
+                        "vfx/vNN/, carrying the others' programs, documents and scores "
+                        "forward from the active version; continuity, reach and plan are "
+                        "redone")
     # Standalone use: hand it the files instead of a project.
     workspace.add_inputs(p, "script", "voice", "styles")
     p.set_defaults(run=run)
@@ -2864,6 +3057,19 @@ def run(args) -> int:
         print("warning: no engine reachable (RS_RENDER_HOST unset, no local binary); "
               "documents will pass only the SDK's checks", file=sys.stderr)
 
+    sections_only: set[int] = set()
+    if getattr(args, "sections", None):
+        try:
+            sections_only = {int(x) for x in str(args.sections).split(",") if x.strip()}
+        except ValueError:
+            print(f"error: --sections takes section numbers, e.g. 2,3 (got {args.sections!r})",
+                  file=sys.stderr)
+            return 2
+        if args.fresh:
+            print("error: --sections carries the other sections forward; with --fresh the "
+                  "plan they were authored to would change under them", file=sys.stderr)
+            return 2
+
     rules, digest = house.for_args(args, project, "vfx")
     if rules and verbose:
         print(f"standards: {', '.join(digest['sources'])}", file=sys.stderr)
@@ -2875,6 +3081,7 @@ def run(args) -> int:
         budget_hours=args.budget_hours, sections=sections, words=words,
         frame=(args.width, args.height), direction=direction,
         revisions=args.revisions, author_bar=args.author_bar, fresh=args.fresh,
+        sections_only=sections_only,
         verbose=verbose)
     try:
         data = planner.run()
