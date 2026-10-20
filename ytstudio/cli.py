@@ -54,7 +54,7 @@ import claude_engine
 
 from .core import read_json
 from . import (assess, assets, build, doctor, env, gate, harness, house, ideas, improve,
-               keyframe, pilot, probes, props, qa, render, research, retime, review, script,
+               inhibit, keyframe, pilot, probes, props, qa, render, research, retime, review, script,
                sound, styles, vfx, voice, workspace)
 
 #: The stages `yt run` walks, in order.
@@ -345,6 +345,10 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+#: Stages that never wait on a model or a render host need no inhibitor.
+LOCAL_ONLY = frozenset({"ls", "assets", "props"})
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     # Effort and fallback apply to every engine a stage builds, including the
@@ -359,7 +363,10 @@ def main(argv: list[str] | None = None) -> int:
             # The name, never the value.
             print(f"env: {name} from {path}", file=sys.stderr)
     try:
-        return args.run(args)
+        if args.stage in LOCAL_ONLY:
+            return args.run(args)
+        with inhibit.held(f"yt {args.stage}"):
+            return args.run(args)
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
         return 130
