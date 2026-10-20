@@ -1209,7 +1209,10 @@ class SceneBuilder:
             layer.start = p.at
             layer.end = round(p.at + p.seconds, 3)
             if hit is not None and fit:
+                # A fitted layer needs its box, or the engine refuses it (C16).
                 layer.fit = fit
+                layer.boxWidth = str(self.width)
+                layer.boxHeight = str(self.height)
 
         # What the includes do not carry: the design's tokens first, then
         # each included document's tokens and lights, the lights gated to the
