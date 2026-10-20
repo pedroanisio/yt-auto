@@ -179,6 +179,28 @@ REVIEW_SCHEMA = {
     "required": ["flags", "verdict"],
 }
 
+#: The cue fields a revision may rewrite: the design, never the file contract
+#: `--fetch` writes for `yt build`, and never the cue's id.
+REVISE_TEXT = ("name", "purpose", "description", "motif", "instrumentation",
+               "tempo", "sync", "entry", "exit", "level", "source")
+REVISE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {"type": "string", "enum": ["fix", "keep"]},
+        "name": {"type": "string"}, "purpose": {"type": "string"},
+        "description": {"type": "string"}, "motif": {"type": "string"},
+        "instrumentation": {"type": "string"}, "tempo": {"type": "string"},
+        "sync": {"type": "string"}, "entry": {"type": "string"},
+        "exit": {"type": "string"}, "level": {"type": "string"},
+        "source": {"type": "string"},
+        "at": {"type": "integer"}, "seconds": {"type": "integer"},
+        "why": {"type": "string"},
+    },
+    "required": ["action", "why"],
+}
+#: Severities the review-then-revise loop acts on.
+REVISABLE = ("blocker", "important")
+
 
 @dataclass
 class Cue:
@@ -602,8 +624,9 @@ class SoundDesigner:
 
     # -- stage three: listen back ------------------------------------------
 
-    def review(self, cues: list[Cue], stats: dict) -> dict:
-        self._say(f"[review] {len(cues)} cues, "
+    def review(self, cues: list[Cue], stats: dict, *,
+               only: list[str] | None = None) -> dict:
+        self._say(f"[review] {len(only) if only else len(cues)} cues, "
                   f"{stats['music_share']}% of the runtime scored")
         sheet = "\n".join(
             f"{c.cue_id} [{c.kind}] {timecode(c.at)}-{timecode(c.out)} "
@@ -636,15 +659,139 @@ class SoundDesigner:
                  "id, the problem, how severe it is, and the smallest fix. "
                  "Then one sentence on whether this is ready to hand to an "
                  "editor."]
+        if only:
+            parts.append(
+                "These cues were just revised. Judge only " + ", ".join(only)
+                + ": flag a problem that is still there or one the change "
+                "introduced, and flag no other cue.")
         try:
             return self._ask("\n\n".join(parts), REVIEW_SCHEMA)
         except ClaudeError as exc:
             self._say(f"[review] failed ({exc})")
             return {}
 
+    # -- stage four: fix what the listen-back found --------------------------
+
+    def revise(self, cues: list[Cue], flag: dict) -> dict:
+        """The smallest change to one flagged cue, or a reason to keep it.
+
+        Returns {"applied": {...} | None, "why": str}; a failed call changes
+        nothing and is a keep.
+        """
+        by_id = {c.cue_id: c for c in cues}
+        cue = by_id.get(str(flag.get("cue", "")).strip())
+        if cue is None:
+            return {"applied": None, "why": "no such cue on the sheet"}
+        sheet = "\n".join(
+            f"{c.cue_id} [{c.kind}] {timecode(c.at)}-{timecode(c.out)} "
+            f"({c.seconds}s) {c.name} -- {c.purpose} | level: {c.level or '?'} "
+            f"| source: {c.source}" for c in cues)
+        now = {k: getattr(cue, k) for k in REVISE_TEXT}
+        parts = [self._brief(), self._palette_recap(),
+                 f"The cue sheet:\n\n{sheet}",
+                 f"The listen-back flagged {cue.cue_id} "
+                 f"({flag.get('severity', '')}): {flag.get('problem', '')} "
+                 f"(suggested: {flag.get('fix', '')}).\n"
+                 f"Its fields now: {now}",
+                 "Make the smallest change to this one cue that removes the "
+                 "problem, giving only the fields that change (`at` and "
+                 f"`seconds` stay inside 0 to {self.runtime}). Never add a "
+                 "reference track as something to drop into the edit. When the "
+                 "cue is already right, or the fix would break another cue, "
+                 "answer keep and say why in one clause."]
+        try:
+            data = self._ask("\n\n".join(parts), REVISE_SCHEMA)
+        except ClaudeError as exc:
+            self._say(f"[revise] {cue.cue_id} failed ({exc}); keeping it")
+            return {"applied": None, "why": f"revision failed: {exc}"}
+        why = str(data.get("why", "")).strip()
+        if data.get("action") != "fix":
+            return {"applied": None, "why": why or "kept as written"}
+        before, after = {}, {}
+        for key in REVISE_TEXT:
+            value = str(data.get(key, "") or "").strip()
+            if value and value != getattr(cue, key):
+                before[key], after[key] = getattr(cue, key), value
+        at, seconds = cue.at, cue.seconds
+        try:
+            if data.get("at") is not None:
+                at = min(max(int(data["at"]), 0), self.runtime - 1)
+            if data.get("seconds") is not None:
+                seconds = max(1, int(data["seconds"]))
+        except (TypeError, ValueError):
+            pass
+        seconds = max(1, min(seconds, self.runtime - at))   # ends inside the film
+        for key, value in (("at", at), ("seconds", seconds)):
+            if value != getattr(cue, key):
+                before[key], after[key] = getattr(cue, key), value
+        if not after:
+            return {"applied": None, "why": why or "nothing to change"}
+        for key, value in after.items():
+            setattr(cue, key, value)
+        return {"applied": {"cue": cue.cue_id, "before": before, "after": after,
+                            "why": why}, "why": why}
+
+    def review_and_revise(self, cues: list[Cue], stats: dict, *, rounds: int = 2,
+                          fix: bool = True) -> dict:
+        """Listen back, fix the important and blocking cues, re-check just those.
+
+        Stops when nothing binding is left or the rounds run out. The result
+        is the review, with `revisions` (what changed), `kept` (cues left as
+        written, with the reason, and still flagged) and `unresolved` (flags
+        still standing after the last round, each kept with that reason).
+        """
+        review = self.review(cues, stats)
+        if not review or not fix:
+            return review
+
+        def binding(flags, skip=()):
+            return [f for f in flags if f.get("severity") in REVISABLE
+                    and f.get("cue") not in skip]
+
+        revisions: list[dict] = []
+        kept: dict[str, str] = {}
+        used = 0
+        for _ in range(max(0, rounds)):
+            todo = binding(review.get("flags", []), kept)
+            if not todo:
+                break
+            used += 1
+            changed: list[str] = []
+            for f in todo:
+                if f["cue"] in changed:
+                    continue        # a cue's flags are answered by one change
+                result = self.revise(cues, f)
+                if result["applied"]:
+                    revisions.append(result["applied"])
+                    changed.append(f["cue"])
+                else:
+                    kept[f["cue"]] = result["why"]
+            if not changed:
+                break
+            again = self.review(cues, coverage(cues, self.runtime), only=changed)
+            if not again:
+                break
+            review["flags"] = (
+                [f for f in review.get("flags", []) if f.get("cue") not in changed]
+                + [f for f in again.get("flags", []) if f.get("cue") in changed])
+            review["recheck"] = again.get("verdict", "")
+        left = binding(review.get("flags", []), kept)
+        for f in review.get("flags", []):
+            if f.get("cue") in kept:
+                f["kept"] = kept[f["cue"]]
+        for f in left:
+            f["kept"] = (f"still flagged after {used} round(s) of revision; "
+                         "left as it is")
+        review["revisions"] = revisions
+        review["kept"] = [{"cue": c, "why": why} for c, why in kept.items()]
+        review["unresolved"] = left
+        self._say(f"[revise] changed {len(revisions)}, kept {len(kept)}, "
+                  f"{len(left)} still flagged")
+        return review
+
     # -- run ---------------------------------------------------------------
 
-    def run(self, *, do_review: bool = False) -> dict:
+    def run(self, *, do_review: bool = False, fix: bool = True) -> dict:
         palette = self.plan()
         cues: list[Cue] = []
         failures = 0
@@ -663,7 +810,10 @@ class SoundDesigner:
         number_cues(cues)
 
         stats = coverage(cues, self.runtime)
-        review = self.review(cues, stats) if do_review and cues else {}
+        review = (self.review_and_revise(cues, stats, fix=fix)
+                  if do_review and cues else {})
+        if review.get("revisions"):
+            stats = coverage(cues, self.runtime)
         return {
             "idea": asdict(self.idea),
             "runtime": self.runtime,
@@ -1151,6 +1301,10 @@ def print_sound(idea: Idea, data: dict, cues: list[Cue]) -> None:
                         f"({flag.get('severity', '?')}): {flag.get('problem', '')}",
                         "  "))
             print(wrap(f"fix: {flag.get('fix', '')}", "      "))
+            if flag.get("kept"):
+                print(wrap(f"kept: {flag['kept']}", "      "))
+    for rev in review.get("revisions", []):
+        print(wrap(f"· revised {rev.get('cue', '?')}: {rev.get('why', '')}", "  "))
     if review.get("verdict"):
         print(wrap(f"verdict: {review['verdict']}", "  "))
 
@@ -1242,6 +1396,10 @@ def write_md(path: str, idea: Idea, data: dict, cues: list[Cue]) -> None:
             md += [f"- **{flag.get('severity', '?')}** · {flag.get('cue', '?')} "
                    f"— {flag.get('problem', '')}",
                    f"  - fix: {flag.get('fix', '')}"]
+            if flag.get("kept"):
+                md.append(f"  - kept: {flag['kept']}")
+        for rev in review.get("revisions", []):
+            md.append(f"- revised {rev.get('cue', '?')} — {rev.get('why', '')}")
         md.append("")
     Path(path).write_text("\n".join(md), encoding="utf-8")
 
@@ -1289,7 +1447,10 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
     p.add_argument("--no-music", action="store_true", dest="no_music",
                    help="effects, ambience and silence only; no score")
     p.add_argument("--review", action="store_true",
-                   help="listen back to the cue sheet and flag what is wrong")
+                   help="listen back to the cue sheet, fix the important and "
+                        "blocking cues, and re-check them")
+    p.add_argument("--report-only", action="store_true", dest="report_only",
+                   help="with --review: report the findings without fixing them")
     p.add_argument("--fetch", action="store_true",
                    help="download CC0/CC-BY audio for every cue from Freesound "
                         "into <project>/sound/ and write the files into the "
@@ -1383,7 +1544,7 @@ def run(args) -> int:
         verbose=not args.quiet)
 
     try:
-        data = designer.run(do_review=args.review)
+        data = designer.run(do_review=args.review, fix=not args.report_only)
     except ClaudeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
