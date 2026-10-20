@@ -154,6 +154,38 @@ RETAKE_SCHEMA = {
     "required": ["retakes", "verdict", "notes"],
 }
 
+WORDLESS_ROLE = (
+    "You write the descriptive captions of a film that has no narration, for "
+    "deaf and hard-of-hearing viewers: sound descriptions in square brackets, "
+    "each naming what is heard and, where it matters, its character. You work "
+    "from the sound cue sheet and the shots with their timings. You describe "
+    "only sound that the cue sheet or the shot supports and you never invent "
+    "dialogue or speech. One short cue per audible event, in the film's "
+    "language, ordered in time, none overlapping, each long enough to read."
+)
+
+DESCRIBE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "cues": {"type": "array",
+                 "items": {"type": "object",
+                           "properties": {
+                               "at": {"type": "number",
+                                      "description": "seconds from the top of the film"},
+                               "seconds": {"type": "number",
+                                           "description": "how long the cue stays up"},
+                               "text": {"type": "string",
+                                        "description": "the bracketed sound description"}},
+                           "required": ["at", "seconds", "text"]}},
+    },
+    "required": ["cues"],
+}
+
+#: The delivery gate's caption limits (scene-render production_gate.captions).
+GATE_LINE_CHARS = 42
+GATE_LINES = 2
+GATE_CPS = 17.0
+
 
 def directions_from(retakes) -> dict[str, dict]:
     """What the director asked of each retake, as the recorder can apply it:
@@ -928,6 +960,161 @@ def write_captions(path: Path, takes: list[Take], *,
     return clamped, too_short
 
 
+def write_cues(path: Path, cues: list[dict], *, srt: bool = False) -> None:
+    """Legal cues (see `legalise`) as VTT or SRT."""
+    out = [] if srt else ["WEBVTT", ""]
+    for i, cue in enumerate(cues, 1):
+        if srt:
+            out.append(str(i))
+        out.append(f"{_stamp(cue['start'], comma=srt)} --> {_stamp(cue['end'], comma=srt)}")
+        out += cue["lines"]
+        out.append("")
+    path.write_text("\n".join(out) + "\n", encoding="utf-8")
+
+
+def legalise(raw: list[dict], film_end: float) -> tuple[list[dict], list[str]]:
+    """Make descriptive cues legal to the delivery gate, mechanically.
+
+    Ordered and not overlapping, inside 0..film_end, at most two lines of at
+    most 42 characters, at most 17 characters per second. A cue too fast is
+    lengthened into the gap before the next one; one that cannot be made legal
+    is dropped. The words are never changed. Returns the cues
+    ({start, end, lines}) and one sentence for everything that was altered.
+    """
+    notes: list[str] = []
+    end_ms = int(film_end * 1000)
+    rows = []
+    for item in raw:
+        try:
+            at, length = float(item.get("at")), float(item.get("seconds") or 0)
+        except (TypeError, ValueError, AttributeError):
+            notes.append(f"dropped a cue with no usable time: {str(item)[:60]}")
+            continue
+        text = " ".join(str(item.get("text", "")).split())
+        if not text or not math.isfinite(at) or not math.isfinite(length):
+            notes.append(f"dropped an empty or untimed cue at {at}")
+            continue
+        rows.append((at, length, text))
+    rows.sort(key=lambda r: r[0])
+
+    cues: list[dict] = []
+    prev_end = 0
+    for i, (at, length, text) in enumerate(rows):
+        label = f"{text[:30]!r} at {at:g}s"
+        lines = caption_lines(text, GATE_LINE_CHARS)
+        if len(lines) > GATE_LINES or any(len(x) > GATE_LINE_CHARS for x in lines):
+            notes.append(f"dropped {label}: more than {GATE_LINES} lines of "
+                         f"{GATE_LINE_CHARS} characters")
+            continue
+        start = max(int(round(at * 1000)), 0, prev_end)
+        asked_end = int(round((at + length) * 1000))
+        if start >= end_ms:
+            notes.append(f"dropped {label}: outside the film's {film_end:g}s")
+            continue
+        need = _need_ms(lines)
+        want = max(asked_end - start, need, 700)
+        nxt = next((int(round(r[0] * 1000)) for r in rows[i + 1:]
+                    if int(round(r[0] * 1000)) > start), end_ms)
+        end = min(start + want, nxt, end_ms)
+        if end - start < need:
+            moved = []
+            # Borrow before dropping: first from the gap behind (the previous
+            # cue's end comes back while it keeps its own minimum), then from
+            # the cue ahead (its start goes later, keeping its minimum and order).
+            floor = cues[-1]["start_ms"] + cues[-1]["min_ms"] if cues else 0
+            back = min(max(start - floor, 0), need - (end - start))
+            if back > 0:
+                start -= back
+                moved.append(f"started {back / 1000:.2f}s earlier")
+            if end - start < need and i + 1 < len(rows):
+                after = rows[i + 1]
+                after_min = max(_need_ms(caption_lines(after[2], GATE_LINE_CHARS)), 700)
+                after_cap = (int(round(rows[i + 2][0] * 1000))
+                             if i + 2 < len(rows) else end_ms) - after_min
+                pushed = min(max(start + need, end), max(after_cap, end), end_ms)
+                if pushed > end:
+                    moved.append(f"pushed the start of the cue after it "
+                                 f"{(pushed - nxt) / 1000:.2f}s later")
+                    if pushed > round(after[0] * 1000):
+                        rows[i + 1] = (pushed / 1000,
+                                       max(after[0] + after[1] - pushed / 1000, 0.0),
+                                       after[2])
+                    end = pushed
+            if end - start < need:
+                notes.append(f"dropped {label}: needs {need / 1000:.2f}s at "
+                             f"{GATE_CPS:g} characters per second and only "
+                             f"{(end - start) / 1000:.2f}s fits even after "
+                             "borrowing from the cues around it")
+                continue
+            if cues and cues[-1]["end_ms"] > start:
+                cues[-1]["end_ms"] = start
+            notes.append(f"kept {label} by borrowing slack: " + "; ".join(moved))
+            asked_end = end
+        if end > asked_end:
+            notes.append(f"lengthened {label} to {(end - start) / 1000:.2f}s "
+                         "(reading speed)")
+        elif end < asked_end:
+            notes.append(f"shortened {label} to {(end - start) / 1000:.2f}s "
+                         "(next cue or the end of the film)")
+        cues.append({"start_ms": start, "end_ms": end, "lines": lines,
+                     "min_ms": max(need, 700)})
+        prev_end = end
+    legal = [{"start": c["start_ms"] / 1000, "end": c["end_ms"] / 1000,
+              "lines": c["lines"]} for c in cues]
+    return legal, notes
+
+
+def _need_ms(lines: list[str]) -> int:
+    """Shortest legal on-screen time for these lines at the gate's reading speed."""
+    return int(math.ceil(sum(len(x) for x in lines) / GATE_CPS * 1000)) + 2
+
+
+def wordless_timeline(sections: list[Section]) -> tuple[list[dict], float, float]:
+    """The shots as the pipeline places them, the film's end, and the last
+    shot's start (the voice end of a film with no voice)."""
+    from . import build
+    placed = build.timeline(sections, None)
+    shots = [{"label": p.label, "section": p.section, "at": p.at, "seconds": p.seconds}
+             for p in placed]
+    end = max((p.at + p.seconds for p in placed), default=0.0)
+    return shots, round(end, 3), round(max((p.at for p in placed), default=0.0), 3)
+
+
+def wordless(idea: Idea, sections: list[Section], director: Harness,
+             sound: dict) -> tuple[dict, list[dict], list[str]]:
+    """Descriptive captions and the manifest for a screenplay with no narration."""
+    shots, film_end, last_start = wordless_timeline(sections)
+    visuals = {sh.label: sh.visual[:200] for sec in sections for sh in sec.shots}
+    for row in shots:
+        row["visual"] = visuals.get(row["label"], "")
+    cues = [{k: c.get(k) for k in ("kind", "name", "at", "seconds", "shot",
+                                   "description", "purpose")}
+            for c in (sound or {}).get("cues", []) if isinstance(c, dict)]
+    answer = director.decide("describe", "\n\n".join([
+        "This film has no narration. Write its descriptive captions: bracketed "
+        "sound descriptions for deaf and hard-of-hearing viewers, one cue per "
+        "audible event, in time order, none overlapping. Name what is heard "
+        "and its character; never invent dialogue. Keep each cue under "
+        f"{GATE_LINES * GATE_LINE_CHARS} characters, and give it enough seconds "
+        f"to read at {GATE_CPS:g} characters per second. The film runs "
+        f"{film_end:g} seconds.",
+        brief("Film", {"title": idea.title, "premise": idea.description,
+                       "genre": idea.genre}),
+        brief("Sound cue sheet", cues),
+        brief("Shots and their timings", shots)]), DESCRIBE_SCHEMA)
+    asked = answer.get("cues", [])
+    legal, notes = legalise(asked, film_end)
+    data = {"idea": asdict(idea), "engine": "none", "voice": "", "lang": "",
+            "layout": "none", "wordless": True, "takes": [],
+            "voice_end": last_start, "voice_end_source": "last shot start",
+            "film_end": film_end, "spoken_seconds": 0.0, "planned_seconds": 0,
+            "drift_seconds": 0.0, "timing": [], "by_section": {},
+            "too_fast_for_captions": [], "overlaps": [],
+            "descriptive_captions": {"cues": len(legal), "asked": len(asked),
+                                     "repairs": notes}}
+    return data, legal, notes
+
+
 def stitch(path: Path, takes: list[Take], source: Path) -> tuple[float, list[str]]:
     """One continuous track with the takes where the layout puts them.
 
@@ -1049,6 +1236,41 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
     return p
 
 
+def run_wordless(args, idea, project, sections) -> int:
+    """No narration: the film carries descriptive captions instead of a voice."""
+    if args.dry_run:
+        print("wordless film: no narration to record; `yt voice` writes "
+              "descriptive captions", file=sys.stderr)
+        return 0
+    rules, digest = house.for_args(args, project, "voice")
+    director = Harness(project.root, "voice", model=args.model, role=WORDLESS_ROLE,
+                       house=rules, house_digest=digest,
+                       fresh=getattr(args, "fresh", False), verbose=not args.quiet)
+    sound = read_json(project.source("sound"), warn=False) or {}
+    try:
+        data, cues, notes = wordless(idea, sections, director, sound)
+    except HarnessError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    for note in notes:
+        print(f"note: {note}", file=sys.stderr)
+    if not cues:
+        print("error: no descriptive caption survived the gate's limits; the gate "
+              "needs at least one cue", file=sys.stderr)
+        return 1
+    vtt = project.out("captions")
+    write_cues(Path(vtt), cues)
+    write_cues(project.root / "narration.srt", cues, srt=True)
+    data["director"] = director.report()
+    manifest = project.out("voice")
+    write_json(manifest, data)
+    print(f"wordless film: {len(cues)} descriptive caption(s), voice ends at "
+          f"{data['voice_end']:g}s (the last shot's start)")
+    for path in (manifest, vtt, str(project.root / "narration.srt")):
+        print(f"wrote {path}", file=sys.stderr)
+    return 0
+
+
 def run(args) -> int:
     if args.list_engines:
         chosen = pick_engine("auto")
@@ -1075,8 +1297,7 @@ def run(args) -> int:
             print(f"language {args.lang} from the screenplay", file=sys.stderr)
     takes_planned = sum(1 for s in sections for sh in s.shots if sh.narration.strip())
     if not takes_planned:
-        print("error: the screenplay has no narration to record", file=sys.stderr)
-        return 1
+        return run_wordless(args, idea, project, sections)
 
     engine = pick_engine(args.engine)
     ok, hint = ENGINES[engine].available()

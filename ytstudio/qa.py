@@ -904,6 +904,19 @@ def render_frames(args, project, scene: str, samples: list[dict],
 # cli
 # --------------------------------------------------------------------------- #
 
+def narration_measurements(voice: dict) -> dict:
+    """What voice.json says the narration is. A wordless film says so (and how
+    many descriptive captions it carries), so no reviewer reads engine "none"
+    as a narration that failed to record."""
+    out = {k: voice.get(k) for k in ("engine", "voice", "timing", "drift_seconds",
+                                     "too_fast_for_captions", "overlaps", "review",
+                                     "casting")}
+    if voice.get("wordless"):
+        out["wordless"] = True
+        out["descriptive_captions"] = (voice.get("descriptive_captions") or {}).get("cues")
+    return out
+
+
 def register(sub, parents=()) -> argparse.ArgumentParser:
     p = sub.add_parser(
         "qa", parents=list(parents),
@@ -1039,9 +1052,7 @@ def run(args) -> int:
         "layers": build.get("layers"), "placeholders": build.get("placeholders"),
         "legibility": build.get("legibility"), "stale_takes": build.get("stale_takes"),
         "editorial": build.get("editorial"), "findings": build.get("findings"),
-        "narration": {k: voice.get(k) for k in
-                      ("engine", "voice", "timing", "drift_seconds",
-                       "too_fast_for_captions", "overlaps", "review", "casting")},
+        "narration": narration_measurements(voice),
         "sound_cues": cues_near, "mix": sound.get("mix"),
         "gate": (gate or {}).get("triage"),
         "geometry": {k: geometry_report.get(k) for k in

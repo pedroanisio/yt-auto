@@ -441,7 +441,8 @@ Writes `voice/` (one file per shot), `voice.json`, `narration.vtt` and
 `narration.srt`, plus `voice.wav` with `--stitch`. `--layout sequential` (the
 default) places takes back to back with real gaps and gives the honest runtime;
 `--layout planned` uses the script's own timecodes and warns when a take runs
-into the next, because then the audio genuinely overlaps.
+into the next, because then the audio genuinely overlaps. A screenplay with no
+narration gets a descriptive captions track and a wordless `voice.json` instead (see `docs/production.md`).
 
 `--format` picks what the hosted engine returns: the default `pcm_<rate>` is
 wrapped as WAV here and level-matched, while `mp3_44100_128` and friends are
