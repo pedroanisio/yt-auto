@@ -78,6 +78,7 @@ from pathlib import Path
 
 from claude_engine import ClaudeError, EngineConfig, Usage
 from . import assess, design, framecheck, harness, house, render, sdkkit, vfx, workspace
+from .script import Shot, visible_text
 from .core import Idea, _merge_usage, compact, read_json, write_json
 from .vfx import (AUTHOR_TOOLS, FRAME, MISSION, STACK, Workspace,
                   prop_textures, props_items)
@@ -423,10 +424,12 @@ def script_facts(script: dict | None) -> dict:
         for shot in section.get("shots") or []:
             if not isinstance(shot, dict):
                 continue
+            words = visible_text(Shot.from_raw(shot))
             shots.append({"label": shot.get("label"), "visual": str(shot.get("visual", ""))[:240],
-                          "on_screen": shot.get("on_screen", ""), "asset": shot.get("asset", "")})
-            if str(shot.get("on_screen") or "").strip():
-                supers.append(str(shot["on_screen"]).strip())
+                          "super": words, "direction": shot.get("on_screen", ""),
+                          "asset": shot.get("asset", "")})
+            if words:
+                supers.append(words)
         sections.append({"heading": section.get("heading", ""), "shots": shots[:6]})
     return {"logline": script.get("logline", ""), "promise": script.get("promise", ""),
             "payoff": script.get("payoff", ""), "lang": script.get("lang", ""),

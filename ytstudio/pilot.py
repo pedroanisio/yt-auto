@@ -41,6 +41,7 @@ from .harness import Harness, HarnessError, brief
 from .core import _key, read_json, timecode
 from .build import duplicate_animations, shots_from_scene
 from .scene_sdk import enum_of, sdk
+from .script import visible_text
 from .script import load_script
 
 #: Preferred join, when the schema has it.
@@ -129,7 +130,7 @@ def traits_of(shot, placed: dict, *, section: str, cues: list[dict],
         traits.add(f"style:{_key(shot.style)[:24]}")
     traits.add(f"asset:{placed.get('asset', 'placeholder')}")
     traits.add("voice" if (shot.narration or "").strip() else "silent")
-    if getattr(shot, "on_screen", ""):
+    if visible_text(shot).strip():
         traits.add("super")
     if getattr(shot, "source", "") and shot.source.upper() != "UNSOURCED":
         traits.add("cited")
