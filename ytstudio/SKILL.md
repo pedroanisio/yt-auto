@@ -60,6 +60,12 @@ came from breaking one of them.
    include at a cleaned copy, `vfx/vNN/<section>.include.scene.xml`, with
    the tokens inlined and those sections dropped, so the engine raises no
    E12 warning. The authored file is never written.
+   **Text is pinned to a shipped font file.** `yt build` resolves every text
+   node's family/weight/style to `ytstudio/fonts` (`fonts.py`), copies the
+   file into the project's `fonts/`, adds the `<font>` asset, and treats a
+   family it has no file for as an `error:` finding. Author with a shipped
+   family (Inter, Inter Display, Lora, Liberation, DejaVu); a brand face
+   such as JetBrains Mono or IBM Plex fails the build, it does not fall back.
 8. **A placeholder is disqualifying,** not deductible. While any remain the
    verdict is NOT READY whatever the other scores say.
 9. **Nothing heavy runs on this workstation.** Renders, encodes, mixes and
@@ -367,6 +373,15 @@ hand-authored world showed the cost.
     gate clears a section's proof frames before rendering them again, so
     the reviewer only sees this round's.
   - Revisions resume the author's own session.
+  - Every gated round is kept under `vfx/vNN/rounds/<stem>/rNN/` (program,
+    document, provenance, proof frames). A section ends on its best-reviewed
+    round, so a last revision that crashes, breaks the build or scores lower
+    falls back to that round. A section whose authoring raises becomes an
+    error record; the other sections are kept.
+  - `yt vfx --sections 2,3` re-authors only those sections into the next
+    `vfx/vNN/` and carries the others forward from the active version
+    (`carried_from`, $0). Continuity, reach and plan are then redone.
+    `--sections` refuses `--fresh`.
   - `vfx.json` and `keyframe.json` record each document's `program` and
     `provenance`.
 - **`yt probe`.** `--list` shows the classes, `--only` picks some,

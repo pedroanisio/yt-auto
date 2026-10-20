@@ -238,6 +238,22 @@ class Section:
         return sum(shot.seconds for shot in self.shots)
 
 
+#: How a silent shot is listed to the review stages. It is a mark in the
+#: listing, never narration: a model that hands it back as a shot's line means
+#: the shot is silent, and a voice engine handed it records nothing (measured:
+#: ElevenLabs strips the brackets and refuses the empty text).
+SILENT = "[picture only, no narration]"
+
+
+def spoken(line: str) -> str:
+    """The words of a narration line: "" for a line that is only a bracketed
+    direction (the SILENT mark, or "[no narration]" and the like)."""
+    text = " ".join(str(line or "").split())
+    if text.startswith("[") and text.endswith("]") and "]" not in text[:-1]:
+        return ""
+    return text
+
+
 def shot_listing(shots: list[Shot], *, cite: bool = False) -> str:
     """Every shot numbered for the review stages.
 
@@ -246,7 +262,7 @@ def shot_listing(shots: list[Shot], *, cite: bool = False) -> str:
     """
     lines = []
     for shot in shots:
-        body = shot.narration or "[picture only, no narration]"
+        body = shot.narration or SILENT
         if cite and shot.source:
             body += f"  [cited: {shot.source}]"
         lines.append(f"{shot.n}. [{shot.label} {timecode(shot.at)} "
@@ -365,7 +381,8 @@ def sections_of(data: dict) -> list[Section]:
             purpose=str(raw.get("purpose", "")),
             seconds=int(raw.get("seconds", 0) or 0),
             beats=[str(b) for b in raw.get("beats", [])],
-            shots=[Shot(**{k: v for k, v in shot.items() if k in known})
+            shots=[Shot(**{**{k: v for k, v in shot.items() if k in known},
+                           "narration": spoken(shot.get("narration", ""))})
                    for shot in raw.get("shots", [])]))
     return sections
 
@@ -755,7 +772,7 @@ class Screenwriter:
         applied = 0
         for edit in data.get("edits", []):
             shot = by_n.get(int(edit.get("n", 0) or 0))
-            line = str(edit.get("narration", "")).strip()
+            line = spoken(edit.get("narration", ""))
             if shot is None or not line or line == shot.narration:
                 continue
             shot.narration, shot.revised = line, str(edit.get("why", "")).strip()
@@ -835,7 +852,7 @@ class Screenwriter:
             if shot is None or n not in todo:
                 continue
             why = str(fix.get("why", "")).strip()
-            line = str(fix.get("narration", "")).strip()
+            line = spoken(fix.get("narration", ""))
             if fix.get("action") == "keep":
                 result["kept"].append({"n": n, "label": shot.label, "why": why})
             elif line and line != shot.narration:

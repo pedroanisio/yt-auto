@@ -46,7 +46,7 @@ from dataclasses import asdict, dataclass, field
 from xml.etree import ElementTree
 from pathlib import Path
 
-from . import house, workspace
+from . import fonts, house, workspace
 from .core import Idea, _key, read_json, timecode
 from . import design as designer
 from .harness import Harness, HarnessError, brief
@@ -283,6 +283,7 @@ class Media:
     licence: str = ""
     credit: str = ""
     kind: str = "image"
+    about: str = ""          # what the research kept the file for
 
 
 def local_media(project_root: Path, dossier: dict | None) -> list[Media]:
@@ -304,7 +305,8 @@ def local_media(project_root: Path, dossier: dict | None) -> list[Media]:
         out.append(Media(path=row["file"], title=row.get("title", ""),
                          licence=row.get("licence") or asset.get("licence", ""),
                          credit=asset.get("credit_line", ""),
-                         kind=asset.get("kind", "image")))
+                         kind=asset.get("kind", "image"),
+                         about=str(asset.get("use_for", ""))[:200]))
     return out
 
 
@@ -469,7 +471,8 @@ def resolve_tokens(tokens: dict[str, str]) -> dict[str, str]:
     return out
 
 
-def cleaned_include(src: Path, dest: Path) -> dict:
+def cleaned_include(src: Path, dest: Path,
+                    pinner: fonts.Pinner | None = None) -> dict:
     """Write the copy of an authored document that an <include> points at.
 
     The engine validates an included document on its own and reads its
@@ -477,7 +480,8 @@ def cleaned_include(src: Path, dest: Path) -> dict:
     `var(--name)` with the file's resolved value first, then drops the
     sections an include does not merge (NOT_MERGED); the build hoists the
     paints and lights into the scene instead. The authored file is read,
-    never written.
+    never written. With a `pinner`, each text node of the copy is pinned to a
+    shipped font file (fonts.py) before the copy is written.
     """
     out = {"symbols": [], "durations": {}, "paint_refs": set(), "unresolved": [],
            "removed": [], "findings": []}
@@ -489,6 +493,7 @@ def cleaned_include(src: Path, dest: Path) -> dict:
         return out
     values = resolve_tokens({t.get("name"): t.get("value", "")
                              for t in root.iter("token") if t.get("name")})
+    styles = fonts.Pinner.styles_of(root)
     for tag in NOT_MERGED:
         for child in root.findall(tag):
             root.remove(child)
@@ -513,6 +518,8 @@ def cleaned_include(src: Path, dest: Path) -> dict:
                 out["durations"][s.get("id")] = float(length)
             except ValueError:
                 pass
+    if pinner is not None:
+        pinner.pin_xml(root, Path(dest).parent, styles)
     try:
         dest.write_bytes(ElementTree.tostring(root, encoding="utf-8",
                                               xml_declaration=True))
@@ -1099,6 +1106,7 @@ class SceneBuilder:
         includes: list[tuple[str, str, float, float]] = []
         # The copy each include points at, written once per authored file.
         cleaned: dict[str, dict] = {}
+        pinner = fonts.Pinner(self.root)
         include_findings: list[str] = []
         timing_errors: list[str] = []      # a symbol shorter than its shot
 
@@ -1106,7 +1114,8 @@ class SceneBuilder:
             info = cleaned.get(file)
             if info is None:
                 target = include_copy_of(file)
-                info = cleaned_include(self.root / file, self.root / target)
+                info = cleaned_include(self.root / file, self.root / target,
+                                       pinner)
                 info["src"] = target if not any(
                     f.startswith("error") for f in info["findings"]) else file
                 info["file"] = file
@@ -1338,6 +1347,7 @@ class SceneBuilder:
         if self.preset and (not allowed or self.preset in allowed):
             output.preset = self.preset
 
+        pinner.pin_scene(scene)
         findings = [str(f) for f in scene.check()]
         data = scene.to_bytes(layout="pretty")
         # Read the document back and check it again: the version is resolved
@@ -1351,7 +1361,8 @@ class SceneBuilder:
         except Exception as exc:
             reparse = [f"error: the written scene did not parse back: {exc}"]
         reparse += duplicate_animations(data)
-        reparse += edit["findings"] + include_findings + lifted + sound["findings"]
+        reparse += (edit["findings"] + include_findings + lifted + sound["findings"]
+                    + pinner.errors)
         reparse += [f"warning: blocking (editorial): {x}" for x in edit["blocking"]]
         manifest = {
             "idea": asdict(self.idea),
@@ -1399,6 +1410,7 @@ class SceneBuilder:
                         "cleaned": {info["src"]: file for file, info in cleaned.items()
                                     if info["src"] != file}},
             "includes": len(includes),
+            "fonts": pinner.report(),
             "audio_tracks": sound["tracks"],
             "narration_tracks": sound["narration"],
             "buses": sound["buses"],

@@ -415,6 +415,20 @@ class Dossier(unittest.TestCase):
         self.assertEqual(assets_[1]["source_file"], "downloads/02-m.stl")
         self.assertNotIn("file", assets_[2])
 
+    def test_the_build_reads_downloaded_media_with_what_it_is_for(self):
+        from ytstudio import build
+        root = Path(self._tmp.name)
+        (root / "downloads").mkdir()
+        (root / "downloads" / "01-a.jpg").write_bytes(JPEG)
+        (root / "raw" / "08-downloads.json").write_text(json.dumps([
+            {"title": "a comet", "url": "https://h.example/a.jpg", "status": "ok",
+             "file": "downloads/01-a.jpg", "licence": "CC0"}]))
+        media = build.local_media(root, {"assets": [
+            {"title": "a comet", "kind": "image", "credit_line": "c",
+             "use_for": "the opening still"}]})
+        self.assertEqual([(m.path, m.about) for m in media],
+                         [("downloads/01-a.jpg", "the opening still")])
+
     def test_a_long_name_keeps_its_extension(self):
         url = "https://h.example/" + "a-very-long-descriptive-name-" * 5 + "movie.ogv"
         name = research._filename(url, 19, "application/ogg")

@@ -42,6 +42,34 @@ from . import framecheck
 from .scene_sdk import sdk
 
 KIT_DIR = "kit"
+
+#: Reference libraries of complete SDK programs that rendered on this engine,
+#: one folder each with an INDEX.md (see kit/REFERENCES.md in a workspace). They
+#: are read, never run, and live outside git; SR_KIT_REFERENCES moves them.
+REFERENCES_DIR = Path(os.environ.get("SR_KIT_REFERENCES")
+                      or Path(__file__).resolve().parent.parent / "_tmp" / "kit-references")
+
+
+def reference_libraries() -> list[Path]:
+    """The reference libraries present: folders under REFERENCES_DIR with an INDEX.md."""
+    if not REFERENCES_DIR.is_dir():
+        return []
+    return sorted(p for p in REFERENCES_DIR.iterdir() if (p / "INDEX.md").is_file())
+
+
+def references_text(libraries: list[Path]) -> str:
+    """kit/REFERENCES.md: where each library is and how an author uses it."""
+    lines = ["# Reference libraries", "",
+             "Complete programs written with the SDK, built and rendered on this engine, far",
+             "more of them than kit/examples/. Start from a library's INDEX.md: it lists every",
+             "program by subject and by the SDK elements and effect types it uses, with a",
+             "thumbnail of what it renders. Read a program to see how a construct is written",
+             "and copy the construction into your own program. Never run them (they import",
+             "helpers of their own library), and their colours, sizes and texts are not a look",
+             "for this film.", ""]
+    for lib in libraries:
+        lines.append(f"- `{lib}/INDEX.md`")
+    return "\n".join(lines) + "\n"
 EXAMPLES_SRC = Path(__file__).resolve().parent / "kit" / "examples"
 #: What authors went to the engine's source for, stamped with the engine version
 #: it was verified on; ENGINE.md prints it and flags it when the version differs.
@@ -334,6 +362,9 @@ def install(directory: Path, *, frame: tuple[int, int] | None = None, fps: int =
         (kit / "examples" / path.name).write_text(path.read_text(encoding="utf-8"),
                                                   encoding="utf-8")
     (kit / "examples" / "README.md").write_text(examples_index(), encoding="utf-8")
+    libraries = reference_libraries()
+    if libraries:
+        (kit / "REFERENCES.md").write_text(references_text(libraries), encoding="utf-8")
     return {"dir": str(directory), "engine_source": engine.get("source"),
             "renderer_notes": len(notes), "examples": [p.name for p in example_files()]}
 
@@ -350,7 +381,11 @@ AUTHOR_SYSTEM = (
     "kit.py frame <doc> --at <seconds>`) and look at every PNG with the Read tool: "
     "a black, flat, floating or wrong frame means the work is not done. You use "
     "what a program can do -- loops, functions, parameters, seeded randomness -- and "
-    "you never invent an asset file, a font or a value the schema does not accept."
+    "you never invent an asset file, a font or a value the schema does not accept. "
+    "You write and edit files with the Write and Edit tools; the shell is for running "
+    "`python3 kit.py ...` and your program, and a shell command that writes a file "
+    "(a heredoc, `>`, `sed -i`) is denied. A denial names that one command, never the "
+    "shell: when one is denied, do it with the right tool and keep building."
 )
 
 #: The tools such an agent gets: its workspace's files and a shell for the kit.
@@ -376,6 +411,7 @@ def author_config(workspace: Path, *, project_root: Path | None = None,
     if project_root:
         dirs = [str(Path(project_root) / name) for name in AUTHOR_READ_DIRS
                 if (Path(project_root) / name).is_dir()]
+    dirs += [str(lib) for lib in reference_libraries()]     # read, never written
     allowed = [t for t in AUTHOR_TOOLS if t != "Bash"]
     allowed += [f"Bash({cmd})" for cmd in AUTHOR_SHELL]
     allowed += [f"Bash(python3 {p})" for p in programs]
@@ -398,6 +434,9 @@ random generator where variation is wanted.
 - `kit/ENGINE.md`: what the engine approximates or ignores, per renderer. Pick the
   renderer for what the picture needs, knowing what it drops.
 - `kit/examples/`: programs that rendered on this engine. Their values are placeholders.
+- `kit/REFERENCES.md`, when present: libraries of hundreds of complete programs that
+  rendered, indexed by subject and technique (`grep` their INDEX.md for an element or
+  an effect type, Read a thumbnail); read and adapt them, never run them.
 - `python3 kit.py describe <element>` before writing an attribute you have not used.
 - `python3 kit.py build <program.py>` until it reports 0 errors and a deterministic
   document; then `python3 kit.py frame <doc> --at <seconds>` and Read every PNG.
@@ -405,6 +444,10 @@ random generator where variation is wanted.
   the document and the frames you rendered; run it before you call a frame done.
 - Stay in your workspace: the kit, the examples, this brief and the project directories
   it names are all you need; anything else is denied.
+- Write the program with the Write tool and change it with Edit. The shell runs
+  `python3 kit.py ...`, `python3 sr.py ...` and your program; a shell command that
+  writes a file (a heredoc, `>`, `sed -i`) is denied. A denial is about that one
+  command, not the shell: the build and the frames still run.
 - `kit.py` prints the time left on every build and frame (`SRKIT_DEADLINE`). Keep a
   program that builds and a still you have looked at: when your time reaches 80% you
   are stopped and asked to build and render the current program at once.
@@ -547,6 +590,22 @@ def _run_program(program: Path, timeout: float) -> tuple[subprocess.CompletedPro
 SHADOW_LIGHTS = ("directional", "point", "spot", "rect-area", "disk-area", "sphere-area")
 
 
+#: The smallest text a phone viewer can read, as a share of the frame height
+#: (54 px at 1080p): the house standard's floor for labels and numbers.
+LEGIBLE_SHARE = 1 / 20
+
+#: Elements whose `size` is the height of the text they draw.
+TEXT_ELEMENTS = ("text", "textStyle", "formula")
+
+
+def _number(value) -> bool:
+    try:
+        float(value)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
 def rule_findings(data: bytes) -> list[str]:
     """The harness's rules on a document, beyond what the schema can say."""
     from xml.etree import ElementTree
@@ -560,6 +619,22 @@ def rule_findings(data: bytes) -> list[str]:
     casters = [el for el in nodes if local(el) == "light"
                and el.get("type") in SHADOW_LIGHTS]
     out = []
+    project = next((el for el in nodes if local(el) == "project"), None)
+    try:
+        height = float(project.get("height")) if project is not None else 0.0
+    except (TypeError, ValueError):
+        height = 0.0
+    if height:
+        floor = height * LEGIBLE_SHARE
+        small = sorted({f"{el.get('id') or local(el)} ({float(el.get('size')):g} px)"
+                        for el in nodes if local(el) in TEXT_ELEMENTS and _number(el.get("size"))
+                        and float(el.get("size")) < floor})
+        if small:
+            out.append(f"warning: rule:legibility: text under {floor:.0f} px (1/20 of the frame "
+                       f"height) cannot be read on a phone: {', '.join(small[:12])}"
+                       + (" ..." if len(small) > 12 else "")
+                       + "; enlarge every word that is part of the film (a style sheet's own "
+                         "notes may stay small)")
     if solids and casters and not any((el.get("castShadow") or "").strip() in ("true", "1")
                                       for el in casters):
         out.append("warning: rule:shadow: no light casts a shadow (light/@castShadow defaults "
