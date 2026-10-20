@@ -37,6 +37,7 @@ splits within one machine.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -254,6 +255,7 @@ class Host:
     cores: int = 0
     gpu: str = ""
     ffprobe: str = ""       # ffprobe there, which the delivery gate needs
+    sha256: str = ""        # the binary's hash there, "" when it could not be read
     error: str = ""
 
     @property
@@ -285,7 +287,8 @@ def probe(addr: str, *, timeout: float = 12.0) -> Host:
         return _HOSTS[addr]
     binary_expr = os.environ.get("RS_RENDER_REMOTE_BIN") or REMOTE_BIN_LOOKUP
     script = (f"B={binary_expr}; if [ -x \"$B\" ]; then echo \"ENGINE=$B\"; "
-              f"echo \"VERSION=$($B --version 2>/dev/null | head -1)\"; else echo ENGINE=; fi; "
+              f"echo \"VERSION=$($B --version 2>/dev/null | head -1)\"; "
+              f"echo \"SHA=$(sha256sum \"$B\" 2>/dev/null | cut -d' ' -f1)\"; else echo ENGINE=; fi; "
               "echo \"RAM=$(free -g | awk 'NR==2{print $2}')\"; echo \"CORES=$(nproc)\"; "
               "echo \"GPU=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)\"; "
               "echo \"FFPROBE=$(command -v ffprobe 2>/dev/null)\"")
@@ -307,6 +310,8 @@ def probe(addr: str, *, timeout: float = 12.0) -> Host:
             host.engine = value
         elif key == "VERSION":
             host.version = value
+        elif key == "SHA":
+            host.sha256 = value
         elif key == "RAM":
             host.ram_gb = int(value or 0)
         elif key == "CORES":
@@ -600,10 +605,222 @@ def engine_validate(xml_bytes: bytes, *, host: str = "", timeout: float = 120.0
     return findings
 
 
+#: Per-job report statuses (AUTO-32).
+STATUSES = ("rendered", "failed", "timeout", "blocked-inputs")
+
+_SHA_MEMO: dict[tuple, str] = {}
+_VERSION_MEMO: dict[tuple, str] = {}
+
+
+def _file_sha(path: Path) -> str:
+    """sha256 of a file, "" when it is not readable; remembered per (path, mtime, size)."""
+    try:
+        st = path.stat()
+        memo = (str(path), st.st_mtime_ns, st.st_size)
+        if memo not in _SHA_MEMO:
+            h = hashlib.sha256()
+            with path.open("rb") as fh:
+                for chunk in iter(lambda: fh.read(1 << 20), b""):
+                    h.update(chunk)
+            _SHA_MEMO[memo] = h.hexdigest()
+        return _SHA_MEMO[memo]
+    except OSError:
+        return ""
+
+
+def _binary_version(path: Path) -> str:
+    try:
+        st = path.stat()
+        memo = (str(path), st.st_mtime_ns, st.st_size)
+        if memo not in _VERSION_MEMO:
+            proc = subprocess.run([str(path), "--version"], capture_output=True, text=True, timeout=10)
+            _VERSION_MEMO[memo] = (proc.stdout or "").strip().splitlines()[0] if (
+                proc.returncode == 0 and (proc.stdout or "").strip()) else ""
+        return _VERSION_MEMO[memo]
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def engine_info(host: str = "", binary: Path | None = None) -> dict:
+    """The engine that ran (or would run) a job: {version, sha256, path}. A host's
+    comes from its probe; a local one is read from the file. Empty strings when unknown."""
+    if host:
+        known = _HOSTS.get(host)
+        engine_path = getattr(known, "engine", "")
+        return {"version": getattr(known, "version", ""), "sha256": getattr(known, "sha256", ""),
+                "path": f"{host}:{engine_path}" if engine_path else host}
+    binary = binary if binary is not None else engine()
+    if binary is None or not Path(binary).is_file():
+        return {"version": "", "sha256": "", "path": str(binary or "")}
+    return {"version": _binary_version(Path(binary)), "sha256": _file_sha(Path(binary)),
+            "path": str(binary)}
+
+
+def _local_refs(text: str) -> list[str]:
+    """Relative file paths a document names (src=, environment=, the material maps...)."""
+    from .vfx import FILE_ATTRS
+    return [m.group(1) for m in re.finditer(r'\b(?:' + "|".join(FILE_ATTRS) + r')="([^"]+)"', text)
+            if "://" not in m.group(1) and not m.group(1).startswith(("#", "/"))]
+
+
+def missing_inputs(doc_text: str, base: Path, root: Path | None = None) -> list[str]:
+    """Files the document names that are not on disk, relative to `root` (default `base`)."""
+    root = root or base
+    out: list[str] = []
+    for ref in _local_refs(doc_text):
+        path = Path(os.path.normpath(base / ref))
+        if not path.exists():
+            try:
+                shown = path.relative_to(root).as_posix()
+            except ValueError:
+                shown = path.as_posix()
+            if shown not in out:
+                out.append(shown)
+    return out
+
+
+def _bundle_missing(doc_text: str, bundle: dict[str, bytes], doc_path: str) -> list[str]:
+    base = Path(doc_path).parent
+    out: list[str] = []
+    for ref in _local_refs(doc_text):
+        if ref.endswith(".scene.xml"):
+            continue            # another document: shipped, or the engine's own business
+        rel = os.path.normpath((base / ref).as_posix())
+        if rel not in bundle and rel not in out:
+            out.append(rel)
+    return out
+
+
+def job_report(job: str, status: str | None = None, *, exit_code: int = 0, stdout: str = "",
+               stderr: str = "", seconds: float = 0.0, envelope: dict | None = None,
+               missing: list[str] | tuple = (), timeout_seconds: float | None = None,
+               engine: dict | None = None, message: str = "", command: str | None = None) -> dict:
+    """The one report shape of every render job: the engine's scene-render-cli/1
+    envelope (kept when it printed one, made when it did not) plus
+
+        status          rendered | failed | timeout | blocked-inputs
+        job             encode | still | audio | validate | frames | ...
+        missing_inputs  the files a blocked job lacked
+        timeout         true (with timeout_seconds) when the job ran out of time
+        seconds         spent
+        engine          {version, sha256, path}
+        outcome_unknown true when a detached job never reported
+        message         a line on what went wrong, empty when nothing did
+    """
+    env = dict(envelope if envelope is not None else _envelope(stdout))
+    unknown = "remote job outcome unknown" in (stderr or "")
+    lost_deadline = "remote job lost: it did not finish within" in (stderr or "")
+    timed_out = status == "timeout" or lost_deadline
+    if status is None:
+        if timed_out:
+            status = "timeout"
+        elif missing:
+            status = "blocked-inputs"
+        elif exit_code == 0 and not unknown and env.get("ok", True) is not False:
+            status = "rendered"
+        else:
+            status = "failed"
+    ok = status == "rendered"
+    if not message and not ok:
+        tail = (stderr or "").strip() or (stdout if not env else "").strip()
+        message = tail[-300:] if tail else f"{job} {status} (exit {exit_code})"
+    if status == "blocked-inputs" and not message:
+        message = "missing inputs: " + ", ".join(missing)
+    env.setdefault("format", "scene-render-cli/1")
+    env["ok"] = ok
+    env["exit_code"] = 0 if ok else (exit_code or 1)
+    env.setdefault("command", command or job)
+    env.setdefault("diagnostics", [])
+    env.setdefault("result", {"outputs": []})
+    env.update({"status": status, "job": job, "missing_inputs": list(missing),
+                "timeout": bool(timed_out), "seconds": round(float(seconds), 3),
+                "engine": engine or {"version": "", "sha256": "", "path": ""},
+                "outcome_unknown": unknown, "message": message})
+    if timed_out and timeout_seconds is not None:
+        env["timeout_seconds"] = timeout_seconds
+    return env
+
+
+def write_job_report(path: Path, report: dict) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return write_json(path, report)
+
+
+def still_cache_dir() -> Path:
+    """Where stills are cached: $YT_STILL_CACHE, else .cache/stills of the working
+    project: the nearest directory from here up that holds an idea.json (`.cache/` never
+    travels to a host, see SYNC_EXCLUDES). Outside any project it is a per-user scratch
+    directory, so nothing is written into an arbitrary checkout."""
+    chosen = os.environ.get("YT_STILL_CACHE")
+    if chosen:
+        return Path(chosen)
+    here = Path.cwd().resolve()
+    for folder in (here, *here.parents):
+        if (folder / workspace.ARTIFACTS["idea"]).is_file():
+            return folder / ".cache" / "stills"
+    import tempfile
+    return Path(tempfile.gettempdir()) / f"yt-still-cache-{os.getuid()}" / "stills"
+
+
+def still_fingerprint(xml_bytes: bytes, files: dict[str, bytes], doc_path: str, at: float,
+                      quality: str, engine_id: str, options: str = "json") -> str:
+    """Everything a still depends on: the scene, every shipped file's bytes, the engine,
+    the time, the quality and the options."""
+    h = hashlib.sha256()
+
+    def part(label: str, data: bytes) -> None:
+        h.update(label.encode() + b"\0" + str(len(data)).encode() + b"\0" + data + b"\0")
+    part("scene", xml_bytes)
+    part("doc", doc_path.encode())
+    for rel in sorted(files):
+        part("file:" + rel, files[rel])
+    part("engine", engine_id.encode())
+    part("time", repr(float(at)).encode())
+    part("quality", quality.encode())
+    part("options", options.encode())
+    return h.hexdigest()
+
+
+def _engine_id(host: str, cache: Path) -> tuple[str, dict]:
+    """(identity, info) of the engine a still would run on, found without ssh: a local
+    binary's hash, or a host's version and hash from its probe -- this process's, or the
+    last one any process stored. ("" when unknown: then nothing is cached.)"""
+    if host:
+        info = engine_info(host)
+        if not (info["version"] or info["sha256"]):
+            try:
+                stored = json.loads((cache / "engines.json").read_text(encoding="utf-8"))
+                info = stored.get(host) or info
+            except (OSError, json.JSONDecodeError, AttributeError):
+                pass
+        ident = f"{info['version']}|{info['sha256']}" if info["version"] or info["sha256"] else ""
+        return ident, info
+    info = engine_info("")
+    return (f"local|{info['sha256']}" if info["sha256"] else ""), info
+
+
+def _remember_engine(cache: Path, host: str, info: dict) -> None:
+    if not (info.get("version") or info.get("sha256")):
+        return
+    try:
+        path = cache / "engines.json"
+        try:
+            stored = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            stored = {}
+        if stored.get(host) != info:
+            stored[host] = info
+            cache.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(stored, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
 def engine_render_still(xml_bytes: bytes, at: float, *, host: str = "",
                         quality: str = "draft", files: dict[str, bytes] | None = None,
-                        doc_path: str = "doc.scene.xml", timeout: float = 600.0
-                        ) -> tuple[bytes | None, str]:
+                        doc_path: str = "doc.scene.xml", timeout: float = 600.0,
+                        cache_dir: Path | str | None = None) -> tuple[bytes | None, str]:
     """One frame of a document, rendered by the engine: (png, message).
 
     Validation cannot see a resource limit, a camera that frames nothing or a
@@ -613,24 +830,99 @@ def engine_render_still(xml_bytes: bytes, at: float, *, host: str = "",
     engine runs in (the document itself is `doc_path`); a symbol document
     normally needs none. The message carries the engine's diagnostics, one
     per line after the first, so a caller can show them to an author.
+
+    A frame is cached by a fingerprint of the scene, every shipped file, the
+    engine, the time and the quality under `cache_dir` (see still_cache_dir),
+    and a hit is served here, before any ssh. Every outcome -- rendered,
+    failed, timed out, blocked on a missing file -- leaves a job report in
+    the cache's sibling reports/ directory, which `yt doctor` lists.
     """
-    host = host or remote_host(None, "still")
-    binary = engine()
+    cache = Path(cache_dir) if cache_dir else still_cache_dir()
     bundle: dict[str, bytes] = dict(files or {})
     bundle[doc_path] = xml_bytes
+    started = time.monotonic()
+    state: dict = {"key": "", "info": engine_info(host) if host else {"version": "", "sha256": "", "path": ""}}
+
+    def key_for(h: str) -> tuple[str, str]:
+        ident, state["info"] = _engine_id(h, cache)
+        state["key"] = still_fingerprint(xml_bytes, files or {}, doc_path, at, quality, ident)
+        return state["key"], ident
+
+    def report(status: str, message: str = "", **kw) -> None:
+        rep = job_report("still", status, seconds=time.monotonic() - started, message=message,
+                         engine=state["info"], command="render", **kw)
+        rep["fingerprint"] = state["key"]
+        try:
+            write_job_report(cache.parent / "reports" / f"still-{state['key'][:12]}.json", rep)
+        except OSError:
+            pass
+
+    def lookup(h: str) -> tuple[bytes, str] | None:
+        key, ident = key_for(h)
+        hit = cache / f"{key}.png"
+        if ident and hit.is_file():
+            report("rendered", f"served from the still cache ({key[:12]})")
+            return hit.read_bytes(), f"rendered from cache ({key[:12]})"
+        return None
+
+    def store(png: bytes) -> None:
+        if not (state["info"]["version"] or state["info"]["sha256"]):
+            return
+        try:
+            cache.mkdir(parents=True, exist_ok=True)
+            tmp = cache / f".{state['key']}.{os.getpid()}.tmp"
+            tmp.write_bytes(png)
+            os.replace(tmp, cache / f"{state['key']}.png")
+        except OSError:
+            pass
+
+    missing = _bundle_missing(xml_bytes.decode("utf-8", "replace"), bundle, doc_path)
+    if missing:
+        key_for(host)
+        report("blocked-inputs", missing=missing)
+        return None, "error: blocked on missing inputs: " + ", ".join(missing)
+    cached = lookup(host)
+    if cached:
+        return cached
+    host = host or remote_host(None, "still")
+    if host:
+        probe(host)
+        state["info"] = engine_info(host)
+        _remember_engine(cache, host, state["info"])
+        cached = lookup(host)
+        if cached:
+            return cached
+    binary = engine()
     tag = f"still-{os.getpid()}-{uuid.uuid4().hex[:10]}"     # parallel stills must not share it
     if binary is None and not host:
+        key_for(host)
+        report("failed", "no engine reachable")
         return None, "no engine reachable"
     if binary is not None and not host:
         work = Path(REMOTE_ROOT) / tag
-        for rel, data in bundle.items():
-            (work / rel).parent.mkdir(parents=True, exist_ok=True)
-            (work / rel).write_bytes(data)
-        proc = subprocess.run([str(binary), "render", doc_path, "-t", str(at), "-o", "frame.png",
-                               "--json"], cwd=work, capture_output=True, text=True, timeout=timeout)
-        png = (work / "frame.png").read_bytes() if (work / "frame.png").is_file() else None
-        shutil.rmtree(work, ignore_errors=True)
-        return png, _still_message(proc.returncode, proc.stdout, proc.stderr, "rendered locally")
+        try:
+            for rel, data in bundle.items():
+                (work / rel).parent.mkdir(parents=True, exist_ok=True)
+                (work / rel).write_bytes(data)
+            try:
+                proc = subprocess.run([str(binary), "render", doc_path, "-t", str(at), "-o",
+                                       "frame.png", "--json"], cwd=work, capture_output=True,
+                                      text=True, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                report("timeout", f"the still ran past {timeout:g} s", timeout_seconds=timeout,
+                       exit_code=124)
+                raise
+            png = (work / "frame.png").read_bytes() if (work / "frame.png").is_file() else None
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        message = _still_message(proc.returncode, proc.stdout, proc.stderr, "rendered locally")
+        if png is not None and proc.returncode == 0:
+            store(png)
+            report("rendered", envelope=_envelope(proc.stdout))
+        else:
+            report("failed", message[:300], exit_code=proc.returncode,
+                   envelope=_envelope(proc.stdout))
+        return png, message
     known = _HOSTS.get(host) or probe(host)
     binary_expr = shlex.quote(known.engine) if known.engine else REMOTE_BIN_LOOKUP
     remote = f"{REMOTE_ROOT}/{tag}"
@@ -648,11 +940,26 @@ def engine_render_still(xml_bytes: bytes, at: float, *, host: str = "",
         proc = subprocess.run(probe_argv(host, script, 8),
                               input=_tar(bundle), capture_output=True, timeout=timeout)
     except (subprocess.TimeoutExpired, OSError) as exc:
-        return None, f"render host unreachable: {exc}"
+        message = f"render host unreachable: {exc}"
+        if isinstance(exc, subprocess.TimeoutExpired):
+            report("timeout", message, timeout_seconds=timeout, exit_code=124)
+        else:
+            report("failed", message, exit_code=255)
+        return None, message
     err = proc.stderr.decode("utf-8", "replace")
-    report, _, messages = err.partition("\n")
+    engine_json, _, messages = err.partition("\n")
     png = proc.stdout if proc.stdout[:8] == b"\x89PNG\r\n\x1a\n" else None
-    return png, _still_message(proc.returncode, report, messages, f"rendered on {host}")
+    message = _still_message(proc.returncode, engine_json, messages, f"rendered on {host}")
+    if png is not None and proc.returncode == 0:
+        store(png)
+        report("rendered", envelope=_envelope(engine_json))
+    elif proc.returncode == 124 or (proc.returncode == 137 and
+                                    time.monotonic() - started >= timeout - 10):
+        report("timeout", f"the still ran past {timeout:g} s on {host}", timeout_seconds=timeout,
+               exit_code=proc.returncode)
+    else:
+        report("failed", message[:300], exit_code=proc.returncode, envelope=_envelope(engine_json))
+    return png, message
 
 
 def _tar(files: dict[str, bytes]) -> bytes:
@@ -779,10 +1086,21 @@ def encode_sliced(scene: str, project_root: Path, *, slices: int, quality: str |
     The slices' and the mix's reports are merged into the render.json an
     unsliced encode writes (`report_path`, default the project's render.json).
     """
+    report_path = report_path or project_root / "render.json"
+    began = time.monotonic()
+
+    def fail(message: str, host: str = "") -> int:
+        """Every way out of the encode leaves the same report shape a success does -- beside
+        render.json, not over it: the film already on disk keeps the report that describes it."""
+        write_job_report(report_path.with_name(report_path.stem + "-failed.json"), job_report(
+            "encode", "failed", exit_code=1, message=message, command="encode",
+            seconds=time.monotonic() - began, engine=engine_info(host) if host else None))
+        return 1
+
     usable = [h for h in hosts() if h.usable]
     if not usable:
         print("error: no host with the engine; set RS_RENDER_HOSTS", file=sys.stderr)
-        return 1
+        return fail("no host with the engine; set RS_RENDER_HOSTS")
     big = pick_host(usable, "audio")
     ranges = _slice_ranges(start, end, slices)
     if verbose:
@@ -809,7 +1127,8 @@ def encode_sliced(scene: str, project_root: Path, *, slices: int, quality: str |
     for i, code, tail, _ in failed:
         print(f"  slice {i} failed ({code}): {tail}", file=sys.stderr)
     if failed:
-        return 1
+        return fail("; ".join(f"slice {i} failed ({code}): {tail}" for i, code, tail, _ in failed),
+                    big.addr)
 
     # The mix runs in a directory that is kept until the join: every slice is
     # in that project copy, pushed again by the audio run's sync after the
@@ -821,7 +1140,7 @@ def encode_sliced(scene: str, project_root: Path, *, slices: int, quality: str |
     try:
         if mix.returncode != 0:
             print(f"  audio mix failed: {(mix.stderr or mix.stdout).strip()[-200:]}", file=sys.stderr)
-            return 1
+            return fail(f"audio mix failed: {(mix.stderr or mix.stdout).strip()[-200:]}", big.addr)
         join = (f"cd {shlex.quote(remote)} && "
                 "printf 'file slice-%02d.mp4\n' " + " ".join(str(i) for i in range(slices)) + " > slices.txt && "
                 "ffmpeg -y -loglevel error -f concat -safe 0 -i slices.txt -c copy joined.mp4 && "
@@ -831,7 +1150,7 @@ def encode_sliced(scene: str, project_root: Path, *, slices: int, quality: str |
         proc = subprocess.run(ssh_argv(big.addr, join), capture_output=True, text=True)
         if proc.returncode != 0:
             print(f"  join failed on {big.addr}: {proc.stderr.strip()[-300:]}", file=sys.stderr)
-            return 1
+            return fail(f"join failed on {big.addr}: {proc.stderr.strip()[-300:]}", big.addr)
         pull = ["rsync", "-az", "-e", SSH_COMMAND, f"{big.addr}:{remote}/video.mp4", f"{project_root}/video.mp4"]
         refuse_remote()
         subprocess.run(pull, capture_output=True, text=True)
@@ -839,9 +1158,9 @@ def encode_sliced(scene: str, project_root: Path, *, slices: int, quality: str |
         remove_remote(big.addr, remote, verbose=verbose)
     report = merge_slice_reports([r[3] for r in results], _envelope(mix.stdout),
                                  str(project_root.resolve() / "video.mp4"), start, end)
-    report_path = report_path or project_root / "render.json"
-    report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n",
-                           encoding="utf-8")
+    report = job_report("encode", "rendered", envelope=report, command="encode",
+                        seconds=time.monotonic() - began, engine=engine_info(big.addr))
+    write_job_report(report_path, report)
     print(f"wrote {report_path}", file=sys.stderr)
     print(f"wrote {project_root / 'video.mp4'}  (joined from {slices} slices; "
           f"audio mixed once on {big.addr})", file=sys.stderr)
@@ -1080,9 +1399,14 @@ def run(args) -> int:
     with_defaults(args)
     idea, project = workspace.resolve(args, inputs=("scene",))
     scene = project.source("scene", args.scene)
+    job = ("validate" if args.validate else "audio" if getattr(args, "audio_only", False)
+           else "still" if (args.still is not None or args.frames) else "encode")
+    report_path = report_path_for(Path(project.out("render")), job, args.output)
     if not scene:
         print("error: no scene in this project; run `yt build` first",
               file=sys.stderr)
+        write_job_report(report_path, job_report(job, "blocked-inputs", exit_code=1,
+                                                 missing=[Path(project.path("scene")).name]))
         return 1
     if args.prune_remote:
         names = host_names(args)
@@ -1091,8 +1415,6 @@ def run(args) -> int:
             return 1
         prune_remote(names, project.root.name, verbose=not args.quiet)
         return 0
-    job = ("validate" if args.validate else "audio" if getattr(args, "audio_only", False)
-           else "still" if (args.still is not None or args.frames) else "encode")
     host = remote_host(args, job)
     binary = engine()
     if binary is None and not host:
@@ -1138,7 +1460,18 @@ def run(args) -> int:
                              verbose=not args.quiet,
                              report_path=report_path_for(Path(project.out("render")), job, None))
 
-    report_path = report_path_for(Path(project.out("render")), job, args.output)
+    began = time.monotonic()
+    try:
+        scene_text = Path(scene).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        scene_text = ""
+    absent = missing_inputs(scene_text, Path(scene).resolve().parent, project.root.resolve())
+    if absent:
+        print(f"error: the scene names {len(absent)} file(s) that are not there: "
+              f"{', '.join(absent[:6])}", file=sys.stderr)
+        write_job_report(report_path, job_report(job, "blocked-inputs", exit_code=1,
+                                                 missing=absent, command=job))
+        return 1
     if args.validate:
         cmd = [str(binary), "validate", scene]
     elif getattr(args, "audio_only", False):
@@ -1175,20 +1508,31 @@ def run(args) -> int:
     if not args.quiet:
         print("  " + " ".join(cmd), file=sys.stderr)
     remote = remote_dir(project.root.name, job, job_tag()) if host else ""
-    if host:
-        try:
+    def leave(status: str, message: str, code: int = 1) -> None:
+        """The outcome with no engine report to keep: still a report."""
+        write_job_report(report_path, job_report(
+            job, status, exit_code=code, message=message, command=job,
+            seconds=time.monotonic() - began, engine=engine_info(host, binary if not host else None)))
+
+    try:
+        if host:
             proc = _run_remote(cmd, project.root, host, verbose=not args.quiet, job=job,
                                remote=remote, keep_remote=args.keep_remote)
-        except subprocess.CalledProcessError as exc:
-            print(f"error: could not reach {host}: {exc.stderr.strip()[:300]}",
-                  file=sys.stderr)
-            return 1
-    else:
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        else:
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+    except subprocess.CalledProcessError as exc:
+        print(f"error: could not reach {host}: {exc.stderr.strip()[:300]}",
+              file=sys.stderr)
+        leave("failed", f"could not reach {host}: {(exc.stderr or '').strip()[:300]}")
+        return 1
+    except BaseException as exc:        # abandoned by the caller, or a refused launch
+        leave("failed", f"abandoned: {type(exc).__name__}: {str(exc)[:200]}")
+        raise
     if proc.stderr.strip() and not args.quiet:
         print(proc.stderr.strip()[-4000:], file=sys.stderr)
 
     report = {}
+    envelope = None
     if proc.stdout.strip().startswith("{"):
         try:
             report = json.loads(proc.stdout)
@@ -1197,14 +1541,19 @@ def run(args) -> int:
                 # files under the job's directory; the delivery gate matches
                 # them against the project's own files, so localise them.
                 report = _localise(report, remote, str(project.root.resolve()))
-            report_path.write_text(json.dumps(report, indent=2,
-                                              ensure_ascii=False) + "\n",
-                                   encoding="utf-8")
-            print(f"wrote {report_path}", file=sys.stderr)
+            envelope = report
         except json.JSONDecodeError:
             print(proc.stdout.strip()[-2000:])
     elif proc.stdout.strip():
         print(proc.stdout.strip()[-4000:])
+    # Written whatever the outcome: the engine's envelope when it printed one,
+    # a made one (status, seconds, engine, what went wrong) when it did not.
+    write_job_report(report_path, job_report(
+        job, exit_code=proc.returncode, stdout="" if envelope is not None else proc.stdout or "",
+        stderr=proc.stderr or "", envelope=envelope if envelope is not None else {},
+        seconds=time.monotonic() - began, command=job,
+        engine=engine_info(host, binary if not host else None)))
+    print(f"wrote {report_path}", file=sys.stderr)
 
     if report:
         print(f"\n{idea.title} — RENDER")
