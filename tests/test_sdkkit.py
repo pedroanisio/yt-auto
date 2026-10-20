@@ -127,7 +127,10 @@ class ExamplesBuild(KitCase):
             "accessors": [{"min": [-0.5, -0.25, -0.5], "max": [0.5, 0.25, 0.5]}]}))
         hdri = self.dir / "props" / "e.hdr"
         hdri.write_bytes(b"#?RADIANCE\n")
-        env = {"KIT_MODEL": "props/m.gltf", "KIT_HDRI": "props/e.hdr"}
+        structure = self.dir / "structure.xyz"
+        structure.write_text("C 0 0 0\nO 1.5 0 0\nN 0 1.5 1.5\n")
+        env = {"KIT_MODEL": "props/m.gltf", "KIT_HDRI": "props/e.hdr",
+               "KIT_STRUCTURE": "structure.xyz"}
         for path in sdkkit.example_files():
             with self.subTest(example=path.name), mock.patch.dict(os.environ, env):
                 program = self.program(path.read_text(encoding="utf-8"), path.name)

@@ -173,7 +173,7 @@ def brief_text(probe: Probe, *, props: list[dict]) -> str:
              f"Make it a {DURATION:g}-second, {FRAME[0]}x{FRAME[1]} scene with a slow, "
              "motivated camera move. Everything else -- renderer, light, materials, "
              "composition -- is yours to choose for the picture to read as real.", "",
-             sdkkit.BRIEF, "## Deliverable", "",
+             sdkkit.BRIEF, sdkkit.time_line(AUTHOR_TIMEOUT), "## Deliverable", "",
              f"1. `{PROGRAM}`: the program. It saves exactly one document, `{DOCUMENT}`.",
              f"2. `python3 kit.py build {PROGRAM}` reports 0 errors and a deterministic "
              "document.",
@@ -227,12 +227,13 @@ def author(ws: Path, probe: Probe, *, model: str, effort: str | None, budget_usd
     """One agent session that composes the probe in its workspace; a revision
     resumes the same session, so the brief and its own choices stay in view."""
     engine = harness.ENGINE(EngineConfig(
-        tools=sdkkit.AUTHOR_TOOLS, model=model, effort=effort, permission_mode="dontAsk",
-        cwd=ws, max_turns_budget_usd=budget_usd, timeout=AUTHOR_TIMEOUT))
+        **sdkkit.author_config(ws, programs=[PROGRAM]), model=model, effort=effort,
+        max_turns_budget_usd=budget_usd, timeout=AUTHOR_TIMEOUT))
     calls, texts, error = 0, [], ""
     try:
-        for event in engine.stream(prompt, system=sdkkit.AUTHOR_SYSTEM,
-                                   **({"resume": resume} if resume else {})):
+        for event in sdkkit.stream_round(
+                engine, prompt, system=sdkkit.AUTHOR_SYSTEM, resume=resume or False,
+                finish=sdkkit.finish_prompt(PROGRAM, DOCUMENT)):
             if event.subtype == "tool_use":
                 calls += 1
                 if verbose:
@@ -273,7 +274,9 @@ def verify(ws: Path, probe: Probe, *, host: str) -> dict:
         shutil.rmtree(review)
     review.mkdir()
     for t in probe.times:
-        png, findings = sdkkit.frame(doc, t, host=host, out_dir=review)
+        # a probe's frames keep the full deadline: the suite measures cost, it does not cap it
+        png, findings = sdkkit.frame(doc, t, host=host, out_dir=review,
+                                     budget=sdkkit.STILL_DEADLINE)
         out["findings"] += findings
         out["frame_findings"] += findings
         if png:

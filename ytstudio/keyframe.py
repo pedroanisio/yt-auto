@@ -82,6 +82,9 @@ from .core import Idea, _merge_usage, compact, read_json, write_json
 from .vfx import (AUTHOR_TOOLS, FRAME, MISSION, STACK, Workspace,
                   prop_textures, props_items)
 
+#: The author's session timeout, the 80% mark of its round (sdkkit.stream_round).
+AUTHOR_TIMEOUT = 1800.0
+
 #: The keyframe's author composes by program, like every author (sdkkit).
 AUTHOR_SYSTEM = sdkkit.AUTHOR_SYSTEM
 
@@ -133,7 +136,9 @@ REVIEW_ROLE = (
     "and unremarkable; 6 is functional; 3 is a document that renders. Every "
     "finding names what is visible, why it lowers quality, and the fix in the "
     "document's own terms (camera, light, material, geometry, layout) that the "
-    "author can apply without asking you anything."
+    "author can apply without asking you anything. The author was handed the same "
+    "checklist you judge by, and ran its mechanical items itself; spend your "
+    "attention on the `[review]` items:\n" + framecheck.checklist_text()
 )
 
 ELEMENTS_SCHEMA = {
@@ -580,7 +585,7 @@ def write_brief(ws: Workspace, *, idea: Idea, house_rules: str, direction: dict 
                     lines.append("  maps, usable on any surface: "
                                  + ", ".join(f"`{os.path.relpath(m, ws.dir)}`" for m in maps))
             lines.append("")
-    lines += [sdkkit.BRIEF, "## Deliverable", "",
+    lines += [sdkkit.BRIEF, sdkkit.time_line(AUTHOR_TIMEOUT), "## Deliverable", "",
               f"Write `{PROGRAM_NAME}` in this directory: a Python program that builds the "
               f"keyframe with the SDK and saves `{DOC_NAME}`, a complete scene-render document "
               f"(`<project width=\"{FRAME[0]}\" height=\"{FRAME[1]}\" fps=\"30\" duration=\"1\">`, "
@@ -736,8 +741,10 @@ class KeyframeStage:
         calls = 0
         try:
             system = harness.with_feedback(AUTHOR_SYSTEM, self.root, "keyframe")
-            extra = {"resume": True} if resume and getattr(engine, "session_id", None) else {}
-            for event in engine.stream(prompt, system=system, **extra):
+            use = bool(resume and getattr(engine, "session_id", None))
+            finish = sdkkit.finish_prompt(PROGRAM_NAME, DOC_NAME, f"python3 sr.py frame {DOC_NAME}")
+            for event in sdkkit.stream_round(engine, prompt, system=system, resume=use,
+                                             finish=finish):
                 if event.subtype == "tool_use" and event.tool_input:
                     calls += 1
                     what = event.tool_input.get("command") or event.tool_input.get("file_path") or ""
@@ -840,8 +847,8 @@ class KeyframeStage:
                             constraints=vfx.picture_constraints(self.script))
         inputs = _digest(chosen, self.notes, tokens, self.house_digest)
         engine = harness.ENGINE(EngineConfig(
-            tools=AUTHOR_TOOLS, model=self.model, permission_mode="dontAsk", cwd=ws.dir,
-            max_turns_budget_usd=self.budget_usd, timeout=1800.0))
+            **sdkkit.author_config(ws.dir, project_root=self.root, programs=[PROGRAM_NAME]),
+            model=self.model, max_turns_budget_usd=self.budget_usd, timeout=AUTHOR_TIMEOUT))
         reviewer = self._harness(REVIEW_ROLE)
         doc = ws.dir / DOC_NAME
         # A document from before programs were required is not reusable: the
