@@ -40,7 +40,7 @@ from urllib.parse import urlparse
 
 from claude_engine import ClaudeEngine, ClaudeError, EngineConfig, Usage
 from . import assets as yt_assets
-from . import workspace
+from . import harness, workspace
 from .core import Idea, _merge_usage, slugify, write_json
 
 RESEARCHER_SYSTEM = (
@@ -619,7 +619,7 @@ class Researcher:
         return data
 
     def _ask_json(self, prompt: str, schema: dict) -> object:
-        engine = ClaudeEngine(self._config(web=False))
+        engine = harness.build_engine(self._config(web=False), ClaudeEngine)
         try:
             return engine.ask_json(prompt, schema, system=RESEARCHER_SYSTEM)
         finally:
@@ -627,7 +627,7 @@ class Researcher:
 
     def _research_one(self, question: dict) -> dict:
         """One agentic web-research pass; records every URL actually fetched."""
-        engine = ClaudeEngine(self._config(web=True))
+        engine = harness.build_engine(self._config(web=True), ClaudeEngine)
         searches = ", ".join(question.get("searches", [])) or question["question"]
         prompt = (
             f"Research this question for a YouTube video.\n\n{self._idea_block()}\n\n"
@@ -857,7 +857,7 @@ class Researcher:
 
     def _agentic_assets(self, notes: list[dict], found: list[dict]) -> list[dict]:
         """Optional top-up for things no open catalogue holds (press kits etc.)."""
-        engine = ClaudeEngine(self._config(web=True))
+        engine = harness.build_engine(self._config(web=True), ClaudeEngine)
         have = "\n".join(f"- {a['title']}" for a in found) or "nothing yet"
         prompt = (
             f"{self._idea_block()}\n\nResearch so far:\n\n"
