@@ -28,6 +28,8 @@ from claude_engine import Event, Usage
 from ytstudio import harness, vfx
 from ytstudio.core import Idea
 from ytstudio.research import Dossier
+from ytstudio.scene_sdk import sdk
+from tests import programs
 
 WORLD_DOC = '''<?xml version="1.0" encoding="UTF-8"?>
 <scene version="1.3">
@@ -97,15 +99,22 @@ def varied_png() -> bytes:
     return buf.getvalue()
 
 
+def author_program(cwd: Path, name: str, doc: str) -> None:
+    """What an author writes now: the program that builds and saves the document."""
+    programs.author_program(cwd, name[:-len(".scene.xml")] + ".py", name, doc)
+
+
 class FakeEngine:
-    """Both agents of the stage: the author (write tools) writes the fixture
-    document; the reviewer (read-only tools) answers from a script."""
+    """Both agents of the stage: the author (write tools) writes the program
+    that saves the fixture document; the reviewer (read-only tools) answers
+    from a script."""
 
     stream_calls: list = []
     json_calls: list = []
     reviews: list = []
     doc: str = WORLD_DOC
     time_out_on: int = 0        # the n-th author call raises the engine's timeout
+    stale_frame: bool = False   # the author leaves a frame of its own in frames/
 
     def __init__(self, config):
         self.config = config
@@ -117,11 +126,12 @@ class FakeEngine:
         FakeEngine.json_calls.append({"prompt": prompt, "schema": schema})
         return {}
 
-    def stream(self, prompt, system=None):
+    def stream(self, prompt, system=None, resume=False):
         tools = tuple(self.config.tools or ())
         FakeEngine.stream_calls.append({"prompt": prompt, "system": system,
                                         "tools": tools, "cwd": self.config.cwd,
-                                        "timeout": self.config.timeout})
+                                        "timeout": self.config.timeout, "resume": resume})
+        self.session_id = "author-session"
         if "Write" in tools:
             name = re.search(r"(\d{2}-[\w-]+\.scene\.xml)", prompt).group(1)
             authored = sum(1 for c in FakeEngine.stream_calls if "Write" in c["tools"])
@@ -129,7 +139,11 @@ class FakeEngine:
                 (Path(self.config.cwd) / name).write_text("<scene>half-edited</scene>",
                                                          encoding="utf-8")
                 raise harness.ClaudeError("claude timed out after 3600.0s")
-            (Path(self.config.cwd) / name).write_text(FakeEngine.doc, encoding="utf-8")
+            author_program(Path(self.config.cwd), name, FakeEngine.doc)
+            if FakeEngine.stale_frame:
+                stale = Path(self.config.cwd) / "frames" / f"{name[:-10]}__9s.png"
+                stale.parent.mkdir(exist_ok=True)
+                stale.write_bytes(b"an earlier picture")
             yield Event(type="assistant", text=f"{name}: world-open")
         else:
             yield Event(type="assistant", subtype="tool_use", tool_name="Read",
@@ -711,11 +725,28 @@ class Review(unittest.TestCase):
         self.assertEqual(doc["rounds"][1]["score"], 5)           # the previous gate stands
         self.assertEqual(doc["score"], 5)
         self.assertEqual(doc["revisions"], 1)
-        self.assertEqual((self.root / doc["file"]).read_text(encoding="utf-8"), WORLD_DOC)
+        kept = (self.root / doc["file"]).read_text(encoding="utf-8")
+        self.assertNotIn("half-edited", kept)
+        # the document the first gate built from the program, not the half edit
+        self.assertEqual(sdk().read(kept.encode()).to_bytes(layout="pretty"),
+                         sdk().read(WORLD_DOC.encode()).to_bytes(layout="pretty"))
+        self.assertIsNotNone(doc["provenance"])                  # still the program's output
+        self.assertTrue(doc["program"].endswith(".py"))
         reviews = [c for c in FakeEngine.stream_calls if "Write" not in c["tools"]]
         self.assertEqual(len(reviews), 1)                        # nothing re-gated
         authors = [c for c in FakeEngine.stream_calls if "Write" in c["tools"]]
         self.assertEqual([c["timeout"] for c in authors], [3600.0, 3600.0])
+
+    def test_the_review_never_sees_a_frame_the_gate_did_not_render(self):
+        FakeEngine.stale_frame = True
+        try:
+            doc = self.author()[0]
+        finally:
+            FakeEngine.stale_frame = False
+        frames = self.root / doc["file"].rsplit("/", 1)[0] / "frames"
+        stem = doc["file"].rsplit("/", 1)[1][:-len(".scene.xml")]
+        self.assertFalse((frames / f"{stem}__9s.png").exists())        # the author's own
+        self.assertTrue(list(frames.glob(f"{stem}__world-open__*.png")))  # the gate's proofs
 
     def test_the_review_scores_fidelity_to_an_approved_keyframe(self):
         approve_keyframe(self.root)
@@ -781,3 +812,97 @@ class Flags(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ResearchAssets(unittest.TestCase):
+    """Each kind of downloaded research asset is offered for what it is, with
+    a path the author can open from its own directory."""
+
+    def test_kinds_paths_and_what_the_engine_cannot_load(self):
+        root = Path("/p")
+        assets = [
+            {"kind": "image", "file": "downloads/01-a.jpg", "title": "a figure",
+             "licence": "CC BY 4.0", "credit_line": "A. Author", "paper": "Doe 2024"},
+            {"kind": "video", "file": "downloads/02-b.mp4", "title": "a clip", "licence": "PD"},
+            {"kind": "3d-model", "file": "downloads/03-c.stl", "title": "a part", "licence": "CC0"},
+            {"kind": "3d-model", "file": "downloads/04-d.glb", "title": "a body", "licence": "CC0"},
+            {"kind": "structure", "file": "downloads/05-e.cif", "title": "a protein",
+             "licence": "CC0"},
+            {"kind": "audio", "file": "downloads/06-f.mp3", "title": "a sound"},
+            {"kind": "document", "file": "downloads/07-g.pdf", "title": "a paper"},
+            {"kind": "article", "file": "downloads/08-h.html", "title": "a news story"},
+            {"kind": "3d-model", "file": "downloads/09-i.obj", "source_file": "downloads/09-i.stl",
+             "title": "a converted part", "licence": "CC0"},
+            {"kind": "image", "title": "not downloaded"},
+        ]
+        text = "\n".join(vfx.research_asset_lines(assets, root, root / "vfx" / "v01"))
+        self.assertIn("`../../downloads/01-a.jpg`", text)            # from vfx/v01/
+        self.assertIn("baseColorMap", text)                          # a photo as a map
+        self.assertIn("Doe 2024", text) and self.assertIn("A. Author", text)
+        self.assertIn("<video>", text)
+        self.assertIn("03-c.stl` — a part (CC0) — not loadable", text)
+        self.assertNotIn("04-d.glb` — a body (CC0) — not loadable", text)
+        self.assertIn("mmCIF", text)
+        self.assertNotIn("a sound", text)
+        self.assertNotIn("a paper", text)
+        self.assertNotIn("not downloaded", text)
+        self.assertNotIn("a news story", text)                       # article: not the picture's
+        self.assertIn("09-i.obj` — a converted part (CC0)\n", text + "\n")   # loadable
+
+    def test_nothing_downloaded_is_no_section(self):
+        self.assertEqual(vfx.research_asset_lines([{"kind": "image", "title": "x"}],
+                                                  Path("/p"), Path("/p/vfx")), [])
+
+
+class FactCheckConstraints(unittest.TestCase):
+    """What the screenplay's fact-check says the picture may not show reaches
+    the authors verbatim: the whole-film flags everywhere, a shot's flags in
+    the section that holds the shot."""
+
+    SCRIPT = {"sections": [
+        {"heading": "One", "shots": [{"n": 1, "label": "1.1"}, {"n": 2, "label": "1.2"}]},
+        {"heading": "Two", "shots": [{"n": 3, "label": "2.1"}]}],
+        "check": {"verdict": "ok", "flags": [
+            {"n": 0, "severity": "important", "problem": "the whole film draws X at atom scale",
+             "fix": "draw X as a ribbon"},
+            {"n": 3, "severity": "blocker", "problem": "shot 2.1 labels a model wrongly",
+             "fix": "drop the label"},
+            {"n": 1, "severity": "minor", "problem": "a minor wording", "fix": "reword"}]}}
+
+    def test_binding_flags_are_kept_verbatim_with_their_shot(self):
+        rows = vfx.picture_constraints(self.SCRIPT)
+        self.assertEqual([(r["label"], r["severity"]) for r in rows],
+                         [("", "important"), ("2.1", "blocker")])        # minor is not binding
+        self.assertEqual(rows[0]["fix"], "draw X as a ribbon")
+
+    def test_a_section_gets_the_whole_film_and_its_own_shots(self):
+        rows = vfx.picture_constraints(self.SCRIPT)
+        one = "\n".join(vfx.constraint_lines(rows, {"1.1", "1.2"}))
+        two = "\n".join(vfx.constraint_lines(rows, {"2.1"}))
+        self.assertIn("whole film: the whole film draws X", one)
+        self.assertNotIn("labels a model", one)
+        self.assertIn("[blocker] shot 2.1: shot 2.1 labels a model wrongly", two)
+        self.assertIn("REQUIRED: drop the label", two)
+
+    def test_no_check_means_no_section(self):
+        self.assertEqual(vfx.picture_constraints({"sections": []}), [])
+        self.assertEqual(vfx.constraint_lines([], {"1.1"}), [])
+        self.assertEqual(vfx.picture_constraints(None), [])
+
+
+class WorldLength(unittest.TestCase):
+    """The brief's symbol duration and the timing gate's requirement are one
+    number: a world spans to the end of its last shot, gaps between takes in."""
+
+    def test_the_brief_states_what_the_gate_requires(self):
+        section = {"heading": "Two metres", "shots": [
+            {"label": "1.1", "at": 10.0, "seconds": 5.0},
+            {"label": "1.2", "at": 15.7, "seconds": 4.0},       # 0.7 s of breath before it
+            {"label": "1.3", "at": 20.0, "seconds": 6.32}]}
+        world = vfx.world_symbols(section, [])[0]
+        self.assertEqual(world["seconds"], 16.32)               # not 15.32, the shots' sum
+        required = vfx.world_span(world["shots"])
+        self.assertEqual(world["seconds"], required)
+        doc = (f'<scene><symbols><symbol id="{world["id"]}" width="8" height="8" '
+               f'duration="{world["seconds"]:g}"/></symbols></scene>')
+        self.assertEqual(vfx.timing_findings(doc, {world["id"]: required}), [])

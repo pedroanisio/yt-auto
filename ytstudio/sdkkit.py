@@ -79,6 +79,32 @@ try:
 except OSError:
     FRAME = {{"width": 1920, "height": 1080, "fps": 30}}
 
+_sdk_read = S.read
+
+
+def _read(source, *args, **kwargs):
+    """S.read, recorded for the build: reading another document for its values is
+    fine, but a document read and saved again is not composed by the program."""
+    doc = _sdk_read(source, *args, **kwargs)
+    record = os.environ.get("SRKIT_RECORD")
+    if record:
+        try:
+            canonical = hashlib.sha256(doc.to_bytes(layout="pretty")).hexdigest()
+        except Exception:
+            canonical = ""
+        what = "<bytes>" if isinstance(source, (bytes, bytearray)) else str(source)[:200]
+        with open(record, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({{"read": what, "canonical": canonical}}) + "\\n")
+    return doc
+
+
+S.read = _read
+try:
+    import sr_core.scene.io as _io
+    _io.read = _read
+except Exception:
+    pass
+
 
 def save(scene, path):
     """Check the document, write it as pretty XML, record it for the build."""
@@ -111,7 +137,7 @@ KIT_CLI = '''#!/usr/bin/env python3
     python3 kit.py check <file.scene.xml>   check one document the same way
     python3 kit.py frame <file.scene.xml> --at SECONDS
                                             render one frame on the render host into
-                                            frames/ and run the frame checks -- then
+                                            frames/kit/ and run the frame checks -- then
                                             Read the PNG: validation cannot see it
 """
 import sys
@@ -199,13 +225,22 @@ def engine_text(engine: dict, notes: list[dict], measured: list[dict] | None = N
     else:
         lines.append("The manifest could not be read; treat every construct as unproven "
                      "until a frame shows it.")
-    lines += ["", "## What the schema says each renderer applies", ""]
+    lines += ["", "## What a frame costs", "",
+              "Every frame `kit.py frame` renders reports how long it took and with which "
+              "settings (`note: rendered in ...`). A path-traced frame's time grows with "
+              "`pathSamples` (roughly in proportion) and with lights and bounces; a raster "
+              f"frame takes seconds. A still that runs past {STILL_DEADLINE} s is abandoned "
+              "and counts as not rendered, and every frame you wait for is time your session "
+              "does not get back: time one frame before you commit to a setting, and judge "
+              "composition at a setting that renders quickly.", "",
+              "## What the schema says each renderer applies", ""]
     for n in notes:
         lines.append(f"- `{n['element']}/@{n['attribute']}`: {n['doc']}")
     if measured:
         lines += ["", "## Measured on this engine by the probe suite", ""]
         for m in measured:
-            lines.append(f"- {m.get('probe')}: {m.get('score')} -- {m.get('summary', '')}")
+            lines.append(f"- {m.get('probe')}: {m.get('score')} -- {m.get('summary', '')}"
+                         + (f" [one frame: {m['render']}]" if m.get("render") else ""))
     if engine.get("gpus"):
         lines += ["", "## The render host", "", engine["gpus"],
                   str(engine.get("memory_and_cores", ""))]
@@ -309,7 +344,8 @@ def _sha(data: bytes) -> str:
 
 def _run_program(program: Path, timeout: float) -> tuple[subprocess.CompletedProcess | None,
                                                          list[dict], str]:
-    """Run once in a fresh interpreter; (process, saved records, error)."""
+    """Run once in a fresh interpreter; (process, records, error). A record is
+    a document `save` wrote (`path`) or one the program read (`read`)."""
     fd, record = tempfile.mkstemp(prefix="srkit-", suffix=".jsonl")
     os.close(fd)
     env = dict(os.environ, SRKIT_RECORD=record, PYTHONHASHSEED="0")
@@ -327,7 +363,7 @@ def _run_program(program: Path, timeout: float) -> tuple[subprocess.CompletedPro
     error = ""
     if proc.returncode != 0:
         error = (proc.stderr or proc.stdout).strip()[-3000:] or f"exit code {proc.returncode}"
-    elif not rows:
+    elif not [r for r in rows if "path" in r]:
         error = "the program saved no document: call srkit.save(scene, path)"
     return proc, rows, error
 
@@ -349,7 +385,8 @@ def rule_findings(data: bytes) -> list[str]:
     casters = [el for el in nodes if local(el) == "light"
                and el.get("type") in SHADOW_LIGHTS]
     out = []
-    if solids and casters and not any(el.get("castShadow") == "true" for el in casters):
+    if solids and casters and not any((el.get("castShadow") or "").strip() in ("true", "1")
+                                      for el in casters):
         out.append("warning: rule:shadow: no light casts a shadow (light/@castShadow defaults "
                    "to false), so no object can be seen resting on anything; set castShadow "
                    "on the light that should ground the scene")
@@ -368,7 +405,13 @@ def check_document(path: Path, *, host: str = "", validate: bool = True) -> dict
         out["sdk"] = [f"error: the document does not parse: {exc}"]
     if validate:
         from . import render
-        out["engine"] = render.engine_validate(data, host=host)
+        engine = render.engine_validate(data, host=host)
+        if engine and any(m in f for f in engine for m in UNREACHABLE):
+            # The host did not answer: the document is not judged, not invalid.
+            out["sdk"].append("note: the engine's validation could not run (render host "
+                              "unreachable); only the SDK's checks ran")
+            engine = None
+        out["engine"] = engine
     findings = out["sdk"] + (out["engine"] or [])
     out["errors"] = [f for f in findings if f.startswith("error")]
     return out
@@ -389,26 +432,53 @@ def build(program: Path, *, host: str = "", runs: int = 2, timeout: float = PROG
         result["error"] = f"cannot read the program: {exc}"
         return result
     result["program_sha256"] = _sha(source)
-    runs_rows: list[list[dict]] = []
+    runs_rows: list[dict[str, str]] = []
+    reads: list[dict] = []
     for _ in range(max(1, runs)):
         proc, rows, error = _run_program(program, timeout)
         if error:
             result["error"] = error
             return result
         result["stdout"] = (proc.stdout or "").strip()[-2000:] if proc else ""
-        runs_rows.append(rows)
-    first = {r["path"]: r["sha256"] for r in runs_rows[0]}
-    for rows in runs_rows[1:]:
-        if {r["path"]: r["sha256"] for r in rows} != first:
+        saved: dict[str, str] = {}
+        for r in rows:
+            if "path" not in r:
+                continue
+            path = Path(r["path"])
+            # What counts is the file the program left, not what save() saw.
+            if not path.is_file():
+                result["error"] = (f"the program saved {os.path.relpath(path, program.parent)} "
+                                   "and then removed or renamed it")
+                return result
+            on_disk = _sha(path.read_bytes())
+            if on_disk != r["sha256"]:
+                result["error"] = (f"the program changed {os.path.relpath(path, program.parent)} "
+                                   "after saving it; let save() write the final document")
+                return result
+            saved[r["path"]] = on_disk
+        runs_rows.append(saved)
+        reads = [r for r in rows if "read" in r]
+    first = runs_rows[0]
+    for saved in runs_rows[1:]:
+        if saved != first:
             result["error"] = ("the program wrote different documents on two runs; seed every "
                                "random choice and do not read the clock")
             result["deterministic"] = False
             return result
     result["deterministic"] = True
+    passthrough = [os.path.relpath(p, program.parent) for p, digest in first.items()
+                   if any(r.get("canonical") == digest for r in reads)]
+    if passthrough:
+        result["error"] = (f"rule:program-passthrough: {', '.join(passthrough)} is a scene "
+                           "document the program read and saved again; build the scene with "
+                           "the SDK in the program (reading another document for its values "
+                           "is fine)")
+        return result
     S = sdk()
     for path, digest in first.items():
         checked = check_document(Path(path), host=host, validate=validate)
         checked["path"] = os.path.relpath(path, program.parent)
+        checked["sdk"] += program_findings(reads)
         result["documents"].append(checked)
         provenance = {"document": checked["path"], "document_sha256": digest,
                       "program": program.name, "program_sha256": result["program_sha256"],
@@ -423,6 +493,45 @@ def build(program: Path, *, host: str = "", runs: int = 2, timeout: float = PROG
     return result
 
 
+def program_findings(reads: list[dict]) -> list[str]:
+    """The harness's rules on what a program did beyond saving: srkit records
+    every scene document it read. Saving one again is refused by the build;
+    reading one for its values is noted, so a reviewer can see it."""
+    if not reads:
+        return []
+    names = ", ".join(sorted({str(r.get("read", "?")) for r in reads}))[:300]
+    return [f"warning: rule:program-reads-document: the program read {names}; take values "
+            "from another document if you must, but build the scene with the SDK here"]
+
+
+def build_findings(program: Path, document: str) -> list[str]:
+    """An authoring gate's view of the harness's own build of `program`: an
+    error when there is no program, when it fails or does not reproduce its
+    output, or when it did not save `document`; otherwise the harness's rules
+    on the program and the document. The SDK's own checks are left to the
+    gate's validation, which runs them on the document the build just wrote."""
+    program = Path(program)
+    if not program.is_file():
+        return [f"error: rule:program: no `{program.name}`. Write the scene as a Python "
+                f"program with the SDK (`from srkit import S, FRAME, save`) that saves "
+                f"`{document}`, and build it with `python3 kit.py build {program.name}`; a "
+                "hand-written document does not count as authored"]
+    try:
+        result = build(program, validate=False)
+    except Exception as exc:          # an untrusted program must not crash the stage
+        return [f"error: rule:program: `python3 kit.py build {program.name}` could not be "
+                f"judged: {type(exc).__name__}: {str(exc)[:400]}"]
+    if result.get("error"):
+        return [f"error: rule:program: `python3 kit.py build {program.name}` failed: "
+                f"{result['error'][:800]}"]
+    saved = [d["path"] for d in result["documents"]]
+    if document not in saved:
+        return [f"error: rule:program: `{program.name}` saved {', '.join(saved) or 'nothing'}, "
+                f"not `{document}`"]
+    return [f for d in result["documents"] if d["path"] == document
+            for f in d["sdk"] if "rule:" in f]
+
+
 def provenance_of(doc: Path) -> dict | None:
     """The provenance a build wrote beside a document, if the document is
     still the one it built (same bytes)."""
@@ -435,6 +544,31 @@ def provenance_of(doc: Path) -> dict | None:
     if record.get("document_sha256") != _sha(doc.read_bytes()):
         return None
     return record
+
+
+#: What ssh says when a render host does not answer.
+UNREACHABLE = ("timed out during banner exchange", "port 22 timed out", "Connection refused",
+               "No route to host", "Connection timed out", "Could not resolve hostname")
+
+
+#: The note `frame` adds to a rendered still: how long it took, where, and with
+#: which renderer settings, so render cost is measured, never guessed.
+RENDER_NOTE = "rendered in"
+
+#: What a still that renders past this many seconds costs: it is abandoned.
+STILL_DEADLINE = 600
+
+
+def render_settings(text: str) -> str:
+    """The renderer settings that decide a still's cost, as one phrase."""
+    renderer = re.search(r'renderer="(\w+)"', text)
+    samples = re.search(r'pathSamples="(\d+)"', text)
+    bounces = re.search(r'maxBounces="(\d+)"', text)
+    if renderer and renderer.group(1) == "pathtrace":
+        return (f"pathtrace, {samples.group(1) if samples else 64} samples, "
+                f"{bounces.group(1) if bounces else 4} bounces"
+                + (", a medium" if "<medium" in text else ""))
+    return "raster" + (", a medium (path traced at 4 samples)" if "<medium" in text else "")
 
 
 #: A path-traced camera or a participating medium makes a still heavy in time and
@@ -472,7 +606,7 @@ class host_lock:
 
 def frame(doc: Path, at: float, *, host: str = "", out_dir: Path | None = None
           ) -> tuple[Path | None, list[str]]:
-    """Render one frame of a document into frames/ -- on the still host, or on
+    """Render one frame of a document into frames/kit/ -- on the still host, or on
     the encode host when it is path traced or has a medium, one kit render per
     host at a time -- and run the eyeless frame checks: (png path or None, findings)."""
     from . import framecheck, render
@@ -493,13 +627,37 @@ def frame(doc: Path, at: float, *, host: str = "", out_dir: Path | None = None
     files = referenced_files(text, doc.parent, root)
     files.pop(doc_path, None)
     with host_lock(host):
+        started = time.monotonic()
         png, message = render.engine_render_still(data, at, host=host, files=files,
                                                   doc_path=doc_path)
+        if png is None and "No such file or directory" in message:
+            # The engine binary this process found on the host is gone (a
+            # rebuild or a clean): find it again and try once more.
+            getattr(render, "_HOSTS", {}).pop(host, None)
+            png, message = render.engine_render_still(data, at, host=host, files=files,
+                                                      doc_path=doc_path)
+    if png is None and any(m in message for m in UNREACHABLE):
+        # A host this process found usable stopped answering: probe it again,
+        # and if it is down, render where the router now sends the job.
+        getattr(render, "_HOSTS", {}).pop(host, None)
+        fallback = frame_host(text)
+        if fallback and fallback != host:
+            with host_lock(fallback):
+                started = time.monotonic()
+                png, message = render.engine_render_still(data, at, host=fallback, files=files,
+                                                          doc_path=doc_path)
+            host = fallback
+    seconds = time.monotonic() - started
     findings = [line for line in message.splitlines()[1:] if line.strip()]
+    if png is not None:
+        findings.append(f"note: {RENDER_NOTE} {seconds:.0f} s on {host or 'this machine'} "
+                        f"({render_settings(text)})")
     if png is None:
         return None, [f"error: frame at {at:g}s of {doc.name} not rendered: "
                       f"{message.splitlines()[0] if message else 'no message'}"] + findings
-    out = Path(out_dir or doc.parent / "frames")
+    # An author's own previews go to frames/kit/, apart from the proof frames a
+    # stage's gate renders and its reviewer reads.
+    out = Path(out_dir or doc.parent / "frames" / "kit")
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"{doc.stem.replace('.scene', '')}__{at:g}s.png"
     path.write_bytes(png)

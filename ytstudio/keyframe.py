@@ -77,10 +77,13 @@ from datetime import datetime
 from pathlib import Path
 
 from claude_engine import ClaudeError, EngineConfig, Usage
-from . import assess, design, framecheck, harness, house, render, vfx, workspace
+from . import assess, design, framecheck, harness, house, render, sdkkit, vfx, workspace
 from .core import Idea, _merge_usage, compact, read_json, write_json
-from .vfx import (AUTHOR_SYSTEM, AUTHOR_TOOLS, FRAME, MISSION, STACK, Workspace,
+from .vfx import (AUTHOR_TOOLS, FRAME, MISSION, STACK, Workspace,
                   prop_textures, props_items)
+
+#: The keyframe's author composes by program, like every author (sdkkit).
+AUTHOR_SYSTEM = sdkkit.AUTHOR_SYSTEM
 
 __all__ = ["KeyframeStage", "KeyframeError", "RENDERER", "approve", "reject",
            "approval_state", "approved_keyframe", "load_record", "rank_elements",
@@ -89,6 +92,7 @@ __all__ = ["KeyframeStage", "KeyframeError", "RENDERER", "approve", "reject",
 #: Where the author works, under the project; the document and the frame.
 KEYFRAME_DIR = "keyframe"
 DOC_NAME = "keyframe.scene.xml"
+PROGRAM_NAME = "keyframe.py"
 FRAME_NAME = "keyframe.png"
 BRIEF_NAME = "brief.md"
 #: The one symbol the document holds, and where in its second the frame is taken.
@@ -415,6 +419,7 @@ def asset_rows(dossier: dict | None) -> list[dict]:
             continue
         rows.append({"title": a.get("title"), "licence": a.get("licence_verified") or a.get("licence"),
                      "credit": a.get("credit_line", ""), "file": a.get("file") or a.get("path") or "",
+                     "kind": a.get("kind") or "image", "paper": a.get("paper", ""),
                      "use_for": str(a.get("use_for", ""))[:200]})
     return rows[:12]
 
@@ -444,7 +449,8 @@ def _digest(*parts) -> str:
 
 def write_brief(ws: Workspace, *, idea: Idea, house_rules: str, direction: dict | None,
                 elements: dict, roles: list[dict], tokens: dict[str, str],
-                facts: dict, assets: list[dict], notes: list[dict]) -> Path:
+                facts: dict, assets: list[dict], notes: list[dict],
+                constraints: list[dict] | None = None) -> Path:
     """What the author has to make and the facts it has: the elements, the
     roles as tokens, the type sample, the camera language, the props with
     paths relative to the workspace, the bands, the deliverable."""
@@ -464,6 +470,7 @@ def write_brief(ws: Workspace, *, idea: Idea, house_rules: str, direction: dict 
               "## Editorial treatment", "", direction_block(direction), ""]
     if house_rules:
         lines += ["## Standards", "", house_rules, ""]
+    lines += vfx.constraint_lines(constraints or [])
     lines += ["## What the frame must present", "",
               f"Treatment: {elements.get('treatment', '')}",
               f"Hero: {elements.get('hero', '')}",
@@ -490,7 +497,8 @@ def write_brief(ws: Workspace, *, idea: Idea, house_rules: str, direction: dict 
     if not sample:
         sample = (facts.get("supers") or [idea.title])[0]
     lines += ["## Palette roles and tokens", "",
-              "Copy tokens.xml into <styles> and reference every colour as var(--role); the "
+              "The program adds the tokens (tokens.xml) to the document's <styles>, and "
+              "every colour references them as var(--role); the "
               "swatch strip shows each role the film's palette named as a small rect with its "
               "role name and the palette's own words beside it. A role marked `fallback` was "
               "filled by design.py because the palette never named it: use its token if you "
@@ -522,12 +530,7 @@ def write_brief(ws: Workspace, *, idea: Idea, house_rules: str, direction: dict 
               "puts a super there.",
               "- Colours only through var(--role). Nouns, labels and the sample come from the "
               "elements and the film, never invented.", ""]
-    usable = [a for a in assets if a.get("file")]
-    if usable:
-        lines += ["## Licensed images in the project you may use as <image> src", ""]
-        lines += [f"- `{os.path.relpath(root / a['file'], ws.dir)}` -- {a.get('title', '')} "
-                  f"({a.get('licence', '')}; credit: {a.get('credit', '')})" for a in usable]
-        lines.append("")
+    lines += vfx.research_asset_lines(assets, root, ws.dir)
     props = props_items(root)
     if props:
         hdris = [it for it in props if it.get("kind") == "hdri"]
@@ -558,22 +561,24 @@ def write_brief(ws: Workspace, *, idea: Idea, house_rules: str, direction: dict 
                     lines.append("  maps, usable on any surface: "
                                  + ", ".join(f"`{os.path.relpath(m, ws.dir)}`" for m in maps))
             lines.append("")
-    lines += ["## Deliverable", "",
-              f"Write `{DOC_NAME}` in this directory: a complete scene-render document "
+    lines += [sdkkit.BRIEF, "## Deliverable", "",
+              f"Write `{PROGRAM_NAME}` in this directory: a Python program that builds the "
+              f"keyframe with the SDK and saves `{DOC_NAME}`, a complete scene-render document "
               f"(`<project width=\"{FRAME[0]}\" height=\"{FRAME[1]}\" fps=\"30\" duration=\"1\">`, "
               "styles with the tokens, assets, materials, symbols, composition, lights, output) "
               f"holding exactly ONE `<symbol id=\"{SYMBOL_ID}\" width=\"{FRAME[0]}\" "
               f"height=\"{FRAME[1]}\" duration=\"1\">` that composes everything -- the world "
               "and the band -- instanced once in the composition from 0 to 1 s, with the "
-              "<lights> declared at scene level. Children of <scene> must appear in the "
-              "schema's declared order (project, styles, output, assets, materials, symbols, "
-              "composition, lights ...). Read examples.scene.xml first: every construct in it "
-              "has rendered on this engine. Ask the schema with sr.py before guessing an "
-              f"attribute. Run `python3 sr.py check {DOC_NAME}` and fix every error until it "
-              f"reports 0 error(s); then `python3 sr.py frame {DOC_NAME}` renders the symbol "
-              "and you Read the PNG: a black, flat, empty or wrong frame, a hero out of view "
-              "or an unreadable band means the document is not done. Do not create any other "
-              "file. The stage then renders the frame at "
+              "<lights> declared at scene level. The program is the source: a change is made "
+              "in it, never in the XML it writes, and the stage builds the program itself. "
+              "Read kit/SDK-GUIDE.md and kit/examples/ first: every example rendered on this "
+              "engine; examples.scene.xml shows more constructs as XML. Ask the schema "
+              "(`python3 kit.py describe <element>`) before guessing an attribute. Run "
+              f"`python3 kit.py build {PROGRAM_NAME}` and fix every error until it reports 0 "
+              f"error(s); then `python3 sr.py frame {DOC_NAME}` renders the symbol and you "
+              "Read the PNG: a black, flat, empty or wrong frame, a hero out of view or an "
+              "unreadable band means the work is not done. Do not create any other file than "
+              "the program and the document it saves. The stage then renders the frame at "
               f"{STILL_AT:g} s as `{FRAME_NAME}` and a reviewer scores it against the "
               "publication bar; its findings come back to you if it falls short."]
     path = ws.dir / BRIEF_NAME
@@ -708,11 +713,12 @@ class KeyframeStage:
 
     # -- 2. the composition ------------------------------------------------
 
-    def _stream(self, engine, prompt: str) -> int:
+    def _stream(self, engine, prompt: str, *, resume: bool = False) -> int:
         calls = 0
         try:
             system = harness.with_feedback(AUTHOR_SYSTEM, self.root, "keyframe")
-            for event in engine.stream(prompt, system=system):
+            extra = {"resume": True} if resume and getattr(engine, "session_id", None) else {}
+            for event in engine.stream(prompt, system=system, **extra):
                 if event.subtype == "tool_use" and event.tool_input:
                     calls += 1
                     what = event.tool_input.get("command") or event.tool_input.get("file_path") or ""
@@ -772,7 +778,13 @@ class KeyframeStage:
               round_no: int) -> dict:
         """Check the document, render the frame, run the eyeless checks, then
         the review; one round's record."""
-        symbols, findings = check_document(ws)
+        # The harness builds the program itself; the document judged is its output.
+        built = sdkkit.build_findings(ws.dir / PROGRAM_NAME, DOC_NAME)
+        if any(f.startswith("error") for f in built):
+            symbols, findings = [], built
+        else:
+            symbols, findings = check_document(ws)
+            findings = built + findings
         errors = [f for f in findings if f.startswith("error")]
         png = ws.dir / FRAME_NAME
         if not errors:
@@ -802,14 +814,17 @@ class KeyframeStage:
         facts = script_facts(self.script)
         brief = write_brief(ws, idea=self.idea, house_rules=self.house, direction=self.direction,
                             elements=chosen, roles=roles, tokens=tokens, facts=facts,
-                            assets=asset_rows(self.dossier), notes=self.notes)
+                            assets=asset_rows(self.dossier), notes=self.notes,
+                            constraints=vfx.picture_constraints(self.script))
         inputs = _digest(chosen, self.notes, tokens, self.house_digest)
         engine = harness.ENGINE(EngineConfig(
             tools=AUTHOR_TOOLS, model=self.model, permission_mode="dontAsk", cwd=ws.dir,
             max_turns_budget_usd=self.budget_usd, timeout=1800.0))
         reviewer = self._harness(REVIEW_ROLE)
         doc = ws.dir / DOC_NAME
-        reuse = (doc.is_file() and not self.fresh
+        # A document from before programs were required is not reusable: the
+        # program is the source, so it is authored again from the brief.
+        reuse = (doc.is_file() and (ws.dir / PROGRAM_NAME).is_file() and not self.fresh
                  and self.previous.get("inputs_digest") == inputs)
         tool_calls = 0
         if reuse:
@@ -818,14 +833,15 @@ class KeyframeStage:
             self._say(f"  authoring {DOC_NAME} in {ws.rel}/ (up to ${self.budget_usd:g}, "
                       f"bar {self.bar:g}/10, {self.rounds} revision round(s))")
             tool_calls += self._stream(engine, (
-                f"Read {brief.name}, then examples.scene.xml and schema.md, and author "
-                f"{DOC_NAME} as the brief says: one symbol `{SYMBOL_ID}` composing the hero in "
-                "its environment with the lights and materials, in the treatment, and the band "
-                f"with the swatches, the type sample and the element labels. Check it with "
-                f"`python3 sr.py check {DOC_NAME}` and fix every error; then `python3 sr.py "
-                f"frame {DOC_NAME}` and Read the frame it writes until it shows the look. When "
-                "check reports 0 error(s) and the frame shows the look, reply with one line: "
-                "the file name and the symbol id."))
+                f"Read {brief.name}, then kit/SDK-GUIDE.md and kit/examples/, and write "
+                f"{PROGRAM_NAME}: the program that builds {DOC_NAME} as the brief says, one "
+                f"symbol `{SYMBOL_ID}` composing the hero in its environment with the lights "
+                "and materials, in the treatment, and the band with the swatches, the type "
+                "sample and the element labels, and saves it. Build it with `python3 kit.py "
+                f"build {PROGRAM_NAME}` and fix every error; then `python3 sr.py frame "
+                f"{DOC_NAME}` and Read the frame it writes until it shows the look. When the "
+                "build reports 0 error(s) and the frame shows the look, reply with one line: "
+                "the program, the document and the symbol id."))
         rounds: list[dict] = []
         round_no = 0
         while True:
@@ -848,16 +864,18 @@ class KeyframeStage:
                       + (self._review_listing(last["review"]) + "\n\n" if last["review"] else "")
                       + (("The operator's instructions still outrank everything:\n"
                           + _notes_block(self.notes) + "\n\n") if self.notes else "")
-                      + f"Fix the document -- the same elements, one symbol `{SYMBOL_ID}`, the "
-                      f"hero kept -- run `python3 sr.py check {DOC_NAME}` until it reports 0 "
-                      f"error(s), then `python3 sr.py frame {DOC_NAME}` and Read the frame; "
-                      "iterate until it shows the look and the findings above are answered. "
-                      "Reply with one line.")
-            tool_calls += self._stream(engine, prompt)
+                      + f"Re-read {brief.name}, then fix the program {PROGRAM_NAME} -- the same "
+                      f"elements, one symbol `{SYMBOL_ID}`, the hero kept -- run `python3 kit.py "
+                      f"build {PROGRAM_NAME}` until it reports 0 error(s), then `python3 sr.py "
+                      f"frame {DOC_NAME}` and Read the frame; iterate until it shows the look "
+                      "and the findings above are answered. Reply with one line.")
+            tool_calls += self._stream(engine, prompt, resume=True)
         last = rounds[-1]
         frame_ok = bool(last["frame"]) and not last["errors"]
         return {
             "document": f"{ws.rel}/{DOC_NAME}" if doc.is_file() else "",
+            "program": f"{ws.rel}/{PROGRAM_NAME}" if (ws.dir / PROGRAM_NAME).is_file() else "",
+            "provenance": sdkkit.provenance_of(doc) if doc.is_file() else None,
             "frame": f"{ws.rel}/{FRAME_NAME}" if frame_ok else "",
             "brief": f"{ws.rel}/{BRIEF_NAME}",
             "rounds": [{k: v for k, v in r.items() if k != "frame"} for r in rounds],

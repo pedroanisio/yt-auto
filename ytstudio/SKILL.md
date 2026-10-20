@@ -52,7 +52,9 @@ came from breaking one of them.
    money.
 6. **One authoring layer.** Document authoring happens in `ytstudio/vfx.py`;
    `design.py` is the token source. Do not add a second geometry or
-   composition writer.
+   composition writer. The documents themselves are written by the authors'
+   programs, through the kit (`ytstudio/sdkkit.py`); pipeline code never
+   writes a scene's content.
 7. **An `<include>` carries neither styles, paints nor lights.** `yt build`
    hoists them (the file's tokens win, design fills the rest) and points the
    include at a cleaned copy, `vfx/vNN/<section>.include.scene.xml`, with
@@ -74,7 +76,7 @@ itself, and `--project DIR` names a directory directly.
 | Stage | Reads | Writes | Model |
 |---|---|---|---|
 | `yt ideas` | a niche | `work/ideas.json` | yes |
-| `yt research` | the idea | `dossier.json`, `README.md`, `claims.csv`, `raw/` | yes |
+| `yt research` | the idea | `dossier.json`, `README.md`, `claims.csv`, `assets.csv`, `raw/`; with `--download`, `downloads/` | yes |
 | `yt styles` | dossier | `styles.json`, `styles.md` | yes |
 | `yt script` | dossier, styles | `script.json`, `script.md`, `narration.txt`, `shotlist.csv` | yes |
 | `yt props` | script, styles (or phrases given) | `props/<kind>/<id>/`, `props.json` | no (Poly Haven, all CC0) |
@@ -116,6 +118,25 @@ and the findings go back verbatim for up to `--rounds` (2) while under
 picks and composes again. An approved keyframe is the look every vfx world
 inherits (`keyframe.approved_keyframe`), and `yt doctor` warns when the
 animation was authored without one or predates it.
+
+**The research's assets.** `yt research` fills its shot list from every
+catalogue in `--asset-sources` (default all of `assets.SOURCES`): NASA
+(stills, footage, audio), Openverse images and sound, Commons (stills,
+footage, sound, meshes), the Internet Archive, the RCSB PDB (structures,
+CC0), open-access papers in PMC (the PDF, captioned figures, supplementary
+movies), the open-access papers the research itself cites, and news
+(Wikinews under CC BY; the rest of the press as `reference_only` records,
+cited and never downloaded). Each shot's shortlist holds the best relevant
+hit of each kind before more stills, the subject's own searches are one need
+searched once, and the vetting decision keeps at most `--per-shot` of each
+kind per shot. `kind` is one of `assets.KINDS`. A cached search made with
+other catalogues, another licence policy or an older searcher
+(`Researcher.ASSET_SEARCH`) is searched again, and the outline with it.
+`--download` writes `downloads/` and gives each asset in `dossier.json` its
+`file` (an STL becomes OBJ, the original kept as `source_file`); that `file`
+is what the vfx and keyframe briefs offer the authors.
+
+**The fact-check binds the picture.** `yt script --verify` writes its flags into script.json (`check`). Its blocker and important flags reach the people who draw the film, verbatim (`vfx.picture_constraints`): the vfx planner, each section's brief and reviewer (the whole-film flags plus that section's shots), and the keyframe brief. A claim the narration avoids can still be shown wrong by a picture.
 
 Beside the chain:
 
@@ -247,6 +268,10 @@ a pass older than `video.mp4` or `scene.xml` is scored again first), with
   their stated owner without the model; the prose ones, whose `owner` is
   free text, go through one harness decision that also merges duplicates
   and writes each stage a brief: what must change, how the next pass checks.
+  First, a prose finding that makes a claim `build.json` can check (no
+  audio, no narration, a placeholder) and that the manifest contradicts is
+  routed nowhere and listed in `improve.md` as "contradicted by
+  build.json: <field>", so no stage is briefed to fix what is not broken.
 - **Feedback.** `feedback/<stage>.md` (and `.json`) holds the brief with
   the findings verbatim, timestamps and the pass they came from. Every
   `Harness` of that stage puts it in its system prompt as revision notes
@@ -284,7 +309,15 @@ a pass older than `video.mp4` or `scene.xml` is scored again first), with
   nothing is authored twice), with the earlier spend counted. A pass whose
   stages all ran but whose `yt qa` filed nothing (a render host down) is
   `unjudged`: its outputs stay, and the next `yt improve` scores and judges
-  it first.
+  it first. A reverted pass keeps what it made under `attempt/` too. When
+  `yt gate` writes nothing for the new video (its preflight refuses a film
+  with no captions), the old video's `gate.json` is set aside as
+  `improve/pass-NN/stale-gate.json`, so `yt qa` never judges the new video
+  by the old one's gate. `yt improve --rejudge` judges the last pass again
+  on clean evidence: the current state is snapshotted, the attempt's files
+  are put back, the video is rendered again from them, the gate and `yt qa`
+  run, and the same rule keeps it or restores that snapshot; nothing
+  upstream is authored or decided again.
 
 ## Composing with the SDK: the kit and the probes
 
@@ -314,11 +347,32 @@ hand-authored world showed the cost.
   `<doc>.provenance.json` (program and document hashes, schema release).
   `sdkkit.provenance_of(doc)` lapses the moment the document is edited by
   hand.
-- **Who uses it.** `yt probe` composes through it. The vfx, keyframe and
-  assess authors still write XML by hand; moving them onto the kit is the
-  next step, so until then their documents carry no provenance.
+- **Who uses it.** Every authoring agent: `yt vfx` (one program per
+  section, `vfx/vNN/<section>.py` saving `<section>.scene.xml`), `yt
+  keyframe` (`keyframe/keyframe.py`), `yt assess` (`proof.py`) and `yt
+  probe`.
+  - Each stage's gate runs `sdkkit.build_findings` first, so the document
+    it validates, frames and reviews is the program's output.
+  - A missing program, a build that fails or does not reproduce, or a
+    program that saved another file is an error. A hand-written document
+    does not count as authored, and a hand-edited one is overwritten by the
+    next build.
+  - srkit records every scene document a program reads. A program that
+    saves a document it read is refused (`rule:program-passthrough`).
+    Reading another document for its values is only flagged
+    (`rule:program-reads-document`).
+  - The build judges what the program left on disk: a document changed,
+    removed or renamed after `save()` is refused.
+  - An author's own previews (`kit.py frame`) go to `frames/kit/`. The
+    gate clears a section's proof frames before rendering them again, so
+    the reviewer only sees this round's.
+  - Revisions resume the author's own session.
+  - `vfx.json` and `keyframe.json` record each document's `program` and
+    `provenance`.
 - **`yt probe`.** `--list` shows the classes, `--only` picks some,
-  `--fetch-props` fills `work/.probes/props/` with a neutral CC0 set.
+  `--fetch-props` fills `work/.probes/` (`props.json` and `props/`) with a
+  neutral CC0 set, which a run uses by default (`--props DIR` names any
+  folder laid out the same way, a project root included).
   `--reviewer-model` must differ from `--model`: a model never grades its own
   work.
   - Each probe gets the first review plus up to `--rounds` (2) revisions
@@ -347,6 +401,7 @@ hand-authored world showed the cost.
 | A dark metal shows no reflection | a metal's reflectance is its `baseColor`; a dark base swallows the environment and any iridescent film | give a metal a light base colour and let roughness and the environment make the look |
 | Specks around an emitter | the path tracer counts an emissive surface only when a path happens to hit it, never aims at one | light a scene with lights; use emission for what glows |
 | Layered materials vanish | the path tracer ignores clearcoat, sheen, anisotropy, iridescence and dispersion, silently | choose the renderer per shot knowing which it drops (`kit/ENGINE.md`) |
+| A peer's message inside a stage | interactive sessions on the machine list every headless `claude -p` the pipeline starts as a peer, and a broadcast lands in that model mid-task (measured: a probe author received one) | `yt` calls `harness.isolate_sessions()`, so every engine gets `--settings '{"crossSessionInbound":"refuse"}'` unless `CLAUDE_ENGINE_SETTINGS` is set; verified that such a session refuses a message |
 | `project/@fps` is a string | `fps=30` is refused at construction; it is a rational (`"30000/1001"`) | `fps=str(30)` |
 | `crf` with NVENC | ignored; a default bitrate is used and nothing warns | `yt build` sets `bitrate` and `maxBitrate`; do not add crf |
 | The AAC true-peak pass | the decoded AAC overshoots, the engine pulls the programme down about 1 dB | target and compensation are two numbers; `yt build --loudness` |
@@ -366,6 +421,8 @@ hand-authored world showed the cost.
 | `key/@value` is a string | a float is refused at construction | write values as text |
 | `<segment>` needs schema 1.2 | a 1.1 document is refused | raise the version where it is used |
 | An empty enumeration | means free string, not nothing allowed | do not filter against it |
+| A User-Agent with no contact | Wikimedia answers HTTP 429 to every request, so Commons files can be neither verified nor downloaded | the default agent names the project's URL; a `--user-agent` of your own must too |
+| Openverse unpaced | an anonymous client gets 20 requests a minute; a parallel shot list bursts past it and each refusal used to vanish | the searcher paces itself, and failed searches are printed per catalogue |
 
 ## Known limits
 

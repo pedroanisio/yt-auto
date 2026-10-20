@@ -219,6 +219,18 @@ class Run(ProbeCase):
             self.assertTrue((run / "glass" / "rounds" / f"r{n:02d}" / "compose.py").is_file())
         self.assertIn("# round 0", (run / "glass" / "rounds" / "r00" / "compose.py").read_text())
 
+    def test_a_render_host_failure_is_an_error_not_a_score(self):
+        with mock.patch("ytstudio.render.engine_render_still",
+                        return_value=(None, "render failed\nerror: bash: line 1: "
+                                      "/x/scene-render: No such file or directory")):
+            code = self.run_quiet(self.args(only="terrain"))
+        self.assertEqual(code, 1)
+        run = next(p for p in (self.work / probes.PROBES_DIR).iterdir() if p.is_dir())
+        row = json.loads((run / "summary.json").read_text())["rows"][0]
+        self.assertIn("InfrastructureError", row["error"])
+        self.assertEqual(row["causes"]["authoring"], 0)
+        self.assertEqual(len([s for s in FakeEngine.streams if "Write" in s["tools"]]), 1)
+
     def test_resume_keeps_finished_probes_and_restarts_the_rest(self):
         self.run_quiet(self.args(name="base", only="metal"))
         (self.work / probes.PROBES_DIR / "base" / "glass").mkdir()       # an unfinished one
@@ -290,19 +302,120 @@ class Run(ProbeCase):
         self.assertTrue(ws.is_dir())
 
     def test_props_are_linked_below_the_workspace_and_listed_in_the_brief(self):
-        props_root = self.work / probes.PROBES_DIR / "props"
-        (props_root / "props" / "hdri" / "sky").mkdir(parents=True)
-        (props_root / "props" / "hdri" / "sky" / "sky_2k.hdr").write_bytes(b"#?RADIANCE\n")
-        (props_root / "props.json").write_text(json.dumps({"items": [
+        base = self.work / probes.PROBES_DIR                 # where --fetch-props writes
+        (base / "props" / "hdri" / "sky").mkdir(parents=True)
+        (base / "props" / "hdri" / "sky" / "sky_2k.hdr").write_bytes(b"#?RADIANCE\n")
+        (base / "props.json").write_text(json.dumps({"items": [
             {"kind": "hdri", "file": "props/hdri/sky/sky_2k.hdr", "about": "an open sky"}]}))
-        self.run_quiet(self.args(only="terrain"))
-        run = next(p for p in (self.work / probes.PROBES_DIR).iterdir()
-                   if p.is_dir() and p.name != "props")
-        ws = run / "terrain"
+        self.run_quiet(self.args(only="terrain", name="withprops"))
+        ws = base / "withprops" / "terrain"
         linked = ws / "props" / "hdri" / "sky" / "sky_2k.hdr"
         self.assertTrue(linked.is_file())
         self.assertFalse((ws / "props").is_symlink())
         self.assertIn("props/hdri/sky/sky_2k.hdr", (ws / "brief.md").read_text())
+
+    def test_fetch_props_writes_what_a_run_reads(self):
+        def gather(root, phrases, *, kinds, limit, catalogue, verbose):
+            kind = kinds[0]
+            f = Path(root) / "props" / kind / phrases[0] / f"{phrases[0]}.bin"
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(b"x")
+            return [{"kind": kind, "file": f"props/{kind}/{phrases[0]}/{phrases[0]}.bin",
+                     "about": phrases[0]}]
+        with mock.patch("ytstudio.props.gather", side_effect=gather), \
+                mock.patch("ytstudio.props.Catalogue"), mock.patch("sys.stdout", io.StringIO()):
+            self.assertEqual(probes.fetch_props(self.args()), 0)
+        self.run_quiet(self.args(only="metal", name="fetched"))
+        brief = (self.work / probes.PROBES_DIR / "fetched" / "metal" / "brief.md").read_text()
+        self.assertIn("## Props", brief)
+        self.assertTrue((self.work / probes.PROBES_DIR / "fetched" / "metal" / "props" / "hdri")
+                        .is_dir())
+
+    def test_a_tie_is_not_a_regression(self):
+        scores = iter([5.0, 5.0])
+        real = FakeEngine.stream
+
+        def scored(engine, prompt, system=None, resume=None):
+            if "Write" not in tuple(engine.config.tools or ()):
+                VERDICT["score"] = next(scores)
+            yield from real(engine, prompt, system=system, resume=resume)
+        try:
+            with mock.patch.object(FakeEngine, "stream", scored):
+                self.run_quiet(self.args(only="coated", rounds=1, bar=8.0))
+        finally:
+            VERDICT["score"] = 5.5
+        authors = [s for s in FakeEngine.streams if "Write" in s["tools"]]
+        self.assertEqual(len(authors), 2)
+        self.assertNotIn("below round", authors[1]["prompt"])
+
+    def test_the_best_round_stands_when_a_later_round_fails(self):
+        calls = {"n": 0}
+        real = probes.verify
+
+        def flaky(ws, probe, *, host):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("the second build blew up")
+            return real(ws, probe, host=host)
+        with mock.patch.object(probes, "verify", side_effect=flaky):
+            self.run_quiet(self.args(only="macro", rounds=2, bar=9.0))
+        run = next(p for p in (self.work / probes.PROBES_DIR).iterdir() if p.is_dir())
+        row = json.loads((run / "summary.json").read_text())["rows"][0]
+        self.assertEqual(row["score"], 5.5)                  # round 0 was measured
+        self.assertEqual(row["best_round"], 0)
+        self.assertIn("blew up", row["error"])
+        self.assertGreater(row["review"]["cost_usd"], 0)
+
+    def test_aliases_of_one_model_are_one_reviewer(self):
+        with mock.patch("sys.stderr", io.StringIO()) as err:
+            code = probes.run(self.args(model="opus", reviewer_model="claude-opus-5-5"))
+        self.assertEqual(code, 2)
+        self.assertIn("different model", err.getvalue())
+
+    def test_a_host_failure_after_a_failed_validation_is_still_infrastructure(self):
+        with mock.patch("ytstudio.render.engine_validate", return_value=["error[E9]: odd"]), \
+                mock.patch("ytstudio.render.engine_render_still",
+                           return_value=(None, "render failed\nerror: ssh: connect to host "
+                                         "10.0.0.1 port 22: No route to host")):
+            code = self.run_quiet(self.args(only="volume"))
+        self.assertEqual(code, 1)
+        run = next(p for p in (self.work / probes.PROBES_DIR).iterdir() if p.is_dir())
+        row = json.loads((run / "summary.json").read_text())["rows"][0]
+        self.assertIn("InfrastructureError", row["error"])
+
+
+class Isolation(unittest.TestCase):
+    """No other session on the machine may talk to a model mid-stage."""
+
+    def setUp(self):
+        import claude_engine
+        self.ce = claude_engine
+        self.saved = dict(claude_engine.DEFAULTS)
+        self.addCleanup(lambda: (claude_engine.DEFAULTS.clear(),
+                                 claude_engine.DEFAULTS.update(self.saved)))
+        claude_engine.DEFAULTS.pop("settings", None)
+
+    def test_every_engine_refuses_cross_session_messages(self):
+        with mock.patch.dict("os.environ", {}, clear=False) as env:
+            env.pop("CLAUDE_ENGINE_SETTINGS", None)
+            harness.isolate_sessions()
+            config = self.ce.EngineConfig()
+        self.assertEqual(json.loads(config.settings), {"crossSessionInbound": "refuse"})
+
+    def test_the_operators_own_settings_win(self):
+        with mock.patch.dict("os.environ", {"CLAUDE_ENGINE_SETTINGS": "/x/settings.json"}):
+            harness.isolate_sessions()
+            self.assertEqual(self.ce.EngineConfig().settings, "/x/settings.json")
+
+    def test_yt_isolates_its_sessions_before_any_stage_runs(self):
+        from ytstudio import cli
+        work = tempfile.mkdtemp(prefix="iso-")
+        self.addCleanup(shutil.rmtree, work, True)
+        with mock.patch.dict("os.environ", {}, clear=False) as env, \
+                mock.patch("sys.stdout", io.StringIO()), mock.patch("sys.stderr", io.StringIO()):
+            env.pop("CLAUDE_ENGINE_SETTINGS", None)
+            cli.main(["ls", "--work", work, "--quiet"])
+        self.assertIn("crossSessionInbound", self.ce.DEFAULTS.get("settings", ""))
 
 
 if __name__ == "__main__":

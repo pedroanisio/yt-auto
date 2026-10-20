@@ -280,15 +280,27 @@ def research_block(data: dict, *, limit: int = 60) -> str:
     if data.get("verdict"):
         parts.append(f"Does it hold up: {data['verdict']}")
 
-    ranked = sorted(data.get("claims", []),
+    # The claims the outline is built on always go in: dropped, the writer
+    # loses the support for a beat it must write, and the fact-check flags
+    # the line as unsourced when the dossier holds its source. The other
+    # slots go to the best sourced of the rest.
+    def key(text: str) -> str:
+        return " ".join(str(text).lower().split())[:120]
+
+    used = {key(c) for section in (data.get("outline") or {}).get("sections", [])
+            for c in section.get("claims_used", [])}
+    everything = data.get("claims", [])
+    on_outline = [c for c in everything if key(c.get("claim", "")) in used]
+    ranked = sorted((c for c in everything if key(c.get("claim", "")) not in used),
                     key=lambda c: _CONFIDENCE.get(c.get("confidence"), 3))
     if len(ranked) > limit:
         # Dropping claims silently would let the script contradict research
         # it never saw; say so, and drop the least trusted.
-        print(f"note: {len(ranked)} claims in the dossier; the script sees the "
-              f"{limit} best sourced", file=sys.stderr)
+        print(f"note: {len(everything)} claims in the dossier; the script sees "
+              f"the {len(on_outline)} the outline uses and the {limit} best "
+              "sourced of the rest", file=sys.stderr)
     claims = []
-    for claim in ranked[:limit]:
+    for claim in on_outline + ranked[:limit]:
         number = f" [{claim['number']}]" if claim.get("number") else ""
         caveat = f" CAVEAT: {claim['caveat']}" if claim.get("caveat") else ""
         claims.append(

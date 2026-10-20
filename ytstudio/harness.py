@@ -61,6 +61,20 @@ INSPECT_TOOLS = ("Read", "Glob", "Grep")
 #: The engine class; tests replace it with a fake.
 ENGINE: Callable[[EngineConfig], Any] = ClaudeEngine
 
+#: Every `claude -p` session a stage starts refuses cross-session messages.
+#: Without it an interactive session on the machine sees each one as a peer,
+#: and its broadcast lands in a model mid-task (measured: a probe author
+#: received and answered one). Verified: a message sent to a session started
+#: with these settings is refused and never reaches its model.
+ISOLATED_SETTINGS = '{"crossSessionInbound": "refuse"}'
+
+
+def isolate_sessions() -> None:
+    """Make every engine this process starts refuse cross-session messages,
+    unless the operator chose settings of their own (CLAUDE_ENGINE_SETTINGS)."""
+    if not claude_engine.default_for("settings"):
+        claude_engine.set_defaults(settings=ISOLATED_SETTINGS)
+
 
 class HarnessError(RuntimeError):
     """The model could not be asked, or did not answer the question."""

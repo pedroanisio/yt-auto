@@ -1,5 +1,9 @@
 # automation
 
+> **Why this exists:** [`PURPOSE.md`](PURPOSE.md) says what the pipeline is for,
+> the quality bar it answers to and the principles every change must keep.
+> This README says how the pieces work.
+
 Two things that fit together:
 
 - **`claude_engine.py`** — use **Claude Code as the AI engine of a Python
@@ -7,14 +11,16 @@ Two things that fit together:
   agentic work, driven from your own code.
 - **`yt`** — a gen-AI production pipeline built on it that **creates and
   composes top-tier YouTube videos** on scene-render and the sr-core SDK:
-  visually intense explainers with voice-over and motion graphics, in 2D, 2.5D
-  and 3D, in whatever
-  aesthetic the editorial decisions call for — research with sources, visual
+  visually intense explainers with voice-over and motion graphics, in motion
+  graphics, 2D, 2.5D, 3D, voxel, pixel art, planetary and mathematical
+  simulation, in whatever aesthetic the editorial decisions call for — research with sources, visual
   direction, screenplay, narration, authored motion graphics, sound, and the
   rendered, gated film.
 
 No dependencies. The engine launches the `claude` CLI in non-interactive print
-mode and parses its JSON / stream-JSON output.
+mode and parses its JSON / stream-JSON output. `codex_engine.py` offers the
+same API on the Codex CLI; `YT_ENGINE=codex` runs the harness's stages on it
+(its module docstring lists what maps, what is emulated and what Codex lacks).
 
 ## Requirements
 
@@ -107,9 +113,9 @@ Or all of it at once, for one idea:
 | `yt styles` | visual treatments ranked against the video's message, with shots, palette, type, motion | $0.06–0.10 |
 | `yt script` | the full AV screenplay: picture, narration verbatim, supers, assets, citations | **$0.51** for 3 minutes with polish and fact-check |
 | `yt props` | CC0 glTF models, HDRIs and texture maps from Poly Haven under `props/`, listed in `props.json` for the vfx brief | no model calls, no key |
-| `yt keyframe` | the look-lock: one composed 1920x1080 frame of the hero, environment, key light, materials, palette roles, type sample and camera language, each labelled with its source, reviewed and awaiting the operator's approval | one decision, one author session and one vision review per round |
+| `yt keyframe` | the look-lock, composed by the author as a program with the SDK: one 1920x1080 frame of the hero, environment, key light, materials, palette roles, type sample and camera language, each labelled with its source, reviewed and awaiting the operator's approval | one decision, one author session and one vision review per round |
 | `yt voice` | one WAV per shot, measured drift against the script, captions | no model calls; ElevenLabs bills per character, local engines are free |
-| `yt vfx` | every effect specified and costed, then one world `<symbol>` per section with a single camera, its shots as phases, proof frames checked (frame, camera and geometry: a hero that penetrates a set solid, or that reads merged into one on screen with no shadow, is an error with time, object and depth) and reviewed, versioned under `vfx/vNN/` | scales with `--per-section`, `--budget-usd` per section, `--revisions` |
+| `yt vfx` | every effect specified and costed, then one world `<symbol>` per section, written by the author as a Python program with the sr-core SDK that the stage builds itself (determinism and provenance checked), with a single camera, its shots as phases, proof frames checked (frame, camera and geometry: a hero that penetrates a set solid, or that reads merged into one on screen with no shadow, is an error with time, object and depth) and reviewed, versioned under `vfx/vNN/` | scales with `--per-section`, `--budget-usd` per section, `--revisions` |
 | `yt sound` | effects, ambience, score, motifs, mix targets, cue sheet; with `--fetch`, a CC0/CC-BY file per cue from Freesound under `sound/` | **$1.07** for 3 minutes with listen-back |
 | `yt build` | the scene-render document: continuous includes of the authored worlds, model-planned graphics drawn from the design, captions, markers, the mix with the fetched cues on buses per role | one planning call per section |
 | `yt render` | the encoded video, with the engine's report, from a job-scoped directory on a render host | no model calls |
@@ -815,7 +821,11 @@ yt improve --title X --max-passes 1 --budget-usd 15
 
 `--max-passes N` (3) · `--budget-usd B` (15) · `--target` (9.0) · `--from-pass
 pass-NN` · `--quality draft|preview|final` (final) · `--dry-run` · `--resume` (run
-the last failed pass again from the stage that failed, once its cause is fixed)
+the last failed pass again from the stage that failed, once its cause is fixed) ·
+`--rejudge` (put the last pass's kept files back, render, gate and score it again on
+clean evidence, then keep or revert by the same rule). A prose finding that
+`build.json` contradicts (no audio, no narration, a placeholder) is routed nowhere
+and listed in `improve.md` as contradicted.
 
 ### `yt doctor`
 
@@ -1111,6 +1121,8 @@ reach for first: `--model`, `--fallback-model`, `--effort {low..max}`, `--cwd`,
 ```
 yt                      the pipeline entry point (also `python -m ytstudio`)
 claude_engine.py        the engine, task runner, and its own CLI
+codex_engine.py         the same API on the Codex CLI (`YT_ENGINE=codex`)
+PURPOSE.md              why the pipeline exists, the bar, the principles
 example_usage.py        five runnable engine demos (`python example_usage.py all`)
 tasks.example.json      a pipeline spec for `claude_engine.py run`
 ytstudio/

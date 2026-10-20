@@ -30,7 +30,7 @@ import sys
 from pathlib import Path
 
 from claude_engine import ClaudeEngine, ClaudeError, EngineConfig
-from . import render, workspace
+from . import render, sdkkit, workspace
 from .core import Idea, _key, read_json, slugify, write_json
 from .vfx import MISSION, STACK, Workspace
 
@@ -47,13 +47,14 @@ AGENT_TOOLS = ("Read", "Glob", "Grep", "Write", "Edit", "Bash")
 SYSTEM = (
     "You assess whether a described video can be produced on scene-render and "
     "sr-core, by investigation, not opinion. You ask the schema "
-    "(`python3 sr.py describe <element>`, `python3 sr.py enum <element> "
-    "<attribute>`, `python3 sr.py elements`), you read the engine's capability "
-    "manifest for constructs it only approximates or reports, you read the "
-    "render host's resources, and you prove the decisive constructs by "
-    "writing a short document and checking it with `python3 sr.py check` until "
-    "it reports 0 errors. You distinguish what the schema can express from "
-    "what the engine renders, and you say plainly what it cannot do."
+    "(`python3 kit.py describe <element>`, `python3 kit.py enum <element> "
+    "<attribute>`, `python3 kit.py elements`), you read kit/ENGINE.md and engine.json "
+    "for constructs the engine only approximates, ignores per renderer or reports, you "
+    "read the render host's resources, and you prove the decisive constructs by "
+    "writing a short Python program with the sr-core SDK (srkit) that builds a proof "
+    "document, building it with `python3 kit.py build` until it reports 0 errors. You "
+    "distinguish what the schema can express from what the engine renders, and you say "
+    "plainly what it cannot do."
 )
 
 VERDICT_SCHEMA = {
@@ -188,19 +189,22 @@ def prepare(ws: Workspace, *, description: str, facts: dict, project_context: st
         lines += ["## What the project already says", "", project_context, ""]
     lines += ["## Mission", "", MISSION, "",
               "## What is in this directory", "",
-              "- `sr.py` -- `elements`, `describe <el>`, `enum <el> <attr>`, `check <file>`",
+              "- `kit.py` -- `elements`, `describe <el>`, `enum <el> <attr>`, `build <program>`",
+              "- `srkit.py` -- what a program imports: `from srkit import S, FRAME, save`",
+              "- `kit/SDK-GUIDE.md`, `kit/ENGINE.md`, `kit/examples/` -- the SDK's guide, what the "
+              "engine does per renderer, programs that rendered on this engine",
               "- `schema.md` -- a cheat-sheet generated from the schema; describe anything not in it",
-              "- `examples.scene.xml` -- constructs that have validated and rendered on this engine",
+              "- `examples.scene.xml` -- more constructs, as XML, that rendered on this engine",
               "- `engine.json` -- the engine's capability manifest (entries marked approximate or "
               "reported are rendered differently from what the document says, or only logged), "
               "the render host's GPUs, memory, cores and disk", "",
               "## Deliverables", "",
-              "1. `proof.scene.xml`: a complete scene-render document of 2-4 seconds, 1920x1080, "
-              "that exercises the constructs the verdict depends on (for a 3D request that is "
-              "an object3D with a real material, lights, a camera and its renderer; for a "
-              "simulation, the simulating element). Run `python3 sr.py check proof.scene.xml` "
-              "and fix every error until it reports 0 error(s). Children of <scene> must follow "
-              "the schema's declared order.",
+              "1. `proof.py`: a Python program with the SDK that saves `proof.scene.xml`, a "
+              "complete scene-render document of 2-4 seconds, 1920x1080, that exercises the "
+              "constructs the verdict depends on (for a 3D request that is an object3D with a "
+              "real material, lights, a camera and its renderer; for a simulation, the "
+              "simulating element). Run `python3 kit.py build proof.py` and fix every error "
+              "until it reports 0 error(s); the stage builds the program itself.",
               "2. `assessment.json` with exactly these keys: feasible (yes|partly|no), summary, "
               "approach[] (the shots and how each is built), constructs[] (schema elements and "
               "attributes used, e.g. `object3D@primitive=sphere`, `material@transmission`), "
@@ -259,11 +263,17 @@ def prove(ws: Workspace, host: str, *, verbose: bool) -> dict:
     """Validate the proof document and render one frame of it on the engine."""
     out = {"file": "", "valid": False, "errors": [], "frame": ""}
     path = ws.dir / "proof.scene.xml"
-    if not path.is_file():
-        out["errors"] = ["the agent wrote no proof.scene.xml"]
+    # The harness builds the proof program itself; the document is its output.
+    built = sdkkit.build_findings(ws.dir / "proof.py", "proof.scene.xml")
+    if any(f.startswith("error") for f in built) or not path.is_file():
+        out["errors"] = [f for f in built if f.startswith("error")] or [
+            "the agent wrote no proof.scene.xml"]
+        if (ws.dir / "proof.py").is_file():
+            out["file"] = str(ws.dir / "proof.py")   # written, but it did not build
         return out
     out["file"] = str(path)
     symbols, findings = ws.validate("proof.scene.xml")
+    findings = built + findings
     out["errors"] = [f for f in findings if f.startswith("error")]
     out["valid"] = not out["errors"]
     if not out["valid"]:

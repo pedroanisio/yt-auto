@@ -356,7 +356,8 @@ SHOTS_SCHEMA = {
                     "why": {"type": "string"},
                     "kind": {"type": "string",
                              "enum": ["image", "video", "animation", "audio",
-                                      "dataset", "map", "document"]},
+                                      "dataset", "map", "document", "3d-model",
+                                      "article"]},
                     "searches": {"type": "array", "items": {"type": "string"}},
                 },
                 "required": ["shot", "why", "kind", "searches"],
@@ -528,6 +529,9 @@ class Researcher:
         self.user_agent = user_agent
         self.usage = Usage()
         self.visited: list[str] = []
+        #: Set once this run searched the catalogues again, so the outline
+        #: that quotes the old assets is written again too.
+        self.assets_searched = False
 
     # -- plumbing ----------------------------------------------------------
 
@@ -547,9 +551,9 @@ class Researcher:
     def _idea_block(self) -> str:
         return self.idea.block()
 
-    def _stage(self, name: str, work) -> object:
-        """Run `work()` unless this stage is already on disk."""
-        if not self.fresh:
+    def _stage(self, name: str, work, *, redo: bool = False) -> object:
+        """Run `work()` unless this stage is already on disk (or `redo`)."""
+        if not (self.fresh or redo):
             cached = self.dossier.load(name)
             if cached is not None:
                 self._say(f"[{name}] cached")
@@ -682,7 +686,12 @@ class Researcher:
             "assembly', 'tin droplet'). Long descriptive sentences find "
             "nothing. Prefer subjects that public archives really hold: "
             "hardware, facilities, people at work, instruments, satellite and "
-            "microscope imagery, historical photographs.\n\n"
+            "microscope imagery, historical photographs, archival footage and "
+            "sound recordings, figures and supplementary movies from "
+            "open-access papers, published 3D structures and models, and news "
+            "coverage of the subject. Each query is sent to image, footage, "
+            "sound, paper, structure and news catalogues alike, so name the "
+            "thing itself; set `kind` to the medium the shot needs most.\n\n"
             "Also give `topic_searches`: 2-4 queries naming the subject itself "
             "at its most searchable ('EUV lithography', 'photolithography', "
             "'ASML'). These are tried for every shot, because an archive's "
@@ -691,26 +700,54 @@ class Researcher:
             + (f"\n\n{self.scope['shots']}" if self.scope["shots"] else ""),
             SHOTS_SCHEMA))
 
-    def assets(self, notes: list[dict]) -> dict:
-        """Fill the shot list from the catalogues, verified live."""
-        plan = self.shots(notes)
+    #: Raised when the asset search changes what it can find, so a dossier an
+    #: older search filled is searched again instead of replayed.
+    ASSET_SEARCH = 2
 
-        def work() -> object:
-            found = yt_assets.find_assets(
-                plan.get("shots", []),
-                topic_searches=plan.get("topic_searches", []),
-                sources=self.asset_sources,
-                per_need=self.per_shot,
-                shortlist=self.per_shot * 3,
-                allow_sa=self.allow_sa,
-                user_agent=self.user_agent,
-                verbose=self.verbose,
-            )
-            found = self._vet_assets(found)
-            if self.agentic_assets:
-                found += self._agentic_assets(notes, found)
-            return {"assets": found}
-        return self._stage("05-assets", work)
+    def _asset_search_key(self) -> dict:
+        return {"version": self.ASSET_SEARCH, "sources": list(self.asset_sources),
+                "allow_sa": self.allow_sa, "per_shot": self.per_shot,
+                "agentic": self.agentic_assets}
+
+    def assets(self, notes: list[dict], sources: dict | None = None) -> dict:
+        """Fill the shot list from the catalogues, verified live, and add the
+        research's own open-access citations.
+
+        The cached search is replayed only when it was made the same way:
+        one made with other catalogues, another licence policy or an older
+        searcher never looked for what this one would find.
+        """
+        plan = self.shots(notes)
+        key = self._asset_search_key()
+        cached = None if self.fresh else self.dossier.load("05-assets")
+        if isinstance(cached, dict) and cached.get("search") == key:
+            self._say("[05-assets] cached")
+            yt_assets.settle_kinds(cached.get("assets", []))
+            return cached
+        self._say("[05-assets] running" + (
+            " (the cached search was made another way)" if cached else ""))
+        found = yt_assets.find_assets(
+            plan.get("shots", []),
+            topic_searches=plan.get("topic_searches", []),
+            sources=self.asset_sources,
+            per_need=self.per_shot,
+            shortlist=self.per_shot * 3,
+            allow_sa=self.allow_sa,
+            user_agent=self.user_agent,
+            verbose=self.verbose,
+        )
+        if "papers" in self.asset_sources:
+            found += yt_assets.cited_papers(
+                [s.get("url", "") for s in (sources or {}).get("sources", [])],
+                allow_sa=self.allow_sa, user_agent=self.user_agent,
+                verbose=self.verbose)
+        found = self._vet_assets(found)
+        if self.agentic_assets:
+            found += self._agentic_assets(notes, found)
+        data = {"assets": found, "search": key}
+        self.dossier.save("05-assets", data)
+        self.assets_searched = True
+        return data
 
     def _vet_assets(self, candidates: list[dict]) -> list[dict]:
         """Keep only candidates that actually show the shot they were found for.
@@ -724,18 +761,28 @@ class Researcher:
         listing = "\n".join(
             f"{n}. [{c['kind']}] {c['title']} — {c['source']}, {c['licence']}"
             f"{', ' + c['resolution'] if c.get('resolution') else ''}"
+            f"{' (' + c['note'][:90] + ')' if c.get('note') and c['kind'] in ('structure', 'audio', 'video', 'article') else ''}"
             f"\n     wanted for: {c.get('use_for', '')}"
             for n, c in enumerate(candidates, 1))
         verdict = self._ask_json(
             f"{self._idea_block()}\n\n"
-            "These files came back from open image catalogues for the shots "
-            f"listed under each one:\n\n{listing}\n\n"
-            "Keep only the ones that genuinely show what the shot needs. "
+            "These files came back from open media catalogues -- stills, "
+            "footage, sound, open-access papers with their figures and "
+            "movies, 3D structures and models, and news coverage -- for the "
+            f"shots listed under each one:\n\n{listing}\n\n"
+            "Keep only the ones that genuinely serve what the shot needs. "
             "Keyword search returns look-alikes -- a photo of Zeiss binoculars "
             "for a Zeiss mirror, a vodka bottle for an industrial laser, a "
-            "galaxy for a transmission graph. Reject those. A loose but honest "
-            "stand-in is acceptable only if you say so in `as`. Keep at most "
-            f"{self.per_shot} per shot, and keep none rather than something "
+            "galaxy for a transmission graph. Reject those. Judge each by its "
+            "kind: a structure or 3D model is geometry a 3D author builds "
+            "from, kept when it is the very thing the shot shows; a paper or "
+            "its figure is kept when the film rests on it or can show it; a "
+            "sound when it could be heard under the shot; a news article is a "
+            "reference the film may cite by outlet and headline, kept when it "
+            "reports what the shot is about. A loose but honest stand-in is "
+            "acceptable only if you say so in `as`. Keep at most "
+            f"{self.per_shot} of each kind per shot -- the papers the research "
+            "cites count as one shot -- and keep none rather than something "
             "misleading.",
             VET_SCHEMA)
         keep = {int(r["n"]): r for r in verdict.get("keep", [])
@@ -801,13 +848,20 @@ class Researcher:
             GAPS_SCHEMA))
 
     def outline(self, claims: dict, assets: dict, gaps: dict) -> dict:
-        return self._stage("07-outline", lambda: self._ask_json(
+        # The outline quotes the assets each section shows; once the
+        # catalogues were searched again, the cached one names the old set.
+        used = sorted(a.get("url", "") for a in assets.get("assets", []))
+        redo = self.assets_searched or \
+            self.dossier.load("07-outline-assets") not in (None, used)
+        outline = self._stage("07-outline", lambda: self._ask_json(
             f"{self._idea_block()}\n\n"
             f"Claims:\n{json.dumps(claims.get('claims', []), indent=2)}\n\n"
             f"Assets:\n{json.dumps(assets.get('assets', []), indent=2)}\n\n"
             f"Audit:\n{json.dumps(gaps, indent=2)}\n\n"
             + self.scope["outline"],
-            OUTLINE_SCHEMA))
+            OUTLINE_SCHEMA), redo=redo)
+        self.dossier.save("07-outline-assets", used)
+        return outline
 
     # -- run ---------------------------------------------------------------
 
@@ -816,7 +870,7 @@ class Researcher:
         notes = self.research(plan.get("questions", []))
         claims = self.claims(notes)
         sources = self.sources(notes)
-        assets = self.assets(notes)
+        assets = self.assets(notes, sources)
         gaps = self.gaps(claims, sources)
         outline = self.outline(claims, assets, gaps)
         return {
@@ -893,8 +947,13 @@ def provenance_warnings(notes: list[dict]) -> list[str]:
 # --------------------------------------------------------------------------- #
 
 def _filename(url: str, index: int, content_type: str | None) -> str:
-    base = Path(urlparse(url).path).name
-    base = re.sub(r"[^A-Za-z0-9._-]", "_", base)[:80]
+    base = re.sub(r"[^A-Za-z0-9._-]", "_", Path(urlparse(url).path).name)
+    suffix = Path(base).suffix
+    # Shorten the stem, never the extension: a cut one made a file's type
+    # unreadable (".ogv" became a guessed ".ogx").
+    if len(base) > 80:
+        keep = suffix if 1 < len(suffix) <= 6 else ""
+        base = base[:80 - len(keep)] + keep
     suffix = Path(base).suffix
     # ".07283" from an arXiv id is not a file extension; a real one is alphabetic.
     if not suffix or not suffix[1:].isalpha():
@@ -1104,14 +1163,42 @@ def download_assets(dossier: Dossier, assets: list[dict], *, verbose: bool = Tru
         cooldown.clear(host)
         path = out_dir / _filename(direct_file_url(url), n, content_type)
         path.write_bytes(body)
-        manifest.append(row | {"status": "ok", "file": f"downloads/{path.name}",
-                               "bytes": len(body), "content_type": content_type})
+        got = {"status": "ok", "file": f"downloads/{path.name}",
+               "bytes": len(body), "content_type": content_type}
+        if path.suffix.lower() == ".stl" or "application/sla" in content_type.lower():
+            # The engine imports OBJ, not STL: offer the converted mesh.
+            mesh = yt_assets.stl_to_obj(body)
+            if mesh:
+                obj = path.with_suffix(".obj")
+                obj.write_text(mesh, encoding="utf-8")
+                got |= {"file": f"downloads/{obj.name}",
+                        "source_file": f"downloads/{path.name}"}
+        manifest.append(row | got)
         if verbose:
-            print(f"    + {path.name} ({len(body) // 1024} KB)", file=sys.stderr)
+            print(f"    + {Path(got['file']).name} ({len(body) // 1024} KB)",
+                  file=sys.stderr)
 
     cooldown.save()
     dossier.save("08-downloads", manifest)
     return manifest
+
+
+def attach_downloads(assets: list[dict], downloads: list[dict]) -> list[dict]:
+    """Give each downloaded asset its `file`, relative to the project.
+
+    The authors' briefs offer an asset only when it names a file; the
+    manifest knew the file, the dossier's assets never did, so nothing the
+    research downloaded ever reached an author.
+    """
+    got = {d["url"]: d for d in downloads
+           if d.get("status") == "ok" and d.get("file") and d.get("url")}
+    for asset in assets:
+        row = got.get(asset.get("url"))
+        if row:
+            asset["file"] = row["file"]
+            if row.get("source_file"):
+                asset["source_file"] = row["source_file"]
+    return assets
 
 
 # --------------------------------------------------------------------------- #
@@ -1336,6 +1423,7 @@ def run(args) -> int:
                                     force=args.redownload,
                                     allow_sa=args.allow_sa)
 
+    attach_downloads(data["assets"], downloads)
     written = write_dossier(dossier, data, downloads)
     print(f"\n{dossier.dir}/")
     for path in written:

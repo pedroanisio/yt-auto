@@ -29,6 +29,7 @@ from PIL import Image
 
 from claude_engine import Event, Usage
 from ytstudio import cli, doctor, harness, keyframe, vfx, workspace
+from tests import programs
 from ytstudio.core import Idea, write_json
 from ytstudio.scene_sdk import sdk
 
@@ -153,12 +154,16 @@ class FakeEngine:
         FakeEngine.json_calls.append({"prompt": prompt, "schema": schema, "system": system})
         return FakeEngine.answers.pop(0) if FakeEngine.answers else json.loads(json.dumps(ELEMENTS))
 
-    def stream(self, prompt, system=None):
+    def stream(self, prompt, system=None, resume=False):
         tools = tuple(self.config.tools or ())
         FakeEngine.stream_calls.append({"prompt": prompt, "system": system,
-                                        "tools": tools, "cwd": self.config.cwd})
+                                        "tools": tools, "cwd": self.config.cwd,
+                                        "resume": resume})
+        self.session_id = "author-session"
         if "Write" in tools:
-            (Path(self.config.cwd) / keyframe.DOC_NAME).write_text(FakeEngine.doc, encoding="utf-8")
+            # what an author writes now: the program that builds the document
+            programs.author_program(Path(self.config.cwd), keyframe.PROGRAM_NAME,
+                                    keyframe.DOC_NAME, FakeEngine.doc)
             yield Event(type="assistant", text=f"{keyframe.DOC_NAME}: {keyframe.SYMBOL_ID}")
         else:
             yield Event(type="assistant", subtype="tool_use", tool_name="Read",
@@ -337,7 +342,8 @@ class Briefs(ProjectCase):
         self.assertIn("820", brief)                                   # the caption band
         self.assertIn("hero-", brief)
         self.assertIn(keyframe.DOC_NAME, brief)
-        self.assertIn("sr.py check", brief)
+        self.assertIn("kit.py build", brief)
+        self.assertIn(keyframe.PROGRAM_NAME, brief)
         self.assertIn("--background: #2B3A4A", brief)                 # roles, from design.py
         # A role the palette never named is a fallback, and the strip must not show it
         self.assertRegex(brief, r"--negative: #[0-9A-F]{6} \(fallback")

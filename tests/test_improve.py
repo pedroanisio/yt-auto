@@ -116,11 +116,16 @@ class FakeRunner:
         self.costs = costs or {}
         self.fail = fail or {}
         self.calls: list[list[str]] = []
+        self.gate_at_qa = "qa never ran"
 
     def __call__(self, argv):
         self.calls.append(list(argv))
         stage = argv[0]
         cost = self.costs.get(stage, 0.0)
+        if stage == "gate" and self.fail.get("gate") == "refuse":
+            return 1                       # preflight refused: nothing written
+        if stage == "qa":
+            self.gate_at_qa = read_json(self.root / "gate.json", warn=False)
         if stage == "qa" and self.fail.get("qa") == "no-pass":
             return 1                       # the render host was down: no pass filed
         if stage == "qa":
@@ -298,6 +303,37 @@ class Routing(ImproveCase):
         h = harness.Harness(self.root, "improve", verbose=False)
         routing = improve.route(h, findings, name="route-pass-01")
         self.assertEqual(routing["routes"]["F2"]["stage"], "vfx")
+
+    def test_a_finding_the_manifests_contradict_is_routed_nowhere(self):
+        # build.json (setUp) places 3 audio tracks; QA claims there are none.
+        findings = improve.collect(card(5.0, findings=[
+            prose("The scene has no audio nodes (audio coverage 0/9).", owner="audio"),
+            prose("the hero reads flat")]))
+        h = harness.Harness(self.root, "improve", verbose=False)
+        routing = improve.route(h, findings, name="r")
+        self.assertEqual([c["id"] for c in routing["contradicted"]], ["F1"])
+        self.assertIn("build.json: audio_tracks", routing["contradicted"][0]["contradicted_by"])
+        self.assertNotIn("F1", routing["routes"])
+        self.assertNotIn("audio coverage 0/9", FakeEngine.json_calls[0]["prompt"])
+        self.assertEqual(routing["stages"]["vfx"]["findings"], ["F2"])
+
+    def test_a_claim_the_manifests_support_is_routed(self):
+        write_json(self.root / "build.json", {"audio_tracks": 0, "scene": {}})
+        findings = improve.collect(card(5.0, findings=[
+            prose("The scene has no audio tracks.", owner="audio")]))
+        routing = improve.route(harness.Harness(self.root, "improve", verbose=False),
+                                findings, name="r")
+        self.assertEqual(routing["contradicted"], [])
+        self.assertIn("F1", routing["routes"])
+
+    def test_the_claims_checked_are_film_neutral(self):
+        rows = improve.contradicted_by({"problem": "a placeholder card at 0:04"},
+                                       {"placeholders": []})
+        self.assertIn("build.json: placeholders", rows)
+        self.assertIsNone(improve.contradicted_by({"problem": "the light is flat"},
+                                                  {"audio_tracks": 0}))
+        self.assertIn("narration_tracks", improve.contradicted_by(
+            {"problem": "there is no narration track"}, {"narration_tracks": 2}))
 
     def test_gate_and_doctor_rows_are_evidence(self):
         gate = {"exit": 1, "triage": {"blocking": [{"what": "no caption cues",
@@ -742,6 +778,13 @@ class Loop(ImproveCase):
         self.assertEqual(read_json(self.root / "vfx.json")["authoring"]["version"], "v01")
         self.assertEqual((self.root / "video.mp4").read_bytes(), b"original video")
 
+    def test_the_report_of_a_resumed_pass_measures_its_mechanical_fixes(self):
+        self._failed_render()
+        self.improver(FakeRunner(self.root, [card(4.0)]), resume=True, max_passes=1).run()
+        md = (self.root / "improve.md").read_text()
+        self.assertIn("gone in pass-02, but the pass was reverted", md)
+        self.assertNotIn("still reported by pass-02", md)
+
     def test_resume_with_nothing_failed_runs_nothing_and_keeps_the_record(self):
         self.start_pass(card(5.0, mechanical=[mech()]))
         self.improver(FakeRunner(self.root, [card(6.0)]), max_passes=1).run()
@@ -751,6 +794,76 @@ class Loop(ImproveCase):
         self.assertEqual(runner.calls, [])
         self.assertEqual(record["stop"]["reason"], "resume-failed")
         self.assertEqual((self.root / "improve.json").read_text(), saved)
+
+    def test_a_gate_that_wrote_nothing_is_not_read_as_the_new_videos(self):
+        old_gate = {"exit": 1, "triage": {"blocking": [{"what": "the old video's defect",
+                                                        "owner": "vfx", "fix": "x"}]}}
+        write_json(self.root / "gate.json", old_gate)
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        runner = FakeRunner(self.root, [card(4.0)], fail={"gate": "refuse"})
+        record = self.improver(runner, max_passes=1).run()
+        self.assertIsNone(runner.gate_at_qa)                 # QA saw no stale gate
+        self.assertIn("set aside", record["passes"][0]["gate"])
+        self.assertTrue((self.root / "improve" / "pass-01" / "stale-gate.json").is_file())
+        # the pass was reverted, so the old gate.json is back with the old video
+        self.assertEqual(read_json(self.root / "gate.json"), old_gate)
+
+    def test_a_gate_that_ran_is_left_for_qa(self):
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        runner = FakeRunner(self.root, [card(6.0)])
+        record = self.improver(runner, max_passes=1).run()
+        self.assertEqual(runner.gate_at_qa, {"exit": 0, "engine": {"cost_usd": 0.0}})
+        self.assertNotIn("gate", record["passes"][0])
+
+    def test_a_reverted_pass_keeps_what_it_made(self):
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        self.improver(FakeRunner(self.root, [card(4.0)]), max_passes=1).run()
+        attempt = self.root / "improve" / "pass-01" / "attempt"
+        self.assertEqual(read_json(attempt / "vfx.json")["authoring"]["version"], "v02")
+        self.assertNotEqual((attempt / "video.mp4").read_bytes(), b"original video")
+        self.assertEqual((self.root / "video.mp4").read_bytes(), b"original video")
+
+    def _reverted(self, old_gate=True):
+        if old_gate:
+            write_json(self.root / "gate.json", {"exit": 1, "triage": {"blocking": [
+                {"what": "the old video's defect", "owner": "vfx", "fix": "x"}]}})
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        self.improver(FakeRunner(self.root, [card(4.9)], fail={"gate": "refuse"}),
+                      max_passes=1).run()
+
+    def test_rejudge_re_renders_the_attempt_and_judges_it_on_clean_evidence(self):
+        self._reverted()
+        self.assertEqual(read_json(self.root / "vfx.json")["authoring"]["version"], "v01")
+        runner = FakeRunner(self.root, [card(6.0)], fail={"gate": "refuse"})
+        record = self.improver(runner, rejudge=True, max_passes=1).run()
+        self.assertEqual(runner.stages(), ["render", "gate", "qa"])      # nothing authored
+        self.assertIn("--quality", runner.calls[0])
+        self.assertIsNone(runner.gate_at_qa)                              # old gate set aside
+        p = record["passes"][0]
+        self.assertTrue(p["rejudged"])
+        self.assertEqual(p["previous_judgement"]["decision"], "revert")
+        self.assertEqual(p["previous_judgement"]["overall_after"], 4.9)
+        self.assertEqual(p["decision"], "keep")
+        self.assertEqual(p["overall_before"], 5.0)
+        self.assertEqual(read_json(self.root / "vfx.json")["authoring"]["version"], "v02")
+        self.assertEqual(record["best"]["pass"], "pass-03")
+
+    def test_rejudge_that_still_regresses_puts_the_reverted_state_back(self):
+        self._reverted()
+        record = self.improver(FakeRunner(self.root, [card(4.0)], fail={"gate": "refuse"}),
+                               rejudge=True, max_passes=1).run()
+        self.assertEqual(record["passes"][0]["decision"], "revert")
+        self.assertEqual(read_json(self.root / "vfx.json")["authoring"]["version"], "v01")
+        self.assertEqual((self.root / "video.mp4").read_bytes(), b"original video")
+        self.assertEqual(read_json(self.root / "gate.json")["triage"]["blocking"][0]["what"],
+                         "the old video's defect")
+
+    def test_rejudge_needs_a_judged_pass_with_its_attempt(self):
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        runner = FakeRunner(self.root, [])
+        record = self.improver(runner, rejudge=True).run()
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(record["stop"]["reason"], "resume-failed")
 
     def test_feedback_is_closed_once_a_pass_consumed_it(self):
         self.start_pass(card(5.0, mechanical=[mech()]))
@@ -865,16 +978,27 @@ class Report(ImproveCase):
         self.assertTrue((self.root / "improve" / "pass-01" / "pass.json").is_file())
 
 
+class Contradicted(ImproveCase):
+    def test_the_report_lists_what_the_manifests_contradict(self):
+        self.start_pass(card(5.0, mechanical=[mech()], findings=[
+            prose("Audio coverage is 0/9 in the scene document.", owner="audio")]))
+        self.improver(FakeRunner(self.root, [card(6.0)]), max_passes=1).run()
+        record = read_json(self.root / "improve.json")
+        self.assertEqual(len(record["contradicted"]), 1)
+        md = (self.root / "improve.md").read_text()
+        self.assertIn("contradicted by build.json: audio_tracks", md)
+
+
 class Cli(unittest.TestCase):
     def test_improve_is_a_command_with_its_flags(self):
         args = cli.build_parser().parse_args(
             ["improve", "--title", "x", "--max-passes", "2", "--budget-usd", "9",
              "--target", "8.5", "--dry-run", "--from-pass", "pass-03",
-             "--quality", "draft", "--resume"])
+             "--quality", "draft", "--resume", "--rejudge"])
         self.assertIs(args.run, improve.run)
         self.assertEqual((args.max_passes, args.budget_usd, args.target, args.dry_run,
-                          args.from_pass, args.quality, args.resume),
-                         (2, 9.0, 8.5, True, "pass-03", "draft", True))
+                          args.from_pass, args.quality, args.resume, args.rejudge),
+                         (2, 9.0, 8.5, True, "pass-03", "draft", True, True))
         defaults = cli.build_parser().parse_args(["improve", "--title", "x"])
         self.assertEqual((defaults.max_passes, defaults.budget_usd, defaults.target,
                           defaults.quality), (3, 15.0, 9.0, "final"))

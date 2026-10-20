@@ -47,6 +47,19 @@ DURATION = 3.0
 FRAME = (1920, 1080)
 CAUSES = ("authoring", "engine", "asset", "unknown")
 AUTHOR_TIMEOUT = 1800.0
+#: A reviewer reads three full-size frames, the program and ENGINE.md; 900 s was
+#: measured too short for a path-traced probe.
+REVIEW_TIMEOUT = 1800.0
+
+#: Render failures that are the infrastructure's, not the program's.
+INFRA = ("No such file or directory", "render host unreachable", "no engine reachable",
+         "Connection timed out", "Connection refused", "ssh: connect to host",
+         "No route to host", "timed out during banner exchange", "port 22 timed out",
+         "Could not resolve hostname")
+
+
+class InfrastructureError(RuntimeError):
+    """The frames could not be rendered for a reason no author caused."""
 
 
 @dataclass(frozen=True)
@@ -134,6 +147,12 @@ REVIEW_SCHEMA = {
 PROPS_PHRASES = {"hdri": ("studio", "overcast", "sunset", "interior"),
                  "model": ("rock", "plant", "bottle"),
                  "texture": ("metal", "concrete", "fabric")}
+
+
+def model_family(name: str) -> str:
+    """`opus`, `claude-opus-5-5` and `opus[1m]` are one model family."""
+    low = (name or "").lower()
+    return next((f for f in ("fable", "opus", "sonnet", "haiku") if f in low), low)
 
 
 def work_dir(root: Path | None = None) -> Path:
@@ -238,7 +257,8 @@ def verify(ws: Path, probe: Probe, *, host: str) -> dict:
         return {"ok": False, "error": f"no {PROGRAM} in the workspace", "frames": []}
     built = sdkkit.build(program, host=host)
     out = {"ok": built["ok"], "error": built.get("error", ""), "frames": [],
-           "findings": [f for d in built.get("documents", []) for f in d["errors"]]}
+           "findings": [f for d in built.get("documents", []) for f in d["errors"]],
+           "frame_findings": []}
     doc = ws / DOCUMENT
     if built.get("error") or not doc.is_file():
         out["ok"] = False
@@ -251,6 +271,7 @@ def verify(ws: Path, probe: Probe, *, host: str) -> dict:
     for t in probe.times:
         png, findings = sdkkit.frame(doc, t, host=host, out_dir=review)
         out["findings"] += findings
+        out["frame_findings"] += findings
         if png:
             out["frames"].append(png.name)
     for name in ("brief.md", PROGRAM):
@@ -263,7 +284,7 @@ def review(run_root: Path, ws: Path, probe: Probe, *, model: str, effort: str | 
            budget_usd: float, verbose: bool, name: str | None = None) -> tuple[dict, dict]:
     """The realism review, through the harness: (verdict, accounting)."""
     h = harness.Harness(run_root, "probe", model=model, effort=effort, role=REVIEW_ROLE,
-                        verbose=verbose, budget_usd=budget_usd)
+                        verbose=verbose, budget_usd=budget_usd, timeout=REVIEW_TIMEOUT)
     prompt = (f"The probe: {probe.what}. Read brief.md (what must read as real), then "
               f"every PNG here ({', '.join(sorted(p.name for p in (ws / 'review').glob('*.png')))}), "
               "then compose.py and ENGINE.md to attribute each defect to its cause. "
@@ -308,6 +329,16 @@ def run_probe(run_root: Path, probe: Probe, *, args, props_dir: Path | None,
             built = verify(ws, probe, host=args.host)
             row["build"] = {k: built[k] for k in ("ok", "error", "frames")}
             row["build_findings"] = built.get("findings", [])[:20]
+            costs = [f.split(sdkkit.RENDER_NOTE, 1)[1].strip() for f in built.get("frame_findings", [])
+                     if sdkkit.RENDER_NOTE in f]
+            if costs:
+                row["render"] = costs[-1]
+            # Only the render's own messages can blame the infrastructure: a
+            # program that names a missing file fails its build, never here.
+            rendered = built.get("frame_findings", [])
+            if not built["frames"] and any(m in f for f in rendered for m in INFRA):
+                raise InfrastructureError("the frames could not be rendered: " + "; ".join(
+                    f for f in rendered if any(m in f for m in INFRA))[:400])
             if not built["frames"]:
                 # Nothing to look at is a measured outcome, recorded as such.
                 row["rounds"].append({"round": n, "score": 0.0, "built": False,
@@ -335,7 +366,8 @@ def run_probe(run_root: Path, probe: Probe, *, args, props_dir: Path | None,
                     best = current
             if (best and best["score"] >= args.bar) or n == args.rounds:
                 break
-            if current is best:
+            if current is best or current["score"] >= best["score"]:
+                # an improvement, or a tie: the newer program stands
                 prompt = REVISE.format(score=current["score"], bar=args.bar,
                                        findings=json.dumps(current["findings"],
                                                            ensure_ascii=False, indent=1))
@@ -348,17 +380,20 @@ def run_probe(run_root: Path, probe: Probe, *, args, props_dir: Path | None,
             authors.append(author(ws, probe, model=args.model, effort=args.effort,
                                   budget_usd=args.budget_usd, verbose=not args.quiet,
                                   prompt=prompt, resume=authors[-1].get("session_id")))
-        if best is not None:
-            row.update(score=best["score"], summary=best["summary"],
-                       findings=best["findings"], causes=best["causes"],
-                       best_round=best["round"])
-        elif row["rounds"]:
-            row["summary"] = row["rounds"][-1]["summary"]
-            row["causes"] = {c: int(c == "authoring") for c in CAUSES}
-        row["review"] = {"model": args.reviewer_model, "cost_usd": round(reviews_cost, 4)}
     except Exception as exc:          # one probe's failure is that probe's row
         row["error"] = f"{type(exc).__name__}: {exc}"
+    # What was measured stands even when a later round failed; the error keeps
+    # the run from counting as complete.
+    if best is not None:
+        row.update(score=best["score"], summary=best["summary"],
+                   findings=best["findings"], causes=best["causes"],
+                   best_round=best["round"])
+    elif row["rounds"]:
+        row["summary"] = row["rounds"][-1]["summary"]
+        row["causes"] = {c: int(c == "authoring") for c in CAUSES}
+    if row.get("error"):
         row["summary"] = row["summary"] or f"the probe did not complete: {row['error']}"
+    row["review"] = {"model": args.reviewer_model, "cost_usd": round(reviews_cost, 4)}
     if authors:
         row["author"] = {"model": args.model, "sessions": len(authors),
                          "tool_calls": sum(a["tool_calls"] for a in authors),
@@ -385,7 +420,8 @@ def latest(root: Path | None = None) -> dict | None:
 def latest_measured(root: Path | None = None) -> list[dict]:
     """The last run's rows as ENGINE.md shows them: probe, score, summary."""
     summary = latest(root) or {}
-    return [{"probe": r["probe"], "score": r["score"], "summary": r.get("summary", "")}
+    return [{"probe": r["probe"], "score": r["score"], "summary": r.get("summary", ""),
+             "render": r.get("render", "")}
             for r in summary.get("rows", [])]
 
 
@@ -418,7 +454,7 @@ def run(args) -> int:
                   f"have {', '.join(BY_ID)}", file=sys.stderr)
             return 2
         selected = [BY_ID[w] for w in wanted]
-    if args.reviewer_model == args.model:
+    if model_family(args.reviewer_model) == model_family(args.model):
         print("error: the reviewer must be a different model from the author: a model "
               "does not grade its own work", file=sys.stderr)
         return 2
@@ -441,7 +477,9 @@ def run(args) -> int:
         print(f"error: {run_root} exists; pass --resume to continue it", file=sys.stderr)
         return 2
     run_root.mkdir(parents=True, exist_ok=True)
-    props_dir = Path(args.props) if args.props else (base / "props")
+    # A props folder holds props.json and props/: a project root, or the
+    # shared set `--fetch-props` writes into work/.probes/.
+    props_dir = Path(args.props) if args.props else base
     if not (props_dir / "props.json").is_file():
         props_dir = None
     previous = latest(args.work)
@@ -519,8 +557,8 @@ def add_arguments(p: argparse.ArgumentParser, *, shared: bool = True) -> None:
     p.add_argument("--budget-usd", type=float, default=3.0, help="per author session")
     p.add_argument("--review-budget-usd", type=float, default=1.0, help="per review")
     p.add_argument("--jobs", type=int, default=2, help="probes composed at once")
-    p.add_argument("--props", help="a props folder (props.json + props/); default "
-                   "work/.probes/props when it exists")
+    p.add_argument("--props", help="a folder holding props.json and props/ (a project root "
+                   "works); default work/.probes, which --fetch-props fills")
     p.add_argument("--host", default="", help="render host (default: the still host)")
     p.add_argument("--name", help="the run's directory name (default r-<time>)")
     p.add_argument("--resume", action="store_true",
@@ -551,6 +589,7 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     from . import env
     env.load(str(sdkkit.AUTOMATION_ROOT / ".env"))
+    harness.isolate_sessions()
     p = argparse.ArgumentParser(prog="python3 -m ytstudio.probes", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     add_arguments(p)

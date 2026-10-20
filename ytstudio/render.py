@@ -460,6 +460,9 @@ def engine_render_still(xml_bytes: bytes, at: float, *, host: str = "",
     # The bundle travels as a tar on stdin; the report comes back on stderr
     # (JSON first, then the engine's messages) and the PNG on stdout.
     script = (f"mkdir -p {remote} && cd {remote} && tar -xf - && "
+              # the render dies on the host by the deadline this side keeps: a
+              # still this side gave up on must not keep the GPU for hours
+              f"timeout -k 10 {max(1, int(timeout) - 5)} "
               f"{binary_expr} render {shlex.quote(doc_path)} -t {at} -o frame.png --json "
               f"> report.json 2> messages.txt; code=$?; cat report.json >&2; echo >&2; "
               f"cat messages.txt >&2; [ -f frame.png ] && cat frame.png; cd /; rm -rf {remote}; exit $code")

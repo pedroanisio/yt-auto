@@ -256,6 +256,48 @@ def doctor_rows(project: workspace.Project) -> list[tuple]:
 
 
 # --------------------------------------------------------------------------- #
+# claims the manifests can check
+# --------------------------------------------------------------------------- #
+
+#: A finding that states a checkable fact about the build: the pattern of the
+#: claim, the build.json field that settles it, and when that field
+#: contradicts it. A reviewer reading frames can misreport what the mix or
+#: the timeline holds; a brief built on that sends a stage to fix nothing.
+CLAIMS = (
+    (re.compile(r"\bno audio\b|\baudio coverage\b[^.]*?\b0\s*/|"
+                r"\bno (?:sound|audio) (?:tracks?|nodes?)\b", re.I),
+     "audio_tracks", lambda n: n > 0),
+    (re.compile(r"\bno narration\b|\bnarration (?:is )?missing\b", re.I),
+     "narration_tracks", lambda n: n > 0),
+    (re.compile(r"(?<!no )\bplaceholders?\b", re.I), "placeholders", lambda n: n == 0),
+)
+
+
+def _count(value: Any) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, (list, tuple, dict, set)):
+        return len(value)
+    return 0
+
+
+def contradicted_by(finding: dict, build: dict | None) -> str | None:
+    """`build.json: <field> = <value>` when the build manifest contradicts a
+    claim the finding makes, else None."""
+    if not isinstance(build, dict):
+        return None
+    text = str(finding.get("problem", ""))
+    for pattern, field, contradicts in CLAIMS:
+        if field in build and pattern.search(text) and contradicts(_count(build[field])):
+            value = build[field]
+            shown = value if isinstance(value, (int, float)) else f"{_count(value)} item(s)"
+            return f"build.json: {field} = {shown}"
+    return None
+
+
+# --------------------------------------------------------------------------- #
 # routing
 # --------------------------------------------------------------------------- #
 
@@ -333,7 +375,16 @@ def _unrouted(answer: dict, findings: list[dict], fixed: dict[str, str]) -> list
 def route(h: Harness, findings: list[dict], *, name: str,
           context: dict | None = None) -> dict:
     """Each finding to one stage; the briefs per stage; what needs a human."""
-    out: dict = {"routes": {}, "stages": {}, "human": []}
+    out: dict = {"routes": {}, "stages": {}, "human": [], "contradicted": []}
+    build = read_json(Path(h.root) / "build.json", warn=False)
+    kept = []
+    for f in findings:
+        why = None if f.get("source") == "mechanical" else contradicted_by(f, build)
+        if why:
+            out["contradicted"].append(dict(f, contradicted_by=why))
+        else:
+            kept.append(f)
+    findings = kept
     if not findings:
         return out
     fixed = {f["id"]: f["owner"] for f in findings
@@ -711,7 +762,7 @@ class Improver:
                  effort: str | None = None, fallback_model: str | None = None,
                  max_passes: int = 3, budget_usd: float = 15.0, target: float = 9.0,
                  dry_run: bool = False, from_pass: str | None = None,
-                 resume: bool = False,
+                 resume: bool = False, rejudge: bool = False,
                  quality: str = "final", quiet: bool = False,
                  runner: Callable[[list[str]], int] | None = None,
                  doctor: Callable[[workspace.Project], list[tuple]] | None = None,
@@ -728,6 +779,7 @@ class Improver:
         self.target = float(target)
         self.dry_run = dry_run
         self.resume = resume
+        self.rejudge = rejudge
         self.from_pass = from_pass
         self.quality = quality
         self.quiet = quiet
@@ -858,6 +910,22 @@ class Improver:
         self.spent_stages += float(earlier.get("spent_usd") or 0)
         return self._settle(entry, before, new)
 
+    def _gate(self, entry: dict, pdir: Path, stamps: dict[str, int]) -> None:
+        """Run the gate on the new video. A gate that wrote nothing (it can
+        refuse to start, e.g. with no captions to check) leaves the old
+        video's gate.json, whose blocking rows QA would read as this
+        video's; it is set aside, so the pass is judged on its own evidence.
+        A revert puts it back from the snapshot."""
+        entry["argv"].append(["gate", *self.base])
+        entry["exit"]["gate"] = self._run(["gate", *self.base])
+        gate = self.root / "gate.json"
+        if gate.is_file() and stamps.get("gate.json") == gate.stat().st_mtime_ns:
+            pdir.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(gate), str(pdir / "stale-gate.json"))
+            entry["gate"] = ("did not write a gate.json for this video; the earlier one "
+                             f"was set aside as {IMPROVE_DIR}/{pdir.name}/stale-gate.json")
+            self._log(f"[improve] {entry['gate']}")
+
     def _settle(self, entry: dict, before: dict, new: dict) -> dict:
         """Keep or revert a pass judged outside the loop, close its notes."""
         verdict = judge(before, new)
@@ -867,13 +935,78 @@ class Improver:
                      reasons=verdict["reasons"],
                      decision="keep" if verdict["keep"] else "revert")
         if not verdict["keep"]:
-            restore(self.root, Path(entry.get("snapshot")
-                                    or self.root / IMPROVE_DIR / entry["name"] / "snapshot"))
+            pdir = self.root / IMPROVE_DIR / entry["name"]
+            snapshot(self.root, list(entry.get("stages") or []) + ["gate", "qa"],
+                     pdir / "attempt")
+            entry["attempt"] = str(pdir / "attempt")
+            restore(self.root, Path(entry.get("snapshot") or pdir / "snapshot"))
         close_feedback(self.root, entry["name"])
         self._save_pass(self.root / IMPROVE_DIR / entry["name"], entry)
         self._log(f"[improve] {entry['name']}: judged, "
                   f"{'kept' if verdict['keep'] else 'reverted'}")
         return {"entry": entry, "start": before, "best": new if verdict["keep"] else before}
+
+    def _rejudge(self) -> dict | None:
+        """`--rejudge`: judge the last pass again on clean evidence, when its
+        judgement could not be trusted (a stale input, a host that failed).
+        The project as it stands is snapshotted, the attempt's files are put
+        back over it, the video is rendered again from the attempt's scene,
+        the gate and QA run (an old gate.json is set aside if the gate
+        writes none), and the same rule keeps the pass or restores the
+        snapshot. Nothing is authored or decided again upstream."""
+        earlier = read_json(self.root / REPORT_JSON, warn=False) or {}
+        passes = earlier.get("passes") or []
+        last = passes[-1] if passes else {}
+        name = last.get("name", "")
+        pdir = self.root / IMPROVE_DIR / name
+        attempt = pdir / "attempt"
+        before = self._card(self.root / qa.QA_DIR / str(last.get("best_before")))
+        if (last.get("decision") not in ("revert", "unjudged", "keep")
+                or not (attempt / "snapshot.json").is_file() or before is None):
+            self.say(f"error: --rejudge needs a {REPORT_JSON} whose last pass was judged "
+                     f"and kept its files under {IMPROVE_DIR}/<pass>/attempt/")
+            return None
+        self.spent_stages += float(earlier.get("spent_usd") or 0)
+        stages = list(last.get("stages") or [])
+        render = stage_argvs(["render"], set(), self.base, quality=self.quality,
+                             root=self.root)[0]
+        guess = estimate(["render"], None)
+        if guess > self.budget - self.spent:
+            self.say(f"error: re-judging {name} is estimated at ${guess:.2f}; "
+                     f"${self.budget - self.spent:.2f} is left")
+            return None
+        fresh = pdir / "snapshot-rejudge"
+        snapshot(self.root, stages + ["gate", "qa"], fresh)
+        restore(self.root, attempt)
+        entry = dict(last, rejudged=True, exit={}, argv=[], snapshot=str(fresh),
+                     previous_judgement={k: last.get(k) for k in (
+                         "decision", "qa_pass", "overall_after", "scores_after", "reasons",
+                         "gate")})
+        self._log(f"[improve] re-judging {name}: rendering its attempt again")
+        stamps = _stamps(self.root)
+        entry["argv"].append(render)
+        code = entry["exit"]["render"] = self._run(render)
+        if code:
+            restore(self.root, fresh)
+            entry.update(decision="failed", reasons=[f"render exited {code}"])
+            self._save_pass(pdir, entry)
+            return {"entry": entry, "start": before, "best": before,
+                    "stop": {"reason": "stage-failed", "detail": f"render exited {code}; "
+                             "the state before the re-judge was restored"}}
+        self._gate(entry, pdir, stamps)
+        entry["argv"].append(["qa", *self.base])
+        new = self._qa()
+        cost = stage_cost(self.root, "gate", stamps) + float(
+            ((new or {}).get("engine") or {}).get("cost_usd") or 0)
+        self.spent_stages += stage_cost(self.root, "gate", stamps)
+        entry["cost_usd"] = round(float(last.get("cost_usd") or 0) + cost, 4)
+        if new is None:
+            entry.update(decision="unjudged", reasons=[QA_FAILED])
+            self._save_pass(pdir, entry)
+            return {"entry": entry, "start": before, "best": before,
+                    "stop": {"reason": "qa-failed", "detail": f"{QA_FAILED}; run "
+                             "`yt improve --rejudge` again"}}
+        return self._settle(entry, before, new)
 
     def _rerun_failed(self) -> dict | None:
         """`--resume`: run the last pass of an earlier run again from the stage
@@ -929,8 +1062,7 @@ class Improver:
                 break
         new = None
         if failed is None:
-            entry["argv"].append(["gate", *self.base])
-            entry["exit"]["gate"] = self._run(["gate", *self.base])
+            self._gate(entry, pdir, stamps)
             entry["argv"].append(["qa", *self.base])
             new = self._qa()
         cost = sum(stage_cost(self.root, st, stamps) for st, _ in steps) + stage_cost(
@@ -1026,10 +1158,11 @@ class Improver:
                         "started": started, "dry_run": self.dry_run,
                         "max_passes": self.max_passes, "budget_usd": self.budget,
                         "target": self.target, "quality": self.quality, "passes": [],
-                        "human": [], "start": None, "best": None, "spent_usd": 0.0,
+                        "human": [], "contradicted": [], "start": None, "best": None,
+                        "spent_usd": 0.0,
                         "stop": None}
-        if self.resume:
-            resumed = self._rerun_failed()
+        if self.resume or self.rejudge:
+            resumed = self._rejudge() if self.rejudge else self._rerun_failed()
             if resumed is None:
                 record["stop"] = {"reason": "resume-failed",
                                   "detail": "nothing to resume; see the error above"}
@@ -1071,6 +1204,9 @@ class Improver:
                 "project_state": self.states.get(evidence["pass"], [])})
             seen = {h["problem"] for h in record["human"]}
             record["human"] += [h for h in routing["human"] if h["problem"] not in seen]
+            seen = {c["problem"] for c in record["contradicted"]}
+            record["contradicted"] += [c for c in routing["contradicted"]
+                                       if c["problem"] not in seen]
             stages = plan(routing["stages"], self.root)
             argvs = stage_argvs(stages, routing["stages"], self.base, quality=self.quality,
                                 root=self.root)
@@ -1129,8 +1265,7 @@ class Improver:
                     break
             new = None
             if failed is None:
-                entry["argv"].append(["gate", *self.base])
-                entry["exit"]["gate"] = self._run(["gate", *self.base])
+                self._gate(entry, pdir, before)
                 entry["argv"].append(["qa", *self.base])
                 new = self._qa()
                 if new is None:
@@ -1189,6 +1324,8 @@ class Improver:
                 self._log(f"[improve] {name}: kept ({new.get('overall')} against "
                           f"{entry['overall_before']})")
             else:
+                snapshot(self.root, stages + ["gate", "qa"], pdir / "attempt")
+                entry["attempt"] = str(pdir / "attempt")
                 restore(self.root, snap)
                 for stage in routing["stages"]:
                     attempts.setdefault(stage, []).append(
@@ -1336,11 +1473,26 @@ def report_md(record: dict, root: Path) -> str:
                      if p.get("decision") != "keep" else ""), ""]
         fixed = set(p.get("fixed") or [])
         defect_of = p.get("briefed_defects") or {}
+        after_fps = None
+        if "fixed" not in p and p.get("qa_pass"):
+            # A pass judged outside the loop tracked no defects: measure the
+            # mechanical ones against the new pass's own mechanical findings.
+            after = read_json(root / qa.QA_DIR / str(p["qa_pass"]) / "scorecard.json",
+                              warn=False) or {}
+            after_fps = {fingerprint(m) for m in after.get("mechanical") or []}
         for stage, e in (p.get("routed") or {}).items():
             correction = "; ".join(e.get("must_change") or []) or "-"
             for f in e.get("findings") or []:
                 did = defect_of.get(f["id"])
-                if p.get("decision") == "keep" and did in fixed:
+                fp = fingerprint(f) if after_fps is not None else None
+                if fp is not None:
+                    did = f["id"]
+                    if fp not in after_fps:
+                        fixed.add(did)
+                if after_fps is not None and fp is None:
+                    result = (f"not re-checked one by one ({p.get('qa_pass')} was judged "
+                              "after a resume); see its findings")
+                elif p.get("decision") == "keep" and did in fixed:
                     result = f"verified: not reported by {p.get('qa_pass')}"
                 elif did in fixed:
                     result = f"gone in {p.get('qa_pass')}, but the pass was reverted"
@@ -1368,6 +1520,10 @@ def report_md(record: dict, root: Path) -> str:
         lines += ["", "### Needs a human decision (not looped)", ""]
         lines += [f"- [{h['route']}] {h['problem']} -- {h.get('why_routed', '')}"
                   for h in record["human"]]
+    if record.get("contradicted"):
+        lines += ["", "### Contradicted by the manifests (not routed)", ""]
+        lines += [f"- {stamp(c.get('timestamp'))} [{c.get('source')}] {c['problem']} -- "
+                  f"contradicted by {c['contradicted_by']}" for c in record["contradicted"]]
     build = read_json(root / "build.json", warn=False) or {}
     scene = build.get("scene") or {}
     video = root / "video.mp4"
@@ -1415,6 +1571,9 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                    help="the QA pass to start from (default the latest)")
     p.add_argument("--quality", choices=["draft", "preview", "final"], default="final",
                    help="render quality of each pass's encode (default final)")
+    p.add_argument("--rejudge", action="store_true",
+                   help="judge the last pass again on clean evidence: put its kept "
+                        "files back, render, gate and score again, keep or revert")
     p.add_argument("--resume", action="store_true",
                    help="run the last failed pass again from the stage that failed, "
                         "once its cause is fixed, replaying what came before it")
@@ -1430,7 +1589,7 @@ def run(args) -> int:
                         fallback_model=getattr(args, "fallback_model", None),
                         max_passes=args.max_passes, budget_usd=args.budget_usd,
                         target=args.target, dry_run=args.dry_run, from_pass=args.from_pass,
-                        resume=args.resume,
+                        resume=args.resume, rejudge=args.rejudge,
                         quality=args.quality, quiet=args.quiet, house_rules=rules,
                         house_digest=digest)
     try:

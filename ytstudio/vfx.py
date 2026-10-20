@@ -55,7 +55,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from claude_engine import ClaudeError, EngineConfig, Usage
-from . import framecheck, geometry, harness, house, reach, render, workspace
+from . import framecheck, geometry, harness, house, reach, render, sdkkit, workspace
 from .core import Idea, _key, _merge_usage, read_json, slugify, write_json
 from .framecheck import DIM_STD, FLAT_STD, frame_stats, judge_frame  # noqa: F401  (re-exported)
 from .ideas import CHANNEL_STYLES
@@ -106,8 +106,9 @@ CRITICAL_OF = (
     "purpose; too much information arriving at once")
 
 #: Tools the authoring agent gets: the files of its workspace and a shell for
-#: `python3 sr.py`. Nothing reaches outside the workspace by design of the brief.
-AUTHOR_TOOLS = ("Read", "Write", "Edit", "Glob", "Grep", "Bash")
+#: `python3 kit.py` and `python3 sr.py`. Nothing reaches outside the workspace
+#: by design of the brief.
+AUTHOR_TOOLS = sdkkit.AUTHOR_TOOLS
 
 #: One authoring call may render proof frames many times; a revision round
 #: that answers a review needs more than the harness's default 900 s.
@@ -125,20 +126,12 @@ VFX_SYSTEM = (
 )
 
 AUTHOR_SYSTEM = (
-    "You author scene-render documents. The schema is the truth and the "
-    "document is the deliverable: you ask the schema before you guess "
-    "(`python3 sr.py describe <element>`, `python3 sr.py enum <element> "
-    "<attribute>`), you check every document with `python3 sr.py check "
-    "<file>` -- the SDK's checks and the engine's own validation -- and you "
-    "iterate until it reports 0 errors. Validation cannot see the picture, so "
-    "you then render frames (`python3 sr.py frame <file>`) and look at every "
-    "PNG it writes with the Read tool: a black, flat or wrong frame means the "
-    "document is not done, whatever the validator says. A section is one "
-    "world: one set, one hero model, one light rig and one camera whose path "
-    "is keyed across the whole section, so the shots are phases of a single "
-    "continuous take, never separate builds. You never invent an asset file, "
-    "a font or a value the schema does not accept, and you never write prose "
-    "where the brief asks for a document."
+    sdkkit.AUTHOR_SYSTEM + " A section is one world: one set, one hero model, one "
+    "light rig and one camera whose path is keyed across the whole section, so the "
+    "shots are phases of a single continuous take, never separate builds. Its proof "
+    "frames come from `python3 sr.py frame <file>`, which renders each shot's "
+    "midpoint the way `yt build` includes the world; Read every one. You never write "
+    "prose where the brief asks for a program."
 )
 
 REVIEW_ROLE = (
@@ -386,6 +379,48 @@ def script_sections(path: str | None) -> list[dict]:
                         "narration": sh.narration, "asset": sh.asset}
                        for sh in s.shots]}
             for s in sections]
+
+
+#: Fact-check severities that bind what the picture may show.
+BINDING_SEVERITIES = ("blocker", "important")
+
+
+def picture_constraints(script: dict | str | Path | None) -> list[dict]:
+    """The screenplay fact-check's binding flags (`yt script --verify` writes
+    them to script.json under `check`), verbatim, each with the shot label it
+    binds ("" for the whole film). They reach every author who draws the film:
+    a claim the narration avoids can still be shown wrong by a picture."""
+    data = script if isinstance(script, dict) else (read_json(script, warn=False) or {}
+                                                     if script else {})
+    labels = {sh.get("n"): str(sh.get("label") or "")
+              for sec in data.get("sections") or [] if isinstance(sec, dict)
+              for sh in sec.get("shots") or [] if isinstance(sh, dict) and "n" in sh}
+    out = []
+    for f in ((data.get("check") or {}).get("flags") or []):
+        if not isinstance(f, dict) or f.get("severity") not in BINDING_SEVERITIES:
+            continue
+        try:
+            n = int(f.get("n") or 0)
+        except (TypeError, ValueError):
+            n = 0
+        out.append({"label": labels.get(n, "") if n else "", "severity": f["severity"],
+                    "problem": str(f.get("problem", "")), "fix": str(f.get("fix", ""))})
+    return out
+
+
+def constraint_lines(constraints: list[dict], labels: set[str] | None = None) -> list[str]:
+    """The binding flags for some shots (with the whole-film ones), as a brief
+    section; [] when none applies."""
+    rows = [c for c in constraints or []
+            if labels is None or not c["label"] or c["label"] in labels]
+    if not rows:
+        return []
+    lines = ["## Fact-check constraints (from `yt script --verify`; they outrank the "
+             "treatment: a picture must not show what the research does not support)", ""]
+    for c in rows:
+        lines += [f"- [{c['severity']}] {'shot ' + c['label'] if c['label'] else 'whole film'}: "
+                  f"{c['problem']}", f"  REQUIRED: {c['fix']}"]
+    return lines + [""]
 
 
 #: A symbol may fall this far short of its shots before it is an error.
@@ -994,6 +1029,14 @@ def shot_times(shots: list[dict], duration: float, *, apart: float = 1.0) -> lis
     return sorted(mids)
 
 
+def world_span(shots: list[dict]) -> float:
+    """How long a world runs: to the end of its last shot, the gaps between
+    takes included. The brief states it and the timing gate requires it, from
+    this one function."""
+    return round(max((float(s.get("at", 0)) + float(s.get("seconds") or 0)
+                      for s in shots), default=0.0), 3)
+
+
 def world_symbols(section: dict, effects: list[dict],
                   cuts: list[str] | None = None) -> list[dict]:
     """The symbol(s) one section is authored as: by default ONE world holding
@@ -1029,11 +1072,60 @@ def world_symbols(section: dict, effects: list[dict],
                             seconds=float(s.get("seconds") or 0)) for s in run]
         phases = [e for e in effects
                   if not e.get("shots") or covered & set(map(str, e.get("shots", [])))]
+        # The world spans to the end of its last shot, gaps between takes
+        # included: the same number the timing gate requires (world_span), so
+        # an author who gives the symbol the brief's duration passes it.
         out.append({"id": f"{WORLD_PREFIX}{slug}" + (f"-{n}" if n > 1 else ""),
                     "start": round(start, 3), "offset": round(start - origin, 3),
-                    "seconds": round(sum(s["seconds"] for s in world_shots), 3),
+                    "seconds": world_span(world_shots),
                     "shots": world_shots, "phases": phases})
     return out
+
+
+#: What the engine imports as a `<mesh>` (`mesh/@format`).
+MESH_SUFFIXES = (".gltf", ".glb", ".obj", ".usd", ".usda", ".usdc", ".usdz", ".fbx", ".ply",
+                 ".splat")
+
+#: How each kind of research asset enters a program; audio and documents are
+#: not the picture's.
+ASSET_USE = {
+    "image": "an `<image>` asset (`src`), or a material map (`baseColorMap`, `normalMap`, "
+             "...) on a surface",
+    "video": "a `<video>` asset (`src`)",
+    "3d-model": "a `<mesh>` asset (`src`) placed with `object3D primitive=\"mesh\"`",
+    "structure": "atomic coordinates (mmCIF text): the program reads the file and builds the "
+                 "geometry with the SDK; it is data, not a mesh",
+}
+
+
+def research_asset_lines(assets: list[dict], root: Path, here: Path) -> list[str]:
+    """The research's downloaded, licensed files an author may use, by kind,
+    with paths from the author's directory and how each kind enters a program."""
+    by_kind: dict[str, list[tuple[str, dict]]] = {}
+    for a in assets or []:
+        f = a.get("file") or a.get("path")
+        kind = str(a.get("kind") or "image")
+        if not f or kind not in ASSET_USE:
+            continue
+        by_kind.setdefault(kind, []).append((os.path.relpath(Path(root) / f, here), a))
+    if not by_kind:
+        return []
+    lines = ["## Licensed files from the research (paths relative to this directory)", ""]
+    for kind, rows in by_kind.items():
+        lines.append(f"### {kind}: {ASSET_USE[kind]}")
+        for rel, a in rows:
+            licence = a.get("licence_verified") or a.get("licence") or ""
+            credit = a.get("credit_line") or a.get("credit") or ""
+            line = (f"- `{rel}` — {a.get('title', '')} ({licence}"
+                    + (f"; credit: {credit}" if credit else "") + ")")
+            if a.get("paper"):
+                line += f" — from {a['paper']}"
+            if kind == "3d-model" and Path(rel).suffix.lower() not in MESH_SUFFIXES:
+                line += (f" — not loadable: the engine imports "
+                         f"{', '.join(s.lstrip('.') for s in MESH_SUFFIXES)}")
+            lines.append(line)
+        lines.append("")
+    return lines
 
 
 def props_items(root: Path) -> list[dict]:
@@ -1222,6 +1314,15 @@ class Workspace:
             + "</styles>\n", encoding="utf-8")
         (self.dir / "frame.json").write_text(
             json.dumps({"width": frame[0], "height": frame[1], "fps": 30}), encoding="utf-8")
+        # The author composes by program: srkit.py, kit.py and kit/ (the SDK's
+        # guide, what the engine does per renderer, proven example programs).
+        from .probes import latest_measured
+        sdkkit.install(self.dir, measured=latest_measured(self.root.parent) or None)
+
+    @staticmethod
+    def program_name(doc: str) -> str:
+        """The program that writes a document: `01-open.scene.xml` -> `01-open.py`."""
+        return doc[:-len(".scene.xml")] + ".py" if doc.endswith(".scene.xml") else doc + ".py"
 
     @staticmethod
     def cheat_sheet() -> str:
@@ -1254,7 +1355,8 @@ class Workspace:
     def brief(self, n: int, *, idea: Idea, house_rules: str, style: dict,
               tokens: dict[str, str], frame: tuple[int, int], section: dict,
               effects: list[dict], words: dict[str, dict], assets: list[dict],
-              direction_block: str = "", worlds: list[dict] | None = None) -> Path:
+              direction_block: str = "", worlds: list[dict] | None = None,
+              constraints: list[dict] | None = None) -> Path:
         """What the author of one section has to make, and the facts it has:
         one world symbol per section (or per planned cut), its shots as
         phases at their offsets, the hero convention, the props, the gate."""
@@ -1272,11 +1374,14 @@ class Workspace:
             lines += ["## Editorial treatment", "", direction_block, ""]
         if house_rules:
             lines += ["## Standards", "", house_rules, ""]
+        lines += constraint_lines(constraints or [],
+                                  {str(s["label"]) for w in worlds for s in w["shots"]})
         lines += ["## Visual system", "", style.get("look", ""), "",
                   f"Type: {style.get('typography', '')}", "",
                   f"Motion rules: " + " ".join(f"({i}) {r}" for i, r in
                                               enumerate(style.get("motion_rules", []), 1)), "",
-                  "Tokens (copy tokens.xml into <styles> and reference them as var(--name)):", ""]
+                  "Tokens (the program adds them to the document's <styles> as tokens.xml "
+                  "lists them, and every colour references them as var(--name)):", ""]
         lines += [f"- --{k}: {v}" for k, v in tokens.items()]
         if style.get("avoid"):
             lines += ["", "Avoid: " + "; ".join(style["avoid"])]
@@ -1362,12 +1467,7 @@ class Workspace:
                 if e.get("data_or_claim"):
                     lines.append(f"  Carries: {e['data_or_claim']}")
                 lines += [f"  Brief: {e.get('brief', '')}", ""]
-        usable = [a for a in assets if a.get("file") or a.get("path")]
-        if usable:
-            lines += ["## Files in the project you may use as <image>/<video> src", ""]
-            lines += [f"- {a.get('file') or a.get('path')} — {a.get('title', '')} "
-                      f"({a.get('licence', '')})" for a in usable]
-            lines.append("")
+        lines += research_asset_lines(assets, self.root, self.dir)
         props = props_items(self.root)
         if props:
             hdris = [it for it in props if it.get("kind") == "hdri"]
@@ -1445,9 +1545,10 @@ class Workspace:
                       "The operator approved one frame as the film's look. Read both files "
                       f"first: `{doc_rel}` (the document) and `{png_rel}` (the frame). "
                       "The approved look: inherit these materials, lights, hero model and "
-                      "camera language; a world that departs from it is wrong. Copy the "
-                      "document's <materials>, <lights> and the hero's geometry into the "
-                      "world as they are, keep its camera language, and change only what "
+                      "camera language; a world that departs from it is wrong. Rebuild the "
+                      "document's <materials>, <lights> and the hero's geometry in your "
+                      "program with the same values (its own program, beside it, shows how "
+                      "they were built), keep its camera language, and change only what "
                       "the shots require (the camera path, the motion, the set beyond the "
                       "frame). The review scores fidelity to it.", ""]
             for el in look.get("elements") or []:
@@ -1457,19 +1558,24 @@ class Workspace:
                                  + (f"; `{el['file']}`" if el.get("file") else "") + ")"
                                  + (f" — {el['why']}" if el.get("why") else ""))
             lines.append("")
-        lines += ["## Deliverable", "",
-                  f"Write `{doc}` in this directory: a complete scene-render document "
+        program = self.program_name(doc)
+        lines += [sdkkit.BRIEF, "## Deliverable", "",
+                  f"Write `{program}` in this directory: a Python program that builds the "
+                  f"section with the SDK and saves `{doc}`, a complete scene-render document "
                   f"(project, styles with the tokens, assets, materials, symbols -- {ids} "
                   "exactly, sized to the frame, with the camera, the set, the hero and "
                   "every phase inside -- a composition that instances the world as a "
-                  "preview, lights, and an output). Children of <scene> must appear in "
-                  "the schema's declared order (project, styles, output, assets, "
-                  "materials, symbols, composition, lights ...); `sr.py check` reports a "
-                  "wrong order as xsd:occurs. Read examples.scene.xml first: every "
-                  "construct in it has rendered correctly on this engine. Ask the schema "
-                  f"with sr.py before guessing an attribute. Then run `python3 sr.py check "
-                  f"{doc}` and fix every error it reports until it says 0 error(s). Time "
-                  "beats to the spoken words given above. Do not create any other file.", "",
+                  "preview, lights, and an output). The program is the source: a change "
+                  "is made in it, never in the XML it writes, and the stage builds the "
+                  "program itself, so a hand-edited document is overwritten. Read "
+                  "kit/SDK-GUIDE.md and kit/examples/ first: every example rendered on "
+                  "this engine; examples.scene.xml shows more constructs as XML, and the "
+                  "SDK writes the same elements. Ask the schema (`python3 kit.py "
+                  "describe <element>`) before guessing an attribute. Then run `python3 "
+                  f"kit.py build {program}` and fix every error it reports until it says "
+                  "0 error(s) and a deterministic document. Time beats to the spoken words "
+                  "given above. Do not create any other file than the program and the "
+                  "document it saves.", "",
                   "## How your symbol is used, and the frame gate", "",
                   "`yt build` places the world with one `<include src=... symbol=...>` "
                   "spanning its consecutive shots. An include carries the symbol, its "
@@ -1479,7 +1585,7 @@ class Workspace:
                   "symbol is the section's camera; 3D axes are x right, y DOWN, z into "
                   "the scene, and `target=\"<id>\"` aims a camera at a node (see `sr.py "
                   "describe camera`).", "",
-                  "Validation cannot see the picture. After check passes, run "
+                  "Validation cannot see the picture. After the build passes, run "
                   f"`python3 sr.py frame {doc}`: it renders a proof frame at each shot's "
                   "midpoint (from shots.json) plus the symbol's start and end, the way "
                   "the build includes it, writes frames/*.png and reports what the "
@@ -1487,9 +1593,10 @@ class Workspace:
                   "object3D the camera never frames. Read every PNG. A black, flat, "
                   "empty or wrong frame, a hero out of view, or a hero that changes "
                   "between frames means the document is not done: fix the camera, the "
-                  "lights, the materials or the geometry and render again (`--symbol ID "
-                  "--at SECONDS` for one frame). A document counts as authored only when "
-                  "check reports 0 errors and every proof frame shows what its shot asks "
+                  "lights, the materials or the geometry in the program, build and render "
+                  "again (`--symbol ID --at SECONDS` for one frame). A document counts as "
+                  "authored only when its program builds with 0 errors and every proof "
+                  "frame shows what its shot asks "
                   "for; a reviewer then scores the frames against the publication bar "
                   "and sends the findings back to you if they fall short."]
         path = self.dir / f"brief-{n:02d}.md"
@@ -1539,9 +1646,13 @@ class Workspace:
                                    fact["background"])
             files = dict(extra)
             files[f"{self.rel}/{name}"] = text.encode("utf-8")
-            png, message = render.engine_render_still(
-                proof.encode("utf-8"), t, files=files,
-                doc_path=f"{self.rel}/.proof-{stem}.scene.xml")
+            # A path-traced or volumetric world goes to the host with the memory
+            # for it, one kit render per host at a time (sdkkit.frame's rule).
+            host = sdkkit.frame_host(text)
+            with sdkkit.host_lock(host):
+                png, message = render.engine_render_still(
+                    proof.encode("utf-8"), t, host=host, files=files,
+                    doc_path=f"{self.rel}/.proof-{stem}.scene.xml")
             lines = message.splitlines()
             off = framecheck.never_in_view(lines)
             findings = [l for l in lines[1:] if not l.startswith("warning[E12]")
@@ -1665,9 +1776,7 @@ class Workspace:
         if shots:
             # Each symbol has to span its shots, or the build holds its last
             # frame under the narration. Checked before any frame is spent.
-            required = {sid: max(float(s.get("at", 0)) + float(s.get("seconds", 0))
-                                 for s in rows)
-                        for sid, rows in shots.items() if rows}
+            required = {sid: world_span(rows) for sid, rows in shots.items() if rows}
             findings += timing_findings(data.decode("utf-8", "replace"), required)
         if frames and engine is not None and not any(f.startswith("error") for f in findings):
             rendered = 0
@@ -1906,6 +2015,8 @@ class VfxPlanner:
             + ("\n".join(f"- {c.get('number', '')} {c['claim'][:120]}"
                          for c in quoted[:6]) or "- none specific")
             + f"\n\n{MISSION}\n\n{self._direction_block()}\n\n"
+            + "\n".join(constraint_lines(self.bundle.get("picture_check") or [],
+                                         {str(s.get("label")) for s in shots}))
             + ("The engine's vocabulary, by family -- specify with it; the treatment "
                "decides which families carry this video, and a flat treatment still "
                f"has motion, depth and post to draw on:\n{self.vocabulary()}\n\n"
@@ -1974,13 +2085,16 @@ class VfxPlanner:
         cuts = [c.get("before") for c in group.get("cuts", []) or [] if isinstance(c, dict)]
         return world_symbols(section, group.get("effects", []), cuts=cuts)
 
-    def _stream(self, engine, n: int, prompt: str) -> tuple[int, bool]:
-        """Run the authoring agent once: (tool calls, whether it timed out)."""
+    def _stream(self, engine, n: int, prompt: str, *, resume: bool = False) -> tuple[int, bool]:
+        """Run the authoring agent once: (tool calls, whether it timed out).
+        A revision resumes the agent's own session, so the brief, the program
+        and its earlier choices stay in view."""
         tools_used = 0
         timed_out = False
         try:
             system = harness.with_feedback(AUTHOR_SYSTEM, self.ws.root, "vfx")
-            for event in engine.stream(prompt, system=system):
+            extra = {"resume": True} if resume and getattr(engine, "session_id", None) else {}
+            for event in engine.stream(prompt, system=system, **extra):
                 if event.subtype == "tool_use" and event.tool_input:
                     tools_used += 1
                     what = event.tool_input.get("command") or event.tool_input.get("file_path") or ""
@@ -2033,6 +2147,9 @@ class VfxPlanner:
                             "conveys": e.get("conveys"), "on_screen": e.get("on_screen")}
                            for w in worlds for e in w["phases"]]),
             "The editorial treatment:\n" + self._direction_block(),
+            "\n".join(constraint_lines(self.bundle.get("picture_check") or [],
+                                       {str(s["label"]) for w in worlds for s in w["shots"]}))
+            or "No fact-check constraint binds these shots.",
             "Every finding must carry a fix the author can apply in the document: which "
             "camera key, light, material, animation or geometry to change, and to what.",
         ])
@@ -2098,7 +2215,8 @@ class VfxPlanner:
                               tokens=tokens, frame=self.frame, section=section,
                               effects=effects, words=self.words,
                               assets=self.bundle.get("assets", []),
-                              direction_block=self._direction_block(), worlds=worlds)
+                              direction_block=self._direction_block(), worlds=worlds,
+                              constraints=self.bundle.get("picture_check") or [])
         name = self.ws.doc_name(n, section)
         engine = harness.ENGINE(EngineConfig(
             tools=AUTHOR_TOOLS, model=self.model, permission_mode="dontAsk",
@@ -2107,18 +2225,31 @@ class VfxPlanner:
                                    house=self.house, house_digest=self.house_digest,
                                    fresh=self.fresh, verbose=self.verbose, timeout=1800.0)
         ids = ", ".join(w["id"] for w in worlds)
-        prompt = (f"Read {brief.name}, then examples.scene.xml and schema.md, and "
-                  f"author {name} as the brief says: the world symbol ({ids}) with every "
-                  f"shot as a phase. Check it with `python3 sr.py check {name}` and fix "
-                  f"every error; then `python3 sr.py frame {name}` and Read every frame it "
-                  "writes until each shows its shot. When check reports 0 error(s) and the "
-                  "frames show the shots, reply with one line: the file name and the "
-                  "symbol ids it holds.")
+        program = self.ws.program_name(name)
+        prompt = (f"Read {brief.name}, then kit/SDK-GUIDE.md and kit/examples/, and write "
+                  f"{program}: the program that builds {name} as the brief says, the world "
+                  f"symbol ({ids}) with every shot as a phase, and saves it. Build it with "
+                  f"`python3 kit.py build {program}` and fix every error; then `python3 sr.py "
+                  f"frame {name}` and Read every frame it writes until each shows its shot. "
+                  "When the build reports 0 error(s) and the frames show the shots, reply "
+                  "with one line: the program, the document it saves and the symbol ids.")
         tools_used, _ = self._stream(engine, n, prompt)
         rounds: list[dict] = []
 
         def gate(round_no: int) -> tuple[list[str], list[str], dict | None]:
-            symbols, findings = self.ws.validate(name, shots=shots, props=True)
+            # The harness builds the program itself: the document judged is the
+            # program's output, never the agent's word for it.
+            built = sdkkit.build_findings(self.ws.dir / program, name)
+            # The reviewer reads frames/<stem>__*.png: only this round's proof
+            # frames may be there, never one of an earlier document.
+            stem = name[:-len(".scene.xml")]
+            for stale in (self.ws.dir / "frames").glob(f"{stem}__*.png"):
+                stale.unlink(missing_ok=True)
+            if any(f.startswith("error") for f in built):
+                symbols, findings = [], built
+            else:
+                symbols, findings = self.ws.validate(name, shots=shots, props=True)
+                findings = built + findings
             errors = [f for f in findings if f.startswith("error")]
             review = None if errors else self._review(reviewer, n, name, section, worlds, round_no)
             score = float(review["score"]) if review and review.get("score") is not None else None
@@ -2149,21 +2280,28 @@ class VfxPlanner:
             prompt = (f"{name} is not done."
                       + (f" The gate reports:\n{listing}\n\n" if listing else "\n\n")
                       + (self._review_listing(review) + "\n\n" if review else "")
-                      + f"Fix the document -- the same world, one camera, the hero kept -- "
-                      f"run `python3 sr.py check {name}` until it reports 0 error(s), then "
-                      f"`python3 sr.py frame {name}` and Read every frame it writes; "
-                      "iterate until every frame shows its shot and the findings above "
-                      "are answered. Reply with one line.")
+                      + f"Re-read {brief.name}, then fix the program {program} -- the same "
+                      "world, one camera, the hero kept -- run `python3 kit.py build "
+                      f"{program}` until it reports 0 error(s), then `python3 sr.py frame "
+                      f"{name}` and Read every frame it writes; iterate until every frame "
+                      "shows its shot and the findings above are answered. Reply with one "
+                      "line.")
             doc_path = self.ws.dir / name
-            before = doc_path.read_bytes() if doc_path.is_file() else None
-            used, timed_out = self._stream(engine, n, prompt)
+            prog_path = self.ws.dir / program
+            prov_path = doc_path.with_suffix("").with_suffix(".provenance.json")
+            before = {p: (p.read_bytes() if p.is_file() else None)
+                      for p in (doc_path, prog_path, prov_path)}
+            used, timed_out = self._stream(engine, n, prompt, resume=True)
             tools_used += used
             if timed_out:
-                # The agent was cut off mid-edit: keep the document the last
-                # gate judged, record the round as timed out, and stop; a
-                # half-edited document is not something to re-gate silently.
-                if before is not None:
-                    doc_path.write_bytes(before)
+                # The agent was cut off mid-edit: keep the program and the
+                # document the last gate judged, record the round as timed
+                # out, and stop; a half-edited one is not re-gated silently.
+                for path, data in before.items():
+                    if data is None:
+                        path.unlink(missing_ok=True)     # made by the cut-off revision
+                    else:
+                        path.write_bytes(data)
                 prev = rounds[-1]
                 rounds.append(dict(prev, round=revisions, timed_out=True))
                 self._say(f"    [{n}] revision {revisions} timed out after {AUTHOR_TIMEOUT:g}s; "
@@ -2175,6 +2313,8 @@ class VfxPlanner:
         self._account(engine.usage, reviewer.usage)
         return {"n": n, "section": section.get("heading", ""),
                 "file": f"{self.ws.rel}/{name}", "version": self.ws.version,
+                "program": f"{self.ws.rel}/{program}" if (self.ws.dir / program).is_file() else "",
+                "provenance": sdkkit.provenance_of(final) if final.is_file() else None,
                 "symbols": symbols, "findings": findings, "tool_calls": tools_used,
                 "props_declined": props_declined(text),
                 "worlds": [{"id": w["id"], "start": w["start"], "seconds": w["seconds"],
@@ -2677,7 +2817,9 @@ def run(args) -> int:
                   file=sys.stderr)
         bundle = {"idea": idea, "outline": {}, "claims": [], "assets": [], "premise": ""}
     dossier = Dossier(project.root, bundle["idea"], at=project.root)
-    sections = script_sections(project.source("script", workspace.override(args, "script")))
+    script_path = project.source("script", workspace.override(args, "script"))
+    sections = script_sections(script_path)
+    bundle["picture_check"] = picture_constraints(script_path)
     words = voice_words(project.source("voice", workspace.override(args, "voice")))
     direction = read_json(project.source("styles", workspace.override(args, "styles")),
                           warn=False) or {}

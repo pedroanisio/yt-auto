@@ -53,9 +53,9 @@ import sys
 import claude_engine
 
 from .core import read_json
-from . import (assess, assets, build, doctor, env, gate, house, ideas, improve, keyframe,
-               pilot, probes, props, qa, render, research, retime, review, script, sound,
-               styles, vfx, voice, workspace)
+from . import (assess, assets, build, doctor, env, gate, harness, house, ideas, improve,
+               keyframe, pilot, probes, props, qa, render, research, retime, review, script,
+               sound, styles, vfx, voice, workspace)
 
 #: The stages `yt run` walks, in order.
 PIPELINE = tuple(stage for stage, _ in workspace.STAGES)
@@ -352,6 +352,8 @@ def main(argv: list[str] | None = None) -> int:
     # than one more argument threaded through each stage.
     claude_engine.set_defaults(effort=getattr(args, "effort", None),
                                fallback_model=getattr(args, "fallback_model", None))
+    # No other session on the machine may talk to a model mid-stage.
+    harness.isolate_sessions()
     for name, path in env.load(getattr(args, "env_file", None)):
         if not getattr(args, "quiet", False):
             # The name, never the value.

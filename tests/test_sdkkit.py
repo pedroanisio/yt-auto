@@ -204,12 +204,71 @@ class Build(KitCase):
         doc.write_text(doc.read_text().replace('duration="1"', 'duration="2"'))
         self.assertIsNone(sdkkit.provenance_of(doc))
 
+    def test_an_unreachable_validator_is_a_note_not_an_error(self):
+        with mock.patch("ytstudio.render.engine_validate",
+                        return_value=["error: Connection timed out during banner exchange"]):
+            result = sdkkit.build(self.program(MINIMAL))
+        self.assertTrue(result["ok"], result)
+        self.assertIsNone(result["documents"][0]["engine"])
+        self.assertTrue(any("could not run" in f for f in result["documents"][0]["sdk"]))
+
     def test_engine_findings_join_the_sdks(self):
         with mock.patch("ytstudio.render.engine_validate",
                         return_value=["error[E1]: the engine refuses it"]):
             result = sdkkit.build(self.program(MINIMAL))
         self.assertFalse(result["ok"])
         self.assertEqual(result["documents"][0]["errors"], ["error[E1]: the engine refuses it"])
+
+
+class Honesty(KitCase):
+    """The program is the source only if it builds the scene: what it leaves
+    on disk is what counts, and saving a document it read is refused."""
+
+    def test_the_generated_helper_compiles(self):
+        compile((self.dir / "srkit.py").read_text(), "srkit.py", "exec")
+
+    def test_a_document_read_and_saved_again_is_refused(self):
+        (self.dir / "hand.scene.xml").write_text(
+            '<scene version="1.3"><project width="8" height="8" fps="30" duration="1"/>'
+            '<composition/></scene>')
+        result = sdkkit.build(self.program(
+            "from srkit import S, save\nsave(S.read('hand.scene.xml'), 'out.scene.xml')\n"),
+            validate=False)
+        self.assertFalse(result["ok"])
+        self.assertIn("rule:program-passthrough", result["error"])
+
+    def test_reading_another_document_for_values_is_noted_not_refused(self):
+        (self.dir / "look.scene.xml").write_text(
+            '<scene version="1.3"><project width="8" height="8" fps="30" duration="9"/>'
+            '<composition/></scene>')
+        result = sdkkit.build(self.program(
+            "from srkit import FRAME, S, save\nlook = S.read('look.scene.xml')\n"
+            + MINIMAL.split("\n", 1)[1]), validate=False)
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertTrue(any("rule:program-reads-document" in f
+                            for f in result["documents"][0]["sdk"]))
+
+    def test_a_document_changed_after_save_is_refused(self):
+        changed = MINIMAL + "open('minimal.scene.xml', 'a').write('<!-- after -->')\n"
+        result = sdkkit.build(self.program(changed), validate=False)
+        self.assertFalse(result["ok"])
+        self.assertIn("after saving it", result["error"])
+
+    def test_a_document_removed_after_save_is_an_error_not_a_crash(self):
+        removed = MINIMAL + "import os\nos.replace('minimal.scene.xml', 'moved.scene.xml')\n"
+        program = self.program(removed)
+        result = sdkkit.build(program, validate=False)
+        self.assertIn("removed or renamed", result["error"])
+        findings = sdkkit.build_findings(program, "minimal.scene.xml")
+        self.assertTrue(findings[0].startswith("error: rule:program"))
+
+    def test_an_authors_preview_frame_stays_out_of_the_proof_frames(self):
+        doc = self.dir / "a.scene.xml"
+        doc.write_text('<scene><project width="8" height="8" fps="30" duration="1"/></scene>')
+        from tests.test_probes import png_bytes
+        with mock.patch("ytstudio.render.engine_render_still", return_value=(png_bytes(), "ok")):
+            path, _ = sdkkit.frame(doc, 0.5, host="h")
+        self.assertEqual(path.parent, self.dir / "frames" / "kit")
 
 
 class Rules(unittest.TestCase):
@@ -220,6 +279,10 @@ class Rules(unittest.TestCase):
     def test_a_world_whose_lights_cast_no_shadow_is_flagged(self):
         doc = self.LIT.format(lights='<light id="k" type="rect-area"/>').encode()
         self.assertTrue(any("rule:shadow" in f for f in sdkkit.rule_findings(doc)))
+
+    def test_castshadow_one_is_true(self):
+        doc = self.LIT.format(lights='<light id="k" type="spot" castShadow="1"/>').encode()
+        self.assertEqual(sdkkit.rule_findings(doc), [])
 
     def test_one_casting_light_is_enough(self):
         doc = self.LIT.format(lights='<light id="k" type="rect-area" castShadow="true"/>'
@@ -240,6 +303,55 @@ class Frames(unittest.TestCase):
             self.assertEqual(sdkkit.frame_host('<object3D><medium/></object3D>'), "encode")
             self.assertEqual(sdkkit.frame_host('<camera renderer="raster"/>'), "still")
         self.assertEqual(rh.call_count, 3)
+
+    def test_every_rendered_frame_reports_its_cost_and_settings(self):
+        d = Path(tempfile.mkdtemp(prefix="kit-"))
+        self.addCleanup(shutil.rmtree, d, True)
+        doc = d / "a.scene.xml"
+        doc.write_text('<scene><project width="8" height="8" fps="30" duration="1"/>'
+                       '<symbols><symbol id="w"><camera id="c" renderer="pathtrace" '
+                       'pathSamples="256" maxBounces="12"/></symbol></symbols></scene>')
+        from tests.test_probes import png_bytes
+        with mock.patch("ytstudio.render.engine_render_still", return_value=(png_bytes(), "ok")):
+            _, findings = sdkkit.frame(doc, 0.5, host="h7")
+        note = next(f for f in findings if sdkkit.RENDER_NOTE in f)
+        self.assertIn("on h7 (pathtrace, 256 samples, 12 bounces)", note)
+        self.assertEqual(sdkkit.render_settings('<camera renderer="raster"/>'), "raster")
+
+    def test_engine_md_says_what_a_frame_costs(self):
+        text = sdkkit.engine_text({"manifest": MANIFEST}, [],
+                                  [{"probe": "glass", "score": 6, "summary": "s",
+                                    "render": "135 s on h (pathtrace, 256 samples, 12 bounces)"}])
+        self.assertIn("## What a frame costs", text)
+        self.assertIn(f"past {sdkkit.STILL_DEADLINE} s is abandoned", text)
+        self.assertIn("[one frame: 135 s on h (pathtrace, 256 samples, 12 bounces)]", text)
+
+    def test_a_host_that_stops_answering_hands_the_frame_to_another(self):
+        d = Path(tempfile.mkdtemp(prefix="kit-"))
+        self.addCleanup(shutil.rmtree, d, True)
+        doc = d / "a.scene.xml"
+        doc.write_text('<scene><project width="8" height="8" fps="30" duration="1"/></scene>')
+        from tests.test_probes import png_bytes
+        answers = iter([(None, "render failed\nerror: Connection to 10.0.0.13 port 22 timed out"),
+                        (png_bytes(), "ok")])
+        with mock.patch("ytstudio.render.engine_render_still", side_effect=lambda *a, **k: next(answers)), \
+                mock.patch.object(sdkkit, "frame_host", return_value="h7"):
+            path, findings = sdkkit.frame(doc, 0.5, host="h13")
+        self.assertIsNotNone(path)
+        self.assertTrue(any("on h7" in f for f in findings), findings)
+
+    def test_a_still_dies_on_the_host_by_the_deadline_kept_here(self):
+        from types import SimpleNamespace
+        from ytstudio import render
+        seen = {}
+
+        def run(cmd, **kw):
+            seen["script"] = cmd[-1]
+            return SimpleNamespace(returncode=1, stdout=b"", stderr=b"{}")
+        with mock.patch.dict(render._HOSTS, {"h": SimpleNamespace(engine="/opt/sr")}), \
+                mock.patch.object(render.subprocess, "run", side_effect=run):
+            render.engine_render_still(b"<scene/>", 1.0, host="h", timeout=600)
+        self.assertIn("timeout -k 10 595 /opt/sr render", seen["script"])
 
     def test_renders_on_one_host_never_overlap(self):
         import threading
