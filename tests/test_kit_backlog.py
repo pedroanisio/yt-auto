@@ -49,6 +49,10 @@ class Confinement(unittest.TestCase):
             (self.root / name).mkdir()
         self.ws = self.root / "vfx" / "v01"
         self.ws.mkdir(parents=True)
+        # the machine's reference libraries are not part of what these tests pin
+        patcher = mock.patch.object(sdkkit, "REFERENCES_DIR", self.root / "no-references")
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_files_are_confined_to_the_workspace_and_the_project_dirs_read_only(self):
         cfg = sdkkit.author_config(self.ws, project_root=self.root, programs=["01-open.py"])
