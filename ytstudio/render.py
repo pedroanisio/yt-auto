@@ -764,9 +764,11 @@ def still_cache_dir() -> Path:
 
 
 def still_fingerprint(xml_bytes: bytes, files: dict[str, bytes], doc_path: str, at: float,
-                      quality: str, engine_id: str, options: str = "json") -> str:
-    """Everything a still depends on: the scene, every shipped file's bytes, the engine,
-    the time, the quality and the options."""
+                      quality: str, engine_id: str, options: str = "json",
+                      extra: dict[str, bytes] | None = None) -> str:
+    """Everything a still depends on: the scene, every shipped file's bytes, every other
+    file the scene references (`extra`, see reference_files), the engine, the time, the
+    quality and the options."""
     h = hashlib.sha256()
 
     def part(label: str, data: bytes) -> None:
@@ -775,11 +777,52 @@ def still_fingerprint(xml_bytes: bytes, files: dict[str, bytes], doc_path: str, 
     part("doc", doc_path.encode())
     for rel in sorted(files):
         part("file:" + rel, files[rel])
+    for name in sorted(extra or {}):
+        part("ref:" + name, (extra or {})[name])
     part("engine", engine_id.encode())
     part("time", repr(float(at)).encode())
     part("quality", quality.encode())
     part("options", options.encode())
     return h.hexdigest()
+
+
+#: Attributes besides vfx.FILE_ATTRS that name a file the engine opens.
+REFERENCE_ATTRS = ("fontFile",)
+MODEL_SUFFIXES = (".gltf", ".obj", ".usd", ".usda", ".mtl")
+
+
+def reference_files(text: str, base: Path, _seen: set[Path] | None = None) -> dict[str, bytes] | None:
+    """Every local file a document names, whatever the caller ships with it: {resolved
+    path: bytes}. Textures, models (with the directory their buffers and materials live
+    in), HDRIs, fonts and included documents (and what those name). None when a
+    reference cannot be read -- missing or unreadable -- because then the still's
+    inputs are not known and it must not be cached."""
+    from .vfx import FILE_ATTRS
+    seen = _seen if _seen is not None else set()
+    out: dict[str, bytes] = {}
+    pattern = r'\b(?:' + "|".join(FILE_ATTRS + REFERENCE_ATTRS) + r')="([^"]+)"'
+    for m in re.finditer(pattern, text):
+        ref = m.group(1)
+        if "://" in ref or ref.startswith("#"):
+            continue
+        path = Path(os.path.normpath(base / ref))
+        if path in seen:
+            continue
+        seen.add(path)
+        try:
+            out[str(path)] = path.read_bytes()
+            if path.suffix.lower() in MODEL_SUFFIXES:
+                for sibling in sorted(path.parent.rglob("*")):
+                    if sibling.is_file() and str(sibling) not in out:
+                        out[str(sibling)] = sibling.read_bytes()
+            elif ref.endswith(".scene.xml"):
+                inner = reference_files(out[str(path)].decode("utf-8", "replace"), path.parent, seen)
+                if inner is None:
+                    return None
+                out.update(inner)
+        except OSError:
+            return None
+    return out
 
 
 def _engine_id(host: str, cache: Path) -> tuple[str, dict]:
@@ -817,10 +860,39 @@ def _remember_engine(cache: Path, host: str, info: dict) -> None:
         pass
 
 
+def _cache_message(key: str, cache: Path, host: str) -> str:
+    try:
+        where = (cache / f"{key}.host").read_text(encoding="utf-8").strip()
+    except OSError:
+        where = ""
+    return f"rendered from cache ({key[:12]}); rendered earlier on {where or host or 'this machine'}"
+
+
+def cached_still(xml_bytes: bytes, at: float, *, host: str = "", quality: str = "draft",
+                 files: dict[str, bytes] | None = None, doc_path: str = "doc.scene.xml",
+                 cache_dir: Path | str | None = None,
+                 extra: dict[str, bytes] | None = None) -> tuple[bytes, str] | None:
+    """The cached frame for this still, or None: (png, message), found with no ssh and
+    no lock. With no host given every configured host (else this machine) is tried, by
+    the engine identity last known for it; the fingerprint is engine_render_still's."""
+    cache = Path(cache_dir) if cache_dir else still_cache_dir()
+    for h in ([host] if host else host_names() or [""]):
+        ident, _ = _engine_id(h, cache)
+        if not ident:
+            continue
+        key = still_fingerprint(xml_bytes, files or {}, doc_path, at, quality, ident, extra=extra)
+        hit = cache / f"{key}.png"
+        if hit.is_file():
+            return hit.read_bytes(), _cache_message(key, cache, h)
+    return None
+
+
 def engine_render_still(xml_bytes: bytes, at: float, *, host: str = "",
                         quality: str = "draft", files: dict[str, bytes] | None = None,
                         doc_path: str = "doc.scene.xml", timeout: float = 600.0,
-                        cache_dir: Path | str | None = None) -> tuple[bytes | None, str]:
+                        cache_dir: Path | str | None = None,
+                        extra: dict[str, bytes] | None = None,
+                        cacheable: bool = True) -> tuple[bytes | None, str]:
     """One frame of a document, rendered by the engine: (png, message).
 
     Validation cannot see a resource limit, a camera that frames nothing or a
@@ -835,7 +907,10 @@ def engine_render_still(xml_bytes: bytes, at: float, *, host: str = "",
     engine, the time and the quality under `cache_dir` (see still_cache_dir),
     and a hit is served here, before any ssh. Every outcome -- rendered,
     failed, timed out, blocked on a missing file -- leaves a job report in
-    the cache's sibling reports/ directory, which `yt doctor` lists.
+    the cache's sibling reports/ directory, which `yt doctor` lists. `extra` are the
+    other files the scene references (reference_files), folded into the fingerprint;
+    with `cacheable=False` (a reference could not be read) the cache is neither
+    read nor written.
     """
     cache = Path(cache_dir) if cache_dir else still_cache_dir()
     bundle: dict[str, bytes] = dict(files or {})
@@ -845,7 +920,8 @@ def engine_render_still(xml_bytes: bytes, at: float, *, host: str = "",
 
     def key_for(h: str) -> tuple[str, str]:
         ident, state["info"] = _engine_id(h, cache)
-        state["key"] = still_fingerprint(xml_bytes, files or {}, doc_path, at, quality, ident)
+        state["key"] = still_fingerprint(xml_bytes, files or {}, doc_path, at, quality, ident,
+                                         extra=extra)
         return state["key"], ident
 
     def report(status: str, message: str = "", **kw) -> None:
@@ -860,16 +936,17 @@ def engine_render_still(xml_bytes: bytes, at: float, *, host: str = "",
     def lookup(h: str) -> tuple[bytes, str] | None:
         key, ident = key_for(h)
         hit = cache / f"{key}.png"
-        if ident and hit.is_file():
+        if cacheable and ident and hit.is_file():
             report("rendered", f"served from the still cache ({key[:12]})")
-            return hit.read_bytes(), f"rendered from cache ({key[:12]})"
+            return hit.read_bytes(), _cache_message(key, cache, h)
         return None
 
     def store(png: bytes) -> None:
-        if not (state["info"]["version"] or state["info"]["sha256"]):
+        if not cacheable or not (state["info"]["version"] or state["info"]["sha256"]):
             return
         try:
             cache.mkdir(parents=True, exist_ok=True)
+            (cache / f"{state['key']}.host").write_text(host or "this machine", encoding="utf-8")
             tmp = cache / f".{state['key']}.{os.getpid()}.tmp"
             tmp.write_bytes(png)
             os.replace(tmp, cache / f"{state['key']}.png")

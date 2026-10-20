@@ -891,13 +891,13 @@ def frame(doc: Path, at: float, *, host: str = "", out_dir: Path | None = None,
     def still(where: str) -> tuple[bytes | None, str]:
         try:
             return render.engine_render_still(data, at, host=where, files=files,
-                                              doc_path=doc_path, timeout=budget)
+                                              doc_path=doc_path, timeout=budget,
+                                              extra=refs, cacheable=refs is not None)
         except subprocess.TimeoutExpired:
             return None, f"error: the render ran past {budget:g} s"
     doc = Path(doc).resolve()
     data = doc.read_bytes()
     text = data.decode("utf-8", "replace")
-    host = host or frame_host(text)
     # The engine runs where every referenced file can be named below it: a
     # document under vfx/vNN/ that uses ../../props/... ships from the project.
     refs = [Path(os.path.normpath(doc.parent / m.group(1))) for m in
@@ -909,16 +909,30 @@ def frame(doc: Path, at: float, *, host: str = "", out_dir: Path | None = None,
     doc_path = doc.relative_to(root).as_posix()
     files = referenced_files(text, doc.parent, root)
     files.pop(doc_path, None)
-    asked = time.monotonic()            # the budget times the render, not this wait
-    with host_lock(host):
+    # Every file the document names, shipped or not, is part of the cache key; one
+    # that cannot be read leaves the still out of the cache altogether.
+    refs = render.reference_files(text, doc.parent)
+    # A cache hit needs no host: it is served before any ssh health check and
+    # without waiting for another render's lock.
+    hit = None if refs is None else render.cached_still(
+        data, at, host=host, files=files, doc_path=doc_path, extra=refs)
+    waited = 0.0
+    if hit:
+        png, message = hit
         started = time.monotonic()
-        waited = started - asked
-        png, message = still(host)
-        if png is None and "No such file or directory" in message:
-            # The engine binary this process found on the host is gone (a
-            # rebuild or a clean): find it again and try once more.
-            getattr(render, "_HOSTS", {}).pop(host, None)
+        host = host or message.rpartition("rendered earlier on ")[2]
+    else:
+        host = host or frame_host(text)
+        asked = time.monotonic()        # the budget times the render, not this wait
+        with host_lock(host):
+            started = time.monotonic()
+            waited = started - asked
             png, message = still(host)
+            if png is None and "No such file or directory" in message:
+                # The engine binary this process found on the host is gone (a
+                # rebuild or a clean): find it again and try once more.
+                getattr(render, "_HOSTS", {}).pop(host, None)
+                png, message = still(host)
     if png is None and any(m in message for m in UNREACHABLE):
         # A host this process found usable stopped answering: probe it again,
         # and if it is down, render where the router now sends the job.
@@ -931,7 +945,10 @@ def frame(doc: Path, at: float, *, host: str = "", out_dir: Path | None = None,
             host = fallback
     seconds = time.monotonic() - started
     findings = [line for line in message.splitlines()[1:] if line.strip()]
-    if png is not None:
+    if png is not None and message.startswith("rendered from cache"):
+        findings.append(f"note: served from cache (rendered earlier on "
+                        f"{message.rpartition('rendered earlier on ')[2] or host or 'this machine'})")
+    elif png is not None:
         findings.append(f"note: {RENDER_NOTE} {seconds:.0f} s on {host or 'this machine'} "
                         f"({render_settings(text)})")
     if waited >= WAIT_NOTE_SECONDS:

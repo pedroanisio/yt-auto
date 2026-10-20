@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -114,6 +115,96 @@ class StillCache(Base):
                       render.still_fingerprint(DOC, {"a": b"1"}, "doc.scene.xml", 1.0, "final", "engine-a"),
                       render.still_fingerprint(DOC, {"a": b"1"}, "doc.scene.xml", 1.0, "draft", "engine-b")):
             self.assertNotEqual(key, other)
+
+
+class HostFreeHits(Base):
+    """sdkkit.frame answers from the cache before it picks a host or takes its lock."""
+
+    DOC = ('<scene><project width="8" height="8" fps="30" duration="1"/>'
+           '<image src="../../tex/a.png"/><textStyle fontFile="../../fonts/f.ttf"/></scene>')
+
+    def setUp(self):
+        super().setUp()
+        from ytstudio import sdkkit
+        self.sdkkit = sdkkit
+        self.proj = self.tmp / "proj"
+        for sub in ("vfx/v1", "tex", "fonts"):
+            (self.proj / sub).mkdir(parents=True)
+        (self.proj / "tex" / "a.png").write_bytes(b"tex-v1")
+        (self.proj / "fonts" / "f.ttf").write_bytes(b"font-v1")
+        self.doc = self.proj / "vfx" / "v1" / "a.scene.xml"
+        self.doc.write_text(self.DOC)
+        self.locks: list[str] = []
+        outer, real = self, sdkkit.host_lock
+
+        class Lock(real):
+            def __init__(self, host):
+                outer.locks.append(host)
+                super().__init__(host)
+        for p in (mock.patch.object(sdkkit, "host_lock", Lock),
+                  mock.patch.object(sdkkit.framecheck, "judge_frame", return_value=[]),
+                  mock.patch.object(render, "still_cache_dir", return_value=self.cache)):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def frame(self):
+        return self.sdkkit.frame(self.doc, 0.5, out_dir=self.tmp / "out")
+
+    def test_a_hit_costs_no_ssh_and_takes_no_lock(self):
+        first, _ = self.frame()
+        self.assertIsNotNone(first)
+        self.locks.clear()
+        with mock.patch.object(render, "remote_host", side_effect=AssertionError("ssh")):
+            path, _ = self.frame()
+        self.assertIsNotNone(path)
+        self.assertEqual(self.locks, [])
+        self.assertEqual(len(self.renders()), 1)
+
+    def test_a_hit_says_it_came_from_the_cache_not_that_it_rendered(self):
+        self.frame()
+        _, findings = self.frame()
+        notes = [f for f in findings if f.startswith("note:")]
+        self.assertTrue(any("served from cache (rendered earlier on" in n for n in notes), notes)
+        self.assertFalse(any(self.sdkkit.RENDER_NOTE in n for n in notes), notes)
+
+    def test_a_real_render_keeps_the_render_note(self):
+        _, findings = self.frame()
+        self.assertTrue(any(f.startswith(f"note: {self.sdkkit.RENDER_NOTE} ") for f in findings))
+
+    def test_a_changed_texture_outside_the_shipped_set_renders_again(self):
+        self.frame()
+        (self.proj / "tex" / "a.png").write_bytes(b"tex-v2")
+        self.frame()
+        self.assertEqual(len(self.renders()), 2)
+
+    def test_a_changed_font_renders_again(self):
+        self.frame()
+        (self.proj / "fonts" / "f.ttf").write_bytes(b"font-v2")
+        self.frame()
+        self.assertEqual(len(self.renders()), 2)
+
+    def test_an_unreadable_reference_neither_reads_nor_writes_the_cache(self):
+        self.frame()
+        before = set(self.cache.glob("*.png"))
+        (self.proj / "tex" / "a.png").write_bytes(b"tex-v2")
+        with mock.patch.object(render, "reference_files", return_value=None):
+            self.frame()
+            self.frame()
+        self.assertEqual(set(self.cache.glob("*.png")), before)
+        self.assertEqual(len(self.renders()), 3)
+
+    def test_reference_files_reads_every_attribute(self):
+        got = render.reference_files(self.doc.read_text(), self.doc.parent)
+        self.assertEqual(sorted(got.values()), [b"font-v1", b"tex-v1"])
+
+    def test_reference_files_is_none_when_one_cannot_be_read(self):
+        (self.proj / "tex" / "a.png").unlink()
+        self.assertIsNone(render.reference_files(self.doc.read_text(), self.doc.parent))
+        (self.proj / "tex" / "a.png").write_bytes(b"x")
+        (self.proj / "tex" / "a.png").chmod(0)
+        self.addCleanup((self.proj / "tex" / "a.png").chmod, 0o644)
+        if not os.access(self.proj / "tex" / "a.png", os.R_OK):
+            self.assertIsNone(render.reference_files(self.doc.read_text(), self.doc.parent))
 
 
 class StillReports(Base):
