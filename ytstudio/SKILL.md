@@ -153,7 +153,7 @@ Beside the chain:
 | `yt probe` | the realism probe suite: fixed neutral briefs, one per class of material, light or motion, each composed by an agent coding with the SDK through the kit, built and framed by the harness, scored by a different model that names each defect's cause (authoring, engine, asset), revised in the same session while under `--bar` | `work/.probes/<run>/` (`summary.json`, `summary.md`, one workspace per probe), `work/.probes/latest.json` |
 | `yt ls` | which videos exist and how far each got | |
 | `yt assets` | search open catalogues for one shot's footage | |
-| `yt props` | fetch CC0 3D props (glTF models, HDRIs, texture maps) from Poly Haven, by phrase or derived from the script and styles; the vfx brief lists them | `props/<kind>/<id>/`, `props.json` |
+| `yt props` | fetch CC0 3D props (glTF models, HDRIs, texture maps) from Poly Haven, by phrase, or with none chosen and vetted by model decisions over the script and styles ("nothing fits" keeps nothing); the vfx brief lists them | `props/<kind>/<id>/`, `props.json` |
 
 Keys load from `--env-file`, then `$YT_ENV_FILE`, `./_tmp/do_not_delete.env`,
 `./.env`, `~/.config/pals-notes/.env`; `yt sound --fetch` wants
