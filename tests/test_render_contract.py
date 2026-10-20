@@ -31,6 +31,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from ytstudio import render  # noqa: E402
 
+MARK = "\n__YT_JOB_EXIT__=0\n"      # the attach's final line; only a marker settles a job
+
 
 class RemoteDirectories(unittest.TestCase):
     """Every job gets a directory of its own under REMOTE_ROOT/<slug>/."""
@@ -138,7 +140,8 @@ class RemoteRun(unittest.TestCase):
 
         def fake(argv, **kw):
             seen.append(list(argv))
-            return subprocess.CompletedProcess(argv, 0, stdout="{}", stderr="")
+            return subprocess.CompletedProcess(argv, 0, stdout="{}" + MARK * (argv[0] == "ssh"),
+                                               stderr="")
 
         with mock.patch.object(render.subprocess, "run", side_effect=fake):
             render._HOSTS["root@h"] = render.Host("root@h", engine="/opt/sr/scene-render")
@@ -174,7 +177,8 @@ class RemoteRun(unittest.TestCase):
         seen: list[list[str]] = []
         with mock.patch.object(render.subprocess, "run",
                                side_effect=lambda argv, **kw: (seen.append(list(argv)) or
-                                                               subprocess.CompletedProcess(argv, 0, "{}", ""))):
+                                                               subprocess.CompletedProcess(
+                                                                   argv, 0, "{}" + MARK * (argv[0] == "ssh"), ""))):
             proc = render.run_job(["scene-render", "encode", "/w/monty/scene.xml", "-o", "w.mp4"],
                                   Path("/w/monty"), "root@h", job="window")
         self.assertEqual(proc.returncode, 0)
@@ -226,7 +230,8 @@ class RunContract(unittest.TestCase):
         def fake(argv, **kw):
             self.seen.append(list(argv))
             return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(
-                {"ok": True, "command": "render", "result": {"outputs": []}}), stderr="")
+                {"ok": True, "command": "render", "result": {"outputs": []}})
+                + MARK * (argv[0] == "ssh"), stderr="")
 
         self.patches = [mock.patch.object(render.subprocess, "run", side_effect=fake),
                         mock.patch.object(render, "engine", return_value=Path("/opt/sr/scene-render")),
@@ -300,7 +305,8 @@ class RunContract(unittest.TestCase):
             if argv[0] == "ssh" and "encode" in argv[-1]:
                 out = json.dumps({"ok": True, "command": "encode", "result": {"outputs": [
                     {"path": f"{remote['dir']}/video.mp4", "files": [f"{remote['dir']}/video.mp4"]}]}})
-            return subprocess.CompletedProcess(argv, 0, stdout=out, stderr="")
+            return subprocess.CompletedProcess(argv, 0, stdout=out + MARK * (argv[0] == "ssh"),
+                                               stderr="")
 
         def dir_(slug, job, tag, root=render.REMOTE_ROOT):
             remote["dir"] = f"{root}/{slug}/{job}-{tag}"

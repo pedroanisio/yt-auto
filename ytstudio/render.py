@@ -39,10 +39,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -95,6 +98,22 @@ SYNC_EXCLUDES = (".cache/", "*.bak", "raw/", "review-frames/", "vfx-stubs/", "qa
 #: What comes back from the host after a run: results, never the inputs.
 PULL_BACK = ("*.mp4", "*.png", "*.wav", "render.json", "render-*.json", "pilot*.json",
              ".estimate-*.json")
+
+
+#: Every ssh this module runs: no prompts, and a dead link is noticed in about a
+#: minute instead of never, so a session that drops is seen as dropped.
+SSH_OPTS = ("-o", "BatchMode=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4")
+SSH_COMMAND = "ssh " + " ".join(SSH_OPTS)      # rsync -e
+
+
+def ssh_argv(host: str, script: str, *extra: str) -> list[str]:
+    """argv for one ssh call: the keepalive options, `extra` (-o ...), the host, the script."""
+    return ["ssh", *SSH_OPTS, *extra, host, script]
+
+
+def probe_argv(host: str, script: str, timeout: int = 4) -> list[str]:
+    """ssh argv for a short check: a connection not made in `timeout` s is a no."""
+    return ssh_argv(host, script, "-o", f"ConnectTimeout={timeout}")
 
 
 def job_tag() -> str:
@@ -162,7 +181,7 @@ def sync_up_args(source: Path, host: str, remote: str, *, file: bool = False,
     named file survives a pattern that would otherwise drop it.
     """
     parent = str(Path(remote).parent) if file else remote
-    argv = ["rsync", "-az", f"--rsync-path=mkdir -p {shlex.quote(parent)} && rsync"]
+    argv = ["rsync", "-az", "-e", SSH_COMMAND, f"--rsync-path=mkdir -p {shlex.quote(parent)} && rsync"]
     if delete:
         argv.append("--delete")
     argv += [f"--include={p}" for p in includes]
@@ -177,8 +196,12 @@ def sync_up_args(source: Path, host: str, remote: str, *, file: bool = False,
 def pull_back_args(host: str, remote: str, dest: Path,
                    patterns: tuple[str, ...] = PULL_BACK) -> list[str]:
     """rsync argv bringing a job's results (PULL_BACK) from host:remote to dest."""
-    return (["rsync", "-az", "--include=*/"] + [f"--include={p}" for p in patterns]
+    return (["rsync", "-az", "-e", SSH_COMMAND, "--include=*/"] + [f"--include={p}" for p in patterns]
             + ["--exclude=*", f"{host}:{remote}/", f"{dest}/"])
+
+
+#: What a detached job leaves beside its directory: output, errors, exit status, pid.
+JOB_FILES = (".out", ".err", ".status", ".pid")
 
 
 def remove_remote(host: str, remote: str, *, verbose: bool = False) -> None:
@@ -188,8 +211,9 @@ def remove_remote(host: str, remote: str, *, verbose: bool = False) -> None:
                for root in SCRATCH_ROOTS):
         raise ValueError(f"refusing to remove {remote!r}: not a job directory under {SCRATCH_ROOTS}")
     parent = shlex.quote(str(Path(path).parent))
-    proc = subprocess.run(["ssh", "-o", "BatchMode=yes", host,
-                           f"rm -rf {shlex.quote(path)}; rmdir --ignore-fail-on-non-empty {parent} 2>/dev/null; true"],
+    control = " ".join(shlex.quote(path + ext) for ext in JOB_FILES)
+    proc = subprocess.run(ssh_argv(host, f"rm -rf {shlex.quote(path)}; rm -f {control}; "
+                                         f"rmdir --ignore-fail-on-non-empty {parent} 2>/dev/null; true"),
                           capture_output=True, text=True)
     if verbose:
         note = "" if proc.returncode == 0 else f" (failed: {proc.stderr.strip()[:120]})"
@@ -239,7 +263,8 @@ def host_names(args=None) -> list[str]:
 
 
 def probe(addr: str, *, timeout: float = 12.0) -> Host:
-    """One ssh round trip: engine, RAM, cores, GPU. Cached for the process."""
+    """One ssh round trip: engine, RAM, cores, GPU. Cached for the process;
+    `ssh_alive` is what notices a host that went away afterwards."""
     if addr in _HOSTS:
         return _HOSTS[addr]
     binary_expr = os.environ.get("RS_RENDER_REMOTE_BIN") or REMOTE_BIN_LOOKUP
@@ -250,8 +275,8 @@ def probe(addr: str, *, timeout: float = 12.0) -> Host:
               "echo \"FFPROBE=$(command -v ffprobe 2>/dev/null)\"")
     host = Host(addr=addr)
     try:
-        proc = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", f"ConnectTimeout={int(timeout)}",
-                               addr, script], capture_output=True, text=True, timeout=timeout + 20)
+        proc = subprocess.run(probe_argv(addr, script, int(timeout)),
+                              capture_output=True, text=True, timeout=timeout + 20)
     except (subprocess.TimeoutExpired, OSError) as exc:
         host.error = str(exc)[:120]
         _HOSTS[addr] = host
@@ -296,13 +321,50 @@ def pick_host(candidates: list[Host], job: str) -> Host | None:
     return min(usable, key=lambda h: (h.ram_gb, -h.cores))
 
 
+#: addr -> (monotonic time, answered): one recheck serves the jobs of the next moments.
+_ALIVE: dict[str, tuple[float, bool]] = {}
+ALIVE_TTL = 20.0
+
+
+def ssh_alive(addr: str, *, timeout: int = 4) -> bool:
+    """Does the host answer ssh right now? One short round trip, remembered for
+    ALIVE_TTL seconds; the process-wide probe cache never learns a host went away."""
+    now = time.monotonic()
+    seen = _ALIVE.get(addr)
+    if seen and now - seen[0] < ALIVE_TTL:
+        return seen[1]
+    try:
+        ok = subprocess.run(probe_argv(addr, "true", timeout), capture_output=True, text=True,
+                            timeout=timeout + 6).returncode == 0
+    except (subprocess.TimeoutExpired, OSError):
+        ok = False
+    _ALIVE[addr] = (now, ok)
+    return ok
+
+
+def tcp_open(addr: str, *, port: int = 22, timeout: float = 3.0) -> bool:
+    """Does the host accept a TCP connection on the ssh port? (`user@host` is read as host.)"""
+    try:
+        socket.create_connection((addr.rpartition("@")[2], port), timeout=timeout).close()
+    except OSError:
+        return False
+    return True
+
+
 def remote_host(args, job: str = "encode") -> str:
-    """The ssh target to use for `job`, or "" to render here."""
+    """The ssh target to use for `job`, or "" to render here. Each candidate is
+    rechecked with a short ssh first, so a host that stopped answering after
+    this process probed it is passed over instead of hung on."""
     if args is not None and getattr(args, "local", False):
         return ""
-    chosen = pick_host(hosts(args), job)
-    if chosen is not None:
-        return chosen.addr
+    candidates = [h for h in hosts(args) if h.usable]
+    while candidates:
+        chosen = pick_host(candidates, job)
+        if chosen is None:
+            break
+        if ssh_alive(chosen.addr):
+            return chosen.addr
+        candidates = [h for h in candidates if h is not chosen]
     names = host_names(args)
     return names[0] if names else ""
 
@@ -338,6 +400,95 @@ def run_job(cmd: list[str], project_root: Path, host: str, *, job: str,
                        remote=remote, keep_remote=keep_remote)
 
 
+#: How long a dropped session is chased: REATTACH_TRIES polls, REATTACH_WAIT s apart.
+REATTACH_TRIES = 120
+REATTACH_WAIT = 15.0
+#: Backstop for one attach: seconds before the loop gives up on a job that is neither
+#: finished nor provably dead.
+JOB_DEADLINE = 6 * 3600
+#: Lines the attach script prints, so the job's own exit code (255 included) is never
+#: confused with a dropped ssh session, and a vanished job is told apart.
+EXIT_MARK = "__YT_JOB_EXIT__="
+LOST_MARK = "__YT_JOB_LOST__"
+
+
+def detached_script(script: str, remote: str) -> str:
+    """Shell that starts `script` on its own session (it outlives the ssh that
+    started it), recording its pid, output and exit code beside the job directory,
+    then waits for the result like an attached run."""
+    out, err, status, pid = (shlex.quote(remote + ext) for ext in JOB_FILES)
+    body = (f"echo $$ > {pid}; ( {script} ) > {out} 2> {err}; "
+            f"echo $? > {status}.tmp; mv {status}.tmp {status}")
+    return (f"rm -f {out} {err} {status} {pid}; "
+            f"nohup setsid sh -c {shlex.quote(body)} > /dev/null 2>&1 < /dev/null & "
+            f"{attach_script(remote)}")
+
+
+def attach_script(remote: str, deadline: int = JOB_DEADLINE) -> str:
+    """Shell that waits for a detached job's status file, replays its output, then
+    prints the job's code as a marker line and exits 0 (ssh's own 255 stays reserved
+    for a dropped session). If the status file is absent and the recorded pid is no
+    longer alive, or the deadline passes, it prints a lost marker instead. It never
+    starts anything."""
+    out, err, status, pid = (shlex.quote(remote + ext) for ext in JOB_FILES)
+    return (f"end=$(( $(date +%s) + {deadline} )); "
+            f"while [ ! -f {status} ]; do "
+            f"if [ -f {pid} ] && ! kill -0 $(cat {pid}) 2>/dev/null && [ ! -f {status} ]; "
+            f"then echo {LOST_MARK}=dead; exit 0; fi; "
+            f"if [ $(date +%s) -ge $end ]; then echo {LOST_MARK}=deadline; exit 0; fi; "
+            f"sleep 2; done; "
+            f"cat {out}; cat {err} >&2; "
+            f"printf '\\n{EXIT_MARK}%s\\n' \"$(cat {status})\"; exit 0")
+
+
+def _read_job(proc: subprocess.CompletedProcess) -> subprocess.CompletedProcess | None:
+    """The job's own result from an attach's output, or None when the attach printed
+    no final marker. A lost job becomes a non-zero result with a message."""
+    text = proc.stdout or ""
+    lost = re.search(rf"(?m)^{LOST_MARK}=(\w+)\n?\Z", text)
+    if lost:
+        why = ("its process is gone and it wrote no status (host rebooted or engine killed)"
+               if lost.group(1) == "dead" else f"it did not finish within {JOB_DEADLINE} s")
+        return subprocess.CompletedProcess(proc.args, 1, text[:lost.start()],
+                                           (proc.stderr or "") + f"remote job lost: {why}\n")
+    done = re.search(rf"\n?{EXIT_MARK}(\d+)\n?\Z", text)
+    if done:
+        return subprocess.CompletedProcess(proc.args, int(done.group(1)), text[:done.start()],
+                                           proc.stderr)
+    return None
+
+
+def _run_detached(host: str, script: str, remote: str, *, verbose: bool = False
+                  ) -> tuple[subprocess.CompletedProcess, bool]:
+    """Run `script` on the host detached; return (result, settled). Only a marker is
+    authoritative: whatever ssh's exit code (255, 143, -15, 1...), output without an
+    EXIT or LOST marker means the job's outcome is unknown, so poll (attach only)
+    until it reports. settled is False when the polls ran out with no marker: the
+    job may still be running and its directory must be left alone."""
+    proc = subprocess.run(ssh_argv(host, detached_script(script, remote)),
+                          capture_output=True, text=True)
+    tries = 0
+    while True:
+        job = _read_job(proc)
+        if job is not None:
+            return job, True
+        if tries >= REATTACH_TRIES:
+            break
+        tries += 1
+        if verbose:
+            print(f"  no result marker from {host} (ssh exit {proc.returncode}); "
+                  f"job may still run there, polling ({tries})", file=sys.stderr)
+        time.sleep(REATTACH_WAIT)
+        proc = subprocess.run(ssh_argv(host, attach_script(remote)), capture_output=True, text=True)
+    note = (f"remote job outcome unknown: no result marker from {host} after {tries} polls; "
+            f"the job may still be running. Left in place: {host}:{remote} "
+            f"(pull it later from there)\n")
+    if verbose:
+        print(f"  {note.strip()}", file=sys.stderr)
+    return subprocess.CompletedProcess(proc.args, proc.returncode or 1, proc.stdout,
+                                       (proc.stderr or "") + note), False
+
+
 def _run_remote(cmd: list[str], project_root: Path, host: str, *, verbose: bool,
                 job: str = "encode", remote: str | None = None,
                 keep_remote: bool = False) -> subprocess.CompletedProcess:
@@ -348,6 +499,7 @@ def _run_remote(cmd: list[str], project_root: Path, host: str, *, verbose: bool,
         print(f"  sync -> {host}:{mirror}", file=sys.stderr)
     subprocess.run(sync_up_args(project_root, host, mirror), check=True,
                    capture_output=True, text=True)
+    settled = False
     try:
         known = _HOSTS.get(host)
         binary = (shlex.quote(known.engine) if known and known.engine else
@@ -357,15 +509,18 @@ def _run_remote(cmd: list[str], project_root: Path, host: str, *, verbose: bool,
         script = job_script(mirror, remote, binary, rest, dirs=output_dirs(relative))
         if verbose:
             print(f"  ssh {host} {script}", file=sys.stderr)
-        proc = subprocess.run(["ssh", "-o", "BatchMode=yes", host, script],
-                              capture_output=True, text=True)
+        proc, settled = _run_detached(host, script, remote, verbose=verbose)
+        if not settled:
+            return proc                 # outcome unknown: no pull-back, no removal
         pulled = subprocess.run(pull_back_args(host, remote, project_root),
                                 capture_output=True, text=True)
         if pulled.returncode and verbose:
             print(f"  warning: could not pull results back: {pulled.stderr.strip()[:200]}",
                   file=sys.stderr)
     finally:
-        if keep_remote:
+        if not settled:
+            pass                        # the job may still run there: leave its directory
+        elif keep_remote:
             if verbose:
                 print(f"  kept {host}:{remote}", file=sys.stderr)
         else:
@@ -401,8 +556,7 @@ def engine_validate(xml_bytes: bytes, *, host: str = "", timeout: float = 120.0
               f"{binary_expr} validate --format json --no-assets {shlex.quote(remote)}; "
               f"code=$?; rm -f {shlex.quote(remote)}; exit $code")
     try:
-        proc = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
-                               host, script], input=xml_bytes, capture_output=True,
+        proc = subprocess.run(probe_argv(host, script, 8), input=xml_bytes, capture_output=True,
                               timeout=timeout)
     except (subprocess.TimeoutExpired, OSError) as exc:
         return [f"error: sdk:engine-failed: {exc}"]
@@ -467,7 +621,7 @@ def engine_render_still(xml_bytes: bytes, at: float, *, host: str = "",
               f"> report.json 2> messages.txt; code=$?; cat report.json >&2; echo >&2; "
               f"cat messages.txt >&2; [ -f frame.png ] && cat frame.png; cd /; rm -rf {remote}; exit $code")
     try:
-        proc = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host, script],
+        proc = subprocess.run(probe_argv(host, script, 8),
                               input=_tar(bundle), capture_output=True, timeout=timeout)
     except (subprocess.TimeoutExpired, OSError) as exc:
         return None, f"render host unreachable: {exc}"
@@ -581,11 +735,11 @@ def encode_sliced(scene: str, project_root: Path, *, slices: int, quality: str |
                 "ffmpeg -y -loglevel error -f concat -safe 0 -i slices.txt -c copy joined.mp4 && "
                 "ffmpeg -y -loglevel error -i joined.mp4 -i mix.wav -map 0:v -map 1:a -c:v copy "
                 "-c:a aac -b:a 192k -shortest video.mp4 && rm -f joined.mp4 && ls -la video.mp4")
-        proc = subprocess.run(["ssh", "-o", "BatchMode=yes", big.addr, join], capture_output=True, text=True)
+        proc = subprocess.run(ssh_argv(big.addr, join), capture_output=True, text=True)
         if proc.returncode != 0:
             print(f"  join failed on {big.addr}: {proc.stderr.strip()[-300:]}", file=sys.stderr)
             return 1
-        pull = ["rsync", "-az", f"{big.addr}:{remote}/video.mp4", f"{project_root}/video.mp4"]
+        pull = ["rsync", "-az", "-e", SSH_COMMAND, f"{big.addr}:{remote}/video.mp4", f"{project_root}/video.mp4"]
         subprocess.run(pull, capture_output=True, text=True)
     finally:
         remove_remote(big.addr, remote, verbose=verbose)
