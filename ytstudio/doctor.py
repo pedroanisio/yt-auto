@@ -110,24 +110,7 @@ def check_environment(work: Path) -> Report:
         # The renderers are other machines; nothing is built here. One short
         # ssh per host asks for the engine, the memory and the GPU, and the
         # routing rule (docs/compute.md: memory, not GPU) says what each gets.
-        usable = [h for h in hosts if h.usable]
-        big = render.pick_host(usable, "encode")
-        small = render.pick_host(usable, "still")
-        for h in hosts:
-            if h.usable:
-                roles = []
-                if h is big:
-                    roles.append("encode, audio")
-                if h is small:
-                    roles.append("stills, frames, validate")
-                report.add("ok", "engine", f"{h.version} on {h.addr} ({h.ram_gb} GB, "
-                           f"{h.cores} cores, {h.gpu or 'no gpu'}) -> {'; '.join(roles) or 'slices'}")
-            else:
-                report.add("warn", "engine", f"{h.addr}: {h.error or 'no scene-render binary'}",
-                           "check ssh access, or unpack a release under ~/render on that host")
-        if not usable:
-            report.add("fail", "engine", "no render host answers: yt render cannot run",
-                       "fix RS_RENDER_HOSTS or ssh access")
+        check_hosts(report, hosts)
     elif binary:
         report.add("ok", "engine", f"scene-render at {binary}")
     else:
@@ -198,6 +181,34 @@ def check_environment(work: Path) -> Report:
 # --------------------------------------------------------------------------- #
 # one video
 # --------------------------------------------------------------------------- #
+
+def check_hosts(report: Report, hosts: list) -> None:
+    """One finding per render host, and the routing each usable one gets. A host
+    that takes a TCP connection on the ssh port but does not answer ssh is a
+    hung or half-started sshd, not an unplugged machine: it is named as such."""
+    usable = [h for h in hosts if h.usable]
+    big = render.pick_host(usable, "encode")
+    small = render.pick_host(usable, "still")
+    for h in hosts:
+        if h.usable:
+            roles = []
+            if h is big:
+                roles.append("encode, audio")
+            if h is small:
+                roles.append("stills, frames, validate")
+            report.add("ok", "engine", f"{h.version} on {h.addr} ({h.ram_gb} GB, "
+                       f"{h.cores} cores, {h.gpu or 'no gpu'}) -> {'; '.join(roles) or 'slices'}")
+        elif h.error and render.tcp_open(h.addr):
+            report.add("warn", "engine", f"{h.addr}: accepts TCP on the ssh port but not SSH "
+                       f"({_clip(h.error, 80)}); jobs sent there would hang",
+                       "restart sshd on that host, or take it out of RS_RENDER_HOSTS")
+        else:
+            report.add("warn", "engine", f"{h.addr}: {h.error or 'no scene-render binary'}",
+                       "check ssh access, or unpack a release under ~/render on that host")
+    if not usable:
+        report.add("fail", "engine", "no render host answers: yt render cannot run",
+                   "fix RS_RENDER_HOSTS or ssh access")
+
 
 def _clip(text: str, limit: int = 160) -> str:
     """Cut long advice at a word, never mid-word, and mark the cut."""
