@@ -136,14 +136,49 @@ RETAKE_SCHEMA = {
     "properties": {
         "retakes": {"type": "array",
                     "items": {"type": "object",
-                              "properties": {"label": {"type": "string"},
-                                             "reason": {"type": "string"}},
+                              "properties": {
+                                  "label": {"type": "string"},
+                                  "reason": {"type": "string"},
+                                  "speed": {"type": "number",
+                                            "description": "0.85 to 1.15, this take alone"},
+                                  "settings": {
+                                      "type": "object",
+                                      "description": "ElevenLabs voice settings, this take alone",
+                                      "properties": {"stability": {"type": "number"},
+                                                     "similarity_boost": {"type": "number"},
+                                                     "style": {"type": "number"}}}},
                               "required": ["label", "reason"]}},
         "verdict": {"type": "string", "enum": ["ok", "retake"]},
         "notes": {"type": "string"},
     },
     "required": ["retakes", "verdict", "notes"],
 }
+
+
+def directions_from(retakes) -> dict[str, dict]:
+    """What the director asked of each retake, as the recorder can apply it:
+    label -> {"speed": within SPEED_RANGE, "settings": the known keys}. Rows
+    without a label, or without a usable speed or settings, are dropped."""
+    out: dict[str, dict] = {}
+    for row in retakes if isinstance(retakes, list) else []:
+        if not isinstance(row, dict) or not str(row.get("label") or "").strip():
+            continue
+        direction: dict = {}
+        try:
+            speed = float(row["speed"])
+            direction["speed"] = round(min(SPEED_RANGE[1], max(SPEED_RANGE[0], speed)), 3)
+        except (KeyError, TypeError, ValueError):
+            pass
+        settings = row.get("settings")
+        if isinstance(settings, dict):
+            kept = {k: float(v) for k, v in settings.items()
+                    if k in ("stability", "similarity_boost", "style")
+                    and isinstance(v, (int, float))}
+            if kept:
+                direction["settings"] = kept
+        if direction:
+            out[str(row["label"]).strip()] = direction
+    return out
 
 
 def candidates(engine: str, lang: str) -> list[dict]:
@@ -601,6 +636,7 @@ class VoiceOver:
                  layout: str = "sequential", gap: float = GAP,
                  section_gap: float = SECTION_GAP, normalise: bool = True,
                  trim: bool = True, redo: set[str] | None = None,
+                 directions: dict[str, dict] | None = None,
                  verbose: bool = True) -> None:
         self.idea = idea
         self.sections = sections
@@ -618,6 +654,7 @@ class VoiceOver:
         self.normalise = normalise
         self.trim = trim
         self.redo = redo or set()
+        self.directions = dict(directions or {})
         self.verbose = verbose
         self.cache = self.dir / ".cache"
 
@@ -642,9 +679,27 @@ class VoiceOver:
                                 chars=len(text)))
         return out
 
+    def _named(self, take: Take) -> bool:
+        """Is this take one --redo asked to record again?"""
+        return take.label in self.redo or "all" in self.redo
+
+    def _direction(self, take: Take) -> dict:
+        """The director's speed/settings for a named retake; nothing otherwise."""
+        return self.directions.get(take.label, {}) if self._named(take) else {}
+
+    def _opts_for(self, take: Take) -> dict:
+        opts = dict(self.opts)
+        direction = self._direction(take)
+        if "speed" in direction:
+            opts["speed"] = direction["speed"]
+        if "settings" in direction:
+            opts["settings"] = (opts.get("settings") or {}) | direction["settings"]
+        return opts
+
     def _fingerprint(self, take: Take) -> str:
         parts = [self.engine, self.voice, self.lang, str(self.rate),
-                 json.dumps(self.opts, sort_keys=True, default=str), take.text]
+                 json.dumps(self._opts_for(take), sort_keys=True, default=str),
+                 take.text]
         return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
 
     # -- recording ---------------------------------------------------------
@@ -654,12 +709,12 @@ class VoiceOver:
         for take in takes:
             target = self.dir / f"{take.n:03d}-{take.label.replace('.', '-')}.wav"
             cached = self.cache / f"{self._fingerprint(take)}.wav"
-            if cached.exists() and take.label not in self.redo:
+            if cached.exists() and not self._named(take):
                 take.cached = True
             else:
                 self._say(f"  {take.label} {len(take.text):>4} chars")
                 synth(take.text, cached, voice=self.voice, rate=self.rate,
-                      opts=self.opts | {"lang": self.engine_lang})
+                      opts=self._opts_for(take) | {"lang": self.engine_lang})
             frames, rate, channels = read_wav(cached)
             if self.trim:
                 frames = trim_silence(frames, rate)
@@ -700,21 +755,42 @@ class VoiceOver:
         client = kit.Client(kit.api_key())
         scenes = [{"id": f"{t.n:03d}-{t.label.replace('.', '-')}", "text": t.text}
                   for t in takes]
-        scenes_file = self.dir / "scenes.json"
         self.dir.mkdir(parents=True, exist_ok=True)
-        scenes_file.write_text(json.dumps(scenes, ensure_ascii=False, indent=1),
-                               encoding="utf-8")
         fmt = self.opts.get("format") or f"pcm_{self.rate}"
-        # tts_scenes carries each shot's neighbours and request ids, so the
-        # prosody runs across the cuts instead of resetting every shot.
-        call = lambda: kit.tts_scenes(  # noqa: E731
-            client, str(scenes_file), self.voice, str(self.dir),
-            model=self.opts.get("model") or kit.DEFAULT_MODEL,
-            fmt=fmt, language=self.lang or None, timestamps=True,
-            settings=self.opts.get("settings") or None,
-            max_chars=self.opts.get("max_chars"),
-            force=bool(self.redo), log=self._say)
-        self._retrying(call)
+        base = self.opts.get("settings") or None
+
+        def send(group: list[int], *, force: bool, settings) -> None:
+            if not group:
+                return
+            scenes_file = self.dir / "scenes.json"
+            scenes_file.write_text(
+                json.dumps([scenes[i] for i in group], ensure_ascii=False, indent=1),
+                encoding="utf-8")
+            # tts_scenes carries each shot's neighbours and request ids, so
+            # the prosody runs across the cuts instead of resetting every shot.
+            call = lambda: kit.tts_scenes(  # noqa: E731
+                client, str(scenes_file), self.voice, str(self.dir),
+                model=self.opts.get("model") or kit.DEFAULT_MODEL,
+                fmt=fmt, language=self.lang or None, timestamps=True,
+                settings=settings, max_chars=self.opts.get("max_chars"),
+                force=force, log=self._say)
+            self._retrying(call)
+
+        # The kit takes one force flag per call, so the named takes are
+        # recorded apart: the accepted ones are served from its cache (not
+        # paid, not replaced) and a retake costs only itself.
+        kept = [i for i, t in enumerate(takes) if not self._named(t)]
+        plain = [i for i, t in enumerate(takes)
+                 if self._named(t) and not self._direction(t)]
+        send(kept, force=False, settings=base)
+        send(plain, force=True, settings=base)
+        for i, take in enumerate(takes):
+            direction = self._direction(take)
+            if direction:
+                settings = self._opts_for(take).get("settings") or {}
+                if "speed" in direction:
+                    settings = settings | {"speed": direction["speed"]}
+                send([i], force=True, settings=settings or None)
         for take, scene in zip(takes, scenes):
             raw = self.dir / f"{scene['id']}.mp3"
             take.engine, take.voice = self.engine, self.voice
@@ -1079,6 +1155,9 @@ def run(args) -> int:
         gap=args.gap, section_gap=args.section_gap,
         normalise=not args.no_normalise, trim=not args.no_trim,
         redo=set(p.strip() for p in args.redo.split(",") if p.strip()),
+        directions=directions_from(
+            ((read_json(project.out("voice"), warn=False) or {})
+             .get("review") or {}).get("retakes")),
         verbose=not args.quiet)
 
     try:
@@ -1116,7 +1195,8 @@ def run(args) -> int:
     if review.get("retakes"):
         print(f"\n  the director asks for {len(review['retakes'])} retake(s):")
         for row in review["retakes"][:10]:
-            print(f"    {row.get('label', ''):<6} {str(row.get('reason', ''))[:80]}")
+            pace = f" @{row['speed']}x" if row.get("speed") else ""
+            print(f"    {row.get('label', ''):<6}{pace} {str(row.get('reason', ''))[:80]}")
         print("    record them with: yt voice --redo "
               + ",".join(str(r.get("label", "")) for r in review["retakes"]))
     if review.get("notes"):
