@@ -619,6 +619,18 @@ on target). `build.json` records it under `audio_staging` (`bed_db`,
 transients with no bed under them are a warning, because the target will be
 missed. Nothing changes the loudness target itself.
 
+**Fonts.** Every text node (`text`, `span`, `textStyle`, and `object3D`
+text) is pinned to a licensed file the repo ships under `ytstudio/fonts`
+(Inter, Inter Display, Lora, Liberation Sans/Serif/Mono, DejaVu
+Sans/Serif/Sans Mono; licences in `ytstudio/fonts/LICENSES`). The build
+resolves family, weight and style (`fonts.py`), copies the file to the
+project's `fonts/` so the render sync ships it, adds the `<font>` asset
+(with its sha256 and licence) and points the node at it; the cleaned include
+copies get `fontFile`. A family with no file is an `error:` finding and
+blocks the build; the explicit alias table (Helvetica, Arial, `serif`,
+`monospace`…) and nearest-weight choices are listed under `fonts.notes` in
+`build.json`. A node naming no family gets DejaVu Sans.
+
 `--width` · `--height` · `--fps` · `--codec` (checked against the schema's own
 list) · `--bitrate` and friends (never `crf`) · `--loudness` · `--true-peak`
 · `--no-limiter` · `--no-captions` · `--no-audio` · `--fresh` · `--force`
