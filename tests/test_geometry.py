@@ -26,6 +26,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from claude_engine import Event, Usage
+from tests import hermetic
 from ytstudio import gate, geometry, harness, qa, vfx
 from ytstudio.scene_sdk import sdk
 
@@ -419,6 +420,10 @@ class Evaluate(unittest.TestCase):
 
 class Runner(unittest.TestCase):
     """The production runner: one job whose shell loop evaluates every time."""
+
+    @classmethod
+    def setUpClass(cls):
+        hermetic.fake_remote_class(cls)
 
     def test_the_script_links_the_job_dir_and_loops_eval_per_time(self):
         script = geometry.eval_script("/tmp/yt-render/p/mirror", "/tmp/yt-render/p/eval-1-ab",

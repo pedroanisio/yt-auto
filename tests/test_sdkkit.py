@@ -20,6 +20,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from tests import hermetic  # noqa: E402
 from tests.test_universality import leaks  # noqa: E402
 from ytstudio import sdkkit  # noqa: E402
 
@@ -300,6 +301,10 @@ class Rules(unittest.TestCase):
 
 
 class Frames(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        hermetic.fake_remote_class(cls)
+
     def test_a_heavy_document_renders_where_an_encode_would(self):
         with mock.patch("ytstudio.render.remote_host", side_effect=lambda a, job: job) as rh:
             self.assertEqual(sdkkit.frame_host('<camera renderer="pathtrace"/>'), "encode")

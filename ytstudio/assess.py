@@ -165,6 +165,7 @@ def engine_facts(host: str) -> dict:
         "$(command -v scene-render || echo $HOME/src/scene-render/target/release/scene-render)")
     script = (f"B={binary_expr}; $B capabilities; echo '=====GPUS'; $B gpus; "
               "echo '=====MEM'; free -g | sed -n 2p; nproc; echo '=====DISK'; df -h /tmp | tail -1")
+    render.refuse_remote()
     try:
         proc = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host, script],
                               capture_output=True, text=True, timeout=60)

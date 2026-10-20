@@ -1114,6 +1114,7 @@ def remote_frames(root: Path, doc: str, times, host: str, *, scratch: bool = Fal
     root = Path(root)
     mirror = render.mirror_dir(root.name)
     job = render.remote_dir(root.name, "eval", render.job_tag())
+    render.refuse_remote()
     subprocess.run(render.sync_up_args(root, host, mirror), check=True,
                    capture_output=True, text=True)
     try:
