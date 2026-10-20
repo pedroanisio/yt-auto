@@ -849,10 +849,13 @@ Fetches CC0 3D props for one video from Poly Haven: glTF models with their
 textures, HDRIs to light a set, PBR texture maps for a surface — what the
 schema can place but no stage could provide, so `yt vfx` authors against
 real assets instead of a blockout of primitives. Phrases come from the
-command line, or, with none, are derived from what the project already says
-it needs on screen -- the premise, the script's asset and visual fields, the
-styles' shots -- matched against the catalogue's tags; the tooling itself
-knows no subject, and a project with nothing to search exits 1.
+command line, or, with none, are chosen by two model decisions: one picks
+search phrases from what the project already says it needs on screen (the
+premise, the script's asset and visual fields, the styles' shots) against the
+catalogue's vocabulary, and one keeps only the candidates that fit what is on
+screen, before anything is downloaded. "Nothing fits" is a valid answer and
+leaves an empty `props.json`; the tooling itself knows no subject, and a
+project with nothing to search exits 1.
 Everything on Poly Haven is CC0, so there is no licence to check and no key
 to load. The catalogue listing is cached for a day under
 `work/.props-cache/`; a file already on disk is not fetched again.

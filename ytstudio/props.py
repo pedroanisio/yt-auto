@@ -23,8 +23,10 @@ What lands in the project:
 
 Downloaded files are untrusted bytes from the open web: they are written to
 disk and never opened, parsed or executed by this script. The search phrases
-come from the operator, or from the project's own script and styles matched
-against the catalogue's tags; the tooling itself knows no subject.
+come from the operator, or (derived runs) from one harness decision that reads
+the project's own script and styles against the catalogue's vocabulary; a second
+decision keeps only the candidates that fit, and "none fit" is a valid answer.
+The tooling itself knows no subject.
 """
 
 from __future__ import annotations
@@ -39,8 +41,9 @@ import urllib.parse
 import urllib.request
 from pathlib import Path, PurePosixPath
 
-from . import workspace
+from . import house, workspace
 from .core import read_json, write_json
+from .harness import Harness, HarnessError
 
 API = "https://api.polyhaven.com"
 SITE = "https://polyhaven.com/a/"
@@ -374,10 +377,13 @@ def item_record(hit: dict, main: str, written: list[str]) -> dict:
 
 def gather(root: Path, phrases: list[str], *, kinds: tuple[str, ...] = KINDS,
            limit: int = 3, catalogue: Catalogue, redownload: bool = False,
-           user_agent: str = DEFAULT_USER_AGENT, verbose: bool = True) -> list[dict]:
+           user_agent: str = DEFAULT_USER_AGENT, verbose: bool = True,
+           judge=None) -> list[dict]:
     """Search every phrase in every kind, fetch the best `limit` of each, and
     return the manifest items. An asset found by two phrases is listed once,
-    under the phrase that matched it best."""
+    under the phrase that matched it best. `judge`, when given, sees the
+    candidates before anything is fetched and returns the ones to keep (with a
+    `fit` note); the rest are never listed, downloaded or uploaded."""
     say = (lambda m: print(m, file=sys.stderr)) if verbose else (lambda m: None)
     best: dict[str, dict] = {}
     for phrase in phrases:
@@ -391,7 +397,12 @@ def gather(root: Path, phrases: list[str], *, kinds: tuple[str, ...] = KINDS,
 
     items: list[dict] = []
     order = {p: n for n, p in enumerate(phrases)}
-    for hit in sorted(best.values(), key=lambda h: (order[h["phrase"]], -h["score"], h["id"])):
+    candidates = sorted(best.values(),
+                        key=lambda h: (order[h["phrase"]], -h["score"], h["id"]))
+    if judge is not None:
+        candidates = judge(candidates) if candidates else []
+        say(f"  kept {len(candidates)} of {len(best)} candidate(s)")
+    for hit in candidates:
         try:
             files = catalogue.files(hit["id"])
         except (urllib.error.URLError, OSError, ValueError) as exc:
@@ -407,7 +418,10 @@ def gather(root: Path, phrases: list[str], *, kinds: tuple[str, ...] = KINDS,
         except (urllib.error.URLError, OSError, ValueError) as exc:
             say(f"    x {hit['id']}: download failed ({exc})")
             continue
-        items.append(item_record(hit, main, written))
+        record = item_record(hit, main, written)
+        if hit.get("fit"):
+            record["fit"] = hit["fit"]
+        items.append(record)
     return items
 
 
@@ -448,6 +462,91 @@ def derive_phrases(text: str, vocabulary: set[str], limit: int = 8) -> list[str]
     return ranked[:limit]
 
 
+ROLE = (
+    "You are the set dresser for this film. You choose which free 3D props, "
+    "HDRIs and textures from a fixed catalogue the animation authors will "
+    "build with. Every asset you keep is downloaded, uploaded to the render "
+    "hosts and weighed by every author, so a look-alike that merely shares a "
+    "word with the script costs them time and misleads them. You judge fit "
+    "against what the script and styles actually put on screen, and 'nothing "
+    "fits' is an honest, welcome answer."
+)
+
+PHRASES_SCHEMA = {
+    "type": "object",
+    "properties": {"phrases": {"type": "array", "items": {"type": "string"}}},
+    "required": ["phrases"],
+}
+
+KEEP_SCHEMA = {
+    "type": "object",
+    "properties": {"keep": {"type": "array", "items": {
+        "type": "object",
+        "properties": {"n": {"type": "integer"}, "as": {"type": "string"}},
+        "required": ["n", "as"]}}},
+    "required": ["keep"],
+}
+
+#: How many catalogue terms the phrase question may carry.
+VOCABULARY_CAP = 4000
+
+
+def decide_phrases(h: Harness, text: str, vocabulary: set[str], limit: int = 8) -> list[str]:
+    """The search phrases the model picks for this project: plain words from
+    the catalogue's vocabulary naming things the film shows. Empty when the
+    catalogue holds nothing the film needs."""
+    if not text.strip():
+        return []
+    words = sorted(w for w in vocabulary if w)[:VOCABULARY_CAP]
+    answer = h.decide(
+        "phrases",
+        f"What the project says it puts on screen:\n{text}\n\n"
+        "The free catalogue is searched by these tag, category and name "
+        f"words:\n{', '.join(words)}\n\n"
+        f"Pick at most {limit} search phrases of one to three plain words "
+        "each, for set pieces, HDRIs or materials this film genuinely shows "
+        "and the catalogue could serve. Do not search for a word only because "
+        "it appears in the text; a word with a different sense or an object "
+        "the film never shows is a wrong search. Return an empty list when "
+        "the catalogue cannot serve this subject.",
+        PHRASES_SCHEMA)
+    phrases = [re.sub(r"\s+", " ", str(p)).strip() for p in answer.get("phrases") or []]
+    return list(dict.fromkeys(p for p in phrases if p))[:limit]
+
+
+def vet_candidates(h: Harness, text: str, hits: list[dict]) -> list[dict]:
+    """The candidates the model keeps, each with its `fit` note. Keyword
+    search finds look-alikes; none kept is a valid verdict."""
+    if not hits:
+        return []
+    listing = "\n".join(
+        f"{n}. [{hit['kind']}] {hit['meta'].get('name') or hit['id']}"
+        f" -- tags: {', '.join(str(t) for t in (hit['meta'].get('tags') or [])[:12])}"
+        f"; {str(hit['meta'].get('description') or '')[:160]}"
+        f"\n     found for: {hit['phrase']}"
+        for n, hit in enumerate(hits, 1))
+    verdict = h.decide(
+        "keep",
+        f"What the project says it puts on screen:\n{text}\n\n"
+        f"Candidates the catalogue returned:\n\n{listing}\n\n"
+        "Keep only the candidates an author would genuinely build this film "
+        "with. Reject look-alikes that share a word with the script but are "
+        "not what any shot shows. A loose but honest stand-in is acceptable "
+        "only if you say so in `as`. Keep none rather than something "
+        "misleading.",
+        KEEP_SCHEMA)
+    kept, seen = [], set()
+    for row in verdict.get("keep") or []:
+        try:
+            n = int(row.get("n", 0))
+        except (TypeError, ValueError):
+            continue
+        if 1 <= n <= len(hits) and n not in seen:
+            seen.add(n)
+            kept.append(hits[n - 1] | {"fit": str(row.get("as") or "")})
+    return kept
+
+
 def write_manifest(root: Path, items: list[dict], *, phrases: list[str]) -> Path:
     return write_json(root / workspace.ARTIFACTS["props"], {
         "source": "Poly Haven (https://polyhaven.com), everything CC0",
@@ -479,7 +578,11 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
     p.add_argument("--redownload", action="store_true",
                    help="fetch files already on disk again")
     p.add_argument("--fresh", action="store_true",
-                   help="re-read the catalogue instead of the day-old cache")
+                   help="re-read the catalogue instead of the day-old cache, and ask the "
+                        "model again")
+    p.add_argument("--model", default="sonnet",
+                   help="model that picks the phrases and keeps the fitting results "
+                        "when the phrases are derived (default sonnet)")
     p.add_argument("--user-agent", default=DEFAULT_USER_AGENT,
                    help="User-Agent for the requests")
     p.set_defaults(run=run, source=None, index=None, stdin=None, genre=None,
@@ -501,19 +604,34 @@ def run(args) -> int:
 
     phrases = list(dict.fromkeys(p.strip() for p in args.phrase if p.strip()))
     derived = not phrases
+    text = project_text(project.root) if derived else ""
+    if derived and not text.strip():
+        print("error: nothing to search for: give phrases, or run `yt script` / "
+              "`yt styles` first so they can be derived", file=sys.stderr)
+        return 1
+    judge = None
     try:
         if derived:
-            phrases = derive_phrases(project_text(project.root), catalogue.vocabulary(kinds))
+            rules, digest = house.for_args(args, project, "props")
+            h = Harness(project.root, "props", model=args.model, role=ROLE,
+                        house=rules, house_digest=digest,
+                        fresh=getattr(args, "fresh", False), verbose=verbose)
+            phrases = decide_phrases(h, text, catalogue.vocabulary(kinds))
+            judge = lambda hits: vet_candidates(h, text, hits)  # noqa: E731
         if not phrases:
-            print("error: nothing to search for: give phrases, or run `yt script` / "
-                  "`yt styles` first so they can be derived", file=sys.stderr)
-            return 1
+            if not derived:
+                print("error: nothing to search for", file=sys.stderr)
+                return 1
+            say("props: the model found nothing in the catalogue that fits this project")
         say(f"props: {idea.title}\n  -> {project.root}/{PROPS_DIR}/\n  "
             f"phrases{' (derived from the project)' if derived else ''}: "
             + ", ".join(phrases))
         items = gather(project.root, phrases, kinds=kinds, limit=args.limit,
                        catalogue=catalogue, redownload=args.redownload,
-                       user_agent=args.user_agent, verbose=verbose)
+                       user_agent=args.user_agent, verbose=verbose, judge=judge)
+    except HarnessError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     except (urllib.error.URLError, OSError, ValueError) as exc:
         print(f"error: Poly Haven unreachable: {exc}", file=sys.stderr)
         return 1
