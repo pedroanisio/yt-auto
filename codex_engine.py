@@ -83,7 +83,16 @@ meaning: accepted, ignored, one warning when set to a non-default value):
                                     ClaudeExecutionError(error_max_budget_usd)
                                     raised. Codex reports usage once per turn,
                                     so a single exec can overrun before it is
-                                    stopped; an unpriced model cannot be held
+                                    stopped. An unpriced model (a ChatGPT
+                                    sign-in's default has no public price)
+                                    cannot be held in dollars: a budgeted
+                                    call on it is REFUSED before codex starts
+                                    (CodexBudgetRefused) unless a price is
+                                    configured or a token cap is set
+    max_budget_tokens               per-call cap on input + output tokens,    E
+                                    or $CODEX_BUDGET_TOKENS; works for priced
+                                    and unpriced models; same stop as above
+                                    (error_max_budget_tokens)
     session id pinning              not available: the id is Codex's          N
                                     thread_id, known once thread.started
     fallback_model, betas, system_prompt_snapshot,                            N
@@ -130,7 +139,7 @@ __all__ = [
     "set_defaults", "default_for", "PRICES", "price_for", "strict_schema",
     "drop_nulls", "Answer", "Usage", "Event", "Task", "TaskResult", "TaskRunner",
     "ClaudeError", "ClaudeNotFound", "ClaudeExecutionError", "CodexNotFound",
-    "CodexExecutionError", "CodexEngineWarning", "is_transient",
+    "CodexExecutionError", "CodexBudgetRefused", "CodexEngineWarning", "is_transient",
     "READ_ONLY_TOOLS", "EDIT_TOOLS", "FULL_TOOLS",
 ]
 
@@ -214,6 +223,10 @@ class CodexExecutionError(ClaudeExecutionError):
         super().__init__(message, transient=transient, **kwargs)
 
 
+class CodexBudgetRefused(CodexExecutionError):
+    """A budgeted run on a model Codex cannot price, with no token cap."""
+
+
 class CodexEngineWarning(UserWarning):
     """A setting Codex cannot honour, or a cost it cannot price."""
 
@@ -269,6 +282,7 @@ class CodexConfig(EngineConfig):
     executable: str = "codex"
     images: Sequence[str | Path] = ()          # -i, attached to every prompt
     prices: dict[str, dict[str, float]] | None = None   # over PRICES
+    max_budget_tokens: int | None = None       # per-call token cap (input + output)
     sandbox: str | None = None                 # force a sandbox mode
     codex_config: dict[str, Any] = field(default_factory=dict)  # extra -c pairs
 
@@ -347,6 +361,11 @@ def _supported_efforts(model: str | None, env: dict[str, str]) -> set[str]:
             return {str(level.get("effort")) for level in
                     m.get("supported_reasoning_levels") or [] if isinstance(level, dict)}
     return set()
+
+
+def usage_tokens(usage: dict) -> int:
+    """Input plus output tokens of a turn.completed usage block."""
+    return int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0)
 
 
 def price_for(model: str | None, *, overrides: dict | None = None,
@@ -566,6 +585,32 @@ class CodexEngine(ClaudeEngine):
         env.update(self.config.env or {})
         return env
 
+    def token_cap(self) -> int | None:
+        """The per-call token cap: the config, else $CODEX_BUDGET_TOKENS."""
+        cap = getattr(self.config, "max_budget_tokens", None)
+        if cap is None:
+            raw = self._env().get("CODEX_BUDGET_TOKENS")
+            try:
+                cap = int(raw) if raw else None
+            except ValueError:
+                _warn_once("tokens-env", "CODEX_BUDGET_TOKENS is not an integer; ignored")
+        return cap if cap and cap > 0 else None
+
+    def _refuse_unholdable_budget(self) -> None:
+        """A dollar budget needs a price or a token cap; without either it
+        could never stop the run, so the run does not start."""
+        budget = self.config.max_turns_budget_usd
+        if budget is None or self.token_cap() is not None:
+            return
+        model = self.resolved_model()
+        if price_for(model, overrides=getattr(self.config, "prices", None),
+                     env=self._env()) is None:
+            raise CodexBudgetRefused(
+                f"refusing to start: the ${budget:g} budget cannot be held, Codex "
+                f"model {model!r} has no price. Set its price in CODEX_PRICES "
+                "(or CodexConfig.prices) or a token cap in CODEX_BUDGET_TOKENS.",
+                transient=False)
+
     def _executable_name(self) -> str:
         exe = self.config.executable
         if not exe or exe == "claude":
@@ -718,6 +763,7 @@ class CodexEngine(ClaudeEngine):
     def _run_events(self, argv: list[str], stdin: str) -> Iterator[Event]:
         """Launch codex, yield normalised events, enforce timeout and budget."""
         cfg = self.config
+        self._refuse_unholdable_budget()
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, bufsize=1, **self._popen_kwargs())
         assert proc.stdin and proc.stdout and proc.stderr
@@ -815,9 +861,15 @@ class CodexEngine(ClaudeEngine):
             payload = self._result_payload(message.get("usage") or {}, state)
             budget = self.config.max_turns_budget_usd
             cost = payload["total_cost_usd"]
-            if budget is not None and cost is None:
-                _warn_once("budget-unpriced", f"cannot hold the ${budget:g} budget: "
-                           f"{payload['model']} has no price (set CODEX_PRICES)")
+            cap = self.token_cap()
+            spent = usage_tokens(message.get("usage") or {})
+            if cap is not None and spent > cap:
+                payload.update(subtype="error_max_budget_tokens", is_error=True)
+                self._absorb_result(payload)
+                raise CodexExecutionError(
+                    f"codex reported an error: error_max_budget_tokens (used "
+                    f"{spent} tokens, over the {cap} token budget)",
+                    payload=payload, transient=False)
             if budget is not None and cost is not None and cost > budget:
                 payload.update(subtype="error_max_budget_usd", is_error=True)
                 self._absorb_result(payload)

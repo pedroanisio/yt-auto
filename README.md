@@ -21,6 +21,9 @@ No dependencies. The engine launches the `claude` CLI in non-interactive print
 mode and parses its JSON / stream-JSON output. `codex_engine.py` offers the
 same API on the Codex CLI; `YT_ENGINE=codex` runs the harness's stages on it
 (its module docstring lists what maps, what is emulated and what Codex lacks).
+A dollar budget needs a price for the model: when the model is unpriced (for
+example under a ChatGPT sign-in), set `CODEX_PRICES` or a token cap with
+`CODEX_BUDGET_TOKENS`, or the budgeted call refuses to start.
 
 ## Requirements
 
