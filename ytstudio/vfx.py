@@ -1144,6 +1144,14 @@ DECLINE_META = "props-declined"
 MAP_ATTRS = ("baseColorMap", "normalMap", "metallicRoughnessMap", "occlusionMap")
 
 
+def timed_out_usage(usage) -> dict:
+    """What calls cut off by their timeout spent, for a record: the tokens
+    and cost are already inside the totals; this marks them as such."""
+    return {"calls": usage.timed_out_calls, "tokens": dict(usage.timed_out_tokens),
+            "cost_usd": round(usage.timed_out_cost_usd, 4),
+            "cost_estimated": usage.timed_out_cost_estimated}
+
+
 def props_declined(doc_text: str) -> dict[str, str]:
     """The props the document declines with a reason, from its
     `<meta name="props-declined" value="<prop id or kind>: <reason>">` entries;
@@ -2324,6 +2332,7 @@ class VfxPlanner:
                 "score": rounds[-1]["score"] if rounds else None,
                 "review": rounds[-1]["review"] if rounds else None,
                 "cost_usd": round(engine.usage.cost_usd + reviewer.usage.cost_usd, 4),
+                "timed_out_usage": timed_out_usage(engine.usage),
                 "engine": reviewer.report()}
 
     def author(self, outline: dict, effects: list[dict], style: dict,

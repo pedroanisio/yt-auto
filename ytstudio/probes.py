@@ -246,6 +246,10 @@ def author(ws: Path, probe: Probe, *, model: str, effort: str | None, budget_usd
         error = str(exc)
     usage = engine.usage
     return {"tool_calls": calls, "cost_usd": round(usage.cost_usd, 4), "error": error,
+            "timed_out_usage": {"calls": usage.timed_out_calls,
+                                "tokens": dict(usage.timed_out_tokens),
+                                "cost_usd": round(usage.timed_out_cost_usd, 4),
+                                "cost_estimated": usage.timed_out_cost_estimated},
             "closing": texts[-1].strip()[-2000:] if texts else "",
             "model": model, "session_id": getattr(engine, "session_id", None) or resume}
 
