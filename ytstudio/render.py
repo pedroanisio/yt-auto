@@ -703,14 +703,81 @@ def _slice_ranges(start: float, end: float, slices: int) -> list[tuple[float, fl
             for i in range(slices)]
 
 
+def _envelope(text: str) -> dict:
+    """The engine's JSON report from a job's stdout, {} when it printed none."""
+    text = (text or "").strip()
+    if not text.startswith("{"):
+        return {}
+    try:
+        report = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+    return report if isinstance(report, dict) else {}
+
+
+def _outputs(report: dict) -> list[dict]:
+    outs = (report.get("result") or {}).get("outputs") or []
+    return [o for o in outs if isinstance(o, dict)]
+
+
+def merge_slice_reports(slices: list[dict], mix: dict, video: str, start: float,
+                        end: float) -> dict:
+    """The scene-render-cli/1 envelope of a sliced encode, as one encode's.
+
+    One output stands for the joined file: its path, range and duration are
+    the join's, frames add up, the quality is the lowest any slice ran at,
+    findings and warnings are every slice's said once, and the loudness
+    fields are the mix's (the slices carry no audio of their own).
+    """
+    keys = ("findings", "evaluation_warnings", "unsupported", "warnings")
+    parts = [o for rep in slices for o in _outputs(rep)]
+    output: dict = {"id": "main", "path": video, "files": [video],
+                    "range": [start, end], "duration": round(end - start, 3)}
+    tiers = [str(o["quality"]) for o in parts if o.get("quality")]
+    order = ["draft", "preview", "final"]
+    if tiers:
+        output["quality"] = min(tiers, key=lambda t: order.index(t) if t in order else -1)
+    frames = [o["frames"] for o in parts if isinstance(o.get("frames"), int)]
+    if frames:
+        output["frames"] = sum(frames)
+    fps = next((o["fps"] for o in parts if o.get("fps")), None)
+    if fps:
+        output["fps"] = fps
+    for key in keys:
+        said: set[str] = set()
+        output[key] = []
+        for o in parts:
+            for item in o.get(key) or []:
+                mark = json.dumps(item, sort_keys=True, default=str)
+                if mark not in said:
+                    said.add(mark)
+                    output[key].append(item)
+    audio = next(iter(_outputs(mix)), {})
+    for key in ("loudness", "true_peak", "loudness_range", "short_term_max"):
+        if key in audio:
+            output[key] = audio[key]
+    diagnostics: list = []
+    for rep in [*slices, mix]:
+        for d in rep.get("diagnostics") or []:
+            if d not in diagnostics:
+                diagnostics.append(d)
+    ok = all(rep.get("ok", True) for rep in [*slices, mix])
+    return {"format": "scene-render-cli/1", "ok": ok, "exit_code": 0 if ok else 1,
+            "command": "encode", "diagnostics": diagnostics,
+            "result": {"outputs": [output]}}
+
+
 def encode_sliced(scene: str, project_root: Path, *, slices: int, quality: str | None,
-                  start: float, end: float, strict: bool, verbose: bool) -> int:
+                  start: float, end: float, strict: bool, verbose: bool,
+                  report_path: Path | None = None) -> int:
     """A long encode across every usable host: video slices, one audio mix, join.
 
     Each slice is its own --start/--end encode (the only split that crosses a
     machine); the audio mix is rendered once on the host with the most RAM,
     because the engine assembles it whole whatever range is asked for; the
     slices are joined by stream copy and the mix muxed in, on that same host.
+    The slices' and the mix's reports are merged into the render.json an
+    unsliced encode writes (`report_path`, default the project's render.json).
     """
     usable = [h for h in hosts() if h.usable]
     if not usable:
@@ -723,22 +790,23 @@ def encode_sliced(scene: str, project_root: Path, *, slices: int, quality: str |
               file=sys.stderr)
     rel_scene = str(Path(scene).resolve().relative_to(project_root.resolve()))
 
-    def one(i: int, rng: tuple[float, float]) -> tuple[int, int, str]:
+    def one(i: int, rng: tuple[float, float]) -> tuple[int, int, str, dict]:
         host = usable[i % len(usable)]
         out = f"slice-{i:02d}.mp4"
-        cmd = ["scene-render", "encode", rel_scene, "-o", out, "--no-upload",
+        cmd = ["scene-render", "encode", rel_scene, "-o", out, "--no-upload", "--json",
                "--start", str(rng[0]), "--end", str(rng[1])]
         if quality:
             cmd += ["--quality", quality]
         if strict:
             cmd.append("--strict")
         proc = _run_remote(cmd, project_root, host.addr, verbose=verbose)
-        return i, proc.returncode, (proc.stderr or proc.stdout).strip()[-200:]
+        return (i, proc.returncode, (proc.stderr or proc.stdout).strip()[-200:],
+                _envelope(proc.stdout))
 
     with ThreadPoolExecutor(max_workers=len(usable)) as pool:
         results = list(pool.map(lambda ir: one(*ir), enumerate(ranges)))
     failed = [r for r in results if r[1] != 0]
-    for i, code, tail in failed:
+    for i, code, tail, _ in failed:
         print(f"  slice {i} failed ({code}): {tail}", file=sys.stderr)
     if failed:
         return 1
@@ -747,7 +815,7 @@ def encode_sliced(scene: str, project_root: Path, *, slices: int, quality: str |
     # in that project copy, pushed again by the audio run's sync after the
     # pull-backs above, and the join happens there.
     remote = remote_dir(project_root.name, "audio", job_tag())
-    mix = _run_remote(["scene-render", "encode", rel_scene, "-o", "mix.wav", "--no-upload",
+    mix = _run_remote(["scene-render", "encode", rel_scene, "-o", "mix.wav", "--no-upload", "--json",
                        "--start", str(start), "--end", str(end)], project_root, big.addr,
                       verbose=verbose, remote=remote, keep_remote=True)
     try:
@@ -769,6 +837,12 @@ def encode_sliced(scene: str, project_root: Path, *, slices: int, quality: str |
         subprocess.run(pull, capture_output=True, text=True)
     finally:
         remove_remote(big.addr, remote, verbose=verbose)
+    report = merge_slice_reports([r[3] for r in results], _envelope(mix.stdout),
+                                 str(project_root.resolve() / "video.mp4"), start, end)
+    report_path = report_path or project_root / "render.json"
+    report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n",
+                           encoding="utf-8")
+    print(f"wrote {report_path}", file=sys.stderr)
     print(f"wrote {project_root / 'video.mp4'}  (joined from {slices} slices; "
           f"audio mixed once on {big.addr})", file=sys.stderr)
     return 0
@@ -1061,7 +1135,8 @@ def run(args) -> int:
             return 1
         return encode_sliced(scene, project.root, slices=args.slices, quality=args.quality,
                              start=args.start or 0.0, end=end, strict=args.strict,
-                             verbose=not args.quiet)
+                             verbose=not args.quiet,
+                             report_path=report_path_for(Path(project.out("render")), job, None))
 
     report_path = report_path_for(Path(project.out("render")), job, args.output)
     if args.validate:
