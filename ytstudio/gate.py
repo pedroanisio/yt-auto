@@ -287,6 +287,7 @@ def run_remote(plan: RemotePlan, report: dict, project_root: Path, *, verbose: b
     """Ship, run, bring the gate's own JSON back, remove the directory."""
     if verbose:
         print(f"  sync -> {plan.host}:{plan.root}", file=sys.stderr)
+    render_stage.refuse_remote()
     try:
         for argv in plan.syncs:
             subprocess.run(argv, check=True, capture_output=True, text=True)
@@ -303,6 +304,7 @@ def run_remote(plan: RemotePlan, report: dict, project_root: Path, *, verbose: b
         # bring it home with its paths localised, like a render report.
         technical = project_root / "qa" / "TECHNICAL.json"
         technical.parent.mkdir(parents=True, exist_ok=True)
+        render_stage.refuse_remote()
         pulled = subprocess.run(["rsync", "-az", f"{plan.host}:{plan.project}/qa/TECHNICAL.json",
                                  str(technical)], capture_output=True, text=True)
         if pulled.returncode == 0 and technical.is_file():

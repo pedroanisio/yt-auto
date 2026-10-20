@@ -106,6 +106,21 @@ SSH_OPTS = ("-o", "BatchMode=yes", "-o", "ServerAliveInterval=15", "-o", "Server
 SSH_COMMAND = "ssh " + " ".join(SSH_OPTS)      # rsync -e
 
 
+#: Set by the test runner: nothing in ytstudio may start ssh or rsync, and no host is
+#: configured, whatever the repo's .env names.
+NO_REMOTE_ENV = "YT_NO_REMOTE"
+
+
+class RemoteRefused(RuntimeError):
+    """A launcher tried to reach a render host while YT_NO_REMOTE is set."""
+
+
+def refuse_remote(what: str = "ssh") -> None:
+    """Call before any ssh/rsync launch: raises under YT_NO_REMOTE, so tests never reach a host."""
+    if os.environ.get(NO_REMOTE_ENV):
+        raise RemoteRefused(f"{what} refused: {NO_REMOTE_ENV} is set (tests never reach a render host)")
+
+
 def ssh_argv(host: str, script: str, *extra: str) -> list[str]:
     """argv for one ssh call: the keepalive options, `extra` (-o ...), the host, the script."""
     return ["ssh", *SSH_OPTS, *extra, host, script]
@@ -212,6 +227,7 @@ def remove_remote(host: str, remote: str, *, verbose: bool = False) -> None:
         raise ValueError(f"refusing to remove {remote!r}: not a job directory under {SCRATCH_ROOTS}")
     parent = shlex.quote(str(Path(path).parent))
     control = " ".join(shlex.quote(path + ext) for ext in JOB_FILES)
+    refuse_remote()
     proc = subprocess.run(ssh_argv(host, f"rm -rf {shlex.quote(path)}; rm -f {control}; "
                                          f"rmdir --ignore-fail-on-non-empty {parent} 2>/dev/null; true"),
                           capture_output=True, text=True)
@@ -250,7 +266,7 @@ _HOSTS: dict[str, Host] = {}
 
 def host_names(args=None) -> list[str]:
     """Every configured render host, --host first when given."""
-    if args is not None and getattr(args, "local", False):
+    if (args is not None and getattr(args, "local", False)) or os.environ.get(NO_REMOTE_ENV):
         return []
     names: list[str] = []
     for raw in ([getattr(args, "host", None) or ""] if args is not None else []) + [
@@ -274,6 +290,7 @@ def probe(addr: str, *, timeout: float = 12.0) -> Host:
               "echo \"GPU=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)\"; "
               "echo \"FFPROBE=$(command -v ffprobe 2>/dev/null)\"")
     host = Host(addr=addr)
+    refuse_remote()
     try:
         proc = subprocess.run(probe_argv(addr, script, int(timeout)),
                               capture_output=True, text=True, timeout=timeout + 20)
@@ -333,6 +350,7 @@ def ssh_alive(addr: str, *, timeout: int = 4) -> bool:
     seen = _ALIVE.get(addr)
     if seen and now - seen[0] < ALIVE_TTL:
         return seen[1]
+    refuse_remote()
     try:
         ok = subprocess.run(probe_argv(addr, "true", timeout), capture_output=True, text=True,
                             timeout=timeout + 6).returncode == 0
@@ -465,6 +483,7 @@ def _run_detached(host: str, script: str, remote: str, *, verbose: bool = False
     EXIT or LOST marker means the job's outcome is unknown, so poll (attach only)
     until it reports. settled is False when the polls ran out with no marker: the
     job may still be running and its directory must be left alone."""
+    refuse_remote()
     proc = subprocess.run(ssh_argv(host, detached_script(script, remote)),
                           capture_output=True, text=True)
     tries = 0
@@ -479,6 +498,7 @@ def _run_detached(host: str, script: str, remote: str, *, verbose: bool = False
             print(f"  no result marker from {host} (ssh exit {proc.returncode}); "
                   f"job may still run there, polling ({tries})", file=sys.stderr)
         time.sleep(REATTACH_WAIT)
+        refuse_remote()
         proc = subprocess.run(ssh_argv(host, attach_script(remote)), capture_output=True, text=True)
     note = (f"remote job outcome unknown: no result marker from {host} after {tries} polls; "
             f"the job may still be running. Left in place: {host}:{remote} "
@@ -497,6 +517,7 @@ def _run_remote(cmd: list[str], project_root: Path, host: str, *, verbose: bool,
     mirror = mirror_dir(project_root.name)
     if verbose:
         print(f"  sync -> {host}:{mirror}", file=sys.stderr)
+    refuse_remote()
     subprocess.run(sync_up_args(project_root, host, mirror), check=True,
                    capture_output=True, text=True)
     settled = False
@@ -512,6 +533,7 @@ def _run_remote(cmd: list[str], project_root: Path, host: str, *, verbose: bool,
         proc, settled = _run_detached(host, script, remote, verbose=verbose)
         if not settled:
             return proc                 # outcome unknown: no pull-back, no removal
+        refuse_remote()
         pulled = subprocess.run(pull_back_args(host, remote, project_root),
                                 capture_output=True, text=True)
         if pulled.returncode and verbose:
@@ -555,6 +577,7 @@ def engine_validate(xml_bytes: bytes, *, host: str = "", timeout: float = 120.0
     script = (f"mkdir -p {REMOTE_ROOT} && cat > {shlex.quote(remote)} && "
               f"{binary_expr} validate --format json --no-assets {shlex.quote(remote)}; "
               f"code=$?; rm -f {shlex.quote(remote)}; exit $code")
+    refuse_remote()
     try:
         proc = subprocess.run(probe_argv(host, script, 8), input=xml_bytes, capture_output=True,
                               timeout=timeout)
@@ -620,6 +643,7 @@ def engine_render_still(xml_bytes: bytes, at: float, *, host: str = "",
               f"{binary_expr} render {shlex.quote(doc_path)} -t {at} -o frame.png --json "
               f"> report.json 2> messages.txt; code=$?; cat report.json >&2; echo >&2; "
               f"cat messages.txt >&2; [ -f frame.png ] && cat frame.png; cd /; rm -rf {remote}; exit $code")
+    refuse_remote()
     try:
         proc = subprocess.run(probe_argv(host, script, 8),
                               input=_tar(bundle), capture_output=True, timeout=timeout)
@@ -735,11 +759,13 @@ def encode_sliced(scene: str, project_root: Path, *, slices: int, quality: str |
                 "ffmpeg -y -loglevel error -f concat -safe 0 -i slices.txt -c copy joined.mp4 && "
                 "ffmpeg -y -loglevel error -i joined.mp4 -i mix.wav -map 0:v -map 1:a -c:v copy "
                 "-c:a aac -b:a 192k -shortest video.mp4 && rm -f joined.mp4 && ls -la video.mp4")
+        refuse_remote()
         proc = subprocess.run(ssh_argv(big.addr, join), capture_output=True, text=True)
         if proc.returncode != 0:
             print(f"  join failed on {big.addr}: {proc.stderr.strip()[-300:]}", file=sys.stderr)
             return 1
         pull = ["rsync", "-az", "-e", SSH_COMMAND, f"{big.addr}:{remote}/video.mp4", f"{project_root}/video.mp4"]
+        refuse_remote()
         subprocess.run(pull, capture_output=True, text=True)
     finally:
         remove_remote(big.addr, remote, verbose=verbose)

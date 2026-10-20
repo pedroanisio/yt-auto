@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -17,6 +18,8 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+os.environ.setdefault("YT_NO_REMOTE", "1")      # the suite never reaches a render host
 
 from ytstudio import assets, core, research, vfx, workspace  # noqa: E402
 
@@ -243,7 +246,7 @@ class VfxArithmetic(unittest.TestCase):
         section = {"heading": "Open"}
         name = ws.doc_name(1, section)
         (ws.dir / name).write_bytes(sc.to_bytes(layout="pretty"))
-        symbols, findings = ws.validate(name)
+        symbols, findings = ws.validate(name, frames=False)
         self.assertEqual(symbols, ["fx-a"])
         self.assertFalse([f for f in findings if f.startswith("error")])
         effects = [{"section": "Open", "effects": [
@@ -334,6 +337,7 @@ class RenderRouting(unittest.TestCase):
         args = argparse.Namespace(host="root@c", local=False)
         old = dict(os.environ)
         try:
+            os.environ.pop("YT_NO_REMOTE", None)       # host_names is pure; only the flag hides hosts
             os.environ["RS_RENDER_HOSTS"] = "root@a, root@b"
             os.environ["RS_RENDER_HOST"] = "root@a"
             self.assertEqual(self.render.host_names(args), ["root@c", "root@a", "root@b"])

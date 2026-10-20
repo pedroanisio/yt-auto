@@ -13,7 +13,13 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from tests import hermetic  # noqa: E402
 from ytstudio import doctor, render  # noqa: E402
+
+
+def setUpModule():
+    # every test here replaces subprocess.run, so the refusal is lifted for them
+    hermetic.fake_remote_module(sys.modules[__name__])
 
 
 def done(argv, rc=0, out="", err=""):
