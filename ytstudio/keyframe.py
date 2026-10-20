@@ -284,10 +284,29 @@ def _record_for_approval(root: Path) -> tuple[dict, Path]:
     return record, doc
 
 
+def record_mismatch(root: Path, record: dict) -> str:
+    """Why the record does not describe the files on disk, or "". The record
+    carries the digests of the document and the program as of its last round;
+    a run stopped mid-round leaves files that moved on without it. A record
+    from before the digests is not compared."""
+    for key, path_key, what in (("document_digest", "document", "document"),
+                                ("program_digest", "program", "program")):
+        want, rel = record.get(key), record.get(path_key)
+        if want is None or not rel:
+            continue
+        if document_digest(Path(root) / rel) != want:
+            return f"the {what} {rel} changed after the record was written (a stopped run?)"
+    return ""
+
+
 def approve(root: Path) -> dict:
     """Record the operator's approval of the keyframe on disk, tied to the
-    document's digest; a later change to the document makes it stale."""
+    document's digest; a later change to the document makes it stale. A
+    record that no longer matches the document and program is refused."""
     record, doc = _record_for_approval(root)
+    mixed = record_mismatch(root, record)
+    if mixed:
+        raise KeyframeError(f"{mixed}; run `yt keyframe` again before approving")
     record["approval"] = {"state": "approved", "notes": "", "digest": document_digest(doc),
                           "at": _now()}
     write_json(record_path(root), record)
@@ -806,7 +825,10 @@ class KeyframeStage:
                 "score": score, "scores": (review or {}).get("scores") or {},
                 "review": review, "frame": png.is_file()}
 
-    def compose(self, chosen: dict, element_findings: list[str], picker: harness.Harness) -> dict:
+    def compose(self, chosen: dict, element_findings: list[str], picker: harness.Harness,
+                checkpoint=None) -> dict:
+        """Author and revise the document; `checkpoint(result)` runs after every
+        gated round so a stopped run leaves a record that matches the files."""
         ws = Workspace(self.root, KEYFRAME_DIR)
         tokens = tokens_for(self.direction)
         ws.prepare(tokens=tokens, frame=FRAME)
@@ -825,7 +847,8 @@ class KeyframeStage:
         # A document from before programs were required is not reusable: the
         # program is the source, so it is authored again from the brief.
         reuse = (doc.is_file() and (ws.dir / PROGRAM_NAME).is_file() and not self.fresh
-                 and self.previous.get("inputs_digest") == inputs)
+                 and self.previous.get("inputs_digest") == inputs
+                 and not record_mismatch(self.root, self.previous))
         tool_calls = 0
         if reuse:
             self._say(f"  {DOC_NAME} exists for these inputs; not authored again")
@@ -844,9 +867,35 @@ class KeyframeStage:
                 "the program, the document and the symbol id."))
         rounds: list[dict] = []
         round_no = 0
+
+        def snapshot(finished: bool) -> dict:
+            """The result as of the rounds gated so far, with the digests of
+            the files it describes."""
+            last = rounds[-1]
+            frame_ok = bool(last["frame"]) and not last["errors"]
+            return {
+                "document": f"{ws.rel}/{DOC_NAME}" if doc.is_file() else "",
+                "program": f"{ws.rel}/{PROGRAM_NAME}" if (ws.dir / PROGRAM_NAME).is_file() else "",
+                "provenance": sdkkit.provenance_of(doc) if doc.is_file() else None,
+                "frame": f"{ws.rel}/{FRAME_NAME}" if frame_ok else "",
+                "brief": f"{ws.rel}/{BRIEF_NAME}",
+                "rounds": [{k: v for k, v in r.items() if k != "frame"} for r in rounds],
+                "score": last["score"], "bar": self.bar, "rounds_allowed": self.rounds,
+                "at_bar": last["score"] is not None and last["score"] >= self.bar and frame_ok,
+                "element_findings": element_findings, "inputs_digest": inputs,
+                "tool_calls": tool_calls, "reused_document": reuse, "finished": finished,
+                "document_digest": document_digest(doc) if doc.is_file() else "",
+                "program_digest": document_digest(ws.dir / PROGRAM_NAME),
+                "engine": {"elements": picker.report(), "review": reviewer.report()},
+                "cost_usd": round(self.usage.cost_usd + picker.usage.cost_usd
+                                  + reviewer.usage.cost_usd, 4),
+            }
+
         while True:
             rounds.append(self._gate(ws, reviewer, chosen, round_no))
             last = rounds[-1]
+            if checkpoint:
+                checkpoint(snapshot(False))
             short = last["score"] is not None and last["score"] < self.bar
             if not last["errors"] and not short:
                 break
@@ -870,23 +919,7 @@ class KeyframeStage:
                       f"frame {DOC_NAME}` and Read the frame; iterate until it shows the look "
                       "and the findings above are answered. Reply with one line.")
             tool_calls += self._stream(engine, prompt, resume=True)
-        last = rounds[-1]
-        frame_ok = bool(last["frame"]) and not last["errors"]
-        return {
-            "document": f"{ws.rel}/{DOC_NAME}" if doc.is_file() else "",
-            "program": f"{ws.rel}/{PROGRAM_NAME}" if (ws.dir / PROGRAM_NAME).is_file() else "",
-            "provenance": sdkkit.provenance_of(doc) if doc.is_file() else None,
-            "frame": f"{ws.rel}/{FRAME_NAME}" if frame_ok else "",
-            "brief": f"{ws.rel}/{BRIEF_NAME}",
-            "rounds": [{k: v for k, v in r.items() if k != "frame"} for r in rounds],
-            "score": last["score"], "bar": self.bar, "rounds_allowed": self.rounds,
-            "at_bar": last["score"] is not None and last["score"] >= self.bar and frame_ok,
-            "element_findings": element_findings, "inputs_digest": inputs,
-            "tool_calls": tool_calls, "reused_document": reuse,
-            "engine": {"elements": picker.report(), "review": reviewer.report()},
-            "cost_usd": round(self.usage.cost_usd + picker.usage.cost_usd
-                              + reviewer.usage.cost_usd, 4),
-        }
+        return snapshot(True)
 
     def run(self) -> dict:
         picker = self._harness(ELEMENTS_ROLE)
@@ -895,19 +928,22 @@ class KeyframeStage:
                   + ", ".join(f"{e['name']} ({e['source_kind']})" for e in chosen["elements"]))
         for f in element_findings:
             self._say(f"  {f}")
-        result = self.compose(chosen, element_findings, picker)
-        record = {"idea": compact(self.idea), "stack": STACK, "house": self.house_digest,
-                  "treatment": chosen["treatment"], "hero": chosen["hero"],
-                  "camera": chosen["camera"], "notes_for_author": chosen["notes_for_author"],
-                  "elements": chosen["elements"], **result,
-                  "operator_notes": self.notes,
-                  "approval": {"state": "pending", "notes": "",
-                               "digest": document_digest(self.root / result["document"])
-                               if result["document"] else "", "at": _now()},
-                  "when": _now()}
-        write_json(record_path(self.root), record)
-        write_sheet(self.root, record)
-        return record
+
+        def save(result: dict) -> dict:
+            record = {"idea": compact(self.idea), "stack": STACK, "house": self.house_digest,
+                      "treatment": chosen["treatment"], "hero": chosen["hero"],
+                      "camera": chosen["camera"], "notes_for_author": chosen["notes_for_author"],
+                      "elements": chosen["elements"], **result,
+                      "operator_notes": self.notes,
+                      "approval": {"state": "pending", "notes": "",
+                                   "digest": document_digest(self.root / result["document"])
+                                   if result["document"] else "", "at": _now()},
+                      "when": _now()}
+            write_json(record_path(self.root), record)
+            write_sheet(self.root, record)
+            return record
+
+        return save(self.compose(chosen, element_findings, picker, checkpoint=save))
 
 
 # --------------------------------------------------------------------------- #
