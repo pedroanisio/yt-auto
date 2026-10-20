@@ -103,6 +103,202 @@ EDIT_SCHEMA = {
 }
 
 
+TONE_MAPPERS = ["none", "aces", "aces2", "agx", "filmic", "reinhard"]
+LOOK_ID = "film-look"
+#: Sane limits on the model's grade (a bound, not a grade): beyond them a CDL
+#: stops being a look and becomes damage.
+LOOK_BOUNDS = {"exposure": (-2.0, 2.0), "slope": (0.5, 1.5), "offset": (-0.1, 0.1),
+               "power": (0.6, 1.6), "saturation": (0.5, 1.5), "mix": (0.0, 1.0)}
+
+_CHANNELS = {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}
+LOOK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "tone_mapping": {"type": "string", "enum": TONE_MAPPERS},
+        "exposure": {"type": "number", "description": "stops; 0 leaves the light as lit"},
+        "look": {"type": "string", "enum": ["grade", "none"]},
+        "slope": _CHANNELS, "offset": _CHANNELS, "power": _CHANNELS,
+        "saturation": {"type": "number"}, "mix": {"type": "number"},
+        "reason": {"type": "string"},
+    },
+    "required": ["tone_mapping", "exposure", "look", "reason"],
+}
+
+
+def clean_look(raw) -> dict | None:
+    """The model's look held to the schema's list and to sane bounds.
+
+    None when nothing is to be applied: a 'none' answer is valid, and so is
+    an answer too malformed to read.
+    """
+    if not isinstance(raw, dict):
+        return None
+
+    def number(value, name, default):
+        lo, hi = LOOK_BOUNDS[name]
+        try:
+            return min(hi, max(lo, float(value)))
+        except (TypeError, ValueError):
+            return default
+
+    def channels(name, default):
+        value = raw.get(name)
+        if not (isinstance(value, (list, tuple)) and len(value) == 3):
+            return [default] * 3
+        return [number(v, name, default) for v in value]
+
+    tone = raw.get("tone_mapping")
+    tone = tone if tone in TONE_MAPPERS else "none"
+    grade = "grade" if raw.get("look") == "grade" else "none"
+    if tone == "none" and grade == "none":
+        return None
+    return {"tone_mapping": tone, "exposure": number(raw.get("exposure"), "exposure", 0.0),
+            "look": grade, "slope": channels("slope", 1.0),
+            "offset": channels("offset", 0.0), "power": channels("power", 1.0),
+            "saturation": number(raw.get("saturation"), "saturation", 1.0),
+            "mix": number(raw.get("mix"), "mix", 1.0),
+            "reason": str(raw.get("reason", ""))}
+
+
+VERDICT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string", "enum": ["apply", "revise", "none"]},
+        "reason": {"type": "string"},
+        "revision": LOOK_SCHEMA,
+    },
+    "required": ["verdict", "reason"],
+}
+
+
+def look_host() -> str:
+    """The render host a look can be seen on, or "" when none is reachable.
+
+    Under YT_NO_REMOTE (the suite) there is none, and so no look is applied.
+    """
+    from . import render
+    if os.environ.get(render.NO_REMOTE_ENV):
+        return ""
+    try:
+        return render.remote_host(None, "still") or ""
+    except Exception:
+        return ""
+
+
+def look_question(first: bool) -> str:
+    return ("Read the two PNGs in this folder: ungraded.png is the frame as authored, "
+            "graded.png is the same frame with the proposed colour look. Judge whether "
+            "the graded frame keeps the palette's roles (each colour still reads as "
+            "what it is for: backgrounds, surfaces, accents, text) and the contrast "
+            "better than the ungraded one, and does not wash out, grey or shift it "
+            "against the treatment. Answer `apply` only if it is better; `revise` with "
+            "one corrected look in `revision` if a change would fix it; otherwise "
+            "`none`." + ("" if first else " This is the revision's only re-check: "
+                         "answer `apply` or `none`."))
+
+
+def look_frame_time(builder) -> float:
+    """The midpoint of the film's longest shot (0.5 s when it has none)."""
+    placed = timeline(builder.sections, builder.voice)
+    if not placed:
+        return 0.5
+    longest = max(placed, key=lambda p: p.seconds)
+    return round(longest.at + longest.seconds / 2, 3)
+
+
+def shipped_with(doc_text: str, root: Path) -> dict[str, bytes]:
+    """Every local file a document needs, including what its <include>s need.
+
+    `referenced_files` skips `.scene.xml` references, but the include copies
+    (written by build()) are exactly that, and each carries asset paths of its
+    own, relative to its own directory. Both travel, to any depth.
+    """
+    from .vfx import referenced_files
+    root = Path(root).resolve()
+    files = referenced_files(doc_text, root, root)
+    seen: set[str] = set()
+    pending = [(doc_text, root)]
+    while pending:
+        text, base = pending.pop()
+        for ref in re.findall(r'<include\b[^>]*?\bsrc="([^"]+)"', text):
+            path = (base / ref).resolve()
+            try:
+                rel = path.relative_to(root).as_posix()
+            except ValueError:
+                continue
+            if rel in seen or not path.is_file():
+                continue
+            seen.add(rel)
+            files[rel] = path.read_bytes()
+            inner = path.read_text(encoding="utf-8", errors="replace")
+            files.update(referenced_files(inner, path.parent, root))
+            pending.append((inner, path.parent))
+    return files
+
+
+def check_look(builder, engine, look, *, host: str | None = None,
+               render_still=None) -> tuple[dict | None, dict]:
+    """The look, seen on a rendered frame before it is applied: (look, record).
+
+    One still with the look and one without go to the harness, which says
+    apply | revise | none. Only 'apply' applies it; a revision is checked once
+    more. With no render host nothing is seen, so nothing is graded.
+    """
+    import tempfile
+    from . import render
+    if not look:
+        return None, {"status": "none chosen"}
+    host = look_host() if host is None else host
+    if not host:
+        return None, {"status": "not checked",
+                      "reason": "no render host reachable; the look was not applied"}
+    render_still = render_still or render.engine_render_still
+    at = look_frame_time(builder)
+    kept = builder.look
+
+    def still(candidate):
+        builder.look = candidate
+        try:
+            data, _ = builder.build()
+        finally:
+            builder.look = kept
+        files = shipped_with(data.decode("utf-8", "replace"), builder.root)
+        return render_still(data, at, host=host, files=files)
+
+    def judge(candidate, first):
+        plain, note = still(None)
+        graded, note2 = still(candidate)
+        if plain is None or graded is None:
+            return None, (note if plain is None else note2)
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "ungraded.png").write_bytes(plain)
+            (Path(tmp) / "graded.png").write_bytes(graded)
+            return engine.inspect("look-check", look_question(first), VERDICT_SCHEMA,
+                                  cwd=Path(tmp)), ""
+
+    answer, why = judge(look, True)
+    if answer is None:
+        return None, {"status": "not checked", "at": at,
+                      "reason": f"a frame was not rendered: {why}"}
+    verdict = answer.get("verdict") if isinstance(answer, dict) else None
+    record = {"at": at, "verdict": verdict, "reason": str((answer or {}).get("reason", ""))}
+    if verdict == "apply":
+        return look, dict(record, status="applied")
+    revision = clean_look(answer.get("revision")) if verdict == "revise" else None
+    if revision is None:
+        return None, dict(record, status="dropped")
+    second, why = judge(revision, False)
+    if second is None:
+        return None, dict(record, status="dropped", first=record,
+                          reason=f"the revision was not checked: {why}")
+    again = second.get("verdict") if isinstance(second, dict) else None
+    if again == "apply":
+        return revision, dict(record, status="revised", first=dict(record),
+                              verdict="apply", reason=str(second.get("reason", "")))
+    return None, dict(record, status="dropped", first=dict(record), verdict=again,
+                      reason=str(second.get("reason", "")))
+
+
 def ident(text: str, prefix: str = "x") -> str:
     """An xs:ID: letters, digits, dashes, and never starting with a digit."""
     clean = re.sub(r"[^A-Za-z0-9_.-]", "-", text).strip("-") or "x"
@@ -440,7 +636,9 @@ def hoisted(path: Path, scene_dir: Path | None = None) -> dict:
 #: What an <include> does not merge (engine warning E12): the including
 #: document's own are what light and paint the included content, and its
 #: colour tokens are read from the included file's own styles.
-NOT_MERGED = ("styles", "paints", "lights")
+#: colorManagement is the film's one pipeline; a section's own would grade it
+#: apart from the others.
+NOT_MERGED = ("styles", "paints", "lights", "colorManagement")
 TOKEN_REF = re.compile(r"var\(--([A-Za-z0-9_.-]+)\)")
 PAINT_REF = re.compile(r"url\(#([A-Za-z0-9_.-]+)\)")
 #: How far a token may alias another before it is given up on (the engine's
@@ -600,9 +798,11 @@ class SceneBuilder:
                  bitrate: int = 16_000_000,
                  max_bitrate: int = 24_000_000, buffer_size: int = 48_000_000,
                  preset: str = "slow", edit: dict | None = None,
+                 look: dict | None = None,
                  verbose: bool = True) -> None:
         self.idea = idea
         self.edit = edit or {}
+        self.look = look
         self.sections = sections
         self.root = root
         self.voice = voice or {}
@@ -1048,6 +1248,23 @@ class SceneBuilder:
 
     # -- the document ----------------------------------------------------------
 
+    def _colour(self, scene) -> None:
+        """The film's one colour pipeline, as the model decided it."""
+        look = self.look
+        if not look:
+            return
+        grade = look["look"] == "grade"
+        pipeline = scene.add_colorManagement(
+            workingSpace="acescg", toneMapping=look["tone_mapping"],
+            exposure=look["exposure"])
+        if grade:
+            pipeline.add_look(
+                id=LOOK_ID, space="acescct", mix=look["mix"],
+                saturation=look["saturation"],
+                **{k: ",".join(f"{v:g}" for v in look[k])
+                   for k in ("slope", "offset", "power")})
+            pipeline.looks = LOOK_ID
+
     def build(self) -> tuple[bytes, dict]:
         S = sdk()
         placed = timeline(self.sections, self.voice)
@@ -1061,6 +1278,8 @@ class SceneBuilder:
         scene = S.Scene(version="auto")
         scene.add_project(width=self.width, height=self.height, fps=str(self.fps),
                           duration=duration, background=self.background)
+
+        self._colour(scene)
 
         meta = scene.add_metadata()
         meta.add_meta(name="title", value=self.idea.title)
@@ -1369,6 +1588,7 @@ class SceneBuilder:
                       "true_peak": self.true_peak,
                       "normalize": self.normalize,
                       "limiter": self.limiter},
+            "look": self.look,
             "timeline": {"shots": len(placed),
                          "from_voice": sum(1 for p in placed if p.source == "voice"),
                          "from_script": sum(1 for p in placed if p.source == "script"),
@@ -1478,6 +1698,20 @@ def duplicate_animations(document: bytes) -> list[str]:
                            "than once; the later animate wins silently. Merge "
                            "them, or set additive.")
     return out
+
+
+def look_prompt(data: dict) -> str:
+    """The question the colourist answers: one look for the whole film."""
+    return "\n\n".join([
+        "Decide the ONE colour look every section of this film shares. Choose "
+        "the `tone_mapping` operator and `exposure` (stops) that keep lit "
+        "surfaces inside the palette, and, if the treatment calls for a grade, "
+        "an ASC CDL: per-channel `slope`, `offset`, `power` and a `saturation`, "
+        "with `mix` for its strength. Answer `look: none` (and tone_mapping "
+        "none) when the treatment wants the colours as authored. Give the "
+        "`reason` in terms of the treatment and the palette.",
+        brief("Film", {k: data.get(k) for k in ("title", "treatment", "design")}),
+    ])
 
 
 def edit_prompt(data: dict) -> str:
@@ -1692,7 +1926,13 @@ def run(args) -> int:
                      fresh=getattr(args, "fresh", False), verbose=not args.quiet)
     try:
         builder.edit = engine.decide("edit", edit_prompt(builder.brief()), EDIT_SCHEMA)
+        chosen = clean_look(engine.decide(
+            "look", look_prompt(builder.brief()), LOOK_SCHEMA))
+        builder.look, check = check_look(builder, engine, chosen)
         data, manifest = builder.build()
+        manifest["look_check"] = check
+        if chosen and not builder.look:
+            manifest["look_declined"] = chosen
     except (HarnessError, Exception) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

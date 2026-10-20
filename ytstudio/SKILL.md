@@ -59,7 +59,13 @@ came from breaking one of them.
    hoists them (the file's tokens win, design fills the rest) and points the
    include at a cleaned copy, `vfx/vNN/<section>.include.scene.xml`, with
    the tokens inlined and those sections dropped, so the engine raises no
-   E12 warning. The authored file is never written.
+   E12 warning. The authored file is never written. The same copy drops a
+   section's own `colorManagement`: the film has one colour pipeline. `yt
+   build` asks the harness once for it (`look`: tone mapping, exposure and
+   one ASC CDL, from the treatment and palette; `none` is valid), clamps it
+   to sane bounds, writes one `colorManagement` with `looks=` naming the
+   look, and records it as `look` in build.json. The builder holds no grade;
+   the kit example `colour_and_look.py` shows the elements.
 8. **A placeholder is disqualifying,** not deductible. While any remain the
    verdict is NOT READY whatever the other scores say.
 9. **Nothing heavy runs on this workstation.** Renders, encodes, mixes and
