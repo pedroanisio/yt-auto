@@ -36,10 +36,16 @@ import tempfile
 import time
 from pathlib import Path
 
+from claude_engine import ClaudeError
+
+from . import framecheck
 from .scene_sdk import sdk
 
 KIT_DIR = "kit"
 EXAMPLES_SRC = Path(__file__).resolve().parent / "kit" / "examples"
+#: What authors went to the engine's source for, stamped with the engine version
+#: it was verified on; ENGINE.md prints it and flags it when the version differs.
+FACTS_FILE = Path(__file__).resolve().parent / "kit" / "engine_facts.json"
 AUTOMATION_ROOT = Path(__file__).resolve().parent.parent
 
 #: Where the engine's source checkout is, for its capability manifest when no
@@ -139,6 +145,10 @@ KIT_CLI = '''#!/usr/bin/env python3
                                             render one frame on the render host into
                                             frames/kit/ and run the frame checks -- then
                                             Read the PNG: validation cannot see it
+    python3 kit.py precheck <file.scene.xml|frame.png>
+                                            the reviewer's mechanical checks (framing,
+                                            contrast steps, haze, overlapping labels) on
+                                            a document and the frames already rendered
 """
 import sys
 sys.path.insert(0, {automation_root!r})
@@ -202,8 +212,34 @@ def engine_manifest(host: str = "") -> dict:
         return {"source": "none: no host answered and no checkout was found", "manifest": {}}
 
 
-def engine_text(engine: dict, notes: list[dict], measured: list[dict] | None = None) -> str:
-    """ENGINE.md: the manifest, the renderer notes and anything measured."""
+def engine_facts() -> dict:
+    """The facts file: {"verified_on": version, "facts": [{topic, text, source}]}."""
+    try:
+        data = json.loads(FACTS_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"verified_on": "", "facts": []}
+    return data if isinstance(data, dict) else {"verified_on": "", "facts": []}
+
+
+def facts_lines(version: str, facts: dict) -> list[str]:
+    """ENGINE.md's facts section: each fact, stamped, flagged when the engine moved on."""
+    rows = [f for f in facts.get("facts") or [] if isinstance(f, dict) and f.get("text")]
+    if not rows:
+        return []
+    verified = str(facts.get("verified_on") or "?")
+    lines = ["", "## Facts measured on the engine", "",
+             f"Facts verified on {verified}"
+             + ("." if version == verified else
+                f"; this engine is {version}: re-check each one with a frame before relying "
+                "on it."), ""]
+    for f in rows:
+        lines.append(f"- **{f.get('topic', '')}**: {f['text']} (source: {f.get('source', '?')})")
+    return lines
+
+
+def engine_text(engine: dict, notes: list[dict], measured: list[dict] | None = None,
+                facts: dict | None = None) -> str:
+    """ENGINE.md: the manifest, the facts, the renderer notes and anything measured."""
     caps = engine.get("manifest") or {}
     eng = caps.get("engine") or {}
     lines = ["# What this engine does with a document", "",
@@ -225,11 +261,16 @@ def engine_text(engine: dict, notes: list[dict], measured: list[dict] | None = N
     else:
         lines.append("The manifest could not be read; treat every construct as unproven "
                      "until a frame shows it.")
+    eng_version = str(eng.get("version", "?"))
+    lines += facts_lines(eng_version, engine_facts() if facts is None else facts)
     lines += ["", "## What a frame costs", "",
               "Every frame `kit.py frame` renders reports how long it took and with which "
               "settings (`note: rendered in ...`). A path-traced frame's time grows with "
-              "`pathSamples` (roughly in proportion) and with lights and bounces; a raster "
-              f"frame takes seconds. A still that runs past {STILL_DEADLINE} s is abandoned "
+              "`pathSamples` (roughly in proportion) and with lights and bounces, a clay "
+              "object's with its blob count and `resolution`; a raster "
+              f"frame takes seconds. `kit.py frame` stops a still at {STILL_BUDGET} s and "
+              "names the cost driver; a still that runs past "
+              f"{STILL_DEADLINE} s is abandoned "
               "and counts as not rendered, and every frame you wait for is time your session "
               "does not get back: time one frame before you commit to a setting, and judge "
               "composition at a setting that renders quickly.", "",
@@ -315,6 +356,35 @@ AUTHOR_SYSTEM = (
 #: The tools such an agent gets: its workspace's files and a shell for the kit.
 AUTHOR_TOOLS = ("Read", "Write", "Edit", "Glob", "Grep", "Bash")
 
+#: Project directories an author may read besides its workspace: the fetched props,
+#: the approved look and the research assets. Read-only.
+AUTHOR_READ_DIRS = ("props", "keyframe", "downloads")
+
+#: The shell commands an author may run: the kit, the stage's frame command and its
+#: own program. Everything else is denied (`dontAsk`), so the shell is no way out of
+#: the workspace.
+AUTHOR_SHELL = ("python3 kit.py *", "python3 sr.py *")
+
+
+def author_config(workspace: Path, *, project_root: Path | None = None,
+                  programs: tuple[str, ...] | list[str] = ()) -> dict:
+    """EngineConfig fields that confine an authoring session: Read, Glob and Grep to
+    the workspace plus the project's read-only directories (`restricted`, `add_dirs`),
+    Write and Edit denied under those directories, and Bash an allow-list. The bare
+    tools are not auto-allowed: `auto_allow_tools` would allow every shell command."""
+    dirs: list[str] = []
+    if project_root:
+        dirs = [str(Path(project_root) / name) for name in AUTHOR_READ_DIRS
+                if (Path(project_root) / name).is_dir()]
+    allowed = [t for t in AUTHOR_TOOLS if t != "Bash"]
+    allowed += [f"Bash({cmd})" for cmd in AUTHOR_SHELL]
+    allowed += [f"Bash(python3 {p})" for p in programs]
+    return {"tools": AUTHOR_TOOLS, "allowed_tools": tuple(allowed), "auto_allow_tools": False,
+            # "//" marks an absolute path; a single "/" reads as relative to the project root
+            "disallowed_tools": tuple(f"{t}(/{d}/**)" for d in dirs for t in ("Write", "Edit")),
+            "permission_mode": "dontAsk", "restricted": True, "add_dirs": tuple(dirs),
+            "cwd": workspace}
+
 #: What a brief says about the kit, so every stage that installs it says the same.
 BRIEF = """## How you compose: a program, not a document
 
@@ -331,7 +401,112 @@ random generator where variation is wanted.
 - `python3 kit.py describe <element>` before writing an attribute you have not used.
 - `python3 kit.py build <program.py>` until it reports 0 errors and a deterministic
   document; then `python3 kit.py frame <doc> --at <seconds>` and Read every PNG.
+- `python3 kit.py precheck <doc>` runs the mechanical part of the checklist below on
+  the document and the frames you rendered; run it before you call a frame done.
+- Stay in your workspace: the kit, the examples, this brief and the project directories
+  it names are all you need; anything else is denied.
+- `kit.py` prints the time left on every build and frame (`SRKIT_DEADLINE`). Keep a
+  program that builds and a still you have looked at: when your time reaches 80% you
+  are stopped and asked to build and render the current program at once.
+
+## What the reviewer checks
+
+The reviewer judges every frame against this checklist, so do not spend a round to
+learn it. `[pre-check]` items you can test yourself; `[review]` items need your eyes.
+
+""" + framecheck.checklist_text() + """
 """
+
+
+def time_line(timeout: float) -> str:
+    """The brief's statement of the author's clock: the session timeout is the 80%
+    mark of a round, the rest of the budget is kept for the finish."""
+    budget = round_budget(timeout)
+    return (f"## Your clock\n\nA round is {budget / 60:g} minutes. At {timeout / 60:g} minutes "
+            "(80%) you are stopped and asked to build the current program and render a still "
+            "of it, which is then reviewed; what is not built by then is lost. Plan for a "
+            "program that builds early, and improve it in steps.\n")
+
+
+# --------------------------------------------------------------------------- #
+# the author's clock
+# --------------------------------------------------------------------------- #
+
+#: The share of a round's budget at which an author is stopped and asked to build
+#: and render what it has. An author session's timeout is that mark.
+CUTOFF = 0.8
+
+#: The environment variable by which the kit learns when the round ends (epoch seconds).
+DEADLINE_VAR = "SRKIT_DEADLINE"
+
+#: Less than this left of the budget, a finish call could not build and render anything.
+MIN_FINISH = 60.0
+
+
+def now() -> float:
+    """The clock the rounds are kept by (a seam: tests replace it)."""
+    return time.time()
+
+
+def round_budget(timeout: float) -> float:
+    """The whole budget of a round whose session timeout is `timeout` (the 80% mark)."""
+    return timeout / CUTOFF
+
+
+def time_left_line(env: dict | None = None) -> str:
+    """What `kit.py` prints on every build and frame: the time left in the round,
+    or nothing when no deadline is set (a person running the kit by hand)."""
+    raw = (os.environ if env is None else env).get(DEADLINE_VAR)
+    try:
+        left = float(raw) - now()
+    except (TypeError, ValueError):
+        return ""
+    if left <= 0:
+        return ("time left: none, past the deadline: build and render what you have now")
+    minutes, seconds = divmod(int(left), 60)
+    return (f"time left: {minutes} min {seconds} s of this round; keep a program that "
+            "builds and a still you have looked at")
+
+
+def finish_prompt(program: str = "the program", document: str = "the document",
+                  frame_cmd: str | None = None) -> str:
+    """What an author is asked at 80% of its round: stop and show what it has."""
+    return (f"Your time is nearly up. Stop changing the look now. Build the current program "
+            f"(`python3 kit.py build {program}`), render a still of it "
+            f"(`{frame_cmd or f'python3 kit.py frame {document} --at 1'}`), Read the PNG, and "
+            "reply with one line. Do it now; start nothing new.")
+
+
+def stream_round(engine, prompt: str, *, system: str, resume=False, finish: str | None = None):
+    """One author round: yield the engine's events, as `engine.stream` does, with the
+    clock kept. The session's timeout is the 80% mark of the round's budget; the
+    deadline reaches the kit through `SRKIT_DEADLINE`. A session cut off at the mark
+    is resumed once with `finish` (build and render the current program) and the time
+    left of the budget; a failure before the mark, any other failure, no session to
+    resume or no time left is raised as it was."""
+    config = getattr(engine, "config", None)
+    if config is None:              # an engine that carries no clock is simply streamed
+        yield from engine.stream(prompt, system=system, **({"resume": resume} if resume else {}))
+        return
+    timeout = float(config.timeout or 0)
+    started = now()
+    deadline = started + round_budget(timeout) if timeout else None
+    if deadline is not None:
+        config.env = dict(config.env or {}, **{DEADLINE_VAR: f"{deadline:.0f}"})
+    try:
+        yield from engine.stream(prompt, system=system, **({"resume": resume} if resume else {}))
+        return
+    except ClaudeError as exc:
+        reached = timeout and now() - started >= 0.95 * timeout
+        session = getattr(engine, "session_id", None)
+        left = deadline - now() if deadline is not None else 0.0
+        if not (reached and "timed out" in str(exc).lower() and session and left >= MIN_FINISH):
+            raise
+    config.timeout = left
+    try:
+        yield from engine.stream(finish or finish_prompt(), system=system, resume=True)
+    finally:
+        config.timeout = timeout
 
 
 # --------------------------------------------------------------------------- #
@@ -558,17 +733,36 @@ RENDER_NOTE = "rendered in"
 #: What a still that renders past this many seconds costs: it is abandoned.
 STILL_DEADLINE = 600
 
+#: What `frame` allows a still, well under the ceiling above: an author's session
+#: must not wait on a render that will not finish. A caller that needs the full
+#: ceiling (the probe suite's verify frames) passes `budget=STILL_DEADLINE`.
+STILL_BUDGET = 420
+
+
+def clay_cost(text: str) -> tuple[int, int]:
+    """(blob count, cells along the longest side of the largest clay object) of a
+    document: the two things a clay surface's render time grows with."""
+    blobs = len(re.findall(r"<blob\b", text))
+    cells: list[int] = []
+    for tag in re.findall(r"<object3D\b[^>]*>", text):
+        if 'primitive="clay"' in tag:
+            res = re.search(r'\bresolution="(\d+)"', tag)
+            cells.append(int(res.group(1)) if res else 64)
+    return blobs, max(cells, default=0)
+
 
 def render_settings(text: str) -> str:
     """The renderer settings that decide a still's cost, as one phrase."""
     renderer = re.search(r'renderer="(\w+)"', text)
     samples = re.search(r'pathSamples="(\d+)"', text)
     bounces = re.search(r'maxBounces="(\d+)"', text)
+    blobs, cells = clay_cost(text)
+    clay = f", {blobs} blobs at {cells} cells" if blobs else ""
     if renderer and renderer.group(1) == "pathtrace":
         return (f"pathtrace, {samples.group(1) if samples else 64} samples, "
                 f"{bounces.group(1) if bounces else 4} bounces"
-                + (", a medium" if "<medium" in text else ""))
-    return "raster" + (", a medium (path traced at 4 samples)" if "<medium" in text else "")
+                + (", a medium" if "<medium" in text else "") + clay)
+    return "raster" + (", a medium (path traced at 4 samples)" if "<medium" in text else "") + clay
 
 
 #: A path-traced camera or a participating medium makes a still heavy in time and
@@ -604,13 +798,23 @@ class host_lock:
         self.fh.close()
 
 
-def frame(doc: Path, at: float, *, host: str = "", out_dir: Path | None = None
-          ) -> tuple[Path | None, list[str]]:
+def frame(doc: Path, at: float, *, host: str = "", out_dir: Path | None = None,
+          budget: float | None = None) -> tuple[Path | None, list[str]]:
     """Render one frame of a document into frames/kit/ -- on the still host, or on
     the encode host when it is path traced or has a medium, one kit render per
-    host at a time -- and run the eyeless frame checks: (png path or None, findings)."""
-    from . import framecheck, render
+    host at a time -- and run the eyeless frame checks: (png path or None, findings).
+    A still is stopped at `budget` seconds (STILL_BUDGET unless given) and the error
+    names the document's cost drivers."""
+    from . import render
     from .vfx import FILE_ATTRS, referenced_files
+    budget = STILL_BUDGET if budget is None else budget
+
+    def still(where: str) -> tuple[bytes | None, str]:
+        try:
+            return render.engine_render_still(data, at, host=where, files=files,
+                                              doc_path=doc_path, timeout=budget)
+        except subprocess.TimeoutExpired:
+            return None, f"error: the render ran past {budget:g} s"
     doc = Path(doc).resolve()
     data = doc.read_bytes()
     text = data.decode("utf-8", "replace")
@@ -628,14 +832,12 @@ def frame(doc: Path, at: float, *, host: str = "", out_dir: Path | None = None
     files.pop(doc_path, None)
     with host_lock(host):
         started = time.monotonic()
-        png, message = render.engine_render_still(data, at, host=host, files=files,
-                                                  doc_path=doc_path)
+        png, message = still(host)
         if png is None and "No such file or directory" in message:
             # The engine binary this process found on the host is gone (a
             # rebuild or a clean): find it again and try once more.
             getattr(render, "_HOSTS", {}).pop(host, None)
-            png, message = render.engine_render_still(data, at, host=host, files=files,
-                                                      doc_path=doc_path)
+            png, message = still(host)
     if png is None and any(m in message for m in UNREACHABLE):
         # A host this process found usable stopped answering: probe it again,
         # and if it is down, render where the router now sends the job.
@@ -644,8 +846,7 @@ def frame(doc: Path, at: float, *, host: str = "", out_dir: Path | None = None
         if fallback and fallback != host:
             with host_lock(fallback):
                 started = time.monotonic()
-                png, message = render.engine_render_still(data, at, host=fallback, files=files,
-                                                          doc_path=doc_path)
+                png, message = still(fallback)
             host = fallback
     seconds = time.monotonic() - started
     findings = [line for line in message.splitlines()[1:] if line.strip()]
@@ -653,6 +854,14 @@ def frame(doc: Path, at: float, *, host: str = "", out_dir: Path | None = None
         findings.append(f"note: {RENDER_NOTE} {seconds:.0f} s on {host or 'this machine'} "
                         f"({render_settings(text)})")
     if png is None:
+        # The host kills a render a few seconds before the budget; a run that long
+        # with no picture was stopped for its cost, not refused by the engine.
+        if message.startswith("error: the render ran past") or seconds >= budget - 10:
+            return None, [f"error: frame at {at:g}s of {doc.name} not rendered: stopped at the "
+                          f"{budget:g} s budget for a still (the ceiling is {STILL_DEADLINE} s). "
+                          f"Cost drivers of this document: {render_settings(text)}. Lower them "
+                          "(fewer blobs or cells, fewer pathSamples or maxBounces, no medium) "
+                          "and judge composition at a setting that renders quickly"] + findings
         return None, [f"error: frame at {at:g}s of {doc.name} not rendered: "
                       f"{message.splitlines()[0] if message else 'no message'}"] + findings
     # An author's own previews go to frames/kit/, apart from the proof frames a
@@ -661,7 +870,10 @@ def frame(doc: Path, at: float, *, host: str = "", out_dir: Path | None = None
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"{doc.stem.replace('.scene', '')}__{at:g}s.png"
     path.write_bytes(png)
-    findings += framecheck.judge_frame(png, at, doc.stem)
+    judged = framecheck.judge_frame(png, at, doc.stem)
+    findings += judged
+    if not any(f.startswith("error") for f in judged):
+        findings += framecheck.precheck(png, at, doc.stem, text)
     return path, findings
 
 
@@ -697,6 +909,35 @@ def _print_checked(checked: dict) -> None:
     print(f"  {len(checked['errors'])} error(s)")
 
 
+def _print_time_left() -> None:
+    line = time_left_line()
+    if line:
+        print(f"\n{line}")
+
+
+def _precheck(path: Path) -> int:
+    """`kit.py precheck`: the checklist's mechanical items on a document (its labels
+    and every frame already rendered into frames/kit/) or on one PNG."""
+    found: list[str] = []
+    if path.suffix.lower() == ".png":
+        found = framecheck.precheck(path.read_bytes(), 0.0, path.stem)
+    else:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        stem = path.name.replace(".scene.xml", "")
+        found = framecheck.label_overlaps(text, stem)
+        for png in sorted((path.parent / "frames" / "kit").glob(f"{stem}__*s.png")):
+            try:
+                at = float(png.stem.rsplit("__", 1)[1].rstrip("s"))
+            except ValueError:
+                at = 0.0
+            found += framecheck.precheck(png.read_bytes(), at, stem)
+    for f in found:
+        print(f"  {f}")
+    print(f"precheck: {len(found)} finding(s)" if found else "precheck: clean")
+    _print_time_left()
+    return 1 if any(f.startswith("error") for f in found) else 0
+
+
 def main(argv: list[str]) -> int:
     from . import env
     env.load(str(AUTOMATION_ROOT / ".env"))      # the render hosts live there
@@ -715,10 +956,12 @@ def main(argv: list[str]) -> int:
         result = build(Path(rest[0]))
         if result.get("error"):
             print(f"error: {result['error']}")
+            _print_time_left()
             return 1
         for checked in result["documents"]:
             print(f"{checked['path']}  (deterministic, provenance written)")
             _print_checked(checked)
+        _print_time_left()
         return 0 if result["ok"] else 1
     if cmd == "check" and rest:
         checked = check_document(Path(rest[0]))
@@ -733,6 +976,9 @@ def main(argv: list[str]) -> int:
             print(f"  {f}")
         if path:
             print("\nnow Read the PNG and judge it: validation cannot see a picture.")
+        _print_time_left()
         return 1 if path is None or any(f.startswith("error") for f in findings) else 0
+    if cmd == "precheck" and rest:
+        return _precheck(Path(rest[0]))
     print(KIT_CLI.split('"""')[1])
     return 2

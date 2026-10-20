@@ -184,3 +184,132 @@ def never_framed(per_window: list[list[str]], objects: list[str], *,
             "Remove each one, or key it to exist only while the camera sees it "
             "(`visible`, `start`/`end`, or `condition` on the object3D), or move the "
             f"camera so it frames it.{nothing}"]
+
+
+# --------------------------------------------------------------------------- #
+# the reviewer's checklist, and the part of it that needs no eyes
+# --------------------------------------------------------------------------- #
+
+#: What a reviewer checks in a frame: (key, the item, who can check it). The
+#: author is handed this list in the brief and the reviewer judges by the same
+#: list, so a round is never spent finding out what will be looked at. The
+#: items marked `pre-check` have a mechanical test (`python3 kit.py precheck`);
+#: the rest are what only a model looking at the picture can judge.
+CHECKLIST = (
+    ("framing", "Framing: the subject is in frame, whole, and large enough to read; "
+                "the camera is not pointing at empty set.", "pre-check"),
+    ("contrast", "Contrast steps: subject, surface and background sit on distinct tonal "
+                 "steps, so the subject separates from what is behind it.", "pre-check"),
+    ("exposure", "Exposure: no clipped highlights and no crushed or empty frame.", "pre-check"),
+    ("haze", "Haze: no veil lifting the darkest pixels or washing out the picture.",
+     "pre-check"),
+    ("labels", "Labels: text and labels do not overlap each other or the subject, and "
+               "are large enough to read.", "pre-check"),
+    ("grounding", "Grounding: every object rests on something, with contact shadow or "
+                  "occlusion; nothing floats.", "review"),
+    ("materials", "Materials: surfaces read as what they are made of (gloss, grain, "
+                  "translucency), not as flat colour.", "review"),
+    ("light", "Light: a key with a direction, falloff and shadows that agree with it; "
+              "the light rig is the same one in every frame.", "review"),
+    ("data", "Real data: where the brief supplies a model, texture or structure file, the "
+             "picture is built from it, not from hand-shaped stand-ins.", "review"),
+    ("continuity", "Continuity: the same hero, room, light and camera language across "
+                   "the frames.", "review"),
+)
+
+
+def checklist_text() -> str:
+    """The checklist as numbered lines, each marked with how it is checked."""
+    return "\n".join(f"{i}. {text} [{how}]" for i, (_, text, how) in enumerate(CHECKLIST, 1))
+
+
+#: Below this share of the frame, what differs from the background is a speck.
+SUBJECT_MIN_SHARE = 0.02
+#: A tonal step is one of eight luma bands holding at least this share of the frame.
+STEP_MIN_SHARE = 0.03
+MIN_STEPS = 3
+#: Darkest 1% of pixels at or above this luma, with a narrow spread, is a veil.
+HAZE_BLACK = 70
+HAZE_SPAN = 120
+
+
+def precheck(png: bytes, at: float, symbol: str, doc_text: str = "") -> list[str]:
+    """The mechanical part of the checklist on one frame (framing, tonal steps,
+    haze), plus overlapping labels when the document's text is given: warnings
+    the author can answer before a round is spent on a review."""
+    where = f"frame at {at:g}s of {symbol}"
+    found: list[str] = []
+    try:
+        from PIL import Image
+        im = Image.open(io.BytesIO(png)).convert("L")
+        im.thumbnail((320, 320))
+        hist = im.histogram()
+    except Exception as exc:
+        return [f"warning: {where} could not be pre-checked ({str(exc)[:80]})"]
+    n = sum(hist) or 1
+    peak = max(range(256), key=hist.__getitem__)
+    subject = sum(c for v, c in enumerate(hist) if abs(v - peak) > 24) / n
+    if subject < SUBJECT_MIN_SHARE:
+        found.append(f"warning: {where}: framing: only {subject:.1%} of the picture differs "
+                     "from the background -- the subject is a speck or out of frame; move "
+                     "the camera closer, lengthen the lens, or aim it at the subject")
+    steps = sum(1 for b in range(8) if sum(hist[b * 32:(b + 1) * 32]) / n >= STEP_MIN_SHARE)
+    if steps < MIN_STEPS:
+        found.append(f"warning: {where}: contrast: {steps} tonal step(s) of 8 (at least "
+                     f"{MIN_STEPS} wanted) -- subject, surface and background are too close "
+                     "in brightness; light the subject apart from its background")
+
+    def percentile(share: float) -> int:
+        total = 0
+        for v, c in enumerate(hist):
+            total += c
+            if total / n >= share:
+                return v
+        return 255
+    low, high = percentile(0.01), percentile(0.99)
+    if low >= HAZE_BLACK and high - low < HAZE_SPAN:
+        found.append(f"warning: {where}: haze: the darkest pixels sit at luma {low} and the "
+                     f"brightest at {high} -- a veil lifts the blacks; lower the fill, the "
+                     "ambient light or the medium density, or deepen the shadows")
+    if doc_text:
+        found += label_overlaps(doc_text, symbol)
+    return found
+
+
+def _num(value: str | None, default: float | None = None) -> float | None:
+    try:
+        return float(value) if value is not None else default
+    except ValueError:
+        return None
+
+
+def label_overlaps(doc_text: str, symbol: str) -> list[str]:
+    """Text boxes of one parent that overlap. A box is x, y, width, height; the
+    anchor is not assumed, so a pair counts only when it overlaps whether (x, y)
+    is the corner or the centre."""
+    from xml.etree import ElementTree
+    try:
+        root = ElementTree.fromstring(doc_text)
+    except ElementTree.ParseError:
+        return []
+    local = lambda el: el.tag.rsplit("}", 1)[-1]           # noqa: E731
+
+    def boxes(el, centred: bool):
+        x, y, w, h = (_num(el.get("x"), 0.0), _num(el.get("y"), 0.0),
+                      _num(el.get("width")), _num(el.get("height")))
+        if None in (x, y, w, h) or w <= 0 or h <= 0:
+            return None
+        return (x - w / 2, y - h / 2, x + w / 2, y + h / 2) if centred else (x, y, x + w, y + h)
+
+    def meets(a, b) -> bool:
+        return min(a[2], b[2]) > max(a[0], b[0]) and min(a[3], b[3]) > max(a[1], b[1])
+    out: list[str] = []
+    for parent in root.iter():
+        texts = [c for c in parent if local(c) == "text" and c.get("id")]
+        for i, a in enumerate(texts):
+            for b in texts[i + 1:]:
+                pairs = [(boxes(a, c), boxes(b, c)) for c in (False, True)]
+                if all(p and q and meets(p, q) for p, q in pairs):
+                    out.append(f"warning: {symbol}: labels `{a.get('id')}` and `{b.get('id')}` "
+                               "overlap -- move or shrink one so each reads")
+    return out

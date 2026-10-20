@@ -1,0 +1,30 @@
+{
+  "verified_on": "0.6.0",
+  "about": "Facts authors went to the engine's source for. Each was measured or read when the engine was at the version above; ENGINE.md flags them when the engine's version differs.",
+  "facts": [
+    {"topic": "model import",
+     "text": "A glTF imports at 100 scene units per metre with a half turn about x, so its y grows downward; read the model's own bounds in the program to size it and to stand it on the ground (see examples/model_and_environment.py).",
+     "source": "kit example comments (model_and_environment.py)"},
+    {"topic": "shadows",
+     "text": "light@castShadow defaults to false: without one shadow-casting light no object is seen resting on anything. Set it on the key.",
+     "source": "SKILL.md trap rows; the kit's rule:shadow"},
+    {"topic": "environment",
+     "text": "A dome light's environmentVisible defaults to false: the HDRI lights and reflects but the background is a black void until it is set true.",
+     "source": "kit example comments (model_and_environment.py)"},
+    {"topic": "emissive surfaces",
+     "text": "The path tracer finds an emissive surface only by chance, so an emissive object lights nothing reliably and shows as specks; light the scene with a light and let the emissive surface be seen, not relied on.",
+     "source": "SKILL.md trap rows; probe measurements"},
+    {"topic": "metal",
+     "text": "A metal's reflectance is its baseColor: a dark baseColor on a metal is a dark mirror, not a coloured finish.",
+     "source": "engine README"},
+    {"topic": "medium",
+     "text": "A medium forces the path tracer at 4 samples and 2 bounces whatever the camera asks for; a document with a medium costs like a path-traced one and pathSamples does not buy quality there.",
+     "source": "engine README; kit frame note"},
+    {"topic": "image-based light",
+     "text": "An HDRI is prefiltered for reflections at 512 px: a mirror-sharp reflection of an environment is limited by that, not by the file's resolution.",
+     "source": "engine README"},
+    {"topic": "motion blur",
+     "text": "camera@shutterAngle is never read by either renderer; it is accepted by the schema and has no effect.",
+     "source": "engine README; capability manifest"}
+  ]
+}

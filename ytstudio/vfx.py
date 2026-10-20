@@ -146,7 +146,10 @@ REVIEW_ROLE = (
     "competent and unremarkable; 6 is functional; 3 is a document that renders. "
     "Every finding names the frame, what is visible, why it lowers quality, and "
     "the fix in the document's own terms (camera, light, material, animation, "
-    "geometry) that the author can apply without asking you anything."
+    "geometry) that the author can apply without asking you anything. The author "
+    "was handed the same checklist you judge by, and ran its mechanical items "
+    "itself; spend your attention on the `[review]` items:\n"
+    + framecheck.checklist_text()
 )
 
 REVIEW_SCHEMA = {
@@ -1559,7 +1562,7 @@ class Workspace:
                                  + (f" — {el['why']}" if el.get("why") else ""))
             lines.append("")
         program = self.program_name(doc)
-        lines += [sdkkit.BRIEF, "## Deliverable", "",
+        lines += [sdkkit.BRIEF, sdkkit.time_line(AUTHOR_TIMEOUT), "## Deliverable", "",
                   f"Write `{program}` in this directory: a Python program that builds the "
                   f"section with the SDK and saves `{doc}`, a complete scene-render document "
                   f"(project, styles with the tokens, assets, materials, symbols -- {ids} "
@@ -2085,16 +2088,19 @@ class VfxPlanner:
         cuts = [c.get("before") for c in group.get("cuts", []) or [] if isinstance(c, dict)]
         return world_symbols(section, group.get("effects", []), cuts=cuts)
 
-    def _stream(self, engine, n: int, prompt: str, *, resume: bool = False) -> tuple[int, bool]:
+    def _stream(self, engine, n: int, prompt: str, *, resume: bool = False,
+                finish: str | None = None) -> tuple[int, bool]:
         """Run the authoring agent once: (tool calls, whether it timed out).
         A revision resumes the agent's own session, so the brief, the program
-        and its earlier choices stay in view."""
+        and its earlier choices stay in view. A round cut off at 80% of its
+        budget is asked for its still (`finish`) by the shared round."""
         tools_used = 0
         timed_out = False
         try:
             system = harness.with_feedback(AUTHOR_SYSTEM, self.ws.root, "vfx")
-            extra = {"resume": True} if resume and getattr(engine, "session_id", None) else {}
-            for event in engine.stream(prompt, system=system, **extra):
+            use = bool(resume and getattr(engine, "session_id", None))
+            for event in sdkkit.stream_round(engine, prompt, system=system, resume=use,
+                                             finish=finish):
                 if event.subtype == "tool_use" and event.tool_input:
                     tools_used += 1
                     what = event.tool_input.get("command") or event.tool_input.get("file_path") or ""
@@ -2218,14 +2224,15 @@ class VfxPlanner:
                               direction_block=self._direction_block(), worlds=worlds,
                               constraints=self.bundle.get("picture_check") or [])
         name = self.ws.doc_name(n, section)
+        program = self.ws.program_name(name)
         engine = harness.ENGINE(EngineConfig(
-            tools=AUTHOR_TOOLS, model=self.model, permission_mode="dontAsk",
-            cwd=self.ws.dir, max_turns_budget_usd=self.budget_usd, timeout=AUTHOR_TIMEOUT))
+            **sdkkit.author_config(self.ws.dir, project_root=self.ws.root, programs=[program]),
+            model=self.model, max_turns_budget_usd=self.budget_usd, timeout=AUTHOR_TIMEOUT))
+        finish = sdkkit.finish_prompt(program, name, f"python3 sr.py frame {name}")
         reviewer = harness.Harness(self.ws.root, "vfx", model=self.model, role=REVIEW_ROLE,
                                    house=self.house, house_digest=self.house_digest,
                                    fresh=self.fresh, verbose=self.verbose, timeout=1800.0)
         ids = ", ".join(w["id"] for w in worlds)
-        program = self.ws.program_name(name)
         prompt = (f"Read {brief.name}, then kit/SDK-GUIDE.md and kit/examples/, and write "
                   f"{program}: the program that builds {name} as the brief says, the world "
                   f"symbol ({ids}) with every shot as a phase, and saves it. Build it with "
@@ -2233,7 +2240,7 @@ class VfxPlanner:
                   f"frame {name}` and Read every frame it writes until each shows its shot. "
                   "When the build reports 0 error(s) and the frames show the shots, reply "
                   "with one line: the program, the document it saves and the symbol ids.")
-        tools_used, _ = self._stream(engine, n, prompt)
+        tools_used, _ = self._stream(engine, n, prompt, finish=finish)
         rounds: list[dict] = []
 
         def gate(round_no: int) -> tuple[list[str], list[str], dict | None]:
@@ -2291,7 +2298,7 @@ class VfxPlanner:
             prov_path = doc_path.with_suffix("").with_suffix(".provenance.json")
             before = {p: (p.read_bytes() if p.is_file() else None)
                       for p in (doc_path, prog_path, prov_path)}
-            used, timed_out = self._stream(engine, n, prompt, resume=True)
+            used, timed_out = self._stream(engine, n, prompt, resume=True, finish=finish)
             tools_used += used
             if timed_out:
                 # The agent was cut off mid-edit: keep the program and the
