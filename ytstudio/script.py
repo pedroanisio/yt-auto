@@ -32,9 +32,12 @@ import argparse
 import csv
 import re
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
+import claude_engine
 from claude_engine import ClaudeEngine, ClaudeError, EngineConfig, Usage
 from .core import Idea, _merge_usage, read_json, timecode, wrap, write_json
 from .ideas import CHANNEL_STYLES, style_brief
@@ -90,6 +93,7 @@ def section_schema(sourced: bool) -> dict:
         "visual": {"type": "string"},
         "narration": {"type": "string"},
         "on_screen": {"type": "string"},
+        "on_screen_text": {"type": "array", "items": {"type": "string"}},
         "asset": {"type": "string"},
         "style": {"type": "string"},
         "source": {"type": "string"},
@@ -129,6 +133,26 @@ POLISH_SCHEMA = {
     "required": ["edits"],
 }
 
+REVISE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "fixes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "n": {"type": "integer"},
+                    "action": {"type": "string", "enum": ["fix", "keep"]},
+                    "narration": {"type": "string"},
+                    "why": {"type": "string"},
+                },
+                "required": ["n", "action", "narration", "why"],
+            },
+        }
+    },
+    "required": ["fixes"],
+}
+
 CHECK_SCHEMA = {
     "type": "object",
     "properties": {
@@ -160,7 +184,8 @@ CHECK_SCHEMA = {
 class Shot:
     visual: str = ""
     narration: str = ""
-    on_screen: str = ""
+    on_screen: str = ""     # direction for the super: where, how, when
+    on_screen_text: list[str] = field(default_factory=list)  # what it reads
     asset: str = ""
     style: str = ""
     source: str = ""
@@ -179,6 +204,12 @@ class Shot:
                     "source", "note"):
             if key in clean:
                 clean[key] = str(clean[key]).strip()
+        if "on_screen_text" in clean:
+            given = clean["on_screen_text"]
+            clean["on_screen_text"] = [
+                " ".join(str(t).split())
+                for t in (given if isinstance(given, (list, tuple)) else [given])
+                if str(t).strip()]
         try:
             clean["seconds"] = max(1, int(clean.get("seconds", 0) or 0))
         except (TypeError, ValueError):
@@ -241,6 +272,83 @@ def spoken_numbers(shots: list[Shot], limit: int = 25) -> list[str]:
                 seen.add(token.lower())
                 out.append(token)
     return out[-limit:]
+
+
+def _figure_key(token: str) -> str:
+    return " ".join(token.lower().split())
+
+
+def figures_in(text: str) -> list[str]:
+    """The figures a line says, in order, each once, as `spoken_numbers` sees them."""
+    seen, out = set(), []
+    for match in _NUMBER.findall(text or ""):
+        token = match.strip()
+        key = _figure_key(token)
+        if len(token) > 1 and key not in seen:
+            seen.add(key)
+            out.append(token)
+    return out
+
+
+class Ledger:
+    """Which section owns each figure, shared by sections drafted side by side.
+
+    Sections written concurrently cannot read what the others said, so a
+    figure is reserved up front for the first section whose plan names it;
+    the others are told to leave it alone.
+    """
+
+    def __init__(self) -> None:
+        self._owner: dict[str, int] = {}
+        self._shown: dict[str, str] = {}
+        self._lock = threading.Lock()
+
+    @classmethod
+    def from_plan(cls, specs: list[dict]) -> Ledger:
+        ledger = cls()
+        for index, spec in enumerate(specs, 1):
+            text = " . ".join([*map(str, spec.get("beats") or []),
+                               *map(str, spec.get("claims") or [])])
+            for token in figures_in(text):
+                ledger.reserve(token, index)
+        return ledger
+
+    def reserve(self, figure: str, section: int) -> int:
+        """Claim a figure for a section unless another holds it; the owner."""
+        key = _figure_key(figure)
+        with self._lock:
+            self._shown.setdefault(key, figure)
+            return self._owner.setdefault(key, section)
+
+    def owner(self, figure: str) -> int | None:
+        with self._lock:
+            return self._owner.get(_figure_key(figure))
+
+    def reserved_from(self, section: int) -> list[str]:
+        """Figures held by other sections."""
+        with self._lock:
+            return [self._shown[k] for k, o in self._owner.items() if o != section]
+
+    def owned_by(self, section: int) -> list[str]:
+        with self._lock:
+            return [self._shown[k] for k, o in self._owner.items() if o == section]
+
+
+def repeated_figures(sections: list[Section]) -> list[dict]:
+    """Figures spoken in more than one section: the later shot, and the label
+    of the shot that said the figure first."""
+    first: dict[str, tuple[int, str]] = {}
+    out = []
+    for index, section in enumerate(sections):
+        for shot in section.shots:
+            for token in figures_in(shot.narration):
+                key = _figure_key(token)
+                if key not in first:
+                    first[key] = (index, shot.label)
+                elif first[key][0] != index:
+                    out.append({"figure": token, "n": shot.n, "label": shot.label,
+                                "first": first[key][1]})
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -418,6 +526,7 @@ class Screenwriter:
                  inspo: list[str] | None = None, notes: str = "",
                  lang: str = "", house: str = "",
                  house_digest: dict | None = None,
+                 jobs: int = 4, draft_effort: str | None = "medium",
                  verbose: bool = True, root: Path | str | None = None) -> None:
         self.idea = idea
         self.root = root            # the project, for its open revision notes
@@ -434,7 +543,12 @@ class Screenwriter:
         self.house = house
         self.house_digest = house_digest or {}
         self.verbose = verbose
+        self.jobs = max(1, jobs)
+        #: Drafting is most of the calls; the fact-check keeps the full effort.
+        #: An effort the operator set for the whole run wins over this.
+        self.draft_effort = draft_effort
         self.usage = Usage()
+        self._usage_lock = threading.Lock()
 
     # -- plumbing ----------------------------------------------------------
 
@@ -443,12 +557,17 @@ class Screenwriter:
             print(msg, file=sys.stderr)
 
     def _ask(self, prompt: str, schema: dict) -> dict:
-        engine = ClaudeEngine(EngineConfig(tools=(), model=self.model))
+        effort = None
+        if ("shots" in schema.get("properties", {}) and self.draft_effort
+                and not claude_engine.default_for("effort")):
+            effort = self.draft_effort
+        engine = ClaudeEngine(EngineConfig(tools=(), model=self.model, effort=effort))
         try:
             return engine.ask_json(prompt, schema, system=harness.with_feedback(
                 SYSTEM, self.root, "script"))
         finally:
-            _merge_usage(self.usage, engine.usage)
+            with self._usage_lock:
+                _merge_usage(self.usage, engine.usage)
 
     def _brief(self) -> str:
         bits = [f"Title: {self.idea.title}", f"Genre: {self.idea.genre}",
@@ -528,7 +647,9 @@ class Screenwriter:
 
     def write_section(self, spec: dict, *, index: int, total: int,
                       plan: dict, written: list[Shot],
-                      next_heading: str, sourced: bool) -> list[Shot]:
+                      next_heading: str, sourced: bool,
+                      previous: dict | None = None,
+                      ledger: Ledger | None = None) -> list[Shot]:
         seconds = int(spec.get("seconds", 0) or 30)
         budget = words_for(seconds, self.wpm)
         self._say(f"[{index}/{total}] {spec.get('heading', '')} "
@@ -559,6 +680,20 @@ class Screenwriter:
                 parts.append("Figures already said out loud. Do not announce "
                              "any of them a second time as if new: "
                              + ", ".join(numbers))
+        elif previous:
+            before = "; ".join(str(b) for b in previous.get("beats") or [])
+            parts.append(f"The section before this one, \"{previous.get('heading', '')}\", "
+                         "is being written at the same time as this one. It "
+                         f"covers: {before or 'its own beats'}. Do not restate it.")
+        if ledger is not None:
+            others = ledger.reserved_from(index)
+            if others:
+                parts.append("Figures that belong to other sections. Do not say "
+                             "any of them here: " + ", ".join(others))
+            mine = ledger.owned_by(index)
+            if mine:
+                parts.append("Figures this section owns. Say each once; no "
+                             "other section will: " + ", ".join(mine))
         if next_heading:
             parts.append(f"The next section is \"{next_heading}\". End this "
                          "one so that it is the obvious next thing, without "
@@ -575,7 +710,11 @@ class Screenwriter:
             "aloud. Numbers written the way they are said. No stage "
             "directions in this field, and an empty string where the picture "
             "plays alone.\n"
-            "- on_screen: the super, label or lower third, or empty\n"
+            "- on_screen: the direction for a super, label or lower third -- "
+            "where it sits and how it moves -- or empty\n"
+            "- on_screen_text: the exact strings a viewer reads on screen, one "
+            "per string, with no direction in them; an empty list when "
+            "nothing is shown\n"
             "- asset: the licensed asset it uses, or what has to be made\n"
             "- style: which visual treatment this shot belongs to\n"
             "- seconds: its duration\n"
@@ -651,47 +790,183 @@ class Screenwriter:
             self._say(f"[verify] failed ({exc})")
             return {}
 
+    # -- stage five: fix what the check found ------------------------------
+
+    def revise(self, shots: list[Shot], flags: list[dict]) -> dict:
+        """The smallest fix for each flagged line, or a reason to keep it.
+
+        Returns the `applied` rewrites and the lines `kept`; a failed call
+        changes nothing.
+        """
+        by_n = {s.n: s for s in shots}
+        todo: dict[int, list[dict]] = {}
+        for f in flags:
+            n = int(f.get("n", 0) or 0)
+            if n in by_n and f.get("severity") in REVISABLE:
+                todo.setdefault(n, []).append(f)
+        result = {"applied": [], "kept": []}
+        if not todo:
+            return result
+        self._say(f"[revise] {len(todo)} flagged line(s)")
+        problems = "\n".join(
+            f"{n}. " + " / ".join(f"{f['severity']}: {f.get('problem', '')} "
+                                  f"(suggested: {f.get('fix', '')})" for f in fs)
+            for n, fs in sorted(todo.items()))
+        parts = [self._brief(), *([self.research] if self.research else []),
+                 "The script as written:\n\n" + shot_listing(shots, cite=True),
+                 "These lines were flagged by the fact-check:\n\n" + problems,
+                 "For each flagged line make the smallest change to its "
+                 "narration that removes the problem: cut or soften the claim, "
+                 "or state only what the research supports. Keep its length "
+                 "within a couple of words, its voice, and every fact the "
+                 "research does support. Never add a fact. When the line is "
+                 "already defensible, answer keep and say why in one clause. "
+                 "Answer for every flagged number and no other."]
+        try:
+            data = self._ask("\n\n".join(parts), REVISE_SCHEMA)
+        except ClaudeError as exc:
+            self._say(f"[revise] failed ({exc}); keeping the lines as written")
+            return result
+
+        for fix in data.get("fixes", []):
+            n = int(fix.get("n", 0) or 0)
+            shot = by_n.get(n)
+            if shot is None or n not in todo:
+                continue
+            why = str(fix.get("why", "")).strip()
+            line = str(fix.get("narration", "")).strip()
+            if fix.get("action") == "keep":
+                result["kept"].append({"n": n, "label": shot.label, "why": why})
+            elif line and line != shot.narration:
+                result["applied"].append({"n": n, "label": shot.label,
+                                          "before": shot.narration, "after": line,
+                                          "why": why})
+                shot.narration, shot.revised = line, why
+        self._say(f"[revise] rewrote {len(result['applied'])}, "
+                  f"kept {len(result['kept'])}")
+        return result
+
+    def verify_and_revise(self, shots: list[Shot], *, rounds: int = 2,
+                          fix: bool = True) -> dict:
+        """Fact-check, fix the important and blocking lines, re-check just those.
+
+        Stops when nothing binding is left or the rounds run out. The result
+        is the check, with `revisions` (what changed), `kept` (lines left as
+        written, with the reason, and still flagged) and `unresolved`.
+        """
+        check = self.verify(shots)
+        if not check or not fix:
+            return check
+        revisions: list[dict] = []
+        kept: dict[int, str] = {}
+        for _ in range(max(0, rounds)):
+            todo = [f for f in check.get("flags", [])
+                    if int(f.get("n", 0) or 0) not in kept]
+            result = self.revise(shots, todo)
+            kept.update({k["n"]: k["why"] for k in result["kept"]})
+            revisions += result["applied"]
+            changed = {r["n"] for r in result["applied"]}
+            if not changed:
+                break
+            again = self.verify([s for s in shots if s.n in changed])
+            if not again:
+                break
+            check["flags"] = (
+                [f for f in check.get("flags", []) if int(f.get("n", 0) or 0) not in changed]
+                + [f for f in again.get("flags", []) if int(f.get("n", 0) or 0) in changed])
+            check["recheck"] = again.get("verdict", "")
+        for f in check.get("flags", []):
+            if int(f.get("n", 0) or 0) in kept:
+                f["kept"] = kept[int(f["n"])]
+        check["revisions"] = revisions
+        check["kept"] = [{"n": n, "why": why} for n, why in kept.items()]
+        check["unresolved"] = [f for f in check.get("flags", [])
+                               if f.get("severity") in REVISABLE and not f.get("kept")]
+        return check
+
+    def _drop_repeats(self, sections: list[Section], shots: list[Shot]) -> int:
+        """Reword the later mention of a figure two sections both said."""
+        rows = repeated_figures(sections)
+        if not rows:
+            return 0
+        flags = [{"n": r["n"], "severity": "important",
+                  "problem": f"states {r['figure']}, already said at {r['first']}; "
+                             "a figure is announced once",
+                  "fix": "refer back without the figure, or cut it"} for r in rows]
+        self._say(f"[ledger] {len(rows)} repeated figure(s)")
+        return len(self.revise(shots, flags)["applied"])
+
     # -- run ---------------------------------------------------------------
 
-    def run(self, *, do_polish: bool = False, do_verify: bool = False) -> dict:
+    def _draft(self, index: int, specs: list[dict], plan: dict, sourced: bool,
+               ledger: Ledger, written: list[Shot]) -> tuple[Section, list[Shot], bool]:
+        spec = specs[index - 1]
+        section = Section(heading=str(spec.get("heading", f"Section {index}")),
+                          purpose=str(spec.get("purpose", "")),
+                          seconds=int(spec.get("seconds", 0) or 0),
+                          beats=[str(b) for b in spec.get("beats", [])])
+        try:
+            shots = self.write_section(
+                spec, index=index, total=len(specs), plan=plan,
+                written=written, sourced=sourced,
+                previous=specs[index - 2] if index > 1 else None,
+                ledger=ledger,
+                next_heading=str(specs[index].get("heading", ""))
+                if index < len(specs) else "")
+            failed = False
+        except ClaudeError as exc:
+            # One failed section must not cost the whole screenplay.
+            self._say(f"  section {index} failed: {exc}")
+            shots, failed = [], True
+        return section, shots, failed
+
+    def run(self, *, do_polish: bool = False, do_verify: bool = False,
+            fix: bool = True) -> dict:
         plan = self.plan()
         specs = plan.get("sections") or []
         if not specs:
             raise ClaudeError("the plan came back with no sections")
 
         sourced = bool(self.research)
+        ledger = Ledger.from_plan(specs)
         sections: list[Section] = []
         written: list[Shot] = []
         failures = 0
-        for index, spec in enumerate(specs, 1):
-            section = Section(heading=str(spec.get("heading", f"Section {index}")),
-                              purpose=str(spec.get("purpose", "")),
-                              seconds=int(spec.get("seconds", 0) or 0),
-                              beats=[str(b) for b in spec.get("beats", [])])
-            try:
-                shots = self.write_section(
-                    spec, index=index, total=len(specs), plan=plan,
-                    written=written, sourced=sourced,
-                    next_heading=str(specs[index].get("heading", ""))
-                    if index < len(specs) else "")
-            except ClaudeError as exc:
-                # One failed section must not cost the whole screenplay.
-                self._say(f"  section {index} failed: {exc}")
-                failures += 1
-                shots = []
+
+        def number(index: int, section: Section, shots: list[Shot]) -> None:
             for i, shot in enumerate(shots, 1):
                 shot.n = len(written) + i
                 shot.label = f"{index}.{i}"
             section.shots = shots
-            written += shots
+            written.extend(shots)
             sections.append(section)
+
+        if self.jobs > 1 and len(specs) > 1:
+            self._say(f"[write] {len(specs)} sections, {min(self.jobs, len(specs))} "
+                      "at a time")
+            with ThreadPoolExecutor(max_workers=min(self.jobs, len(specs))) as pool:
+                drafts = list(pool.map(
+                    lambda i: self._draft(i, specs, plan, sourced, ledger, []),
+                    range(1, len(specs) + 1)))
+            for index, (section, shots, failed) in enumerate(drafts, 1):
+                failures += failed
+                number(index, section, shots)
+        else:
+            for index in range(1, len(specs) + 1):
+                section, shots, failed = self._draft(index, specs, plan, sourced,
+                                                     ledger, written)
+                failures += failed
+                number(index, section, shots)
 
         at = 0
         for shot in written:
             shot.at, at = at, at + shot.seconds
 
+        if written:
+            self._drop_repeats(sections, written)
         polished = self.polish(written) if do_polish and written else 0
-        check = self.verify(written) if do_verify and written else {}
+        check = (self.verify_and_revise(written, fix=fix)
+                 if do_verify and written else {})
 
         return {
             "idea": asdict(self.idea),
@@ -719,6 +994,9 @@ class Screenwriter:
 #: measurable half of the house rule about reserving time for reading.
 READING_CPS = 17.0
 
+#: The fact-check severities the stage fixes itself.
+REVISABLE = ("blocker", "important")
+
 #: Enough number words to tell "12" said as "twelve" from "12" never said.
 SPOKEN_NUMBERS = {
     0: ("zero",), 1: ("um", "uma", "one"), 2: ("dois", "duas", "two"),
@@ -733,12 +1011,32 @@ SPOKEN_NUMBERS = {
 }
 
 
+#: Strings quoted inside a direction: straight, curly or guillemets.
+_QUOTED = re.compile(r'"([^"]+)"|“([^”]+)”|«\s*([^»]+?)\s*»')
+
+
+def visible_text(shot: Shot) -> str:
+    """The words a viewer reads from a shot, without the directions around them.
+
+    The screenplay keeps them in `on_screen_text`. An older screenplay has only
+    `on_screen`: the strings quoted in it are the words, and with no quotes the
+    whole field is taken, as before.
+    """
+    strings = [t for t in shot.on_screen_text or [] if str(t).strip()]
+    if not strings:
+        field_text = shot.on_screen or ""
+        strings = [next(g for g in m.groups() if g) for m in _QUOTED.finditer(field_text)]
+        if not strings:
+            strings = [field_text]
+    return " ".join(" ".join(strings).split())
+
+
 def legibility(sections: list[Section], timings: dict | None = None) -> list[dict]:
     """Supers nobody can finish reading in the time they are on screen."""
     out = []
     for section in sections:
         for shot in section.shots:
-            text = " ".join((shot.on_screen or "").split())
+            text = visible_text(shot)
             seconds = float((timings or {}).get(shot.label, shot.seconds) or 0)
             if not text or seconds <= 0:
                 continue
@@ -762,7 +1060,8 @@ def unspoken_numbers(sections: list[Section]) -> list[dict]:
     for section in sections:
         for shot in section.shots:
             said = (shot.narration or "").lower()
-            for raw in re.findall(r"\d[\d.,]*", shot.on_screen or ""):
+            shown = visible_text(shot)
+            for raw in re.findall(r"\d[\d.,]*", shown):
                 digits = raw.rstrip(".,")
                 if digits in said:
                     continue
@@ -774,7 +1073,7 @@ def unspoken_numbers(sections: list[Section]) -> list[dict]:
                                              in SPOKEN_NUMBERS.get(value, ())):
                     continue
                 out.append({"label": shot.label, "number": digits,
-                            "super": " ".join((shot.on_screen or "").split())[:50]})
+                            "super": shown[:50]})
     return out
 
 
@@ -954,7 +1253,13 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
     p.add_argument("--polish", action="store_true",
                    help="reread the finished narration and tighten it")
     p.add_argument("--verify", action="store_true",
-                   help="fact-check the script against the dossier")
+                   help="fact-check the script against the dossier, fix the "
+                        "important and blocking lines, and re-check them")
+    p.add_argument("--report-only", action="store_true",
+                   help="with --verify: report the findings without fixing them")
+    p.add_argument("--jobs", type=int, default=4,
+                   help="sections drafted at the same time (default 4; 1 writes "
+                        "them in order, each reading the one before)")
     p.add_argument("--md", dest="md_out", help="where to write the screenplay")
     p.add_argument("--prompter", dest="vo_out", help="where to write narration only")
     p.add_argument("--csv", dest="csv_out", help="where to write the shot list")
@@ -992,14 +1297,15 @@ def run(args) -> int:
         idea, house=rules, house_digest=digest, root=project.root,
         model=args.model, minutes=args.minutes, wpm=args.wpm,
         sections=args.sections, inspo=split(args.inspo), notes=args.notes,
-        lang=args.lang,
+        lang=args.lang, jobs=args.jobs,
         research=research_block(dossier) if dossier else "",
         direction=direction_block(direction) if direction else "",
         outline=(dossier or {}).get("outline") if args.outline else None,
         verbose=not args.quiet)
 
     try:
-        data = writer.run(do_polish=args.polish, do_verify=args.verify)
+        data = writer.run(do_polish=args.polish, do_verify=args.verify,
+                          fix=not args.report_only)
     except ClaudeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

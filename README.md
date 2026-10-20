@@ -342,11 +342,22 @@ figures already spoken aloud, and the next section's heading to set up.
 
 With research in the project, every shot carries the source behind its claim,
 and `--verify` re-reads the finished script for lines the research does not
-support. `--polish` reads the narration end to end and rewrites only what
-repeats, stumbles or buries its point.
+support, then fixes them in the same run: each blocking or important line
+gets the smallest rewrite, or is kept with a reason (a kept flag still binds
+the picture), and only the revised shots are checked again, for at most two
+rounds. `--report-only` keeps the old report-without-fixing behaviour.
+`--polish` reads the narration end to end and rewrites only what repeats,
+stumbles or buries its point.
+
+Sections are drafted in parallel (`--jobs`, default 4; `--jobs 1` drafts in
+order, each reading the one before) against a ledger that reserves each
+figure for the section that owns it; a figure spoken twice is rewritten after
+drafting. A shot's visible text lives in `on_screen_text`, apart from the
+direction in `on_screen`, and the reading-speed check measures only that text.
 
 `--minutes` · `--wpm` · `--sections` · `--outline` to use the dossier's own beat
-sheet · `--inspo` for voice · `--notes` which outrank everything else
+sheet · `--inspo` for voice · `--notes` which outrank everything else ·
+`--jobs` · `--report-only`
 
 The runtime floor is 10 seconds (`yt sound` keeps the same floor), so a short
 film keeps its own length instead of being padded to half a minute.
