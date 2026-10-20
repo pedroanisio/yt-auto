@@ -380,8 +380,26 @@ class StillBudget(unittest.TestCase):
         self.assertEqual([c.kwargs["timeout"] for c in render.call_args_list],
                          [sdkkit.STILL_BUDGET, sdkkit.STILL_DEADLINE])
 
+    def test_the_wait_for_the_host_is_reported_apart_from_the_render(self):
+        # asked at 0, the lock is free at 30, the render ends at 34
+        ticks = iter([0.0, 30.0, 34.0])
+        with mock.patch("ytstudio.render.engine_render_still", return_value=(png_bytes(), "ok")), \
+                mock.patch.object(sdkkit.time, "monotonic", side_effect=lambda: next(ticks)):
+            path, findings = sdkkit.frame(self.doc, 0.5, host="h7")
+        self.assertIsNotNone(path)
+        notes = " ".join(findings)
+        self.assertIn(f"{sdkkit.RENDER_NOTE} 4 s on h7", notes)
+        self.assertIn("waited 30 s for the host", notes)
+
+    def test_no_wait_note_when_the_host_was_free(self):
+        ticks = iter([0.0, 0.2, 3.0])
+        with mock.patch("ytstudio.render.engine_render_still", return_value=(png_bytes(), "ok")), \
+                mock.patch.object(sdkkit.time, "monotonic", side_effect=lambda: next(ticks)):
+            _, findings = sdkkit.frame(self.doc, 0.5, host="h7")
+        self.assertNotIn("waited", " ".join(findings))
+
     def test_a_still_killed_at_the_budget_names_its_cost_driver(self):
-        ticks = iter([0.0, float(sdkkit.STILL_BUDGET)])
+        ticks = iter([0.0, 0.0, float(sdkkit.STILL_BUDGET)])
         with mock.patch("ytstudio.render.engine_render_still",
                         return_value=(None, "render failed\nerror: exit 124")), \
                 mock.patch.object(sdkkit.time, "monotonic", side_effect=lambda: next(ticks)):

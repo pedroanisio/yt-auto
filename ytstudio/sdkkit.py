@@ -798,6 +798,10 @@ class host_lock:
         self.fh.close()
 
 
+#: A wait for the host's render lock at least this long is reported apart.
+WAIT_NOTE_SECONDS = 1.0
+
+
 def frame(doc: Path, at: float, *, host: str = "", out_dir: Path | None = None,
           budget: float | None = None) -> tuple[Path | None, list[str]]:
     """Render one frame of a document into frames/kit/ -- on the still host, or on
@@ -830,8 +834,10 @@ def frame(doc: Path, at: float, *, host: str = "", out_dir: Path | None = None,
     doc_path = doc.relative_to(root).as_posix()
     files = referenced_files(text, doc.parent, root)
     files.pop(doc_path, None)
+    asked = time.monotonic()            # the budget times the render, not this wait
     with host_lock(host):
         started = time.monotonic()
+        waited = started - asked
         png, message = still(host)
         if png is None and "No such file or directory" in message:
             # The engine binary this process found on the host is gone (a
@@ -853,6 +859,9 @@ def frame(doc: Path, at: float, *, host: str = "", out_dir: Path | None = None,
     if png is not None:
         findings.append(f"note: {RENDER_NOTE} {seconds:.0f} s on {host or 'this machine'} "
                         f"({render_settings(text)})")
+    if waited >= WAIT_NOTE_SECONDS:
+        findings.append(f"note: waited {waited:.0f} s for the host (its lock was held by "
+                        "another render); that wait is not part of this still's cost")
     if png is None:
         # The host kills a render a few seconds before the budget; a run that long
         # with no picture was stopped for its cost, not refused by the engine.
