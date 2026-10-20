@@ -344,6 +344,16 @@ fails closed on the first requirement that does not hold, and `gate.json`'s
 `stopped_by` names that requirement, the owning stage and the command that
 fixes it.
 
+The gate applies to a film with no narration too, unchanged. For a screenplay
+with none, `yt voice` records nothing: the model writes a descriptive captions
+track (bracketed sound descriptions from the cue sheet and the shots, never
+dialogue) to `narration.vtt` and `.srt`, every cue is made legal mechanically
+to the gate's limits (ordered, inside the film, two lines of 42 characters, 17
+characters per second; lengthened or dropped, and said so), and `voice.json`
+has no takes, `"wordless": true` and `voice_end` set to the last shot's start
+(`"voice_end_source": "last shot start"`), so the gate's tail check, QA and
+`yt doctor` read one value.
+
 `yt qa` is the harness of sections 2, 7, 8, 9 and 11: it samples the evidence
 as section 7 says, renders one frame window per sample on the render host
 (one `--frames A..B` job each; the still is the window's middle frame), files

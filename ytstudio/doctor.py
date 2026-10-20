@@ -511,9 +511,14 @@ def check_project(project: workspace.Project) -> Report:
             "engine": engine, "takes": len(voice.get("takes", [])),
             "spoken_seconds": voice.get("spoken_seconds"), "drift_seconds": drift,
             "too_fast": len(hot), "overlaps": len(overlaps), "timing": timing}
-        report.add("ok", "voice", f"{engine} · {len(voice.get('takes', []))} takes · "
-                   f"spoken {timecode(voice.get('spoken_seconds', 0) or 0)} · "
-                   f"drift {drift:+.0f}s")
+        if voice.get("wordless"):
+            cues = (voice.get("descriptive_captions") or {}).get("cues", 0)
+            report.add("ok", "voice", f"a wordless film with {cues} descriptive "
+                       "captions")
+        else:
+            report.add("ok", "voice", f"{engine} · {len(voice.get('takes', []))} takes · "
+                       f"spoken {timecode(voice.get('spoken_seconds', 0) or 0)} · "
+                       f"drift {drift:+.0f}s")
         if engine in SCRATCH_ENGINES:
             report.add("warn", "voice", f"narration is a {engine} scratch take, "
                        "not publishable", _cmd("voice", project, "--engine", "auto"))
@@ -636,11 +641,16 @@ def check_project(project: workspace.Project) -> Report:
         # A cue sheet is spotted to absolute timecodes; if it was written
         # against the screenplay's estimate and the recording came in
         # shorter or longer, every cue after the first drift lands wrong.
-        if voice and voice.get("voice_end") and sound.get("runtime"):
-            ends, spotted = float(voice["voice_end"]), float(sound["runtime"])
+        # A wordless film's voice_end is where its ending starts, not where a
+        # narration stops: its cue sheet is measured against the film's end.
+        wordless = bool(voice and voice.get("wordless"))
+        ends = float((voice or {}).get("film_end" if wordless else "voice_end") or 0)
+        if ends and sound.get("runtime"):
+            spotted = float(sound["runtime"])
             if abs(spotted - ends) > ends * DRIFT_LIMIT:
                 report.add("warn", "sound", f"the cue sheet is spotted for "
-                           f"{timecode(spotted)} but the narration ends at "
+                           f"{timecode(spotted)} but the "
+                           f"{'film' if wordless else 'narration'} ends at "
                            f"{timecode(ends)}; cues land on the wrong frames",
                            _cmd("retime", project) + ", then " + _cmd("sound", project))
         if (cov.get("music_share") or 0) > 85:
@@ -684,7 +694,8 @@ def check_project(project: workspace.Project) -> Report:
             report.add("warn", "art", f"{placeholders} of {total} shots have no art "
                        "yet; the render is placeholder cards",
                        "produce the vfx stubs and assets, then " + _cmd("build", project))
-        if voice and not build.get("timeline", {}).get("from_voice"):
+        if (voice and voice.get("takes") and not voice.get("wordless")
+                and not build.get("timeline", {}).get("from_voice")):
             report.add("warn", "build", "the scene was built from screenplay "
                        "estimates, but a narration exists", _cmd("build", project))
     if "render" in done:

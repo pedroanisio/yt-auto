@@ -234,7 +234,7 @@ blocking editorial note. It is not a delivery verdict. The order is:
 4. `yt render --audio-only` once, to prove the mix fits in memory, then
    `yt render --quality final --strict`. Both route to the big host.
 5. `yt gate` (on a render host; `gate.json`'s `stopped_by` says which
-   requirement stopped it and which stage owns the fix), then `yt review
+   requirement stopped it and which stage owns the fix; a wordless film passes it with the descriptive captions `yt voice` writes and `voice_end` = the last shot's start), then `yt review
    --engine rs`, then `yt qa`.
 6. READY TO PUBLISH only when `yt qa` reports an overall of 9.0 with no
    category under 8.5, nothing blocking and no placeholder. A blocking
