@@ -67,7 +67,7 @@ from .harness import FEEDBACK_DIR, Harness, HarnessError, brief
 
 #: The stages a finding can be routed to, in pipeline order.
 PIPELINE = tuple(stage for stage, _ in workspace.STAGES)
-ROUTABLE = PIPELINE + (() if "keyframe" in PIPELINE else ("keyframe",))
+ROUTABLE = PIPELINE
 UPSTREAM, EXTERNAL = "upstream-fact", "external"
 HUMAN = (UPSTREAM, EXTERNAL)
 ROUTES = ROUTABLE + HUMAN

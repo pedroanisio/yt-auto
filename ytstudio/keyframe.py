@@ -95,7 +95,7 @@ from datetime import datetime
 from pathlib import Path
 
 from claude_engine import ClaudeError, EngineConfig, Usage
-from . import assess, design, fonts, framecheck, harness, house, render, sdkkit, vfx, workspace
+from . import assess, design, flags, fonts, framecheck, harness, house, render, sdkkit, vfx, workspace
 from .script import Shot, visible_text
 from .core import Idea, _merge_usage, compact, read_json, write_json
 from .vfx import (AUTHOR_TOOLS, FRAME, MISSION, STACK, Workspace,
@@ -1368,17 +1368,16 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
     p.add_argument("--sheet", action="store_true",
                    help="compose a separate style frame of the film's elements instead (the "
                         "older look-lock, reviewed in rounds; its frame is not part of the film)")
-    p.add_argument("--rounds", type=int, default=DEFAULT_ROUNDS,
-                   help="with --sheet: revision rounds the author gets after the first frame "
-                        f"when the review is under the bar (default {DEFAULT_ROUNDS})")
-    p.add_argument("--bar", type=float, default=DEFAULT_BAR,
-                   help=f"with --sheet: review score (0-10) under which the frame goes back "
-                        f"(default {DEFAULT_BAR:g})")
-    p.add_argument("--budget-usd", type=float, default=None, dest="budget_usd",
-                   help=f"spend cap for one authoring session (default {LOOK_BUDGET_USD:g}; "
-                        "2 with --sheet)")
-    p.add_argument("--fresh", action="store_true",
-                   help="plan and author the look again (with --sheet: pick and compose "
+    flags.rounds(p, default=DEFAULT_ROUNDS,
+                 help="with --sheet: revision rounds the author gets after the first frame "
+                      f"when the review is under the bar (default {DEFAULT_ROUNDS})")
+    flags.bar(p, default=DEFAULT_BAR,
+              help=f"with --sheet: review score (0-10) under which the frame goes back "
+                   f"(default {DEFAULT_BAR:g})")
+    flags.budget(p, default=None,
+                 help=f"spend cap for one authoring session (default {LOOK_BUDGET_USD:g}; "
+                      "2 with --sheet)")
+    flags.fresh(p, help="plan and author the look again (with --sheet: pick and compose "
                         "again), ignoring cached decisions")
     p.add_argument("--approve", action="store_true",
                    help="record the operator's approval of the keyframe on disk")

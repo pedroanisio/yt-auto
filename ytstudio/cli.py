@@ -1,18 +1,22 @@
 """yt -- take a YouTube video from an idea to a rendered cut.
 
-Nine stages, each reading what the ones before it wrote:
+Eleven stages, each reading what the ones before it wrote (the order `yt run` walks):
 
-    yt ideas     invent and rank video ideas, deduplicated against a store
     yt research  turn one idea into a sourced dossier, with licensed footage
     yt styles    rank the visual treatments that can carry its message
     yt script    write the full AV screenplay, shot by shot
-    yt keyframe  lock the look: the film's lead section, authored once, for approval
+    yt props     fetch CC0 3D props (models, HDRIs, textures) for a video from Poly Haven
     yt voice     record the narration, measure it, caption it
+    yt retime    write the measured narration timings back into the script
+    yt keyframe  lock the look: the film's lead section, authored once, for approval
     yt vfx       plan the animation and have the model author it for scene-render
     yt sound     spot the effects, ambience, score and mix against it
     yt build     compile all of it into a scene-render document
     yt render    hand the document to the engine
-    yt retime    write the measured narration timings back into the script
+
+Around them, before and after:
+
+    yt ideas     invent and rank video ideas, deduplicated against a store
     yt pilot     cut a short pilot at full fidelity, for approval
     yt gate      put the render through the delivery gate
     yt review    write the PDF review sheet, and have the model read it
@@ -24,7 +28,7 @@ Nine stages, each reading what the ones before it wrote:
     yt doctor    check the toolchain and every video, and say what to do next
     yt assess    ask whether a described video can be produced, and prove it with a frame
     yt assets    search open catalogues for one shot's footage
-    yt props     fetch CC0 3D props (models, HDRIs, textures) for a video from Poly Haven
+    yt probe     measure what the system can make look real, per class of material and light
 
 Everything for one video lives in `work/<slug>/`, so stages chain without
 passing paths -- and every stage also runs on its own, handed files
@@ -140,9 +144,10 @@ def _register_run(sub, parents: list) -> None:
                         "fact-check, listen-back) for a cheaper first draft")
     p.set_defaults(run=_run_pipeline)
 
-#: Stages that take only the project and the quiet flag: no model, no idea
-#: flags, because they decide nothing and fetch from open catalogues.
-PROJECT_ONLY = ("props",)
+#: Stages that call no model: `yt run` hands them the project and the quiet
+#: flag, not the model flags (props asks a model and takes them like the rest).
+NO_MODEL = ("render",)
+MODEL_FLAGS = ("--model", "--effort", "--fallback-model")
 
 
 def run_extras(args, *, redo: set) -> dict[str, list[str]]:
@@ -175,18 +180,16 @@ def run_extras(args, *, redo: set) -> dict[str, list[str]]:
 
 
 def stage_argv(stage: str, base: list[str], extra: dict[str, list[str]]) -> list[str]:
-    """The argv for one stage of `yt run`: the shared flags plus its own, or
-    only --project/--quiet for a stage that accepts nothing else."""
-    if stage in PROJECT_ONLY:
+    """The argv for one stage of `yt run`: the shared flags plus its own, less
+    the model flags for a stage that calls no model."""
+    if stage in NO_MODEL:
         kept, skip = [], False
         for n, flag in enumerate(base):
             if skip:
                 skip = False
-                continue
-            if flag == "--project":
-                kept += [flag, base[n + 1]]
+            elif flag in MODEL_FLAGS:
                 skip = True
-            elif flag == "--quiet":
+            else:
                 kept.append(flag)
         return [stage, *kept, *extra.get(stage, [])]
     return [stage, *base, *extra.get(stage, [])]
@@ -378,7 +381,7 @@ def build_parser() -> argparse.ArgumentParser:
     vfx.register(sub, [idea, model, quiet, work])
     sound.register(sub, [idea, model, quiet, work])
     build.register(sub, [idea, model, quiet, work])
-    render.register(sub, [idea, model, quiet, work])
+    render.register(sub, [idea, quiet, work])
     retime.register(sub, [idea, model, quiet, work])
     pilot.register(sub, [idea, model, quiet, work])
     gate.register(sub, [idea, model, quiet, work])
@@ -387,7 +390,7 @@ def build_parser() -> argparse.ArgumentParser:
     improve.register(sub, [idea, model, quiet, work])
     doctor.register(sub, [quiet, work])
     assess.register(sub, [model, quiet, work])
-    props.register(sub, [quiet, work])
+    props.register(sub, [model, quiet, work])
     keyframe.register(sub, [idea, model, quiet, work])
     probes.register(sub, [model, quiet, work])
     _register_run(sub, [idea, model, quiet, work])

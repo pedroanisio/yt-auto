@@ -53,7 +53,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import workspace
+from . import flags, workspace
 from .core import read_json, write_json
 
 BUILD_HINT = ("the scene-render binary was not found. Set RS_RENDER_BIN to it, "
@@ -1731,6 +1731,7 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
     p.add_argument("--prune-remote", action="store_true", dest="prune_remote",
                    help="delete this project's mirror on every render host and stop "
                         "(the next job uploads it again in full)")
+    flags.ignore_model(p, "render")
     p.set_defaults(run=run)
     return p
 

@@ -75,6 +75,25 @@ came from breaking one of them.
    the engine's validation go to the render hosts. Never `cargo build`,
    install or run the engine here.
 
+## One word per concept
+
+The same meaning is spelled the same way in every stage that has it
+(`ytstudio/flags.py`, asserted by `tests/test_stage_flags.py`). An old
+spelling still works for one release, hidden from `--help`, and prints a
+one-line note.
+
+| Concept | Flag | Stages | Old spelling |
+|---|---|---|---|
+| revision rounds the author gets | `--rounds` | `keyframe` (with `--sheet`), `vfx`, `probe` | `--revisions` (`vfx`) |
+| the review score under which work goes back | `--bar` | `keyframe` (with `--sheet`), `vfx`, `probe` | `--author-bar` (`vfx`) |
+| a spend cap in dollars | `--budget-usd` (`--stage-budget-usd`, `--synth-budget-usd`, `--review-budget-usd` cap the whole stage, the synthesis, a review) | `research`, `keyframe`, `vfx`, `probe`, `assess`, `improve`, `sound` | `--budget` (`research`) |
+| ignore what is cached and do the stage again | `--fresh` | `research`, `keyframe`, `vfx`, `props`, `voice`, `sound`, `build`, `retime`, `review`, `qa`, `gate`, `pilot` | |
+| the model, its reasoning effort, its fallbacks | `--model`, `--effort`, `--fallback-model` | every stage that calls a model, `props` included; not `render` | |
+
+`vfx --budget-hours` is not money: it is an input to the plan (refinement
+hours available). `voice --redo` takes take labels; `run --redo` takes stage
+names.
+
 ## The stages and their files
 
 Everything for one video lives in `work/<slug>/`. Each stage reads what the

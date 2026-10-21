@@ -15,10 +15,13 @@ class Pipeline(unittest.TestCase):
         self.assertLess(stages.index("props"), stages.index("vfx"))
         self.assertEqual(dict(workspace.STAGES)["props"], "props")
 
-    def test_props_gets_only_the_flags_it_accepts(self):
+    def test_each_stage_gets_only_the_flags_it_accepts(self):
         base = ["--project", "work/x", "--model", "sonnet", "--quiet"]
+        # props asks a model, so it takes the model flags; render calls none.
         argv = cli.stage_argv("props", base, {"props": []})
-        self.assertEqual(argv, ["props", "--project", "work/x", "--quiet"])
+        self.assertEqual(argv, ["props", *base])
+        argv = cli.stage_argv("render", base, {"render": []})
+        self.assertEqual(argv, ["render", "--project", "work/x", "--quiet"])
         argv = cli.stage_argv("sound", base, {"sound": ["--fetch"]})
         self.assertEqual(argv, ["sound", *base, "--fetch"])
 
