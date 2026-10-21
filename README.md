@@ -887,7 +887,7 @@ runs with `--fresh`, every stage downstream of it runs up to `yt render`, `yt
 gate` and `yt qa` score a new pass, and the pass is kept only if the overall
 improves, no category drops more than 0.5 and no new blocking mechanical
 finding appears. Otherwise the snapshot in `improve/pass-NN/snapshot/` is
-restored. It stops at READY TO PUBLISH, at the pass or budget limit, or when
+restored. QA's finding owner is one of the stages, `upstream-fact` or `external`, so routing is a lookup, and `--resume` and `--rejudge` carry the earlier passes and survivor counts forward in `improve.json`. It stops at READY TO PUBLISH, at the pass or budget limit, or when
 a defect survives three briefed passes, and writes `improve.json` and an
 `improve.md` in the shape of the §11 report. The estimate is per stage, read from
 each stage's own report (else a like project's) and marked measured, like or

@@ -286,7 +286,9 @@ blocking editorial note. It is not a delivery verdict. The order is:
    engine's report (what `--strict` refuses), a render short of the whole
    programme, a programme with no audio track, no technical `gate.json` or
    one not `deliverable`, no `qa.json` at READY TO PUBLISH, or a gate or QA
-   pass older than the video it judged. Only with none of them does doctor
+   pass older than the newer of `video.mp4` and `scene.xml` (QA records the
+   digest of the scene it judged, compared instead where present), or a video
+   older than `scene.xml`. Only with none of them does doctor
    print `delivery: READY TO PUBLISH`.
 
 The frame has three bands at 1920x1080, measured from the top: supers and

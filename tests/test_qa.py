@@ -120,5 +120,74 @@ class Comparison(unittest.TestCase):
         self.assertIn("music_score", text)
 
 
+class OwnerEnum(unittest.TestCase):
+    """A finding's owner is a stage, upstream-fact or external; the harness
+    refuses any other word and asks again (AUTO-53)."""
+
+    def card(self, owner):
+        return {"scores": {k: 8.0 for k in qa.CATEGORIES}, "overall": 8.0,
+                "verdict": qa.NOT_READY, "rationale": "r", "blocking": [],
+                "not_evidenced": [],
+                "findings": [{"timestamp": 1.0, "problem": "p", "why": "w",
+                              "root_cause": "c", "owner": owner, "fix": "f",
+                              "severity": "minor"}]}
+
+    def inspect(self, form_owner, retry_owner=None):
+        import json
+        from tests import test_harness as th
+        from ytstudio import harness
+        from claude_engine import Event
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        cwd = root / "qa" / "pass-01"
+        cwd.mkdir(parents=True)
+        th.FakeEngine.json_calls, th.FakeEngine.stream_calls = [], []
+        th.FakeEngine.texts, th.FakeEngine.fail = ["done"], False
+        th.FakeEngine.answers = [self.card(retry_owner)] if retry_owner else []
+
+        class Filing(th.FakeEngine):
+            def stream(self_, prompt, system=None):
+                (cwd / "scorecard.form.json").write_text(
+                    json.dumps(self.card(form_owner)), encoding="utf-8")
+                yield Event(type="assistant", text="I filed the scorecard.")
+                yield Event(type="result", raw={})
+
+        saved, harness.ENGINE = harness.ENGINE, Filing
+        self.addCleanup(setattr, harness, "ENGINE", saved)
+        h = harness.Harness(root, "qa", model="sonnet", verbose=False)
+        return h.inspect("pass-01", "p", qa.SCORECARD_SCHEMA, cwd=cwd,
+                         form="scorecard.form.json"), th.FakeEngine.json_calls
+
+    def test_the_schema_owner_is_the_stage_names_and_the_two_human_routes(self):
+        owner = qa.SCORECARD_SCHEMA["properties"]["findings"]["items"]["properties"]["owner"]
+        self.assertEqual(owner["enum"], list(qa.OWNERS))
+        self.assertTrue({"vfx", "sound", "build", "upstream-fact", "external"} <= set(qa.OWNERS))
+        self.assertNotIn("editor", qa.OWNERS)
+        self.assertTrue(all(qa.DUTIES.get(o) for o in qa.OWNERS))
+
+    def test_an_owner_in_the_enum_is_taken_as_filed(self):
+        result, asked = self.inspect("sound")
+        self.assertEqual(result["findings"][0]["owner"], "sound")
+        self.assertEqual(asked, [])
+
+    def test_an_owner_outside_the_enum_is_refused_and_asked_again(self):
+        result, asked = self.inspect("editor", retry_owner="build")
+        self.assertEqual(len(asked), 1)
+        self.assertEqual(result["findings"][0]["owner"], "build")
+
+    def test_an_owner_still_outside_the_enum_after_the_retry_is_an_error(self):
+        from ytstudio import harness
+        with self.assertRaises(harness.HarnessError) as ctx:
+            self.inspect("editor", retry_owner="audio")
+        self.assertIn("owner", str(ctx.exception))
+
+    def test_the_enum_check_walks_nested_arrays(self):
+        from ytstudio import harness
+        bad = harness.enum_violations(self.card("gate"), qa.SCORECARD_SCHEMA)
+        self.assertEqual(bad, ["findings[0].owner='gate'"])
+        self.assertEqual(harness.enum_violations(self.card("vfx"), qa.SCORECARD_SCHEMA), [])
+
+
 if __name__ == "__main__":
     unittest.main()

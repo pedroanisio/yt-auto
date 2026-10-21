@@ -41,8 +41,8 @@ from claude_engine import (READ_ONLY_TOOLS, ClaudeEngine, ClaudeError,
 from .core import _merge_usage, read_json, write_json
 
 __all__ = ["Harness", "HarnessError", "ENGINE", "READ_ONLY_TOOLS", "ClaudeError",
-           "brief", "missing_fields", "DECISIONS_DIR", "FEEDBACK_DIR",
-           "feedback_for", "with_feedback", "use_engine", "ENGINE_NAME", "build_engine"]
+           "brief", "missing_fields", "enum_violations",
+           "DECISIONS_DIR", "FEEDBACK_DIR", "feedback_for", "with_feedback", "use_engine", "ENGINE_NAME", "build_engine"]
 
 #: Where a project keeps what the model decided, per stage.
 DECISIONS_DIR = "decisions"
@@ -156,6 +156,22 @@ def missing_fields(result: Any, schema: dict) -> list[str]:
     if not isinstance(result, dict):
         return required
     return [name for name in required if name not in result]
+
+
+def enum_violations(result: Any, schema: dict, path: str = "") -> list[str]:
+    """Where an answer holds a value outside the schema's `enum`, as `path=value`,
+    through nested objects and arrays. Missing fields are `missing_fields`' business."""
+    bad: list[str] = []
+    if "enum" in schema and result is not None and result not in schema["enum"]:
+        bad.append(f"{path or 'answer'}={result!r}")
+    if isinstance(result, dict):
+        for name, sub in (schema.get("properties") or {}).items():
+            if name in result and isinstance(sub, dict):
+                bad += enum_violations(result[name], sub, f"{path}.{name}" if path else name)
+    elif isinstance(result, list) and isinstance(schema.get("items"), dict):
+        for n, item in enumerate(result):
+            bad += enum_violations(item, schema["items"], f"{path}[{n}]")
+    return bad
 
 
 #: Appended to every inspection, so the agent that saw the evidence files the form.
@@ -284,11 +300,15 @@ class Harness:
             "cost_usd": round(cost, 4), "tool_calls": tool_calls,
             "when": time.strftime("%Y-%m-%dT%H:%M:%S"), "result": result})
 
-    def _check(self, name: str, result: Any, schema: dict) -> Any:
+    def _check(self, name: str, result: Any, schema: dict, *, enums: bool = False) -> Any:
         missing = missing_fields(result, schema)
         if missing:
             raise HarnessError(f"[{self.stage}] the model's {name} answer lacks "
                                f"{', '.join(missing)}")
+        bad = enum_violations(result, schema) if enums else []
+        if bad:
+            raise HarnessError(f"[{self.stage}] the model's {name} answer has values "
+                               f"outside the schema's enum: {', '.join(bad[:5])}")
         return result
 
     def _engine(self, **config: Any):
@@ -373,12 +393,12 @@ class Harness:
         cost = engine.usage.cost_usd
 
         result = read_json(cwd / form, warn=False) if form else None
-        if result is None or missing_fields(result, schema):
+        if result is None or missing_fields(result, schema) or enum_violations(result, schema):
             # The agent that looked is the one to answer: its closing JSON
             # block is the form. Only when it left none does a text-only
             # pass fill it from its words -- and that pass saw no image.
             result = fenced_json(texts)
-        if result is None or missing_fields(result, schema):
+        if result is None or missing_fields(result, schema) or enum_violations(result, schema):
             if not texts:
                 raise HarnessError(f"[{self.stage}] {name}: the inspection ended "
                                    "with no words and no form")
@@ -395,7 +415,7 @@ class Harness:
             finally:
                 _merge_usage(self.usage, extractor.usage)
             cost += extractor.usage.cost_usd
-        self._check(name, result, schema)
+        self._check(name, result, schema, enums=True)
         self._save(name, digest, result, kind="inspect", cost=cost, tool_calls=calls)
         self.decisions.append(Decision(name, False, digest, cost, kind="inspect",
                                        tool_calls=calls))

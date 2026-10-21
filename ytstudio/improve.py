@@ -107,23 +107,7 @@ FORCE = {"research": ["--fresh"], "styles": ["--rich"], "script": ["--polish", "
 REUSE = {"styles": ["--rich"], "script": ["--polish", "--verify"], "sound": ["--fetch"]}
 
 #: What each stage owns, so the router can place a finding whose owner is prose.
-DUTIES = {
-    "research": "the dossier: claims, sources, licensed assets",
-    "styles": "the treatment: palette roles, typography, motion language, the look",
-    "script": "the screenplay: shots, narration, supers, timing plan",
-    "props": "the CC0 models, HDRIs and texture maps fetched for the authors",
-    "keyframe": "the look-lock frame every authored world inherits",
-    "voice": "the narration takes, their timing, and the captions file",
-    "retime": "the measured narration lengths written back into the screenplay",
-    "vfx": "the authored worlds: geometry, materials, lights and shadows, camera, "
-           "animation, composition inside the frame, the renderer settings of each "
-           "document",
-    "sound": "the cue sheet: effects, ambience, score, levels and timing, the fetched "
-             "or synthesised files",
-    "build": "the compile: placement on the timeline, includes, captions, the audio "
-             "mix and its staging, the tail",
-    "render": "the encode: quality, bitrate, the delivery settings",
-}
+DUTIES = {stage: qa.DUTIES[stage] for stage in ROUTABLE}
 
 #: The files each stage writes, snapshotted before a pass re-runs it.
 SNAPSHOT = {
@@ -333,11 +317,12 @@ def _route_prompt(findings: list[dict], fixed: dict[str, str], context: dict | N
         "running the stage again does not approve anything. The project's state below "
         "says what already exists and what is waiting on the operator; a finding that "
         "asks for something already made and awaiting approval is `external`.\n"
-        "- The `owner` written by QA is free text and may name a tool, a discipline or a "
-        "stage; route by what must change in which stage's source, not by the word.\n"
-        "- A finding marked `routed` was measured mechanically and is already routed; "
-        "do not route it elsewhere, but do write its brief and mark later findings that "
-        "repeat it as `duplicate_of` it.\n"
+        "- The `owner` written by QA is one of the stages, `upstream-fact` or `external`; "
+        "an older scorecard may hold free text naming a tool or a discipline, which you "
+        "route by what must change in which stage's source, not by the word.\n"
+        "- A finding marked `routed` was measured, or its owner was one of the routes; "
+        "it is already routed, so do not route it elsewhere, but do write its brief and "
+        "mark later findings that repeat it as `duplicate_of` it.\n"
         "- `duplicate_of` names the earliest finding describing the same defect, or is "
         "empty.\n"
         "- A brief's `must_change` lists concrete changes in that stage's own terms "
@@ -387,8 +372,12 @@ def route(h: Harness, findings: list[dict], *, name: str,
     findings = kept
     if not findings:
         return out
+    # A lookup, not a decision: a measured finding goes to its stated stage, and a
+    # reviewer's finding to its owner when QA named one of the routes (qa.OWNERS).
     fixed = {f["id"]: f["owner"] for f in findings
-             if f.get("kind") in MECHANICAL_KINDS and f.get("owner") in ROUTABLE}
+             if (f.get("kind") in MECHANICAL_KINDS and f.get("owner") in ROUTABLE)
+             or (f.get("source") == "qa" and f.get("owner") in ROUTES)}
+    looked_up = {f["id"] for f in findings if f.get("source") == "qa"}
     prompt = _route_prompt(findings, fixed, context)
     answer = h.decide(name, prompt, ROUTE_SCHEMA)
     missing = _unrouted(answer, findings, fixed)
@@ -409,8 +398,11 @@ def route(h: Harness, findings: list[dict], *, name: str,
         dup = str(r.get("duplicate_of") or "")
         dup = dup if dup in by_id and dup != f["id"] else ""
         if f["id"] in fixed:
-            routes[f["id"]] = {"stage": fixed[f["id"]], "by": "mechanical",
-                               "why": f"measured {f['kind']}, owned by {fixed[f['id']]}",
+            by = "owner" if f["id"] in looked_up else "mechanical"
+            routes[f["id"]] = {"stage": fixed[f["id"]], "by": by,
+                               "why": (f"QA named {fixed[f['id']]} as the owner"
+                                       if by == "owner" else
+                                       f"measured {f['kind']}, owned by {fixed[f['id']]}"),
                                "duplicate_of": dup}
         else:
             routes[f["id"]] = {"stage": str(r.get("stage", "")), "by": "model",
@@ -424,7 +416,7 @@ def route(h: Harness, findings: list[dict], *, name: str,
         if not primary:
             continue
         stage = routes[primary]["stage"]
-        if r["by"] == "mechanical" and stage != r["stage"]:
+        if r["by"] in ("mechanical", "owner") and stage != r["stage"]:
             r["duplicate_of"] = ""
             continue
         r["stage"] = stage
@@ -1296,6 +1288,23 @@ class Improver:
                  if (m := re.match(r"^pass-(\d+)$", p.name))]
         return f"pass-{(max(taken) + 1 if taken else 1):02d}"
 
+    def _carry(self, record: dict, resumed: dict) -> None:
+        """Continue the earlier run's record instead of starting one: its passes
+        (the one being resumed or re-judged replaced by its new entry), its
+        defects with their survivor counts, the findings it left to a human and
+        the start it measured from. --max-passes, the survivor stop and
+        improve.md then speak for the whole history."""
+        earlier = read_json(self.root / REPORT_JSON, warn=False) or {}
+        entry = resumed["entry"]
+        record["passes"] = [p for p in earlier.get("passes") or []
+                            if isinstance(p, dict) and p.get("name") != entry.get("name")
+                            ] + [entry]
+        for did, d in (earlier.get("defects") or {}).items():
+            self.defects.setdefault(did, d)
+        record["human"] = list(earlier.get("human") or [])
+        record["contradicted"] = list(earlier.get("contradicted") or [])
+        record["start"] = earlier.get("start") or _summary(resumed["start"])
+
     def run(self) -> dict:
         started = time.strftime("%Y-%m-%dT%H:%M:%S")
         record: dict = {"idea": {"title": self.idea.title}, "project": str(self.root),
@@ -1311,25 +1320,28 @@ class Improver:
                 record["stop"] = {"reason": "resume-failed",
                                   "detail": "nothing to resume; see the error above"}
                 return record
+            self._carry(record, resumed)
             if resumed.get("stop"):
-                record.update(start=_summary(resumed["start"]), best=_summary(resumed["best"]),
-                              passes=[resumed["entry"]], stop=resumed["stop"])
+                record.update(best=_summary(resumed["best"]), stop=resumed["stop"])
+                record["defects"] = self.defects
                 return self._finish(record)
         else:
             resumed = None if self.dry_run else self._resume()
+            if resumed:
+                self._carry(record, resumed)
         card = resumed["best"] if resumed else self._evidence()
         if card is None:
             record["stop"] = {"reason": "no-evidence",
                               "detail": "no QA pass could be read or scored"}
             return self._finish(record)
-        record["start"] = _summary(resumed["start"] if resumed else card)
+        record["start"] = record["start"] or _summary(resumed["start"] if resumed else card)
         best = evidence = card
         attempts: dict[str, list[str]] = {}
         last_cost: float | None = None
         findings = self._evidence_findings(card)
-        self._assign(card["pass"], findings, set())
+        self._assign(card["pass"], findings, set(
+            (resumed["entry"].get("briefed_defects") or {}).values()) if resumed else set())
         if resumed:
-            record["passes"].append(resumed["entry"])
             record["best"] = _summary(best)
             last_cost = resumed["entry"].get("cost_usd") or None
 

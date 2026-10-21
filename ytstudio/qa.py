@@ -51,6 +51,7 @@ stage changes no file but its own; it says what to change and who owns it.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 import shutil
 import sys
@@ -108,6 +109,35 @@ ROLE = (
     "from the fact that a track exists."
 )
 
+#: Who can own a finding: a pipeline stage, or a human route. Improve routes by
+#: this word alone; `external` carries the reason in the finding's `fix`.
+OWNERS = (tuple(stage for stage, _ in workspace.STAGES)
+          + (() if any(s == "keyframe" for s, _ in workspace.STAGES) else ("keyframe",))
+          + ("upstream-fact", "external"))
+
+#: What each owner is responsible for, so a finding is placed in the source that fixes it.
+DUTIES = {
+    "research": "the dossier: claims, sources, licensed assets",
+    "styles": "the treatment: palette roles, typography, motion language, the look",
+    "script": "the screenplay: shots, narration, supers, timing plan",
+    "props": "the CC0 models, HDRIs and texture maps fetched for the authors",
+    "keyframe": "the look-lock frame every authored world inherits",
+    "voice": "the narration takes, their timing, and the captions file",
+    "retime": "the measured narration lengths written back into the screenplay",
+    "vfx": "the authored worlds: geometry, materials, lights and shadows, camera, "
+           "animation, composition inside the frame, the renderer settings of each "
+           "document",
+    "sound": "the cue sheet: effects, ambience, score, levels and timing, the fetched "
+             "or synthesised files",
+    "build": "the compile: placement on the timeline, includes, captions, the audio "
+             "mix and its staging, the tail",
+    "render": "the encode: quality, bitrate, the delivery settings",
+    "upstream-fact": "a wrong or unsupported claim in the research or the screenplay; "
+                     "production fixes pictures, not facts",
+    "external": "a policy, a licence or an approval outside this repo, or a finding no "
+                "stage above can own: say why in `fix`",
+}
+
 SCORECARD_SCHEMA = {
     "type": "object",
     "properties": {
@@ -124,8 +154,10 @@ SCORECARD_SCHEMA = {
                                    "problem": {"type": "string"},
                                    "why": {"type": "string"},
                                    "root_cause": {"type": "string"},
-                                   "owner": {"type": "string",
-                                             "description": "the yt stage that fixes it"},
+                                   "owner": {"type": "string", "enum": list(OWNERS),
+                                             "description": "the one stage that fixes it, "
+                                             "upstream-fact, or external with the reason "
+                                             "in `fix`"},
                                    "fix": {"type": "string"},
                                    "severity": {"type": "string",
                                                 "enum": ["blocking", "minor"]}},
@@ -862,6 +894,11 @@ def engine_geometry(args, project, scene: str, shots: list[dict]) -> dict:
 GEOMETRY = engine_geometry
 
 
+def scene_digest(data: bytes) -> str:
+    """sha256 of the scene document QA judged; doctor compares it to scene.xml."""
+    return hashlib.sha256(data).hexdigest()
+
+
 def render_frames(args, project, scene: str, samples: list[dict],
                   frames_dir: Path, *, render=None) -> list[str]:
     """One job per sample: its burst window as a single `--frames A..B`
@@ -1101,6 +1138,8 @@ def run(args) -> int:
               f"caps {' and '.join(CAPPED)} at {MECHANICAL_CAP:g})", mechanical),
         brief("Measurements and decisions from the stages", measurements),
         brief("Blocking, already proven", blockers),
+        brief("Each finding's owner is exactly one of these; one you cannot place is "
+              "`external`, with the reason in `fix`", {o: DUTIES[o] for o in OWNERS}),
         brief("Previous pass, for comparison", {
             "pass": previous.get("pass"), "scores": previous.get("scores"),
             "overall": previous.get("overall"),
@@ -1135,7 +1174,9 @@ def run(args) -> int:
     if card.get("verdict") != verdict and not args.quiet:
         print(f"note: the reviewer said {card.get('verdict')!r}; the bar says "
               f"{verdict!r} ({'; '.join(reasons)})", file=sys.stderr)
+    seen = scene_digest(Path(scene).read_bytes())
     card = dict(card) | {"pass": pass_dir.name, "verdict": verdict, "bar": reasons,
+                         "scene_sha256": seen,
                          "blocking": all_blocking, "frames": sorted(have),
                          "samples": samples, "mechanical": mechanical, "capped": capped,
                          "contact_sheet": sheet.name, "engine": reviewer.report()}
@@ -1147,7 +1188,7 @@ def run(args) -> int:
     write_json(home / "qa.json", {
         "idea": {"title": idea.title}, "pass": pass_dir.name, "verdict": verdict,
         "overall": card.get("overall"), "scores": card.get("scores"),
-        "blocking": len(all_blocking), "findings": len(card.get("findings", [])),
+        "scene_sha256": seen, "blocking": len(all_blocking), "findings": len(card.get("findings", [])),
         "mechanical": len(mechanical), "capped": capped,
         "regressions": diff["regressions"], "reasons": reasons,
         "scorecard": str(pass_dir / "scorecard.json")})

@@ -275,7 +275,7 @@ class Routing(ImproveCase):
     def test_external_and_upstream_findings_go_to_a_human_and_are_not_looped(self):
         findings = improve.collect(card(5.0, findings=[
             prose("the gate demands caption cues for a film with no words", owner="gate"),
-            prose("the glide-time claim has no source", owner="research")]))
+            prose("the glide-time claim has no source", owner="citations")]))
         FakeEngine.route = lambda p: {
             "routes": [{"finding": "F1", "stage": "external", "why": "production_gate policy"},
                        {"finding": "F2", "stage": "upstream-fact", "why": "a wrong claim"}],
@@ -287,7 +287,8 @@ class Routing(ImproveCase):
         self.assertEqual(routing["human"][0]["route"], "external")
 
     def test_an_unrouted_finding_is_asked_again_once_then_an_error(self):
-        findings = improve.collect(card(5.0, findings=[prose("a"), prose("b", t=6.0)]))
+        findings = improve.collect(card(5.0, findings=[prose("a", owner="lighting"),
+                                                       prose("b", t=6.0, owner="lighting")]))
         FakeEngine.route = lambda p: {"routes": [{"finding": "F1", "stage": "vfx",
                                                   "why": "x"}], "briefs": []}
         h = harness.Harness(self.root, "improve", verbose=False)
@@ -1013,6 +1014,130 @@ class Cli(unittest.TestCase):
         self.assertIn("feedback/", text)
         readme = (ROOT / "README.md").read_text()
         self.assertIn("yt improve", readme)
+
+
+class OwnerRouting(ImproveCase):
+    """QA's owner is a stage, upstream-fact or external; routing is a lookup."""
+
+    OWNERS = ("script", "sound", "vfx", "build", "external", "upstream-fact")
+
+    def scorecard(self):
+        return card(5.0, findings=[prose(f"defect {n} of the {o}", t=float(n), owner=o)
+                                   for n, o in enumerate(self.OWNERS, 1)])
+
+    def test_the_owners_are_the_stages_and_the_two_human_routes(self):
+        self.assertEqual(qa.OWNERS, improve.ROUTES)
+        self.assertEqual(qa.OWNERS[-2:], ("upstream-fact", "external"))
+        for stage, _ in workspace.STAGES:
+            self.assertIn(stage, qa.OWNERS)
+        schema = qa.SCORECARD_SCHEMA["properties"]["findings"]["items"]["properties"]["owner"]
+        self.assertEqual(schema["enum"], list(qa.OWNERS))
+
+    def test_a_finding_whose_owner_is_a_route_is_routed_by_lookup(self):
+        findings = improve.collect(self.scorecard())
+        # The model, asked anyway for briefs and duplicates, sends everything to sound.
+        FakeEngine.route = route_all_to("sound")
+        h = harness.Harness(self.root, "improve", verbose=False)
+        routing = improve.route(h, findings, name="route-pass-10")
+        self.assertEqual({fid: r["stage"] for fid, r in routing["routes"].items()},
+                         {f"F{n}": o for n, o in enumerate(self.OWNERS, 1)})
+        self.assertEqual({r["by"] for r in routing["routes"].values()}, {"owner"})
+        self.assertEqual({h["route"] for h in routing["human"]},
+                         {"external", "upstream-fact"})
+
+    def test_a_dry_run_routes_every_finding_without_a_model_routing_decision(self):
+        self.start_pass(self.scorecard())
+        FakeEngine.route = lambda p: {"routes": [], "briefs": []}   # the model routes nothing
+        out = []
+        record = self.improver(FakeRunner(self.root, []), dry_run=True, say=out.append).run()
+        routes = record["plan"]["routes"]
+        self.assertEqual(len(routes), len(self.OWNERS))
+        self.assertEqual({r["by"] for r in routes.values()}, {"owner"})
+        self.assertEqual(len(FakeEngine.json_calls), 1)        # one call, for the briefs
+        self.assertEqual(set(record["plan"]["routed"]), {"script", "sound", "vfx", "build"})
+
+    def test_a_scorecard_with_a_free_text_owner_is_still_routed_by_the_model(self):
+        findings = improve.collect(card(5.0, findings=[prose("flat", owner="editor")]))
+        FakeEngine.route = route_all_to("build")
+        h = harness.Harness(self.root, "improve", verbose=False)
+        routing = improve.route(h, findings, name="route-pass-01")
+        self.assertEqual(routing["routes"]["F1"]["by"], "model")
+        self.assertEqual(routing["routes"]["F1"]["stage"], "build")
+
+
+class History(ImproveCase):
+    """--resume and --rejudge continue the earlier run's record (AUTO-48)."""
+
+    def two_passes_then_a_failed_render(self):
+        """pass-01 kept (the defect survives it), pass-02 fails at its render."""
+        self.start_pass(card(5.0, mechanical=[mech()]))
+
+        class Breaks(FakeRunner):
+            renders = 0
+
+            def __call__(self, argv):
+                if argv[0] == "render":
+                    Breaks.renders += 1
+                    if Breaks.renders == 2:
+                        self.calls.append(list(argv))
+                        return 1
+                return super().__call__(argv)
+
+        first = Breaks(self.root, [card(5.5, mechanical=[mech()])], costs={"vfx": 2.0})
+        return self.improver(first, max_passes=2).run()
+
+    def test_resume_carries_the_passes_defects_and_survivors_forward(self):
+        before = self.two_passes_then_a_failed_render()
+        self.assertEqual([p["name"] for p in before["passes"]], ["pass-01", "pass-02"])
+        self.assertEqual(before["passes"][1]["decision"], "failed")
+        self.assertEqual(before["defects"]["D1"]["survived"], 1)
+        runner = FakeRunner(self.root, [card(6.0, mechanical=[mech()]),
+                                        card(6.5, mechanical=[mech()])])
+        record = self.improver(runner, resume=True, max_passes=3).run()
+        names = [p["name"] for p in record["passes"]]
+        self.assertEqual(names, ["pass-01", "pass-02", "pass-03"])
+        self.assertEqual([p["decision"] for p in record["passes"]], ["keep"] * 3)
+        self.assertTrue(record["passes"][1]["resumed"])
+        self.assertEqual(record["stop"]["reason"], "max-passes")   # counted from pass-01
+        self.assertEqual(record["defects"]["D1"]["survived"], 2)   # continued, not restarted
+        self.assertEqual(len(record["defects"]), 1)
+        saved = read_json(self.root / "improve.json")
+        self.assertEqual([p["name"] for p in saved["passes"]], names)
+        md = (self.root / "improve.md").read_text()
+        for name in names:
+            self.assertIn(name, md)
+
+    def test_max_passes_counts_the_earlier_passes(self):
+        self.two_passes_then_a_failed_render()
+        runner = FakeRunner(self.root, [card(6.0, mechanical=[mech()])])
+        record = self.improver(runner, resume=True, max_passes=2).run()
+        self.assertEqual([p["name"] for p in record["passes"]], ["pass-01", "pass-02"])
+        self.assertEqual(record["stop"]["reason"], "max-passes")
+        self.assertNotIn("improve/pass-03", " ".join(" ".join(c) for c in runner.calls))
+
+    def test_a_failed_resume_still_keeps_the_history(self):
+        self.two_passes_then_a_failed_render()
+        runner = FakeRunner(self.root, [], fail={"render": 1})
+        record = self.improver(runner, resume=True, max_passes=3).run()
+        self.assertEqual([p["name"] for p in record["passes"]], ["pass-01", "pass-02"])
+        self.assertEqual(record["passes"][1]["decision"], "failed")
+        self.assertIn("D1", record["defects"])
+
+    def test_rejudge_keeps_the_earlier_passes(self):
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        first = FakeRunner(self.root, [card(5.5, mechanical=[mech()]),
+                                       card(4.0, mechanical=[mech()])])
+        before = self.improver(first, max_passes=2).run()
+        self.assertEqual([p["decision"] for p in before["passes"]], ["keep", "revert"])
+        runner = FakeRunner(self.root, [card(6.0, mechanical=[mech()])])
+        record = self.improver(runner, rejudge=True, max_passes=2).run()
+        self.assertEqual([p["name"] for p in record["passes"]], ["pass-01", "pass-02"])
+        self.assertEqual([p["decision"] for p in record["passes"]], ["keep", "keep"])
+        self.assertTrue(record["passes"][1]["rejudged"])
+        self.assertEqual(record["defects"]["D1"]["survived"],
+                         before["defects"]["D1"]["survived"])
+        saved = read_json(self.root / "improve.json")
+        self.assertEqual(len(saved["passes"]), 2)
 
 
 class DoctorNote(ImproveCase):
