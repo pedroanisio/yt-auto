@@ -587,6 +587,7 @@ is refused with the measured floor and gain, and the next-ranked hit of the same
 search is tried (three in all) before the cue is left unfilled. With no render
 host, or `YT_NO_REMOTE` set, nothing is measured: the summary and the stage's
 output say `NOT LEVELLED`, and a later `--fetch` measures the kept files.
+A new candidate that passes those checks is then judged against its cue by the model (the library's name, tags, description and length, the measured levels and spectral centroid and flatness, and a spectrogram made on the same host): a reject tries the next-ranked hit, the cue keeps the `judgement` with its evidence, and a cue every candidate failed is left unfilled with the reasons.
 
 ### `yt build`
 

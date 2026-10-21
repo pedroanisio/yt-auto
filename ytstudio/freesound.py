@@ -26,7 +26,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import env
@@ -39,7 +39,7 @@ TOKEN_VARS = ("FREESOUND_CLIENT_SECRET", "FREESOUND_API_KEY")
 #: The preview that gets downloaded. Originals need OAuth; this does not.
 PREVIEW = "preview-hq-mp3"
 FIELDS = ("id,name,username,license,duration,avg_rating,num_ratings,previews,"
-          "url,type,filesize")
+          "url,type,filesize,tags,description")
 USER_AGENT = "yt-sound/1 (scratch-mix previews; https://freesound.org/apiref/)"
 #: What Freesound calls the licences the project allows, for its filter.
 ALLOWED_FILTER = 'license:("Attribution" OR "Creative Commons 0")'
@@ -145,6 +145,8 @@ class Hit:
     ext: str
     url: str
     filesize: int = 0
+    tags: list = field(default_factory=list)
+    description: str = ""
 
     @classmethod
     def from_raw(cls, row: dict) -> Hit | None:
@@ -169,7 +171,9 @@ class Hit:
             ratings=int(row.get("num_ratings") or 0),
             preview=preview, ext=ext if ext in ("mp3", "ogg") else "mp3",
             url=str(row.get("url") or f"{API}/sounds/{sound_id}/"),
-            filesize=int(row.get("filesize") or 0))
+            filesize=int(row.get("filesize") or 0),
+            tags=[str(t) for t in (row.get("tags") or []) if t],
+            description=str(row.get("description") or ""))
 
     @property
     def credit(self) -> str:
