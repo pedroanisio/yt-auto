@@ -548,7 +548,7 @@ class Screenwriter:
         self.idea = idea
         self.root = root            # the project, for its open revision notes
         self.model = model
-        self.seconds = max(10, round(minutes * 60))
+        self.seconds = max(1, round(minutes * 60))
         self.wpm = wpm
         self.sections = sections
         self.research = research
