@@ -95,7 +95,7 @@ from datetime import datetime
 from pathlib import Path
 
 from claude_engine import ClaudeError, EngineConfig, Usage
-from . import assess, design, framecheck, harness, house, render, sdkkit, vfx, workspace
+from . import assess, design, fonts, framecheck, harness, house, render, sdkkit, vfx, workspace
 from .script import Shot, visible_text
 from .core import Idea, _merge_usage, compact, read_json, write_json
 from .vfx import (AUTHOR_TOOLS, FRAME, MISSION, STACK, Workspace,
@@ -656,6 +656,8 @@ def write_brief(ws: Workspace, *, idea: Idea, house_rules: str, direction: dict 
                     lines.append("  maps, usable on any surface: "
                                  + ", ".join(f"`{os.path.relpath(m, ws.dir)}`" for m in maps))
             lines.append("")
+    lines += ["Fonts: text may use only the families the repo ships ("
+              + ", ".join(fonts.families()) + "); any other family fails `yt build`.", ""]
     lines += [sdkkit.BRIEF, sdkkit.time_line(AUTHOR_TIMEOUT), "## Deliverable", "",
               f"Write `{PROGRAM_NAME}` in this directory: a Python program that builds the "
               f"keyframe with the SDK and saves `{DOC_NAME}`, a complete scene-render document "

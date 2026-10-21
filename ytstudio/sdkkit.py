@@ -784,6 +784,28 @@ def _number(value) -> bool:
         return False
 
 
+def _font_findings(nodes, local) -> list[str]:
+    """One error per distinct font request that no shipped family answers: what
+    `yt build` would refuse, said in the author's own round."""
+    from . import fonts
+    styles = {el.get("id"): dict(el.attrib) for el in nodes
+              if local(el) == "textStyle" and el.get("id")}
+    seen: set[tuple[str, str, str]] = set()
+    out = []
+    for el in nodes:
+        req = fonts._request(local(el), dict(el.attrib), styles)
+        if req is None or req in seen:
+            continue
+        seen.add(req)
+        try:
+            fonts.resolve(*req)
+        except fonts.FontError as exc:
+            who = " ".join(p for p in (local(el), el.get("id")) if p)
+            out.append(f"error: rule:font: {who}: {exc}; write a family the repo ships, or a "
+                       "list that ends in one (any other family fails `yt build`)")
+    return out
+
+
 def rule_findings(data: bytes) -> list[str]:
     """The harness's rules on a document, beyond what the schema can say."""
     from xml.etree import ElementTree
@@ -813,6 +835,7 @@ def rule_findings(data: bytes) -> list[str]:
                        + (" ..." if len(small) > 12 else "")
                        + "; enlarge every word that is part of the film (a style sheet's own "
                          "notes may stay small)")
+    out += _font_findings(nodes, local)
     if solids and casters and not any((el.get("castShadow") or "").strip() in ("true", "1")
                                       for el in casters):
         out.append("warning: rule:shadow: no light casts a shadow (light/@castShadow defaults "
