@@ -24,7 +24,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import house, workspace
+from . import house, spend, workspace
 from . import render as render_stage
 from .core import read_json, write_json
 from .harness import Harness, HarnessError, brief
@@ -170,6 +170,7 @@ def run(args) -> int:
     write_json(review_out, {
         "idea": {"title": idea.title}, "pdf": str(out),
         "frames": sorted(p.name for p in frames_dir.glob("*.png")) if frames_dir.is_dir() else [],
-        "critique": critique, "engine": reader.report()})
+        "critique": critique, "engine": reader.report(),
+        "usage": spend.from_report(reader.report())})
     print(f"wrote {review_out}", file=sys.stderr)
     return 0

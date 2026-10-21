@@ -43,7 +43,7 @@ came from breaking one of them.
 4. **Edit the owning stage, never the output.** `scene.xml` is compiled by
    `yt build`; the `vfx/vNN/*.scene.xml` documents are authored by `yt vfx`.
    Fix the source stage and re-run. Authoring is versioned: every run lands
-   in the next `vfx/vNN/`, `vfx.json` names the active one, and `yt vfx
+   in the next `vfx/vNN/`, `vfx.json`'s `authoring.version` names the active one, and `yt vfx
    --fresh` opens a new version rather than overwriting an earlier one.
 5. **`work/` is disposable.** A project directory is an output. The
    deliverable is the pipeline that regenerates it end to end; a golden
@@ -115,6 +115,16 @@ itself, and `--project DIR` names a directory directly.
 | `yt sound` | script | `sound.json`, `sound.md`, `cues.csv`; with `--fetch`, `sound/` and `sound/index.json` | yes (spotting; the fetch asks nothing) |
 | `yt build` | all of the above | `scene.xml`, `build.json`, `vfx/vNN/<section>.include.scene.xml` | yes (coverage, captions, tail, blocking) |
 | `yt render` | `scene.xml` | `video.mp4`, `render.json` (a still, a validation, an audio pass or a pilot writes `render-<job>.json`) | no |
+
+**One spend record.** Every stage's JSON carries `usage`: `{cost_usd, model,
+calls}` (`ytstudio/spend.py` names it once; an engine's token counters may ride
+along). `engine` is not the spend's key: in `voice.json` it is the TTS engine,
+in `render.json` the scene-render binary, in `assess.json` host facts; the
+harness stages (`retime`, `pilot`, `gate`, `review`, `qa`) still also carry
+their harness account there. `yt improve` reads cost through
+`spend.cost_in`, which takes `usage.cost_usd`, else the older `cost_usd`, else
+the older `engine.cost_usd`, so records written before still read. `sound.json`
+and `build.json` are not on the shape yet.
 
 `yt run` (`yt run --title X`) walks research, styles, script, props,
 voice, retime, keyframe, vfx, sound, build, render in that order -- `yt

@@ -61,7 +61,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from . import house, qa, workspace
+from . import house, qa, spend, workspace
 from .core import read_json, write_json
 from .harness import FEEDBACK_DIR, Harness, HarnessError, brief
 
@@ -651,8 +651,7 @@ def _qa_cost(root: Path) -> float | None:
     qa_json = read_json(Path(root) / "qa.json", warn=False) or {}
     card = read_json(Path(root) / qa.QA_DIR / str(qa_json.get("pass", "")) / "scorecard.json",
                      warn=False) or qa_json
-    cost = (card.get("engine") or {}).get("cost_usd")
-    return float(cost) if isinstance(cost, (int, float)) else None
+    return _cost_in(card)
 
 
 def _reported(root: Path, stage: str, sections: list[int] | None) -> float | None:
@@ -787,17 +786,7 @@ def restore(root: Path, dest: Path) -> list[str]:
 # --------------------------------------------------------------------------- #
 
 def _cost_in(data: Any) -> float | None:
-    if not isinstance(data, dict):
-        return None
-    for path in (("usage", "cost_usd"), ("cost_usd",), ("engine", "cost_usd")):
-        value: Any = data
-        for key in path:
-            value = value.get(key) if isinstance(value, dict) else None
-        if isinstance(value, (int, float)):
-            extra = (data.get("synth") or {}).get("cost_usd") if isinstance(
-                data.get("synth"), dict) else 0
-            return float(value) + float(extra or 0)
-    return None
+    return spend.cost_in(data)
 
 
 def _stamps(root: Path) -> dict[str, int]:
@@ -976,7 +965,7 @@ class Improver:
             return None
         card = self._card(after)
         if card:
-            self.spent_stages += float((card.get("engine") or {}).get("cost_usd") or 0)
+            self.spent_stages += _cost_in(card) or 0.0
         return card
 
     def _stale(self, pdir: Path) -> bool:
@@ -1129,8 +1118,7 @@ class Improver:
         self._gate(entry, pdir, stamps)
         entry["argv"].append(["qa", *self.base])
         new = self._qa()
-        cost = stage_cost(self.root, "gate", stamps) + float(
-            ((new or {}).get("engine") or {}).get("cost_usd") or 0)
+        cost = stage_cost(self.root, "gate", stamps) + (_cost_in(new) or 0.0)
         self.spent_stages += stage_cost(self.root, "gate", stamps)
         entry["cost_usd"] = round(float(last.get("cost_usd") or 0) + cost, 4)
         if new is None:
@@ -1204,7 +1192,7 @@ class Improver:
         cost = sum(stage_cost(self.root, st, stamps) for st, _ in steps) + stage_cost(
             self.root, "gate", stamps)
         self.spent_stages += cost
-        cost += float(((new or {}).get("engine") or {}).get("cost_usd") or 0)
+        cost += _cost_in(new) or 0.0
         entry["cost_usd"] = round(float(last.get("cost_usd") or 0) + cost, 4)
         snap = pdir / "snapshot"
         if failed:
@@ -1437,7 +1425,7 @@ class Improver:
                     failed = QA_FAILED
             cost = sum(stage_cost(self.root, s, before) for s in stages + ["gate"])
             self.spent_stages += cost
-            cost += float(((new or {}).get("engine") or {}).get("cost_usd") or 0)
+            cost += _cost_in(new) or 0.0
             entry["cost_usd"] = round(cost, 4)
             last_cost = cost or None
 

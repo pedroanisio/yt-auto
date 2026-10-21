@@ -23,7 +23,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from . import house, workspace
+from . import house, spend, workspace
 from .build import stale_takes
 from .core import read_json, timecode, write_json
 from .harness import Harness, HarnessError, brief
@@ -251,7 +251,8 @@ def run(args) -> int:
     report = {"idea": {"title": idea.title}, "changes": changes, "totals": totals,
               "decisions": list(decided.values()), "accepted": sorted(accepted),
               "notes": verdict.get("notes", ""), "stale": stale,
-              "applied": not args.dry_run, "engine": engine.report()}
+              "applied": not args.dry_run, "engine": engine.report(),
+              "usage": spend.from_report(engine.report())}
     if args.dry_run:
         print("\n(--dry-run: the screenplay was not written)", file=sys.stderr)
         return 0

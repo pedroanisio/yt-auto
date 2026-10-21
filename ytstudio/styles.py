@@ -51,7 +51,7 @@ from pathlib import Path
 from claude_engine import ClaudeEngine, ClaudeError, EngineConfig, Usage
 from .core import Idea, _key, _merge_usage, compact, wrap
 from .core import write_json as dump_json
-from . import fonts, harness, house, workspace
+from . import fonts, harness, house, spend, workspace
 from .assess import stack_brief
 
 #: Deliberation stages, as accepted by --deliberate. See the module docstring.
@@ -743,7 +743,8 @@ def print_styles(idea: Idea, data: dict, styles: list[Style]) -> None:
             print(wrap(f"· {row.get('name', '')}: {row.get('why', '')}", "    "))
 
 
-def write_json(path: str, idea: Idea, data: dict, styles: list[Style]) -> None:
+def write_json(path: str, idea: Idea, data: dict, styles: list[Style],
+               usage: dict | None = None) -> None:
     doc = {"idea": compact(idea),
            "message": data.get("message", ""),
            "demands": data.get("demands", []),
@@ -754,6 +755,7 @@ def write_json(path: str, idea: Idea, data: dict, styles: list[Style]) -> None:
         doc["thumbnail"] = data["thumbnail"]
     if data.get("deliberation"):
         doc["deliberation"] = data["deliberation"]
+    doc["usage"] = usage or spend.record()
     dump_json(path, doc)
 
 
@@ -945,7 +947,8 @@ def run(args) -> int:
 
     json_out = project.out("styles", args.json_out)
     md_out = project.out("styles_md", args.md_out)
-    write_json(json_out, idea, data, styles)
+    write_json(json_out, idea, data, styles,
+               usage=spend.from_usage(director.usage, director.model))
     write_md(md_out, idea, data, styles)
     print(f"\nwrote {json_out}\nwrote {md_out}", file=sys.stderr)
     if args.csv_out:

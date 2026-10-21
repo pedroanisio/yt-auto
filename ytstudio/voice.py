@@ -47,7 +47,7 @@ import wave
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
-from . import house, workspace
+from . import house, spend, workspace
 from .harness import Harness, HarnessError, brief
 from .core import Idea, read_json, timecode, write_json
 from .script import Section, load_script
@@ -1262,6 +1262,7 @@ def run_wordless(args, idea, project, sections) -> int:
     write_cues(Path(vtt), cues)
     write_cues(project.root / "narration.srt", cues, srt=True)
     data["director"] = director.report()
+    data["usage"] = spend.from_report(data["director"])
     manifest = project.out("voice")
     write_json(manifest, data)
     print(f"wordless film: {len(cues)} descriptive caption(s), voice ends at "
@@ -1413,6 +1414,7 @@ def run(args) -> int:
         return 1
     data["review"] = review
     data["director"] = director.report()      # "engine" stays the TTS engine
+    data["usage"] = spend.from_report(data["director"])
     if review.get("retakes"):
         print(f"\n  the director asks for {len(review['retakes'])} retake(s):")
         for row in review["retakes"][:10]:

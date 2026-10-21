@@ -41,7 +41,7 @@ import claude_engine
 from claude_engine import ClaudeEngine, ClaudeError, EngineConfig, Usage
 from .core import Idea, _merge_usage, read_json, timecode, wrap, write_json
 from .ideas import CHANNEL_STYLES, style_brief
-from . import harness, house, workspace
+from . import harness, house, spend, workspace
 
 #: Narration pace. 150 wpm is an unhurried documentary read; 180 is brisk.
 DEFAULT_WPM = 150
@@ -999,7 +999,7 @@ class Screenwriter:
             "lang": self.lang,
             "house": self.house_digest,
             "check": check,
-            "usage": asdict(self.usage),
+            "usage": spend.from_usage(self.usage, self.model),
         }
 
 

@@ -40,7 +40,7 @@ from urllib.parse import urlparse
 
 from claude_engine import ClaudeEngine, ClaudeError, EngineConfig, Usage
 from . import assets as yt_assets
-from . import flags, harness, workspace
+from . import flags, harness, spend, workspace
 from .core import Idea, _merge_usage, slugify, write_json
 
 RESEARCHER_SYSTEM = (
@@ -951,7 +951,7 @@ class Researcher:
             "urls_opened": sorted(set(self.visited)),
             "warnings": provenance_warnings(notes),
             "allow_sa": self.allow_sa,
-            "usage": asdict(self.usage),
+            "usage": spend.from_usage(self.usage, self.model),
         }
 
 
@@ -1386,7 +1386,7 @@ def write_dossier(dossier: Dossier, data: dict, downloads: list[dict]) -> list[P
     md += ["", "## Provenance", "",
            f"- {len(data['urls_opened'])} URLs opened during research "
            "(see `raw/02-research.json`)",
-           f"- cost: {Usage(**data['usage'])}", ""]
+           f"- cost: {spend.to_usage(data['usage'])}", ""]
 
     written = [dossier.write("README.md", "\n".join(md)),
                write_json(dossier.dir / "dossier.json", data)]
