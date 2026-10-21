@@ -168,5 +168,65 @@ class CleanedInclude(unittest.TestCase):
                             for f in manifest["findings"]), manifest["findings"])
 
 
+class SplitWorld(unittest.TestCase):
+    """AUTO-54: a symbol that draws consecutive shots must not end up in two includes unnoticed."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / "vfx").mkdir()
+        (self.root / "vfx" / "open.scene.xml").write_text(AUTHORED.replace(
+            "</symbols>", '<symbol id="fx-1-2"><shape id="s2" shape="rect" width="10" '
+                          'height="10" fill="#FFFFFF"/></symbol></symbols>'))
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def build(self, by_label):
+        sections = [Section(heading="Open", shots=[
+            Shot(label=f"1.{n}", n=n, visual="v", narration="w", seconds=3,
+                 at=3 * (n - 1)) for n in (1, 2, 3)])]
+        return build.SceneBuilder(_idea(), sections, self.root, audio=False,
+                                  verbose=False,
+                                  vfx={"scene": {"by_label": by_label}}).build()
+
+    def hit(self, symbol):
+        return {"file": "vfx/open.scene.xml", "symbol": symbol}
+
+    def test_another_symbol_between_two_spans_is_not_a_split(self):
+        _, manifest = self.build({"1.1": self.hit("fx-1-1"), "1.2": self.hit("fx-1-2"),
+                                  "1.3": self.hit("fx-1-1")})
+        self.assertEqual(manifest["includes"], 3)
+        self.assertEqual(manifest["split_worlds"], [])
+        self.assertFalse([f for f in manifest["findings"] if "include(s)" in f])
+
+    def test_a_run_split_only_by_a_gap_warns(self):
+        _, manifest = self.build({"1.1": self.hit("fx-1-1"), "1.3": self.hit("fx-1-1")})
+        self.assertEqual(manifest["includes"], 2)
+        warned = [f for f in manifest["findings"]
+                  if f.startswith("warning") and "fx-1-1" in f]
+        self.assertEqual(len(warned), 1, manifest["findings"])
+        for needle in ("1.1", "1.3", "2 include"):
+            self.assertIn(needle, warned[0])
+        self.assertEqual(manifest["split_worlds"][0]["includes"], 2)
+
+    def test_a_run_with_no_gap_is_one_include_and_no_warning(self):
+        _, manifest = self.build({"1.1": self.hit("fx-1-1"), "1.2": self.hit("fx-1-1"),
+                                  "1.3": self.hit("fx-1-1")})
+        self.assertEqual(manifest["includes"], 1)
+        self.assertEqual(manifest["split_worlds"], [])
+
+    def test_the_summary_line_says_includes_for_shots_with_the_warning(self):
+        import contextlib
+        import io
+        _, manifest = self.build({"1.1": self.hit("fx-1-1"), "1.3": self.hit("fx-1-1")})
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            build.print_build(manifest)
+        out = buf.getvalue()
+        self.assertIn("2 include(s) for 3 shots", out)
+        self.assertIn("fx-1-1", out)
+
+
 if __name__ == "__main__":
     unittest.main()

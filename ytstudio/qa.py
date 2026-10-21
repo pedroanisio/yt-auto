@@ -51,6 +51,7 @@ stage changes no file but its own; it says what to change and who owns it.
 from __future__ import annotations
 
 import argparse
+import glob
 import hashlib
 import re
 import shutil
@@ -442,7 +443,133 @@ def _on_edge(row: dict) -> bool:
 
 
 #: Mechanical kinds that block on their own, wherever they sit.
-ALWAYS_BLOCKING = ("penetration", "reads-merged")
+ALWAYS_BLOCKING = ("penetration", "reads-merged", "proof-mismatch")
+
+#: The film's stage band against the author's proof frame of the same world
+#: moment, as the mean absolute luma difference (0-255) over rows 230..820 of
+#: 1920x1080 on a 240-wide greyscale. Measured on the Euler film (2026-10-21):
+#: the film still against its own proof frame differed by 0.12 (encode and
+#: quality noise only); the same sparse 2D world between its opening state
+#: and its latest proof frame, 24 s on, by 7.9 (what a world restarted at
+#: t=0 under a later shot looks like); another world's frame by 24.6. So the
+#: line sits well above the noise and under the quietest restart measured.
+#: Both frames are kept under qa/pass-NN/proof/ for a reviewer to look at.
+PROOF_DIFF = 4.0
+PROOF_BAND = (230, 820)           # stage rows at PROOF_BAND_FRAME height
+PROOF_BAND_FRAME = 1080
+PROOF_WIDTH = 240                 # the greyscale both frames are reduced to
+PROOF_DRIFT = 0.05                # plan and build starts further apart are reported
+PROOF_LIMIT = 24                 # the most proof frames rendered from the film
+_PROOF_NAME = re.compile(r"^(?P<t>\d+(?:\.\d+)?)s\.png$")
+
+
+def proof_diff(proof, film) -> float | None:
+    """Mean absolute luma difference of two frames' stage bands, each cut at
+    the band's share of its own height and reduced to the same small
+    greyscale; None when either file cannot be read."""
+    from PIL import Image, ImageChops, ImageStat
+    bands = []
+    for path in (proof, film):
+        try:
+            with Image.open(path) as src:
+                im = src.convert("L")
+        except (OSError, ValueError):
+            return None
+        w, h = im.size
+        top, bottom = (round(h * edge / PROOF_BAND_FRAME) for edge in PROOF_BAND)
+        band = im.crop((0, top, w, max(bottom, top + 1)))
+        height = max(1, round(PROOF_WIDTH * (PROOF_BAND[1] - PROOF_BAND[0]) / 1920))
+        bands.append(band.resize((PROOF_WIDTH, height)))
+    return float(ImageStat.Stat(ImageChops.difference(*bands)).mean[0])
+
+
+def proof_plan(vfx: dict | None, home: Path, shots: list[dict]) -> list[dict]:
+    """One row per authored world that has a proof frame the gate kept: the
+    latest by time, mapped to film time through the build's placement (the
+    `at` of the world's first shot) + T, falling back to `worlds[].start` + T
+    when that shot is not placed. Rows read like sample rows so render_frames
+    renders them; a row carries `start_drift` when plan and build differ."""
+    rows: list[dict] = []
+    for doc in (vfx or {}).get("authored") or []:
+        file = str(doc.get("file") or "")
+        if not file.endswith(".scene.xml"):
+            continue
+        folder = Path(home) / Path(file).parent / "frames"
+        stem = Path(file).name[:-len(".scene.xml")]
+        for world in doc.get("worlds") or []:
+            prefix = f"{stem}__{world.get('id')}__"
+            found = []
+            for png in folder.glob(f"{glob.escape(prefix)}*s.png") if folder.is_dir() else []:
+                m = _PROOF_NAME.match(png.name[len(prefix):])
+                if m:
+                    found.append((float(m["t"]), png))
+            if not found:
+                continue
+            t_in, png = max(found, key=lambda x: x[0])
+            plan_start = float(world.get("start") or 0)
+            first = str((world.get("shots") or [""])[0])
+            placed = next((s for s in shots if str(s.get("label", "")) == first), None)
+            start = float(placed["at"]) if placed else plan_start
+            t = round(start + t_in, 3)
+            shot = next((s for s in shots if float(s["at"]) <= t < float(s["at"]) + float(s["seconds"])),
+                        None)
+            row = {"t": t, "label": str((shot or {}).get("label", "")),
+                   "section": (shot or {}).get("section", ""), "world": str(world.get("id")),
+                   "proof": str(png), "proof_t": t_in, "asset": "effect",
+                   "why": "proof frame", "frame": f"proof-{png.name}"}
+            if placed and abs(start - plan_start) > PROOF_DRIFT:
+                row["start_drift"] = {"plan_start": plan_start, "build_start": start}
+            rows.append(row)
+    return rows
+
+
+def proof_frame_findings(args, project, scene: str, vfx: dict | None, home: Path,
+                         shots: list[dict], out_dir: Path) -> tuple[list[dict], str]:
+    """The film at each world's proof-frame time against the proof frame.
+    Returns the `proof-mismatch` findings and a note for the scorecard (empty
+    when every world was compared). A film with no proof frames files nothing."""
+    plan = proof_plan(vfx, home, shots)
+    skipped = max(0, len(plan) - PROOF_LIMIT)
+    plan = plan[:PROOF_LIMIT]
+    if not plan:
+        return [], ("no proof frames to compare the film with (no vfx, or an older "
+                    "version layout): film-versus-proof check skipped")
+    frames = Path(out_dir) / "proof"
+    problems = render_frames(args, project, scene, plan, frames)
+    found: list[dict] = []
+    unread = []
+    for row in plan:
+        diff = proof_diff(row["proof"], frames / row["frame"])
+        if diff is None:
+            unread.append(row["world"])
+            continue
+        if diff <= PROOF_DIFF:
+            continue
+        drift = row.get("start_drift")
+        found.append({
+            "timestamp": row["t"], "frame": f"proof/{row['frame']}", "shot": row["label"],
+            "owner": "build", "kind": "proof-mismatch", "severity": "blocking",
+            "world": row["world"], "difference": round(diff, 2),
+            "problem": f"the film at {row['t']:g}s differs from the author's proof frame of "
+                       f"world {row['world']} ({row['proof_t']:g}s in): stage difference "
+                       f"{diff:.1f} against {PROOF_DIFF:g}"
+                       + (f"; the plan starts the world at {drift['plan_start']:g}s but the "
+                          f"build placed its first shot at {drift['build_start']:g}s"
+                          if drift else ""),
+            "why": "the composed film does not show what the author built and the vfx gate "
+                   "reviewed; measured mechanically from the two frames",
+            "root_cause": "the build split the world into includes that restart at t=0, "
+                          "moved its start, or composed it differently from the proof render",
+            "fix": "build the world as one include on one clock (see the build manifest's "
+                   "split_worlds) and check its start against vfx.json",
+            **({"start_drift": drift} if drift else {})})
+    parts = []
+    if problems or unread:
+        parts.append(f"{len(problems)} render problem(s), {len(unread)} world(s) unread")
+    if skipped:
+        parts.append(f"{skipped} world(s) not compared (limit {PROOF_LIMIT})")
+    note = f"proof-frame check incomplete: {'; '.join(parts)}" if parts else ""
+    return found, note
 
 
 def merged_by_shot(report: dict | None, shots: list[dict]) -> dict[str, list[dict]]:
@@ -826,6 +953,8 @@ def findings_md(name: str, card: dict, samples: list[dict], diff: dict, *,
               "Measured from the stills, the bursts and the engine's diagnostics before "
               f"the review; a blocking one caps {' and '.join(CAPPED)} at {MECHANICAL_CAP:g}.",
               ""]
+    if card.get("proof_note"):
+        lines += [f"Note: {card['proof_note']}", ""]
     if not card.get("mechanical"):
         lines.append("None found.")
     for row in card.get("mechanical") or []:
@@ -1039,6 +1168,13 @@ def run(args) -> int:
     mechanical = mechanical_findings(samples, diagnostics=diagnostics,
                                      geometry=geometry_by_shot(geometry_report, build.get("shots", [])),
                                      merged=merged_by_shot(geometry_report, build.get("shots", [])))
+    # The film against the authors' proof frames of the same worlds.
+    proof_found, proof_note = proof_frame_findings(
+        args, project, scene, read_json(project.source("vfx"), warn=False)
+        if project.source("vfx") else None, home, build.get("shots", []), pass_dir)
+    mechanical += proof_found
+    if proof_note and not args.quiet:
+        print(f"note: {proof_note}", file=sys.stderr)
     sheet = contact_sheet(samples, frames_dir, pass_dir / "contact-sheet.png")
     if not args.quiet:
         for f in mechanical:
@@ -1173,6 +1309,7 @@ def run(args) -> int:
                          "scene_sha256": seen,
                          "blocking": all_blocking, "frames": sorted(have),
                          "samples": samples, "mechanical": mechanical, "capped": capped,
+                         "proof_note": proof_note,
                          "contact_sheet": sheet.name, "engine": reviewer.report(),
                          "usage": spend.from_report(reviewer.report())}
     diff = compare(previous, card)
