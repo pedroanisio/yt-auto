@@ -983,6 +983,44 @@ def symbol_facts(doc_text: str) -> list[dict]:
     return out
 
 
+def unbounded_layer_findings(doc_text: str) -> list[str]:
+    """Layers with no start, end or duration are resident for the whole world, which a long
+    continuous world cannot afford. A warning naming them when the document outlasts its own
+    median bounded layer (or has none); the count is reported and the author decides, since
+    the repo holds no measured per-layer cost to derive a limit from."""
+    try:
+        root = _ET.fromstring(doc_text)
+    except _ET.ParseError:
+        return []
+    project = root.find("project")
+    try:
+        seconds = float(project.get("duration")) if project is not None else 0.0
+    except (TypeError, ValueError):
+        seconds = 0.0
+    if seconds <= 0:
+        return []
+    free, spans = [], []
+    for layer in root.iter("layer"):
+        a, b, d = layer.get("start"), layer.get("end"), layer.get("duration")
+        if a is None and b is None and d is None:
+            free.append(layer.get("id") or layer.get("asset") or "?")
+            continue
+        try:
+            spans.append(float(d) if d is not None else
+                         float(b if b is not None else seconds) - float(a or 0))
+        except ValueError:
+            continue
+    if not free:
+        return []
+    spans.sort()
+    if spans and seconds <= spans[len(spans) // 2]:
+        return []
+    return [f"warning: {len(free)} layer(s) have no start/end and stay loaded for all "
+            f"{seconds:g}s of the world ({', '.join(free[:12])}{' ...' if len(free) > 12 else ''}); "
+            "a long continuous world can run a host out of memory -- give each layer the "
+            "start/end of the span it is seen in"]
+
+
 def timing_findings(doc_text: str, required: dict[str, float]) -> list[str]:
     """Does each symbol span the shots it draws?
 
@@ -2065,6 +2103,7 @@ class Workspace:
             findings.append("note: no engine reachable; only the SDK's checks ran")
         else:
             findings += engine
+        findings += unbounded_layer_findings(data.decode("utf-8", "replace"))
         listed = props_items(self.root) if props else []
         if listed:
             textures = [p.as_posix() for it in listed for p in prop_textures(self.root, it)]
