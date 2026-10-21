@@ -56,7 +56,6 @@ ARTIFACTS = {
     "sound_md": "sound.md",
     "cues": "cues.csv",
     "pilot": "pilot.json",
-    "retime": "retime.json",
     "gate": "gate.json",
     "review": "review.json",
     "qa": "qa.json",

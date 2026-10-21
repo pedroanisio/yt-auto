@@ -40,7 +40,7 @@ from urllib.parse import urlparse
 
 from claude_engine import ClaudeEngine, ClaudeError, EngineConfig, Usage
 from . import assets as yt_assets
-from . import harness, workspace
+from . import flags, harness, workspace
 from .core import Idea, _merge_usage, slugify, write_json
 
 RESEARCHER_SYSTEM = (
@@ -1428,8 +1428,8 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                         "cinematic piece; fewer for a film under ten minutes)")
     p.add_argument("--jobs", type=int, default=3,
                    help="questions researched in parallel (default 3)")
-    p.add_argument("--budget", type=float, metavar="USD",
-                   help="hard spend cap per engine call")
+    flags.budget(p, default=None, dest="budget", metavar="USD", old=("--budget",),
+                 help="hard spend cap in dollars per engine call")
     p.add_argument("--download", action="store_true",
                    help="fetch freely licensed assets into the project")
     p.add_argument("--shots", type=int, default=None, metavar="N",
@@ -1450,8 +1450,7 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
     p.add_argument("--user-agent", default=DEFAULT_USER_AGENT,
                    help="User-Agent for downloads; some media hosts ask for a "
                         "contact address on heavy use")
-    p.add_argument("--fresh", action="store_true",
-                   help="redo every stage instead of reusing cached ones")
+    flags.fresh(p, help="redo every stage instead of reusing cached ones")
     p.set_defaults(run=run)
     return p
 

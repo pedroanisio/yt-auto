@@ -31,8 +31,8 @@ The frame gate renders a proof frame at each shot's midpoint and judges it
 with `framecheck` (flat, black, clipped, too dark, hero or set out of the
 camera's view); then the model reviews the frames through the harness against
 the publication bar of docs/production.md and scores them 0-10. Under
-`--author-bar` (default 7) the findings go back to the author, up to
-`--revisions` rounds. Every round of authoring lands in a new vfx/vNN/; an
+`--bar` (default 7) the findings go back to the author, up to
+`--rounds` rounds. Every round of authoring lands in a new vfx/vNN/; an
 earlier version is never overwritten, and `--fresh` opens the next one.
 
 Writes into the project: vfx/vNN/<section>.scene.xml for every section,
@@ -56,7 +56,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from claude_engine import ClaudeError, EngineConfig, Usage
-from . import fonts, framecheck, geometry, harness, house, reach, render, sdkkit, workspace
+from . import flags, fonts, framecheck, geometry, harness, house, reach, render, sdkkit, workspace
 from .core import Idea, _key, _merge_usage, read_json, slugify, write_json
 from .framecheck import DIM_STD, FLAT_STD, frame_stats, judge_frame  # noqa: F401  (re-exported)
 from .ideas import CHANNEL_STYLES
@@ -3543,22 +3543,21 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
     add_planning_args(p)
     p.add_argument("--jobs", type=int, default=2,
                    help="sections planned and authored in parallel (default 2)")
-    p.add_argument("--budget-usd", type=float, default=SECTION_BUDGET_USD, dest="budget_usd",
-                   help="budget for one section: its author sessions and its reviews "
-                        f"together (default {SECTION_BUDGET_USD:g})")
+    flags.budget(p, default=SECTION_BUDGET_USD,
+                 help="budget for one section: its author sessions and its reviews "
+                      f"together (default {SECTION_BUDGET_USD:g})")
     p.add_argument("--stage-budget-usd", type=float, default=None, dest="stage_budget_usd",
                    help="budget for the whole stage, every section together "
                         "(default: --budget-usd times the sections authored)")
     p.add_argument("--budget-hours", type=float,
                    help="refinement hours available; shapes what to cut")
-    p.add_argument("--revisions", type=int, default=2,
-                   help="rounds the author gets to fix what the frame gate and the "
-                        "review find (default 2)")
-    p.add_argument("--author-bar", type=float, default=7.0, dest="author_bar",
-                   help="provisional review score (0-10) under which the frames go "
-                        "back to the author (default 7)")
-    p.add_argument("--fresh", action="store_true",
-                   help="redo every stage, authoring included, into the next vfx/vNN/ "
+    flags.rounds(p, default=2, dest="revisions", old=("--revisions",),
+                 help="rounds the author gets to fix what the frame gate and the "
+                      "review find (default 2)")
+    flags.bar(p, default=7.0, dest="author_bar", old=("--author-bar",),
+              help="provisional review score (0-10) under which the frames go "
+                   "back to the author (default 7)")
+    flags.fresh(p, help="redo every stage, authoring included, into the next vfx/vNN/ "
                         "instead of reusing cached ones")
     p.add_argument("--recover", action="store_true",
                    help="rebuild the record of a run that ended before saving it (killed, timed "

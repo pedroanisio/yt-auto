@@ -41,7 +41,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path, PurePosixPath
 
-from . import house, workspace
+from . import flags, house, workspace
 from .core import read_json, write_json
 from .harness import Harness, HarnessError
 
@@ -577,12 +577,8 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                    help=f"comma-separated: {', '.join(KINDS)} (default all)")
     p.add_argument("--redownload", action="store_true",
                    help="fetch files already on disk again")
-    p.add_argument("--fresh", action="store_true",
-                   help="re-read the catalogue instead of the day-old cache, and ask the "
+    flags.fresh(p, help="re-read the catalogue instead of the day-old cache, and ask the "
                         "model again")
-    p.add_argument("--model", default="sonnet",
-                   help="model that picks the phrases and keeps the fitting results "
-                        "when the phrases are derived (default sonnet)")
     p.add_argument("--user-agent", default=DEFAULT_USER_AGENT,
                    help="User-Agent for the requests")
     p.set_defaults(run=run, source=None, index=None, stdin=None, genre=None,

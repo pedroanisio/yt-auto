@@ -62,7 +62,7 @@ clipped, too dark, a `hero-` object the camera never frames, a set mostly out
 of view) over each frame and over one short draft encode per shot, which is
 the only thing that computes the engine's camera analysis; then the model
 reviews the frames against the publication bar and scores them 0-10. Under
-`--author-bar` (7) the findings go back to the author, up to `--revisions`
+`--bar` (7) the findings go back to the author, up to `--rounds`
 rounds (2). Each round of authoring lands in a new `vfx/vNN/`; nothing
 authored before is overwritten.
 
@@ -120,7 +120,7 @@ Or all of it at once, for one idea:
 | `yt props` | CC0 glTF models, HDRIs and texture maps from Poly Haven under `props/`, listed in `props.json` for the vfx brief | no model calls, no key |
 | `yt keyframe` | the look-lock from the film itself: `yt vfx`'s plan for every section and the lead section authored once, judged by the mechanical gate, its frames awaiting the operator's approval; `yt vfx` then carries it and authors the rest against it (`--sheet`: the older separate style frame) | the vfx plan and one author session; no vision review |
 | `yt voice` | one WAV per shot, measured drift against the script, captions | no model calls; ElevenLabs bills per character, local engines are free |
-| `yt vfx` | every effect specified and costed, then one world `<symbol>` per section, written by the author as a Python program with the sr-core SDK that the stage builds itself (determinism and provenance checked), with a single camera, its shots as phases, proof frames checked (frame, camera and geometry: a hero that penetrates a set solid, or that reads merged into one on screen with no shadow, is an error with time, object and depth) and reviewed, versioned under `vfx/vNN/` | scales with `--per-section`, `--budget-usd` per section, `--revisions` |
+| `yt vfx` | every effect specified and costed, then one world `<symbol>` per section, written by the author as a Python program with the sr-core SDK that the stage builds itself (determinism and provenance checked), with a single camera, its shots as phases, proof frames checked (frame, camera and geometry: a hero that penetrates a set solid, or that reads merged into one on screen with no shadow, is an error with time, object and depth) and reviewed, versioned under `vfx/vNN/` | scales with `--per-section`, `--budget-usd` per section, `--rounds` |
 | `yt sound` | effects, ambience, score, motifs, mix targets, cue sheet; with `--fetch`, a CC0/CC-BY file per cue from Freesound under `sound/` | **$1.07** for 3 minutes with listen-back |
 | `yt build` | the scene-render document: continuous includes of the authored worlds, model-planned graphics drawn from the design, captions, markers, the mix with the fetched cues on buses per role | one planning call per section |
 | `yt render` | the encoded video, with the engine's report, from a job-scoped directory on a render host | no model calls |
@@ -511,8 +511,8 @@ framed, a `hero-` object out of view is an error on that shot's frame, set
 objects out of view are counted, and a set mostly out of view across the
 frames is a camera pointing at nothing. The model then reviews the frames
 against the publication bar and scores them. An error, or a score under
-`--author-bar` (7), sends the findings back to the author for up to
-`--revisions` rounds (2); every round and its score are kept in `vfx.json`.
+`--bar` (7), sends the findings back to the author for up to
+`--rounds` rounds (2); every round and its score are kept in `vfx.json`.
 
 Authoring is versioned. Each run lands in the next `vfx/vNN/`, `vfx.json`
 names the active version, and `--fresh` replans and opens a new version;
@@ -539,7 +539,7 @@ author is told its session's cap, and at 80% of it is asked for its build and
 a still (as at 80% of its time) rather than being cut off with exit 1.
 
 `--per-section` · `--jobs` · `--budget-usd` per section · `--stage-budget-usd` ·
-`--budget-hours` · `--width` · `--height` · `--revisions` · `--author-bar` · `--inspo` · `--fresh`
+`--budget-hours` · `--width` · `--height` · `--rounds` · `--bar` · `--inspo` · `--fresh`
 
 ### `yt sound`
 

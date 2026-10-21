@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from claude_engine import ClaudeError, EngineConfig
-from . import harness, sdkkit
+from . import flags, harness, sdkkit
 from .core import read_json, write_json
 
 PROBES_DIR = ".probes"
@@ -545,10 +545,12 @@ def fetch_props(args) -> int:
 
 def add_arguments(p: argparse.ArgumentParser, *, shared: bool = True) -> None:
     """The probe's flags; `shared` adds the ones `yt` gives every stage
-    (--model, --effort, --quiet, --work) for running the module on its own."""
+    (--model, --effort, --fallback-model, --quiet, --work) for running the module on its own."""
     if shared:
         p.add_argument("--model", default="sonnet", help="the author (default sonnet)")
         p.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"])
+        p.add_argument("--fallback-model", dest="fallback_model", metavar="MODEL",
+                       help="model(s) to try when --model is overloaded; comma-separated")
         p.add_argument("--work", help="the work directory (default ./work)")
         p.add_argument("--quiet", action="store_true")
     p.add_argument("--only", help="comma-separated probe ids (default: all)")
@@ -557,11 +559,10 @@ def add_arguments(p: argparse.ArgumentParser, *, shared: bool = True) -> None:
                    help="fill work/.probes/props with a neutral CC0 set, then stop")
     p.add_argument("--reviewer-model", default="opus",
                    help="the realism reviewer; must differ from the author (default opus)")
-    p.add_argument("--rounds", type=int, default=2,
-                   help="revisions after the first review while under the bar (default 2)")
-    p.add_argument("--bar", type=float, default=8.0,
-                   help="the realism score that ends the revisions (default 8)")
-    p.add_argument("--budget-usd", type=float, default=3.0, help="per author session")
+    flags.rounds(p, default=2,
+                 help="revisions after the first review while under the bar (default 2)")
+    flags.bar(p, default=8.0, help="the realism score that ends the revisions (default 8)")
+    flags.budget(p, default=3.0, help="per author session")
     p.add_argument("--review-budget-usd", type=float, default=1.0, help="per review")
     p.add_argument("--jobs", type=int, default=2, help="probes composed at once")
     p.add_argument("--props", help="a folder holding props.json and props/ (a project root "
