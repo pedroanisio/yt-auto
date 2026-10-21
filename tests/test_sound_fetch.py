@@ -109,29 +109,22 @@ class WriteBack(FetchCase):
 
 
 class Queries(FetchCase):
-    def test_the_model_query_is_tried_first_then_search_terms_then_the_name(self):
+    def test_the_model_query_is_tried_then_search_terms_and_never_the_name(self):
         c = cue("sfx", "S1", "Paper flutter following angular velocity", 9,
                 query="paper flutter", search=["page flip wind", "paper rustle"])
-        self.assertEqual(sound.cue_queries(c)[:3],
+        self.assertEqual(sound.cue_queries(c),
                          ["paper flutter", "page flip wind", "paper rustle"])
-        self.assertIn("paper flutter following angular velocity",
-                      sound.cue_queries(c))
 
-    def test_a_name_too_long_to_match_is_also_tried_shortened(self):
+    def test_a_name_alone_gives_no_query(self):
         c = cue("sfx", "S1", "Release: finger-paper slip and air puff", 1)
-        queries = sound.cue_queries(c)
-        self.assertEqual(queries[0], "release finger paper slip and air puff")
-        self.assertIn("release finger paper", queries)
-        self.assertEqual(queries[-1], "release finger")
+        self.assertEqual(sound.cue_queries(c), [])
 
-    def test_the_layers_name_the_sound_so_they_are_tried_before_the_name(self):
+    def test_the_layers_name_the_sound_and_the_name_is_not_tried(self):
         c = cue("ambience", "A1", "Midday room tone (continuous bed)", 15,
                 search=["hvac hum"],
                 layers=["room tone 60-120 Hz HVAC", "air hiss, barely there"])
-        queries = sound.cue_queries(c)
-        self.assertEqual(queries[:3], ["hvac hum", "room tone hvac", "air hiss"])
-        self.assertLess(queries.index("air hiss"),
-                        queries.index("midday room tone continuous bed"))
+        self.assertEqual(sound.cue_queries(c),
+                         ["hvac hum", "room tone hvac", "air hiss"])
 
     def test_queries_are_deduplicated(self):
         c = cue("sfx", "S1", "Tap", 1, query="tap", search=["tap", "Tap"])
@@ -225,7 +218,7 @@ class Schema(unittest.TestCase):
         asked = {}
         designer._ask = lambda prompt, schema: asked.setdefault("prompt", prompt) and {"cues": []}
         designer.spot_whole()
-        self.assertIn("query", asked["prompt"])
+        self.assertIn("search_description", asked["prompt"])
 
 
 class RuntimeFloor(unittest.TestCase):

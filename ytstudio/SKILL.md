@@ -521,7 +521,10 @@ hand-authored world showed the cost.
   every WAV must pass `check.py` -- the pipeline's own check: 48 kHz stereo
   16-bit, the cue's length, neither silent nor clipped -- before its cue
   gets a `file`, and the cue records the script's sha256 so the sound can
-  be regenerated. `--fetch --synth` fetches first and synthesises the rest;
+  be regenerated. The spotter writes each cue for those two paths, a
+  `search_description` in a sound library's words and a `synth_spec` of the
+  sound itself, and the fetch queries come from the description, never from
+  the cue's name. `--fetch --synth` fetches first and synthesises the rest;
   a later `--fetch` keeps a synthesised cue. `yt doctor` warns while any
   cue has no file and names that command.
 - **The ocean is a height field.** It cannot overturn, break or pinch off a

@@ -96,7 +96,7 @@ what is missing and which command fixes it.
 ./yt keyframe --title lithography                      # lock the look: section 1, for approval
 ./yt keyframe --title lithography --approve            # after looking at keyframe.md
 ./yt vfx      --title lithography --budget-hours 40    # carries section 1, authors the rest
-./yt sound    --title lithography --review --fetch     # the cue sheet, then its files
+./yt sound    --title lithography --review --fetch     # the cue sheet (each cue a catalogue search or a synthesis spec), then its files
 ./yt build    --title lithography                      # the scene-render document
 ./yt render   --title lithography --quality draft
 ./yt pilot    --title lithography --seconds 30,60,180   # nested approval cuts
