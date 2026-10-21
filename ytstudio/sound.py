@@ -23,8 +23,11 @@ best hit by duration and rating is downloaded into `<project>/sound/` and
 written back into the cue as `file`, `licence`, `credit`, `source_url` and
 `duration`, which is what `yt build` places. A cue nothing matched keeps no
 file and is listed under `unfilled` with the queries tried. With a sound.json
-already in the project, `--fetch` reuses it and asks the model nothing;
-`--fresh` spots again first.
+already in the project, `--fetch` reuses it and asks the model nothing about
+the spotting; `--fresh` spots again first. Each new candidate that passes the
+level checks is judged against its cue (name, tags, description, measured
+levels and spectrum, a spectrogram): a reject tries the next hit, and the
+verdict and evidence are kept in the cue's `judgement`.
 
 Cues are proposed as original material to record, commission or license: the
 score is described (instruments, tempo, character, how it enters and leaves) so
@@ -36,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import array
+import base64
 import csv
 import hashlib
 import math
@@ -853,7 +857,7 @@ FETCH_QUALITY = (f"Freesound {freesound.PREVIEW}: the high-quality mp3 preview, 
 #: The fields `--fetch` writes into a cue, and clears before trying again.
 FETCHED_FIELDS = ("file", "licence", "credit", "source_url", "duration",
                   "freesound_id", "query_used", "synth", "gain_db",
-                  "source_peak_dbfs")
+                  "source_peak_dbfs", "judgement")
 #: Function words that carry no sound: dropped when a cue's name is shortened
 #: into a last-resort query. Nothing about any subject lives here.
 _STOP = frozenset("a an and the of on in at to for with from by or into onto "
@@ -920,6 +924,12 @@ FETCH_TRIES = 3
 WINDOW_S, FLOOR_FRACTION = 0.4, 0.10
 #: BS.1770's absolute gate: loudness at or under it is silence to ebur128.
 GATE_LUFS = -70.0
+#: Spectral flatness (geometric over arithmetic mean of the spectrum) at or
+#: under this is a tonal sound; above it is noisy. A pure tone is near 0.
+TONAL_FLATNESS = 0.1
+#: The spectrogram brought back for the judge, and how much of a file the
+#: spectral pass reads (seconds).
+SPECTROGRAM_SIZE, SPECTRAL_SECONDS = "640x320", 60
 #: Seconds allowed the remote measurement, plus this much per file.
 MEASURE_SECONDS, MEASURE_SECONDS_PER_FILE = 120, 30
 
@@ -932,11 +942,18 @@ class MeasureError(RuntimeError):
 class Levels:
     """What one file measures: integrated loudness (LUFS), true peak (dBFS),
     the noise floor (dBFS, momentary loudness of its quietest tenth), and the
-    host that measured it."""
+    host that measured it. The same batch also reports what the judge reads:
+    the mean spectral centroid (Hz) and flatness (0 tonal .. 1 noise), whether
+    that makes it tonal, and a spectrogram PNG; each is empty when the host
+    could not make it, which never costs the file its level checks."""
     lufs: float
     true_peak: float
     floor: float
     host: str = ""
+    centroid_hz: float | None = None
+    flatness: float | None = None
+    tonal: bool | None = None
+    spectrogram: bytes = b""
 
 
 def reference_of(kind: str) -> str:
@@ -973,14 +990,29 @@ def parse_ebur128(text: str) -> Levels | None:
     return Levels(lufs=loudness, true_peak=float(peak.group(1)), floor=floor)
 
 
+_SPECTRAL_MEAN = (r"awk -F= '/aspectralstats\.[0-9]+\.centroid=/{c+=$2;a++} "
+                  r"/aspectralstats\.[0-9]+\.flatness=/{f+=$2;b++} "
+                  r'END{if(a&&b)printf "centroid=%.1f flatness=%.5f\n",c/a,f/b}' + "'")
+
+
 def measure_script(remote: str, names: list[str], ffmpeg: str = "") -> str:
     """The one remote shell for a batch: unpack the files into `remote`, run
-    ebur128 on each between @@FILE/@@END marks, and remove the directory."""
+    ebur128 on each between @@FILE/@@END marks, then the spectral means and a
+    spectrogram PNG (base64) between @@SPEC/@@SPECEND marks, and remove the
+    directory. The spectral part may fail without touching the levels."""
     q = shlex.quote
     runs = "".join(
         f'echo "@@FILE {n}"; "$F" -hide_banner -nostats -loglevel verbose -i {q(name)} -vn '
         f'-af ebur128=peak=true:framelog=verbose -f null - 2>&1; '
-        f'echo "@@END {n} $?"; ' for n, name in enumerate(names))
+        f'echo "@@END {n} $?"; '
+        f'echo "@@SPEC {n}"; "$F" -hide_banner -nostats -loglevel error '
+        f'-t {SPECTRAL_SECONDS} -i {q(name)} -vn '
+        f'-af aspectralstats=measure=centroid+flatness,ametadata=mode=print:file=- '
+        f'-f null - 2>/dev/null | {_SPECTRAL_MEAN}; '
+        f'echo "@@PNG {n}"; "$F" -hide_banner -nostats -loglevel error -y -i {q(name)} '
+        f'-lavfi showspectrumpic=s={SPECTROGRAM_SIZE}:legend=0 -frames:v 1 spec{n}.png '
+        f'2>/dev/null && base64 -w0 spec{n}.png 2>/dev/null; echo; '
+        f'echo "@@SPECEND {n}"; ' for n, name in enumerate(names))
     return (f"mkdir -p {q(remote)} && cd {q(remote)} && tar -xf - && "
             f'{{ F=$(command -v ffmpeg 2>/dev/null); [ -n "$F" ] || F={q(ffmpeg)}; '
             f'if [ -x "$F" ]; then {runs}true; else echo __NO_FFMPEG__; false; fi; }}; '
@@ -1026,14 +1058,34 @@ def measure_remote(paths) -> list[Levels | None]:
     if not blocks:
         raise MeasureError(f"measuring on {host} failed (exit {done.returncode}): "
                            f"{done.stderr.decode('utf-8', 'replace').strip()[:200]}")
+    specs = {int(n): (facts, png) for n, facts, png in re.findall(
+        r"@@SPEC (\d+)\n(.*?)\n?@@PNG \1\n(.*?)\n?@@SPECEND \1", out, re.S)}
     found: list[Levels | None] = []
     for n in range(len(paths)):
         code, body = blocks.get(n, (1, ""))
         got = parse_ebur128(body) if code == 0 else None
         if got is not None:
             got.host = host
+            add_spectral(got, *specs.get(n, ("", "")))
         found.append(got)
     return found
+
+
+_SPECTRAL = re.compile(r"centroid=(\d+(?:\.\d+)?)\s+flatness=(\d+(?:\.\d+)?)")
+
+
+def add_spectral(got: Levels, facts: str, png: str) -> None:
+    """Fold the host's spectral line and base64 PNG into `got`; whatever is
+    missing or unreadable stays empty."""
+    m = _SPECTRAL.search(facts or "")
+    if m:
+        got.centroid_hz, got.flatness = float(m.group(1)), float(m.group(2))
+        got.tonal = got.flatness <= TONAL_FLATNESS
+    try:
+        data = base64.b64decode("".join((png or "").split()), validate=True)
+    except ValueError:
+        data = b""
+    got.spectrogram = data if data.startswith(b"\x89PNG") else b""
 
 
 def narration_level(data: dict) -> tuple[float, str]:
@@ -1094,6 +1146,91 @@ def level_to_design(cue: dict, got: Levels, narration: float
             "source_noise_floor_dbfs": _finite(got.floor)}, ""
 
 
+JUDGE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string", "enum": ["accept", "reject"]},
+        "reason": {"type": "string"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1}},
+    "required": ["verdict", "reason", "confidence"]}
+
+JUDGE_ROLE = (
+    "You are the sound editor who vets a library candidate before it goes "
+    "under picture. You are given one cue (its kind, name, purpose and "
+    "description) and one candidate: the library's own name, tags, "
+    "description, length and licence, what was measured of the file "
+    "(loudness, spectral centroid and flatness, tonal or noisy) and, when "
+    "attached, its spectrogram. Accept only a sound that could play as this "
+    "cue: the same kind of sound, the right character for what the cue is "
+    "for. Reject a sound that is something else, however clean or loud it "
+    "is, and say in one sentence which evidence shows it. A title alone can "
+    "mislead: weigh the tags, the description and the measurements against "
+    "the cue. When the evidence is thin, say so in the reason and lower the "
+    "confidence.")
+
+
+def judge_facts(hit, got: Levels) -> dict:
+    """The evidence about one candidate, as plain JSON values: what the
+    library says of it and what was measured."""
+    return {"name": hit.name, "tags": list(hit.tags), "description": hit.description,
+            "duration": round(hit.duration, 3), "licence": hit.licence,
+            "lufs": _finite(got.lufs), "true_peak_dbfs": _finite(got.true_peak),
+            "noise_floor_dbfs": _finite(got.floor),
+            "centroid_hz": got.centroid_hz, "flatness": got.flatness,
+            "tonal": got.tonal}
+
+
+def judge_prompt(cue: dict, evidence: dict) -> str:
+    """The question put to the judge: the cue, then the candidate."""
+    hit, got = evidence["hit"], evidence["levels"]
+    shape = {None: "not measured", True: "tonal", False: "noisy"}[got.tonal]
+    lines = ["The cue:"]
+    for label, key in (("kind", "kind"), ("name", "name"), ("purpose", "purpose"),
+                       ("description", "description"),
+                       ("what to search for", "search_description"),
+                       ("length wanted (s)", "seconds")):
+        if cue.get(key) not in (None, ""):
+            lines.append(f"- {label}: {cue[key]}")
+    lines += ["", "The candidate (from the library):",
+              f"- name: {hit.get('name')}",
+              f"- tags: {', '.join(hit.get('tags') or []) or 'none'}",
+              f"- description: {hit.get('description') or 'none'}",
+              f"- length (s): {hit.get('duration')}",
+              f"- licence: {hit.get('licence')}", "",
+              "Measured on the file:",
+              f"- integrated loudness: {got.lufs:.1f} LUFS; true peak "
+              f"{got.true_peak:.1f} dBFS; noise floor {got.floor:.1f} dBFS"]
+    if got.centroid_hz is not None:
+        lines.append(f"- spectral centroid {got.centroid_hz:.0f} Hz, flatness "
+                     f"{got.flatness:.4f} ({shape})")
+    else:
+        lines.append("- spectral facts: not measured")
+    image = evidence.get("spectrogram")
+    lines += ["", ("Read spectrogram.png (time across, frequency up) before you "
+                   "answer." if image else "No spectrogram is available."),
+              "", "Does this candidate fit this cue? Answer accept or reject, "
+              "with the reason from the evidence and your confidence (0 to 1)."]
+    return "\n".join(lines)
+
+
+def harness_judge(root: str | Path, *, model: str = "sonnet"):
+    """The judge `--fetch` uses: `judge(cue, evidence) -> verdict dict`, asked
+    through the harness. A spectrogram is read by an inspection (the vision
+    path); without one it is a plain decision."""
+    h = harness.Harness(Path(root), "sound", model=model, role=JUDGE_ROLE, verbose=False)
+
+    def judge(cue: dict, evidence: dict) -> dict:
+        name = f"judge-{slugify(str(cue.get('cue_id') or cue.get('name') or 'cue'), 30)}" \
+               f"-{evidence['hit'].get('id')}"
+        prompt = judge_prompt(cue, evidence)
+        image = evidence.get("spectrogram")
+        if image:
+            return h.inspect(name, prompt, JUDGE_SCHEMA, cwd=Path(image).parent,
+                             tools=("Read",))
+        return h.decide(name, prompt, JUDGE_SCHEMA)
+    return judge
+
+
 @dataclass
 class _Job:
     """One cue being filled: where it is, what it may still try."""
@@ -1107,12 +1244,13 @@ class _Job:
     rel: str | None = None          # the file now under test
     hit: object = None              # its Freesound hit (None for a kept file)
     refusals: list = field(default_factory=list)
+    rejected: list = field(default_factory=list)    # candidates the judge turned down
     tries: int = 0
     done: bool = False
 
 
 def fetch(root: str | Path, data: dict, *, token: str | None = None,
-          say=None, measure=None) -> dict:
+          say=None, measure=None, judge=None) -> dict:
     """Fill the cue sheet in `data` with files under `<root>/sound/`.
 
     Mutates `data`: each filled cue gains the contract fields (`file`,
@@ -1131,6 +1269,14 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
     of the same search is tried (`FETCH_TRIES` in all) before the cue is
     left unfilled. A batch that could not be measured keeps its files
     unlevelled and says so in the summary (`measure_error`, `unmeasured`).
+
+    A newly fetched candidate that passes those checks is then judged against
+    its cue (`judge(cue, evidence) -> {verdict, reason, confidence}`, see
+    `harness_judge`; None judges nothing). A reject takes the same next-hit
+    path as a refusal, its reason recorded; the accepted cue keeps the
+    `judgement` (verdict, reason, confidence, the evidence shown, and the
+    candidates rejected before it), and a cue every candidate failed is
+    unfilled with the reasons. A judge that errors leaves the file `unjudged`.
     """
     root = Path(root)
     measure = measure or measure_remote
@@ -1202,7 +1348,8 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
                if job.refusals else "no CC0 or CC-BY hit on Freesound for any query")
         if len(job.refusals) > 1:
             why = f"{len(job.refusals)} sources refused, {why}"
-        unfilled.append(job.miss | {"reason": why})
+        unfilled.append(job.miss | {"reason": why}
+                        | ({"rejected": job.rejected} if job.rejected else {}))
         say(f"  {job.cid} unfilled: {why}")
 
     def advance(job: _Job) -> None:
@@ -1247,13 +1394,43 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
                 job.hits = [h for h in found if h.id != job.old_id][:FETCH_TRIES]
         job.rel = job.hit = None
 
-    def accept(job: _Job, fields: dict | None) -> None:
+    def judged(job: _Job, got: Levels) -> dict:
+        """The judge's verdict on the candidate under test, with the evidence
+        it was shown. A judge that fails leaves the file `unjudged`: the
+        fetch does not die for a model outage, and the record says so."""
+        hit = job.hit
+        evidence = judge_facts(hit, got)
+        image = None
+        if got.spectrogram:
+            image = root / SOUND_DIR / "judge" / str(hit.id) / "spectrogram.png"
+            image.parent.mkdir(parents=True, exist_ok=True)
+            image.write_bytes(got.spectrogram)
+            evidence["spectrogram"] = image.relative_to(root).as_posix()
+        summary["judged"] = summary.get("judged", 0) + 1
+        try:
+            answer = judge(job.cue, {"hit": {k: evidence[k] for k in (
+                "name", "tags", "description", "duration", "licence")} | {"id": hit.id},
+                "levels": got, "spectrogram": image})
+            verdict = str(answer["verdict"]).lower()
+            if verdict not in ("accept", "reject"):
+                raise ValueError(f"verdict {answer['verdict']!r}")
+            record = {"verdict": verdict, "reason": str(answer.get("reason") or ""),
+                      "confidence": answer.get("confidence")}
+        except (harness.HarnessError, ClaudeError, KeyError, TypeError, ValueError) as exc:
+            record = {"verdict": "unjudged", "reason": f"the judge failed: {exc}",
+                      "confidence": None}
+            say(f"  {job.cid} {job.rel}: {record['reason']}")
+        return record | {"evidence": evidence}
+
+    def accept(job: _Job, fields: dict | None, verdict: dict | None = None) -> None:
         cue, rel, hit = job.cue, job.rel, job.hit
         if hit is not None:
             cue.update(file=rel, licence=hit.licence, credit=hit.credit,
                        source_url=hit.url, duration=round(hit.duration, 3),
                        freesound_id=hit.id, query_used=job.used)
-        else:
+        if verdict is not None:
+            cue["judgement"] = verdict | {"rejected": job.rejected}
+        if hit is None:
             summary["cached"] += 1
         if fields:
             cue.update(fields)
@@ -1290,11 +1467,22 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
                 accept(job, None)
                 continue
             fields, why = level_to_design(job.cue, got, narration)
+            verdict: dict | None = None
+            if not why and judge is not None and job.hit is not None:
+                verdict = judged(job, got)
+                if verdict["verdict"] == "reject":
+                    why = f"judged not to fit the cue: {verdict['reason']}"
             if why:
                 discard.add(job.rel)
+                if verdict is not None:
+                    job.rejected.append({
+                        "freesound_id": job.hit.id, "name": job.hit.name,
+                        "reason": verdict["reason"],
+                        "confidence": verdict.get("confidence"),
+                        "evidence": verdict["evidence"]})
                 refuse(job, why)
             else:
-                accept(job, fields)
+                accept(job, fields, verdict)
         for rel in discard - taken - {j.rel for j in jobs if not j.done}:
             (root / rel).unlink(missing_ok=True)
             levels.pop(rel, None)
@@ -1318,13 +1506,14 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
     return summary
 
 
-def fetch_file(path: str | Path, *, token: str | None = None, say=None) -> dict:
+def fetch_file(path: str | Path, *, token: str | None = None, say=None,
+               judge=None) -> dict:
     """`fetch` for a sound.json on disk, written back in place."""
     path = Path(path)
     data = read_json(path)
     if not data:
         raise FileNotFoundError(f"no cue sheet at {path}")
-    summary = fetch(path.parent, data, token=token, say=say)
+    summary = fetch(path.parent, data, token=token, say=say, judge=judge)
     write_json(path, data)
     return summary
 
@@ -1941,7 +2130,8 @@ def _finish(args, idea: Idea, project, data: dict) -> int:
         if not args.quiet:
             print(f"[fetch] freesound -> {project.root / SOUND_DIR}",
                   file=sys.stderr)
-        fetch(project.root, data, say=(lambda m: None) if args.quiet else None)
+        fetch(project.root, data, say=(lambda m: None) if args.quiet else None,
+              judge=harness_judge(project.root, model=args.model))
     if getattr(args, "synth", False):
         if not args.quiet:
             print(f"[synth] original sound -> {project.root / SYNTH_DIR}",
