@@ -7,3 +7,5 @@ work/*
 __pycache__/
 .vscode/settings.json
 .govern/
+.venv-bridge/
+.bridge/
