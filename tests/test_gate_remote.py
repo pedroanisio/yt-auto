@@ -86,10 +86,12 @@ class RemotePlan(unittest.TestCase):
         self.assertEqual(dests, [f"root@h:{plan.project}/",
                                  f"root@h:{plan.root}/tools/gate/",
                                  f"root@h:{plan.root}/tools/audio/",
+                                 f"root@h:{plan.root}/tools/audio/",
                                  f"root@h:{plan.root}/inputs/empty.vtt"])
         sources = [argv[-2] for argv in plan.syncs]
+        # the last tools sync is yt's tail check and its library, over the tools dir's copy
         self.assertEqual(sources, ["/w/monty/", "/src/scene-render/tools/", "/src/pnkit/tools/",
-                                   "/scratch/empty.vtt"])
+                                   str(gate.bundled_tools()) + "/", "/scratch/empty.vtt"])
         for argv in plan.syncs:
             self.assertEqual(argv[0], "rsync")
             self.assertNotIn("--delete", argv)

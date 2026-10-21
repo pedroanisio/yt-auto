@@ -267,7 +267,7 @@ blocking editorial note. It is not a delivery verdict. The order is:
    `yt render --quality final --strict`. Both route to the big host.
 5. `yt gate` (its sr-audiocheck, sr-margin and sr-sibilance are bundled in
    `ytstudio/audiotools` and shipped to the host with the gate; `yt doctor` and
-   `--preflight` name a missing one) (on a render host; `gate.json`'s `stopped_by` says which
+   `--preflight` name a missing one; its tail check is the bundled stdlib `tail_check.py`, which judges the effects after the last word by measuring them) (on a render host; `gate.json`'s `stopped_by` says which
    requirement stopped it and which stage owns the fix; a wordless film passes it with the descriptive captions `yt voice` writes and `voice_end` = the last shot's start), then `yt review
    --engine rs`, then `yt qa`.
 6. READY TO PUBLISH only when `yt qa` reports an overall of 9.0 with no

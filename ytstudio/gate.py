@@ -237,6 +237,12 @@ def plan_remote(found: dict, extras: list[str], project_root: Path, host: str, *
         plan.syncs.append(render_stage.sync_up_args(
             Path(found["audio tools"]), host, f"{root}/tools/audio", delete=False,
             excludes=("__pycache__/",)))
+    else:
+        # the tail check is yt's own (stdlib + ffmpeg; the hosts have no numpy): it and its
+        # library go over any tail_check.py in the tools dir, and the tools dir's sr-* stay
+        plan.syncs.append(render_stage.sync_up_args(
+            bundled_tools(), host, f"{root}/tools/audio", delete=False,
+            excludes=("*",), includes=TAIL_CHECK_FILES))
     for local, remote in plan.paths.items():
         if remote.startswith(root + "/inputs/") and local != found["encode report"]:
             plan.syncs.append(render_stage.sync_up_args(
@@ -254,8 +260,7 @@ def plan_remote(found: dict, extras: list[str], project_root: Path, host: str, *
                     "--loudness-target", str(loudness_target)]
     for caption in captions:
         plan.command += ["--captions", plan.paths[caption]]
-    if (tools / "tail_check.py").is_file() or not tools.is_dir():
-        plan.command += ["--tail-check", f"{root}/tools/audio/tail_check.py"]
+    plan.command += ["--tail-check", f"{root}/tools/audio/tail_check.py"]
     if max_illegal is not None:
         plan.command += ["--max-illegal", str(max_illegal)]
     return plan
@@ -455,6 +460,8 @@ def tools_dir(explicit: str | None) -> Path | None:
 
 #: The three tools production_gate.py runs from --tools-dir, by name.
 AUDIO_TOOLS = ("sr-audiocheck", "sr-margin", "sr-sibilance")
+#: The tail check is a script beside its library, bundled with yt; it is never taken from the tools dir.
+TAIL_CHECK_FILES = ("tail_check.py", "sr_audio.py")
 AUDIO_TOOLS_HINT = ("bundled in ytstudio/audiotools; restore the file from the repo, or "
                     "put one of that name in --tools-dir")
 
@@ -554,7 +561,7 @@ def local_command(found: dict, extras: list[str], *, frames: bool, loudness_targ
            "--loudness-target", str(loudness_target)]
     for caption in [found["captions"], *extras]:
         cmd += ["--captions", caption]
-    tail = Path(found["tools dir"]) / "tail_check.py"
+    tail = bundled_tools() / "tail_check.py"
     if tail.is_file():
         cmd += ["--tail-check", str(tail)]
     if max_illegal is not None:

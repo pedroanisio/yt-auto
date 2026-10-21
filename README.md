@@ -790,8 +790,10 @@ The gate's three audio checks live in `ytstudio/audiotools/`: `sr-margin`
 floor 11 dB), `sr-audiocheck` (true peak, digital silence, DC offset, loudness
 range inside the narration) and `sr-sibilance` (5-10 kHz bursts per take).
 Python standard library and ffmpeg only, so they run on a render host; they ship
-into the job's `tools/audio` beside `tail_check.py` whenever the tools directory
-lacks them. `yt doctor` and `yt gate --preflight` name each one that is missing.
+into the job's `tools/audio` whenever the tools directory lacks them. The gate's
+tail check is yt's own `tail_check.py` in the same directory (pnkit's rules 2-4
+ported without numpy; an ending's effects are judged by measuring each one: a
+short attack that decays), always shipped and passed as `--tail-check`. `yt doctor` and `yt gate --preflight` name each one that is missing.
 Only the true-peak ceiling and the 11 dB floor are standard figures; the other
 limits are named working conventions in `sr_audio.py`.
 
