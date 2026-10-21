@@ -66,24 +66,25 @@ BUILD_HINT = ("the scene-render binary was not found. Set RS_RENDER_BIN to it, "
 
 #: Where the engine may sit under each of local_roots(), nearest root first and,
 #: within one root, in this order: a developer's own build wins over an archive.
-#: A pattern with `*` matches every unpacked release archive, newest version
-#: first (the same `sort -V | tail -1` REMOTE_BIN_LOOKUP applies on a host).
+#: A pattern with `*` takes the newest version among its own matches, ordered as
+#: `sort -V` orders them. (REMOTE_BIN_LOOKUP differs: on a host, `sort -V` runs
+#: over every candidate at once, a cargo build included.) Home and /opt are not
+#: searched: a binary left there would quietly pull work off the render hosts
+#: (SKILL.md invariant 9); name one with RS_RENDER_BIN instead.
 LOCAL_BIN_GLOBS = (
     "scene-render/target/release/scene-render",       # cargo build --release in the checkout
     "scene-render/scene-render",                      # a release binary dropped into the checkout
     "scene-render/dist/scene-render-*/scene-render",  # the release workflow's own dist/
     "scene-render-*/scene-render",                    # an unpacked release archive
     "scene-render-*/scene-render-*/scene-render",     # ... inside a folder of archives
-    "render/scene-render-*/scene-render",             # the hosts' convention
-    "render/scene-render",
 )
 
 
 def local_roots() -> tuple[Path, ...]:
     """The directories LOCAL_BIN_GLOBS are tried under: beside this checkout, then
-    the user's src/ and home, then /opt (where a host keeps /opt/scene-render)."""
+    the user's src/."""
     here = Path(__file__).resolve().parent.parent
-    return (here.parent, Path.home() / "src", Path.home(), Path("/opt"))
+    return (here.parent, Path.home() / "src")
 
 
 def _version_key(path: Path) -> tuple:
@@ -775,12 +776,19 @@ def _validate_output(stdout: str, stderr: str, returncode: int) -> list[str]:
     """What one validate run (here or on a host) amounts to, as findings."""
     try:
         report = json.loads(stdout[stdout.index("{"):])
-    except (ValueError, json.JSONDecodeError):
-        text = (stderr or stdout).strip()
-        return [] if returncode == 0 else [f"error: sdk:engine-failed: {text[-400:]}"]
+    except ValueError:  # no `{`, or not JSON: every engine prints a report, even on success
+        text = (stderr or stdout).strip() or "no output"
+        return [f"error: sdk:engine-failed: 'validate' printed no report "
+                f"(exit {returncode}): {text[-400:]}"]
     if not isinstance(report, dict):
         return [f"error: sdk:engine-failed: 'validate' printed {type(report).__name__}, not a report"]
     findings = validate_findings(report)
+    result = report.get("result")
+    body = result if isinstance(result, dict) else report
+    if not findings and (report.get("ok") is False or body.get("valid") is False):
+        # the engine said invalid and named nothing: still not a pass
+        findings.append("error: sdk:engine-failed: 'validate' reports the document "
+                        "invalid but lists no diagnostics")
     if returncode not in (0, 1) and not findings:
         text = (stderr or stdout).strip()
         findings.append(f"error: sdk:engine-failed: 'validate' exited {returncode}: {text[-400:]}")

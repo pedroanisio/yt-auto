@@ -128,6 +128,11 @@ def check_environment(work: Path) -> Report:
 
     binary = render.engine()
     hosts = render.hosts()
+    named = os.environ.get("RS_RENDER_BIN")
+    if named and (not binary or not binary.is_relative_to(named)):
+        report.add("warn", "engine", f"RS_RENDER_BIN={named} holds no scene-render binary; "
+                   + (f"using {binary} instead" if binary else "ignored"),
+                   "point it at the binary, or at the unpacked release archive")
     if hosts:
         # The renderers are other machines; nothing is built here. One short
         # ssh per host asks for the engine, the memory and the GPU, and the

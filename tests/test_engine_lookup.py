@@ -90,6 +90,15 @@ class Lookup(unittest.TestCase):
         self.assertIn("scene-render-vX-linux-x86_64", render.BUILD_HINT)
 
 
+class Roots(unittest.TestCase):
+    def test_home_and_opt_are_not_searched(self):
+        # a binary left there would pull work off the render hosts (SKILL.md invariant 9)
+        roots = render.local_roots()
+        self.assertNotIn(Path.home(), roots)
+        self.assertNotIn(Path("/opt"), roots)
+        self.assertIn(Path(render.__file__).resolve().parent.parent.parent, roots)
+
+
 DIAG = {"code": "R24-fill", "severity": "error", "label": "r", "path": "/scene/rect",
         "message": "@fill: url(#id) must name an element of paints."}
 WARN = {"code": "W3", "severity": "warning", "message": "a light nothing uses"}
@@ -138,7 +147,7 @@ class ValidateReport(unittest.TestCase):
         self.assertIn("error[E9]: about no file", findings)
 
     def test_a_valid_document_has_no_findings(self):
-        report = dict(ENVELOPE, ok=True, exit_code=1, error=None,
+        report = dict(ENVELOPE, ok=True, exit_code=0, error=None,
                       result={"valid": True, "files": [{"file": "x", "valid": True,
                                                         "diagnostics": []}]})
         self.assertEqual(render.validate_findings(report), [])
@@ -189,6 +198,22 @@ class LocalValidate(unittest.TestCase):
         with mock.patch.object(render, "engine", return_value=self.tmp / "absent"):
             findings = render.engine_validate(b"<scene/>")
         self.assertTrue(findings and findings[0].startswith("error: sdk:engine-failed"))
+
+    def test_an_engine_that_exits_0_with_no_report_is_not_a_pass(self):
+        binary = self.fake_engine("exit 0\n")
+        with mock.patch.object(render, "engine", return_value=binary):
+            findings = render.engine_validate(b"<scene/>")
+        self.assertEqual(len(findings), 1)
+        self.assertTrue(findings[0].startswith("error: sdk:engine-failed"))
+
+    def test_invalid_with_no_diagnostics_is_not_a_pass(self):
+        binary = self.fake_engine('echo \'{"format":"scene-render-cli/1","ok":false,"exit_code":1,'
+                                  '"result":{"valid":false,"files":[]},"diagnostics":[],'
+                                  '"error":{"kind":"invalid","message":"0 of 1"}}\'\nexit 1\n')
+        with mock.patch.object(render, "engine", return_value=binary):
+            findings = render.engine_validate(b"<scene/>")
+        self.assertEqual(len(findings), 1)
+        self.assertIn("lists no diagnostics", findings[0])
 
     def test_no_binary_and_no_host_is_none(self):
         with mock.patch.object(render, "engine", return_value=None), \
