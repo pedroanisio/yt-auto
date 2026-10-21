@@ -1070,8 +1070,37 @@ class SceneBuilder:
                 del spans[label]
                 continue
             run_owner = label
+        # A run the fold left in more than one include restarts the world at
+        # t=0 in each: name it, since no later gate reads the include count.
+        # Two shots of one symbol count as one run when no other effect's shot
+        # lies between them (a gap or a placeholder does not end a run).
+        split_worlds: list[dict] = []
+        runs: list[tuple[tuple, list[tuple[str, str]]]] = []
+        for p in placed:
+            if drawn[p.label][0] != "effect":
+                continue
+            hit = self.vfx_symbols[p.label]
+            key = (p.section, hit["file"], hit["symbol"])
+            row = (p.label, merged.get(p.label, p.label))
+            if runs and runs[-1][0] == key:
+                runs[-1][1].append(row)
+            else:
+                runs.append((key, [row]))
+        for (section, file, symbol), rows in runs:
+            owners = list(dict.fromkeys(owner for _, owner in rows))
+            if len(owners) > 1:
+                split_worlds.append({"symbol": symbol, "file": file,
+                                     "section": section,
+                                     "shots": [label for label, _ in rows],
+                                     "includes": len(owners)})
+        for row in split_worlds:
+            findings.append(
+                f"warning: symbol {row['symbol']!r} draws shots "
+                f"{', '.join(row['shots'])} of {row['section']!r} but ends up in "
+                f"{row['includes']} includes, each restarting the world at t=0; "
+                "the cut between them will snap")
         return {"applied": applied, "reasons": reasons, "covered_by": covered_by,
-                "merged": merged,
+                "merged": merged, "split_worlds": split_worlds,
                 "images": images, "spans": spans, "findings": findings,
                 "captions_off": {str(x) for x in self.edit.get("captions_off", [])},
                 "tail": tail,
@@ -1762,6 +1791,7 @@ class SceneBuilder:
                         "cleaned": {info["src"]: file for file, info in cleaned.items()
                                     if info["src"] != file}},
             "includes": len(includes),
+            "split_worlds": edit["split_worlds"],
             "fonts": pinner.report(),
             "audio_tracks": sound["tracks"],
             "narration_tracks": sound["narration"],
@@ -1900,7 +1930,12 @@ def print_build(manifest: dict) -> None:
     print(f"  {manifest['cues']} captions · "
           f"{manifest['markers']['sections']} section markers + "
           f"{manifest['markers']['beats']} shot markers · "
-          f"{manifest.get('includes', 0)} include(s)")
+          f"{manifest.get('includes', 0)} include(s) for "
+          f"{manifest['markers']['beats']} shots")
+    for row in manifest.get("split_worlds") or []:
+        print(f"  warning: {row['symbol']} is split into {row['includes']} "
+              f"include(s) over shots {', '.join(row['shots'])}: the world "
+              "restarts at t=0 at each cut")
     if manifest.get("audio_missing"):
         rows = manifest["audio_missing"]
         print(f"\n  {len(rows)} cue(s) with no file to place:")

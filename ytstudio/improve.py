@@ -74,7 +74,7 @@ ROUTES = ROUTABLE + HUMAN
 
 #: Measured by `yt qa` before anyone looks; routed to their stated owner.
 MECHANICAL_KINDS = ("penetration", "reads-merged", "flat", "clipped", "frozen", "jump",
-                    "off_camera")
+                    "off_camera", "proof-mismatch")
 
 #: Expensive, and they change the film's facts: never re-run as a side effect.
 EXPENSIVE = ("research", "script")
