@@ -88,7 +88,7 @@ class Legibility(unittest.TestCase):
                       ["shots"]["items"]["properties"])
         seen = []
         w = writer(research="")
-        w._ask = lambda prompt, schema: seen.append(prompt) or {"shots": []}
+        w._ask = lambda name, prompt, schema: seen.append(prompt) or {"shots": []}
         w.write_section({"heading": "A", "seconds": 10, "beats": []}, index=1,
                         total=1, plan={}, written=[], next_heading="",
                         sourced=False)
@@ -110,7 +110,7 @@ class VerifyThenRevise(unittest.TestCase):
         calls = {"flags": [], "fixes": []}
         checks, fixes = list(checks), list(fixes)
 
-        def ask(prompt, schema):
+        def ask(name, prompt, schema):
             which = kind(schema)
             calls[which].append(prompt)
             return (checks if which == "flags" else fixes).pop(0)
@@ -180,7 +180,7 @@ class VerifyThenRevise(unittest.TestCase):
         shots = self.shots()
         w = writer()
 
-        def ask(prompt, schema):
+        def ask(name, prompt, schema):
             if kind(schema) == "fixes":
                 raise script.ClaudeError("boom")
             return {"flags": [flag(2)], "verdict": "no"}
@@ -232,7 +232,7 @@ class ParallelDrafting(unittest.TestCase):
         lock = threading.Lock()
         prompts = {}
 
-        def ask(prompt, schema):
+        def ask(name, prompt, schema):
             which = kind(schema)
             if which == "shots":
                 head = prompt.split('Write section ')[1].split('"')[1]
@@ -312,7 +312,11 @@ class ParallelDrafting(unittest.TestCase):
 
     def test_usage_is_not_lost_across_threads(self):
         w = writer(research="")
-        self.assertTrue(hasattr(w, "_usage_lock"))
+        # Threads book into one account, under the harness's lock, drafting
+        # and fact-check alike.
+        self.assertIs(w.usage, w.harness.usage)
+        self.assertIs(w._drafter.usage, w.harness.usage)
+        self.assertIs(w._drafter.lock, w.harness.lock)
 
     def test_repeated_figures_helper(self):
         secs = [script.Section(heading="a", shots=[shot(1, "It is 120 kg.", "1.1")]),

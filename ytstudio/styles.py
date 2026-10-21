@@ -48,8 +48,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
-from claude_engine import ClaudeEngine, ClaudeError, EngineConfig, Usage
-from .core import Idea, _key, _merge_usage, compact, wrap
+from claude_engine import ClaudeError
+from .core import Idea, _key, compact, wrap
 from .core import write_json as dump_json
 from . import fonts, harness, house, spend, workspace
 from .assess import stack_brief
@@ -491,7 +491,11 @@ class Director:
         self.house = house
         self.house_digest = house_digest or {}
         self.verbose = verbose
-        self.usage = Usage()
+        #: The stage's one door to the model; each question is a named decision.
+        self.harness = harness.Harness(
+            root or ".", "styles", model=model, role=SYSTEM,
+            house_digest=self.house_digest, verbose=verbose)
+        self.usage = self.harness.usage
 
     # -- plumbing ----------------------------------------------------------
 
@@ -499,15 +503,10 @@ class Director:
         if self.verbose:
             print(msg, file=sys.stderr)
 
-    def _ask(self, prompt: str, schema: dict) -> dict:
-        """One call on its own engine: threads must not share usage counters."""
-        engine = harness.build_engine(
-            EngineConfig(tools=(), model=self.model), ClaudeEngine)
-        try:
-            return engine.ask_json(prompt, schema, system=harness.with_feedback(
-                SYSTEM, self.root, "styles"))
-        finally:
-            _merge_usage(self.usage, engine.usage)
+    def _ask(self, name: str, prompt: str, schema: dict) -> dict:
+        """One decision: each call has its own engine, so threads share only the
+        harness's books."""
+        return self.harness.decide(name, prompt, schema)
 
     def _preamble(self, *extra: str) -> str:
         return "\n\n".join([self.idea.block(),
@@ -527,7 +526,7 @@ class Director:
 
     def _sweep(self, pairs: list[tuple[str, str]]) -> list[dict]:
         data = self._ask(
-            self._preamble(
+            "sweep", self._preamble(
                 f"Score every one of these {len(pairs)} candidate visual "
                 f"styles from 1-10 for this video.\n\n{self._SCORING}\n\n"
                 "Score every entry, invent none, and give one short clause of "
@@ -540,7 +539,7 @@ class Director:
             name, brief = pair
             line = f"- {name}: {brief}" if brief else f"- {name}"
             data = self._ask(
-                self._preamble(
+                f"score-{_key(name)}", self._preamble(
                     f"Candidate visual style:\n{line}\n\n"
                     f"Score this one style from 1-10 for this video.\n\n"
                     f"{self._SCORING}\n\nJudge it on its own merits against "
@@ -600,7 +599,7 @@ class Director:
         count = min(self.count, len(pairs))
         self._say(f"[choose] {len(pairs)} candidate(s), picking {count}")
         return self._ask(
-            build_prompt(self.idea, count=count, pool=pool_lines(pairs),
+            "choose", build_prompt(self.idea, count=count, pool=pool_lines(pairs),
                          rich=self.rich, constraints=self.constraints,
                          context=self.context, house=self.house, stack=self.stack),
             style_schema(self.rich))
@@ -620,7 +619,7 @@ class Director:
         extra = ["\n".join(pool_lines(rejected))] if rejected else []
         try:
             verdicts = self._ask(
-                self._preamble(
+                "critique", self._preamble(
                     f"Stated message: {data.get('message', '')}",
                     "Visual demands:\n"
                     + "\n".join(f"- {d}" for d in data.get("demands", [])),
@@ -684,6 +683,7 @@ class Director:
             data["deliberation"] = {"stages": sorted(self.modes),
                                     "pool_scores": scores,
                                     "overlooked": overlooked}
+        data["engine"] = self.harness.report()
         return data, styles
 
 
@@ -755,6 +755,8 @@ def write_json(path: str, idea: Idea, data: dict, styles: list[Style],
         doc["thumbnail"] = data["thumbnail"]
     if data.get("deliberation"):
         doc["deliberation"] = data["deliberation"]
+    if data.get("engine"):
+        doc["engine"] = data["engine"]
     doc["usage"] = usage or spend.record()
     dump_json(path, doc)
 

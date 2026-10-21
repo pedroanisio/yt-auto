@@ -172,10 +172,10 @@ class Audit(unittest.TestCase):
         p.dossier = type("D", (), {"load": lambda s, n: None, "save": lambda s, n, d: None})()
         p.budget_hours = None
 
-        def ask(prompt, schema):
+        def ask(name, prompt, schema):
             asked.append((prompt, schema))
             return dict(self.AUDIT)
-        p._ask_json = ask
+        p._decide =ask
         return p
 
     def test_reach_asks_with_usage_vocabulary_and_caveats_and_keeps_the_answer(self):
@@ -216,7 +216,7 @@ class Audit(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             asked: list = []
             p = self.planner(Path(tmp), asked)
-            p._ask_json = lambda prompt, schema: (asked.append(prompt) or {"verdict": "ok", "build_order": []})
+            p._decide =lambda name, prompt, schema: (asked.append(prompt) or {"verdict": "ok", "build_order": []})
             effects = [{"section": "Open", "effects": [
                 {"id": "fx-flat", "name": "Flat", "type": "2d-diagram", "difficulty": 2,
                  "hours": 2, "section": "Open", "shots": ["1.1"]}]}]

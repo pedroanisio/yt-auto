@@ -2257,9 +2257,14 @@ class VfxPlanner:
         #: (its approval digest, "" for none) and the section it came from.
         self._look_digest = ""
         self._look_n: int | None = None
-        self.usage = Usage()
+        #: The planner's structured asks (outline, style, effects, reach, plan),
+        #: one named decision each, kept under the project like the reviewers'.
+        self.harness = harness.Harness(
+            workspace_dir.root, "vfx", model=model, role=VFX_SYSTEM,
+            fresh=fresh, verbose=verbose)
+        self.usage = self.harness.usage
         #: Section authors and reviewers run in a pool; each reports here once.
-        self._account_lock = threading.Lock()
+        self._account_lock = self.harness.lock
 
     # -- plumbing ----------------------------------------------------------
 
@@ -2275,13 +2280,8 @@ class VfxPlanner:
             for usage in usages:
                 _merge_usage(self.usage, usage)
 
-    def _ask_json(self, prompt: str, schema: dict) -> object:
-        engine = harness.ENGINE(EngineConfig(tools=(), model=self.model))
-        try:
-            return engine.ask_json(prompt, schema, system=harness.with_feedback(
-                VFX_SYSTEM, self.ws.root, "vfx"))
-        finally:
-            self._account(engine.usage)
+    def _decide(self, name: str, prompt: str, schema: dict) -> object:
+        return self.harness.decide(name, prompt, schema)
 
     def _stage(self, name: str, work) -> object:
         if not self.fresh and name not in self._stale:
@@ -2353,7 +2353,8 @@ class VfxPlanner:
         existing = self.bundle.get("outline") or {}
         if existing.get("sections"):
             return existing
-        return self._stage("09-outline", lambda: self._ask_json(
+        return self._stage("09-outline", lambda: self._decide(
+            "plan-outline",
             f"{self._idea_block()}\n\n"
             "There is no script outline yet. Sketch one: 6-9 sections with a "
             "heading, a runtime in seconds and 2-4 beats each, totalling the "
@@ -2362,7 +2363,8 @@ class VfxPlanner:
 
     def style(self) -> dict:
         numbers = [c for c in self.bundle["claims"] if c.get("number")][:12]
-        return self._stage("10-style", lambda: self._ask_json(
+        return self._stage("10-style", lambda: self._decide(
+            "plan-style",
             f"{self._idea_block()}\n\n{self._reference()}\n\n"
             "Numbers this video has to put on screen:\n"
             + "\n".join(f"- {c['number']}: {c['claim'][:110]}" for c in numbers)
@@ -2430,7 +2432,8 @@ class VfxPlanner:
             "misleading. In `template` name the shared rig when one build "
             "serves several shots; same wording each time."
         )
-        answer = self._ask_json(prompt, EFFECTS_SCHEMA)
+        answer = self._decide(f"plan-effects-{slugify(heading, 40) or 'section'}",
+                                prompt, EFFECTS_SCHEMA)
         effects = answer.get("effects", [])
         known = {s["label"] for s in shots}
         for effect in effects:
@@ -3095,7 +3098,7 @@ class VfxPlanner:
                 usage["symbols"].setdefault(eid, usage["symbols"].get(wid, {}))
             names = sdk().element_names()
             rep = reach.report(usage, names, reach.manifest())
-            audit = self._ask_json(reach.prompt(
+            audit = self._decide("plan-reach", reach.prompt(
                 idea_block=self._idea_block(), direction_block=self._direction_block(),
                 mission=MISSION, effects=authored, usage=usage, rep=rep,
                 element_names=names), reach.REACH_SCHEMA)
@@ -3125,7 +3128,8 @@ class VfxPlanner:
                           f"engine offers: {audit.get('reach', {}).get('summary', '')} "
                           "An effect marked `upgrade` has a stronger construct named; "
                           "treat the upgrade as refinement work, ordered by its gain. ")
-        return self._stage("15-plan", lambda: self._ask_json(
+        return self._stage("15-plan", lambda: self._decide(
+            "plan-refine",
             f"{self._idea_block()}\n\nEvery specified visual, and whether the "
             f"author produced a valid scene-render symbol for it:\n{listing}\n\n"
             f"Totals: {totals['hours']:.0f} hours over {totals['count']} "
@@ -3158,7 +3162,7 @@ class VfxPlanner:
         record = next((r for r in authored if r.get("n") == self.lead), None)
         return {"record": record, "style": style, "tokens": tokens,
                 "version": (record or {}).get("version") or self.ws.version,
-                "usage": asdict(self.usage)}
+                "usage": asdict(self.usage), "engine": self.harness.report()}
 
     def recovered(self, outline: dict, effects: list[dict]) -> list[dict]:
         """The authoring record of the last version, rebuilt from what its run
@@ -3314,6 +3318,7 @@ class VfxPlanner:
             "inspo": self.inspo,
             "house": self.house_digest,
             "usage": spend.from_usage(self.usage, self.model),
+            "engine": self.harness.report(),
         }
 
 

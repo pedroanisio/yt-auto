@@ -75,33 +75,36 @@ class RoutingTest(unittest.TestCase):
     def test_script_reaches_the_swapped_engine(self):
         writer = script.Screenwriter(self.idea, root=self.root, verbose=False)
         with self.assertRaises(Reached):
-            writer._ask("decide", {"type": "object"})
+            writer._ask("decide", "ask", {"type": "object"})
         self.assertEqual(len(SwappedEngine.built), 1)
 
     def test_styles_reaches_the_swapped_engine(self):
         director = styles.Director(self.idea, root=self.root, verbose=False)
         with self.assertRaises(Reached):
-            director._ask("decide", {"type": "object"})
+            director._ask("decide", "ask", {"type": "object"})
         self.assertEqual(len(SwappedEngine.built), 1)
 
     def test_sound_reaches_the_swapped_engine(self):
         designer = sound.SoundDesigner(self.idea, root=self.root, verbose=False)
         with self.assertRaises(Reached):
-            designer._ask("decide", {"type": "object"})
+            designer._ask("decide", "ask", {"type": "object"})
         self.assertEqual(len(SwappedEngine.built), 1)
 
     def test_research_reaches_the_swapped_engine(self):
-        researcher = research.Researcher(self.idea, SimpleNamespace(), verbose=False)
+        researcher = research.Researcher(self.idea, SimpleNamespace(dir=self.root),
+                                         verbose=False)
         with self.assertRaises(Reached):
-            researcher._ask_json("decide", {"type": "object"})
+            researcher._decide("decide", "ask", {"type": "object"})
         self.assertEqual(len(SwappedEngine.built), 1)
 
     def test_ideas_reaches_the_swapped_engine(self):
-        generator = ideas.Generator(EngineConfig(tools=()), verbose=False)
-        self.assertIsInstance(generator._engine(), SwappedEngine)
+        generator = ideas.Generator(EngineConfig(tools=()), root=self.root, verbose=False)
+        with self.assertRaises(Reached):
+            generator._batch(1, ("a",), [])
+        self.assertEqual(len(SwappedEngine.built), 1)
 
     def test_assess_reaches_the_swapped_engine_for_both_passes(self):
-        ws = SimpleNamespace(dir=self.root)
+        ws = SimpleNamespace(dir=self.root, root=self.root)
         with self.assertRaises(Reached):
             assess.investigate(ws, model="sonnet", budget_usd=1.0, verbose=False)
         self.assertEqual(len(SwappedEngine.built), 2)

@@ -38,8 +38,8 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 import claude_engine
-from claude_engine import ClaudeEngine, ClaudeError, EngineConfig, Usage
-from .core import Idea, _merge_usage, read_json, timecode, wrap, write_json
+from claude_engine import ClaudeError
+from .core import Idea, read_json, timecode, wrap, write_json
 from .ideas import CHANNEL_STYLES, style_brief
 from . import harness, house, spend, workspace
 
@@ -564,8 +564,16 @@ class Screenwriter:
         #: Drafting is most of the calls; the fact-check keeps the full effort.
         #: An effort the operator set for the whole run wins over this.
         self.draft_effort = draft_effort
-        self.usage = Usage()
-        self._usage_lock = threading.Lock()
+        #: The stage's one door to the model; each question is a named decision.
+        self.harness = harness.Harness(
+            root or ".", "script", model=model, role=SYSTEM,
+            house_digest=self.house_digest, verbose=verbose)
+        self.usage = self.harness.usage
+        #: Drafting at its own effort, on the same books as the fact-check.
+        self._drafter = harness.Harness(
+            root or ".", "script", model=model, role=SYSTEM, effort=draft_effort,
+            house_digest=self.house_digest, verbose=verbose, usage=self.usage,
+            decisions=self.harness.decisions, lock=self.harness.lock)
 
     # -- plumbing ----------------------------------------------------------
 
@@ -573,19 +581,10 @@ class Screenwriter:
         if self.verbose:
             print(msg, file=sys.stderr)
 
-    def _ask(self, prompt: str, schema: dict) -> dict:
-        effort = None
-        if ("shots" in schema.get("properties", {}) and self.draft_effort
-                and not claude_engine.default_for("effort")):
-            effort = self.draft_effort
-        engine = harness.build_engine(
-            EngineConfig(tools=(), model=self.model, effort=effort), ClaudeEngine)
-        try:
-            return engine.ask_json(prompt, schema, system=harness.with_feedback(
-                SYSTEM, self.root, "script"))
-        finally:
-            with self._usage_lock:
-                _merge_usage(self.usage, engine.usage)
+    def _ask(self, name: str, prompt: str, schema: dict) -> dict:
+        drafting = ("shots" in schema.get("properties", {}) and self.draft_effort
+                    and not claude_engine.default_for("effort"))
+        return (self._drafter if drafting else self.harness).decide(name, prompt, schema)
 
     def _brief(self) -> str:
         bits = [f"Title: {self.idea.title}", f"Genre: {self.idea.genre}",
@@ -655,7 +654,7 @@ class Screenwriter:
                  "cut it. Also give the logline, what the first fifteen "
                  "seconds promise the viewer, and how that promise is paid "
                  "off."]
-        data = self._ask("\n\n".join(parts), PLAN_SCHEMA)
+        data = self._ask("plan", "\n\n".join(parts), PLAN_SCHEMA)
 
         # The model's section runtimes rarely add up; hold the total.
         fit_sections(data.get("sections") or [], self.seconds)
@@ -743,7 +742,8 @@ class Screenwriter:
                          "a line states something the research does not cover, "
                          "rather than attaching a source that does not say it.")
 
-        data = self._ask("\n\n".join(parts), section_schema(sourced))
+        data = self._ask(f"write-{index:02d}", "\n\n".join(parts),
+                         section_schema(sourced))
         return [Shot.from_raw(raw) for raw in data.get("shots", [])]
 
     # -- stage three: tighten ----------------------------------------------
@@ -763,7 +763,7 @@ class Screenwriter:
                  "actually changed -- most lines should be left alone -- with "
                  "the shot number, the new line, and one clause saying why."]
         try:
-            data = self._ask("\n\n".join(parts), POLISH_SCHEMA)
+            data = self._ask("polish", "\n\n".join(parts), POLISH_SCHEMA)
         except ClaudeError as exc:
             self._say(f"[polish] failed ({exc}); keeping the script as written")
             return 0
@@ -782,7 +782,7 @@ class Screenwriter:
 
     # -- stage four: hold it to the research -------------------------------
 
-    def verify(self, shots: list[Shot]) -> dict:
+    def verify(self, shots: list[Shot], *, name: str = "verify") -> dict:
         if not self.research:
             self._say("[verify] no research supplied; nothing to check against")
             return {}
@@ -803,14 +803,15 @@ class Screenwriter:
                  "script as a whole. Then give a one-sentence verdict on whether "
                  "this script can be published as it stands."]
         try:
-            return self._ask("\n\n".join(parts), CHECK_SCHEMA)
+            return self._ask(name, "\n\n".join(parts), CHECK_SCHEMA)
         except ClaudeError as exc:
             self._say(f"[verify] failed ({exc})")
             return {}
 
     # -- stage five: fix what the check found ------------------------------
 
-    def revise(self, shots: list[Shot], flags: list[dict]) -> dict:
+    def revise(self, shots: list[Shot], flags: list[dict], *,
+               name: str = "revise") -> dict:
         """The smallest fix for each flagged line, or a reason to keep it.
 
         Returns the `applied` rewrites and the lines `kept`; a failed call
@@ -841,7 +842,7 @@ class Screenwriter:
                  "already defensible, answer keep and say why in one clause. "
                  "Answer for every flagged number and no other."]
         try:
-            data = self._ask("\n\n".join(parts), REVISE_SCHEMA)
+            data = self._ask(name, "\n\n".join(parts), REVISE_SCHEMA)
         except ClaudeError as exc:
             self._say(f"[revise] failed ({exc}); keeping the lines as written")
             return result
@@ -877,16 +878,17 @@ class Screenwriter:
             return check
         revisions: list[dict] = []
         kept: dict[int, str] = {}
-        for _ in range(max(0, rounds)):
+        for round_no in range(1, max(0, rounds) + 1):
             todo = [f for f in check.get("flags", [])
                     if int(f.get("n", 0) or 0) not in kept]
-            result = self.revise(shots, todo)
+            result = self.revise(shots, todo, name=f"revise-{round_no}")
             kept.update({k["n"]: k["why"] for k in result["kept"]})
             revisions += result["applied"]
             changed = {r["n"] for r in result["applied"]}
             if not changed:
                 break
-            again = self.verify([s for s in shots if s.n in changed])
+            again = self.verify([s for s in shots if s.n in changed],
+                                name=f"verify-{round_no}")
             if not again:
                 break
             check["flags"] = (
@@ -912,7 +914,7 @@ class Screenwriter:
                              "a figure is announced once",
                   "fix": "refer back without the figure, or cut it"} for r in rows]
         self._say(f"[ledger] {len(rows)} repeated figure(s)")
-        return len(self.revise(shots, flags)["applied"])
+        return len(self.revise(shots, flags, name="revise-ledger")["applied"])
 
     # -- run ---------------------------------------------------------------
 
@@ -1000,6 +1002,7 @@ class Screenwriter:
             "house": self.house_digest,
             "check": check,
             "usage": spend.from_usage(self.usage, self.model),
+            "engine": self.harness.report(),
         }
 
 

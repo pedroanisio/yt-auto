@@ -586,7 +586,12 @@ class Researcher:
         self.allow_sa = allow_sa
         self.agentic_assets = agentic_assets
         self.user_agent = user_agent
-        self.usage = Usage()
+        #: The structured judgements, one named decision each, kept under the
+        #: project; the two web-agent passes are not decisions and book here.
+        self.harness = harness.Harness(
+            dossier.dir, "research", model=model, role=RESEARCHER_SYSTEM,
+            fresh=fresh, verbose=verbose, budget_usd=budget)
+        self._agent_usage = Usage()
         self.visited: list[str] = []
         #: Set once this run searched the catalogues again, so the outline
         #: that quotes the old assets is written again too.
@@ -622,12 +627,16 @@ class Researcher:
         self.dossier.save(name, data)
         return data
 
-    def _ask_json(self, prompt: str, schema: dict) -> object:
-        engine = harness.build_engine(self._config(web=False), ClaudeEngine)
-        try:
-            return engine.ask_json(prompt, schema, system=RESEARCHER_SYSTEM)
-        finally:
-            _merge_usage(self.usage, engine.usage)
+    @property
+    def usage(self) -> Usage:
+        """What the decisions and the web agents cost together."""
+        total = Usage()
+        _merge_usage(total, self.harness.usage)
+        _merge_usage(total, self._agent_usage)
+        return total
+
+    def _decide(self, name: str, prompt: str, schema: dict) -> object:
+        return self.harness.decide(name, prompt, schema)
 
     def _research_one(self, question: dict) -> dict:
         """One agentic web-research pass; records every URL actually fetched."""
@@ -668,7 +677,7 @@ class Researcher:
                     # error anywhere. The engine's denial list is the canary.
                     denied = _denials(event)
         finally:
-            _merge_usage(self.usage, engine.usage)
+            _merge_usage(self._agent_usage, engine.usage)
         if denied:
             wanted = "; ".join(sorted({d["wanted"] for d in denied if d["wanted"]}))
             self._say(f"    WARNING: {', '.join(sorted({d['tool'] for d in denied}))} "
@@ -686,7 +695,8 @@ class Researcher:
     # -- stages ------------------------------------------------------------
 
     def questions(self) -> dict:
-        return self._stage("01-questions", lambda: self._ask_json(
+        return self._stage("01-questions", lambda: self._decide(
+            "01-questions",
             f"{self._idea_block()}\n\n"
             + self.scope["plan"].format(depth=self.depth),
             QUESTIONS_SCHEMA))
@@ -715,7 +725,8 @@ class Researcher:
             for e in notes)
 
     def claims(self, notes: list[dict]) -> dict:
-        return self._stage("03-claims", lambda: self._ask_json(
+        return self._stage("03-claims", lambda: self._decide(
+            "03-claims",
             f"{self._idea_block()}\n\nResearch notes:\n\n{self._notes_block(notes)}\n\n"
             + self.scope["claims"]
             + (f" The film is short: keep about {self.claim_ceiling} claims "
@@ -723,7 +734,8 @@ class Researcher:
             CLAIMS_SCHEMA))
 
     def sources(self, notes: list[dict]) -> dict:
-        return self._stage("04-sources", lambda: self._ask_json(
+        return self._stage("04-sources", lambda: self._decide(
+            "04-sources",
             f"{self._idea_block()}\n\nResearch notes:\n\n{self._notes_block(notes)}\n\n"
             "Build the source list for this video's description and for "
             "fact-checking. One entry per distinct source actually present in "
@@ -734,7 +746,8 @@ class Researcher:
 
     def shots(self, notes: list[dict]) -> dict:
         """What the video must show. The model plans; it never supplies URLs."""
-        return self._stage("05-shots", lambda: self._ask_json(
+        return self._stage("05-shots", lambda: self._decide(
+            "05-shots",
             f"{self._idea_block()}\n\nResearch so far:\n\n"
             f"{self._notes_block(notes)}\n\n"
             f"Write the shot list: {self.shot_count} visuals this video needs, "
@@ -825,7 +838,8 @@ class Researcher:
             f"{' (' + c['note'][:90] + ')' if c.get('note') and c['kind'] in ('structure', 'audio', 'video', 'article') else ''}"
             f"\n     wanted for: {c.get('use_for', '')}"
             for n, c in enumerate(candidates, 1))
-        verdict = self._ask_json(
+        verdict = self._decide(
+            "assets-vet",
             f"{self._idea_block()}\n\n"
             "These files came back from open media catalogues -- stills, "
             "footage, sound, open-access papers with their figures and "
@@ -878,8 +892,9 @@ class Researcher:
         try:
             answer = engine.agent(prompt)
         finally:
-            _merge_usage(self.usage, engine.usage)
-        extra = self._ask_json(
+            _merge_usage(self._agent_usage, engine.usage)
+        extra = self._decide(
+            "assets-extract",
             "Convert these findings into structured records, keeping URLs and "
             f"licence strings exactly as written. Drop anything with no URL.\n\n"
             f"{answer.text}", ASSETS_SCHEMA).get("assets", [])
@@ -901,7 +916,8 @@ class Researcher:
         return out
 
     def gaps(self, claims: dict, sources: dict) -> dict:
-        return self._stage("06-gaps", lambda: self._ask_json(
+        return self._stage("06-gaps", lambda: self._decide(
+            "06-gaps",
             f"{self._idea_block()}\n\n"
             f"Claims:\n{json.dumps(claims.get('claims', []), indent=2)}\n\n"
             f"Sources:\n{json.dumps(sources.get('sources', []), indent=2)}\n\n"
@@ -914,7 +930,8 @@ class Researcher:
         used = sorted(a.get("url", "") for a in assets.get("assets", []))
         redo = self.assets_searched or \
             self.dossier.load("07-outline-assets") not in (None, used)
-        outline = self._stage("07-outline", lambda: self._ask_json(
+        outline = self._stage("07-outline", lambda: self._decide(
+            "07-outline",
             f"{self._idea_block()}\n\n"
             f"Claims:\n{json.dumps(claims.get('claims', []), indent=2)}\n\n"
             f"Assets:\n{json.dumps(assets.get('assets', []), indent=2)}\n\n"
@@ -952,6 +969,7 @@ class Researcher:
             "warnings": provenance_warnings(notes),
             "allow_sa": self.allow_sa,
             "usage": spend.from_usage(self.usage, self.model),
+            "engine": self.harness.report(),
         }
 
 

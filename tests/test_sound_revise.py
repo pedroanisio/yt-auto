@@ -46,7 +46,7 @@ def rig(reviews, fixes):
     calls = {"review": [], "revise": []}
     reviews, fixes = list(reviews), list(fixes)
 
-    def ask(prompt, schema):
+    def ask(name, prompt, schema):
         which = "review" if is_review(schema) else "revise"
         calls[which].append(prompt)
         queue = reviews if which == "review" else fixes
@@ -124,7 +124,7 @@ class ReviewThenRevise(unittest.TestCase):
         c = cues()
         d = designer()
 
-        def ask(prompt, schema):
+        def ask(name, prompt, schema):
             if is_review(schema):
                 return {"flags": [flag("M1")], "verdict": "no"}
             raise sound.ClaudeError("down")
@@ -170,7 +170,7 @@ class ReviewThenRevise(unittest.TestCase):
         reviews = [{"flags": [flag("M1")], "verdict": "no"},
                    {"flags": [], "verdict": "ok"}]
 
-        def ask(prompt, schema):
+        def ask(name, prompt, schema):
             if is_review(schema):
                 return reviews.pop(0)
             return {"action": "fix", "seconds": 10, "why": "shorter"}
@@ -187,7 +187,7 @@ class ReviewThenRevise(unittest.TestCase):
         d.plan = lambda: {}
         d.spot_whole = cues
 
-        def ask(prompt, schema):
+        def ask(name, prompt, schema):
             if is_review(schema):
                 return {"flags": [flag("M1")], "verdict": "no"}
             self.fail("revised")

@@ -18,7 +18,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from claude_engine import Usage  # noqa: E402
-from ytstudio import research  # noqa: E402
+from ytstudio import harness, research  # noqa: E402
 from ytstudio.core import Idea  # noqa: E402
 
 NOTES = [{"question": "q", "notes": "n", "visited": []}]
@@ -32,7 +32,7 @@ class FakeEngine:
 
     def ask_json(self, prompt, schema, system=None):
         FakeEngine.calls.append(prompt)
-        return {}
+        return {name: [] for name in schema.get("required", [])}
 
 
 def idea(length="", genre="explainer"):
@@ -57,9 +57,10 @@ class Plan(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
-        p = mock.patch.object(research, "ClaudeEngine", FakeEngine)
-        p.start()
-        self.addCleanup(p.stop)
+        for target, name in ((research, "ClaudeEngine"), (harness, "ENGINE")):
+            p = mock.patch.object(target, name, FakeEngine)
+            p.start()
+            self.addCleanup(p.stop)
         FakeEngine.calls = []
 
     def researcher(self, which, **kw):

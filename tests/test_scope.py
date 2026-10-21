@@ -19,7 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from claude_engine import Usage  # noqa: E402
-from ytstudio import assess, research, styles  # noqa: E402
+from ytstudio import assess, harness, research, styles  # noqa: E402
 from ytstudio.core import Idea, slugify  # noqa: E402
 
 
@@ -75,19 +75,20 @@ class FakeEngine:
     def ask_json(self, prompt, schema, system=None):
         FakeEngine.calls.append({"prompt": prompt, "schema": schema, "system": system})
         return {"premise": "p", "questions": [], "gaps": [], "verdict": "v",
-                "claims": [], "sources": [], "shots": [], "topic_searches": []}
+                "claims": [], "sources": [], "shots": [], "topic_searches": [],
+                "working_title": "t", "runtime": "60 s", "sections": []}
 
 
 class Plan(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
-        self._engine = research.ClaudeEngine
-        research.ClaudeEngine = FakeEngine
+        self._engine = research.ClaudeEngine, harness.ENGINE
+        research.ClaudeEngine = harness.ENGINE = FakeEngine
         FakeEngine.calls = []
 
     def tearDown(self):
-        research.ClaudeEngine = self._engine
+        research.ClaudeEngine, harness.ENGINE = self._engine
         self._tmp.cleanup()
 
     def researcher(self, which, **kw):
