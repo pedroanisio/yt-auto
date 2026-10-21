@@ -475,8 +475,10 @@ def transient_shift(rows: list[tuple[str, float, float]], headroom: float
 CUE_BUS = {"music": "music", "sfx": "effects", "stinger": "effects",
            "transition": "effects", "ambience": "ambience"}
 NARRATION_BUS = "narration"
-#: Buses that sit under the voice while it speaks.
-DUCKED_BUSES = ("music", "ambience")
+def ducks(bus_id: str) -> bool:
+    """Every bus but the narration sits under the voice while it speaks: a
+    bed or an effect that does not duck is what makes a narration inaudible."""
+    return bus_id != NARRATION_BUS
 #: What a designed silence takes out: the score and the effects. The voice
 #: and the room stay -- the cue sheet's silences read "no music", "narration
 #: only, with the room", "voice over room tone only".
@@ -849,7 +851,7 @@ class SceneBuilder:
                  burn_captions: bool = False,
                  audio: bool = True, loudness: float = -14.0,
                  true_peak: float = -1.0, normalize: str = "integrated",
-                 limiter: bool = True,
+                 normalize_reason: str = "", limiter: bool = True,
                  bitrate: int = 16_000_000,
                  max_bitrate: int = 24_000_000, buffer_size: int = 48_000_000,
                  preset: str = "slow", edit: dict | None = None,
@@ -883,6 +885,8 @@ class SceneBuilder:
         self.burn_captions = burn_captions
         self.loudness, self.true_peak = loudness, true_peak
         self.normalize = normalize
+        self.normalize_reason = normalize_reason
+        self.sound_normalize = (sound or {}).get("normalize")
         self.limiter = limiter
         self.bitrate, self.max_bitrate = bitrate, max_bitrate
         self.buffer_size, self.preset = buffer_size, preset
@@ -1254,8 +1258,7 @@ class SceneBuilder:
             bus_nodes[bus_id] = node
             if bus_gain:
                 node.gain = bus_gain
-            if (bus_id in DUCKED_BUSES and NARRATION_BUS in by_bus
-                    and bus_id != NARRATION_BUS):
+            if ducks(bus_id) and NARRATION_BUS in by_bus:
                 node.duckUnder = [NARRATION_BUS]
             for (track, total), trim in zip(rows, trims):
                 if trim:
@@ -1281,9 +1284,19 @@ class SceneBuilder:
         # `integrated` measures the whole programme once -- which is why
         # cutting a range never makes the audio cheaper.
         master = mixer().add_master()
-        if self.normalize:
-            master.normalize = self.normalize
-        if self.normalize != "none":
+        normalize, reason = self.normalize, self.normalize_reason
+        asked = self.sound_normalize
+        if isinstance(asked, dict) and asked.get("mode") in ("dynamic", "integrated", "none"):
+            normalize, reason = asked["mode"], str(asked.get("reason") or "")
+        if normalize == "dynamic" and not reason.strip():
+            # a gain riding 3-second loudness lifts the beds between sentences
+            findings.append(
+                "warning: normalize=dynamic asked with no reason; the master "
+                "stays integrated (one gain to the target)")
+            normalize = "integrated"
+        if normalize:
+            master.normalize = normalize
+        if normalize != "none":
             master.loudness = self.loudness
         master.truePeak = self.true_peak
         # The limiter runs AFTER normalisation, so strong short peaks --
@@ -1959,7 +1972,11 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                    help="true-peak ceiling in dBTP (default -1)")
     p.add_argument("--normalize", default="integrated",
                    choices=["integrated", "dynamic", "none"],
-                   help="how the master is normalised (default integrated)")
+                   help="how the master is normalised (default integrated; "
+                        "dynamic needs --normalize-reason)")
+    p.add_argument("--normalize-reason", default="", dest="normalize_reason",
+                   help="why the master is not integrated: dynamic without a "
+                        "reason falls back to integrated")
     p.add_argument("--no-limiter", action="store_true", dest="no_limiter",
                    help="leave the master's limiter off. It runs after "
                         "normalisation, so strong short peaks cost loudness "
@@ -2045,7 +2062,8 @@ def run(args) -> int:
         captions=not args.no_captions, burn_captions=args.burn_captions,
         audio=not args.no_audio,
         loudness=args.loudness, true_peak=args.true_peak,
-        normalize=args.normalize, limiter=not args.no_limiter,
+        normalize=args.normalize, normalize_reason=args.normalize_reason,
+        limiter=not args.no_limiter,
         bitrate=args.bitrate,
         max_bitrate=args.max_bitrate,
         buffer_size=args.buffer_size, preset=args.preset,

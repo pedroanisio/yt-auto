@@ -556,11 +556,12 @@ hand-authored world showed the cost.
   to be asked for in the plan; it splits the section into two worlds.
 - **The sound is Freesound previews, not masters.** `yt sound --fetch`
   fills each cue with the best CC0/CC-BY hit's high-quality mp3 preview and
-  `yt build` places it on a bus per role, ducked under the narration (the
-  fetch measures each file on a render host, by loudness for beds and peak for
-  effects, writes the cue's `gain_db`, and refuses a source the track's gain
-  cannot reach or whose noise floor the lift would put within 12 dB of the
-  narration, trying the next-ranked hit; with no host it says `NOT LEVELLED`); a cue
+  `yt build` places it on a bus per role, every non-narration bus ducked under the narration and the
+  master normalised once (`integrated`; `dynamic` only with `--normalize-reason`
+  or a reason in sound.json's `normalize`). The fetch measures each file on a render host, by
+  loudness for beds and peak for effects, writes the cue's `gain_db`, and refuses a source the
+  track's gain cannot reach or whose noise floor the lift would put within 12 dB of the
+  narration, trying the next-ranked hit; with no host it says `NOT LEVELLED`. A cue
   nothing matched stays `unfilled`, shows under `audio_missing` in
   `build.json`, and a design of which nothing could be placed makes the
   build unpublishable. `yt sound --synth` realises every cue still without
