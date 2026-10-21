@@ -30,7 +30,7 @@ import sys
 from pathlib import Path
 
 from claude_engine import ClaudeEngine, ClaudeError, EngineConfig
-from . import harness, render, sdkkit, workspace
+from . import harness, render, sdkkit, spend, workspace
 from .core import Idea, _key, read_json, slugify, write_json
 from .vfx import MISSION, STACK, Workspace
 
@@ -302,7 +302,8 @@ def prove(ws: Workspace, host: str, *, verbose: bool) -> dict:
     return out
 
 
-def write_report(root: Path, description: str, verdict: dict, proof: dict, facts: dict) -> Path:
+def write_report(root: Path, description: str, verdict: dict, proof: dict, facts: dict,
+                 model: str = "") -> Path:
     md = [f"# Can we produce it? — {verdict.get('feasible', '?').upper()}", "",
           f"*{description}*", "", verdict.get("summary", ""), "",
           f"Engine: {facts.get('host')} · "
@@ -326,7 +327,9 @@ def write_report(root: Path, description: str, verdict: dict, proof: dict, facts
     path = root / "assess.md"
     path.write_text("\n".join(md), encoding="utf-8")
     write_json(root / "assess.json", {"description": description, "verdict": verdict,
-                                      "proof": proof, "engine": facts})
+                                      "proof": proof, "engine": facts,
+                                      "usage": spend.record(verdict.get("cost_usd"), model,
+                                                            verdict.get("tool_calls"))})
     return path
 
 
@@ -398,7 +401,7 @@ def run(args) -> int:
         if verbose:
             print("  proving: validating proof.scene.xml and rendering one frame", file=sys.stderr)
         proof = prove(ws, host, verbose=verbose)
-    report = write_report(root, description, verdict, proof, facts)
+    report = write_report(root, description, verdict, proof, facts, model=args.model)
 
     print(f"\n{verdict.get('feasible', '?').upper()} — {verdict.get('summary', '')}")
     for key in ("approach", "engine_limits", "risks", "missing"):

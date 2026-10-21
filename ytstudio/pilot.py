@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from xml.etree import ElementTree
 
-from . import house, workspace
+from . import house, spend, workspace
 from .harness import Harness, HarnessError, brief
 from .core import _key, read_json, timecode
 from .build import duplicate_animations, shots_from_scene
@@ -546,6 +546,7 @@ def run(args) -> int:
                 "findings": findings,
                 "selection": selection, "notes": verdict.get("notes", ""),
                 "engine": engine.report(),
+                "usage": spend.from_report(engine.report()),
                 "cuts": {str(k): v for k, v in cuts.items()}}
     report = target.with_name("pilot.json")
     report.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",

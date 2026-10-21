@@ -45,7 +45,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import geometry, house, workspace
+from . import geometry, house, spend, workspace
 from . import render as render_stage
 from .core import read_json, write_json
 from .harness import Harness, HarnessError, brief
@@ -727,7 +727,8 @@ def run(args) -> int:
         "idea": {"title": idea.title}, "tool_exit": proc.returncode,
         "mode": "frames" if args.frames else "technical", "host": host or "",
         "command": cmd, "stopped_by": stop, "tool_output": output[-4000:],
-        "triage": triage, "geometry": geo, "exit": code, "engine": supervisor.report()})
+        "triage": triage, "geometry": geo, "exit": code, "engine": supervisor.report(),
+        "usage": spend.from_report(supervisor.report())})
     print(f"wrote {gate_out}", file=sys.stderr)
     if code == 0 and not args.frames:
         print("a perceptual review is still required: this gate is technical; "

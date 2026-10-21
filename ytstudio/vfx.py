@@ -56,7 +56,8 @@ from dataclasses import asdict
 from pathlib import Path
 
 from claude_engine import ClaudeError, EngineConfig, Usage
-from . import flags, fonts, framecheck, geometry, harness, house, reach, render, sdkkit, workspace
+from . import (flags, fonts, framecheck, geometry, harness, house, reach, render, sdkkit, spend,
+               workspace)
 from .core import Idea, _key, _merge_usage, read_json, slugify, write_json
 from .framecheck import DIM_STD, FLAT_STD, frame_stats, judge_frame  # noqa: F401  (re-exported)
 from .ideas import CHANNEL_STYLES
@@ -3312,7 +3313,7 @@ class VfxPlanner:
             "plan": plan,
             "inspo": self.inspo,
             "house": self.house_digest,
-            "usage": asdict(self.usage),
+            "usage": spend.from_usage(self.usage, self.model),
         }
 
 
@@ -3498,7 +3499,7 @@ def write_vfx(dossier: Dossier, data: dict) -> list[Path]:
         md += ["", "### Cut first if short on time", ""] + [f"- {c}" for c in plan["cut_first"]]
     if plan.get("outsource"):
         md += ["", "### Worth outsourcing", ""] + [f"- {o}" for o in plan["outsource"]]
-    md += ["", f"*{Usage(**data['usage'])}*", ""]
+    md += ["", f"*{spend.to_usage(data['usage'])}*", ""]
 
     written = [dossier.write("vfx.md", "\n".join(md)),
                write_json(dossier.dir / "vfx.json", data)]

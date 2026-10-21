@@ -58,7 +58,7 @@ import sys
 from pathlib import Path
 
 from . import geometry as geo
-from . import framecheck, house, reach, workspace
+from . import framecheck, house, reach, spend, workspace
 from . import render as render_stage
 from .build import EVEN_SHOTS, shots_from_scene  # noqa: F401  (standalone sampling)
 from .core import read_json, timecode, write_json
@@ -1173,7 +1173,8 @@ def run(args) -> int:
                          "scene_sha256": seen,
                          "blocking": all_blocking, "frames": sorted(have),
                          "samples": samples, "mechanical": mechanical, "capped": capped,
-                         "contact_sheet": sheet.name, "engine": reviewer.report()}
+                         "contact_sheet": sheet.name, "engine": reviewer.report(),
+                         "usage": spend.from_report(reviewer.report())}
     diff = compare(previous, card)
     card["comparison"] = diff
     write_json(pass_dir / "scorecard.json", card)
@@ -1185,7 +1186,7 @@ def run(args) -> int:
         "scene_sha256": seen, "blocking": len(all_blocking), "findings": len(card.get("findings", [])),
         "mechanical": len(mechanical), "capped": capped,
         "regressions": diff["regressions"], "reasons": reasons,
-        "scorecard": str(pass_dir / "scorecard.json")})
+        "scorecard": str(pass_dir / "scorecard.json"), "usage": card["usage"]})
 
     print(f"\n{idea.title} — QA {pass_dir.name}: {verdict}  (overall {card.get('overall')})")
     for key in CATEGORIES:

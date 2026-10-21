@@ -41,7 +41,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path, PurePosixPath
 
-from . import flags, house, workspace
+from . import flags, house, spend, workspace
 from .core import read_json, write_json
 from .harness import Harness, HarnessError
 
@@ -547,13 +547,15 @@ def vet_candidates(h: Harness, text: str, hits: list[dict]) -> list[dict]:
     return kept
 
 
-def write_manifest(root: Path, items: list[dict], *, phrases: list[str]) -> Path:
+def write_manifest(root: Path, items: list[dict], *, phrases: list[str],
+                   usage: dict | None = None) -> Path:
     return write_json(root / workspace.ARTIFACTS["props"], {
         "source": "Poly Haven (https://polyhaven.com), everything CC0",
         "phrases": phrases,
         "resolution": RESOLUTION,
         "count": len(items),
         "items": items,
+        "usage": usage or spend.record(),
     })
 
 
@@ -605,7 +607,7 @@ def run(args) -> int:
         print("error: nothing to search for: give phrases, or run `yt script` / "
               "`yt styles` first so they can be derived", file=sys.stderr)
         return 1
-    judge = None
+    judge = h = None
     try:
         if derived:
             rules, digest = house.for_args(args, project, "props")
@@ -632,7 +634,8 @@ def run(args) -> int:
         print(f"error: Poly Haven unreachable: {exc}", file=sys.stderr)
         return 1
 
-    path = write_manifest(project.root, items, phrases=phrases)
+    path = write_manifest(project.root, items, phrases=phrases,
+                          usage=spend.from_report(h.report()) if h else None)
     for item in items:
         print(f"{item['kind']:<8} {item['id']:<28} {item['file']}")
         print(f"         {item['about'][:100]}")

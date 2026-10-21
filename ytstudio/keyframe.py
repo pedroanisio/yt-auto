@@ -95,7 +95,8 @@ from datetime import datetime
 from pathlib import Path
 
 from claude_engine import ClaudeError, EngineConfig, Usage
-from . import assess, design, flags, fonts, framecheck, harness, house, render, sdkkit, vfx, workspace
+from . import (assess, design, flags, fonts, framecheck, harness, house, render, sdkkit, spend,
+               vfx, workspace)
 from .script import Shot, visible_text
 from .core import Idea, _merge_usage, compact, read_json, write_json
 from .vfx import (AUTHOR_TOOLS, FRAME, MISSION, STACK, Workspace,
@@ -973,6 +974,10 @@ class KeyframeStage:
                 "engine": {"elements": picker.report(), "review": reviewer.report()},
                 "cost_usd": round(self.usage.cost_usd + picker.usage.cost_usd
                                   + reviewer.usage.cost_usd, 4),
+                "usage": spend.record(self.usage.cost_usd + picker.usage.cost_usd
+                                      + reviewer.usage.cost_usd, self.model,
+                                      self.usage.calls + picker.usage.calls
+                                      + reviewer.usage.calls),
             }
 
         while True:
@@ -1206,7 +1211,8 @@ class SectionLook:
                   "rounds": rec.get("rounds") or [], "score": None,
                   "treatment": style.get("look", ""), "camera": style.get("camera_language", ""),
                   "hero": "", "elements": [], "operator_notes": self.notes,
-                  "cost_usd": round(self.usage.cost_usd, 4), "usage": asdict(self.usage),
+                  "cost_usd": round(self.usage.cost_usd, 4),
+                  "usage": spend.from_usage(self.usage, getattr(self.args, "model", "")),
                   "document_digest": document_digest(doc),
                   "program_digest": document_digest(program) if program else None,
                   "approval": {"state": "pending", "notes": "", "digest": document_digest(doc),
