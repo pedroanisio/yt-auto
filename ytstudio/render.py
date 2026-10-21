@@ -11,8 +11,11 @@ technically succeeded but produced a warning does not quietly pass.
     yt render --title monty --start 60 --end 90 # just that minute
     yt render --title monty --validate          # the engine's own validation
 
-The engine is Rust and is not bundled. It is found through RS_RENDER_BIN, on
-PATH as `scene-render`, or in a checkout beside this one -- or it runs on
+The engine is Rust and is not bundled. It is found through RS_RENDER_BIN (the
+binary, or a directory that holds it), on PATH as `scene-render`, in a checkout
+beside this one (`cargo build --release`), or in a release archive from GitHub
+Releases unpacked beside this one (`scene-render-vX-linux-x86_64/scene-render`,
+the newest version when there are several; see LOCAL_BIN_GLOBS) -- or it runs on
 other machines: with RS_RENDER_HOSTS (comma-separated ssh targets; RS_RENDER_HOST
 for one) or --host set, the project is mirrored there once and refreshed
 incrementally, each job runs in a hardlinked directory of its own (so two
@@ -57,23 +60,72 @@ from . import flags, workspace
 from .core import read_json, write_json
 
 BUILD_HINT = ("the scene-render binary was not found. Set RS_RENDER_BIN to it, "
-              "put `scene-render` on PATH, or build the checkout: "
-              "cd ../scene-render && cargo build --release")
+              "put `scene-render` on PATH, build the checkout "
+              "(cd ../scene-render && cargo build --release), or unpack a release "
+              "archive beside this checkout (scene-render-vX-linux-x86_64/scene-render)")
+
+#: Where the engine may sit under each of local_roots(), nearest root first and,
+#: within one root, in this order: a developer's own build wins over an archive.
+#: A pattern with `*` matches every unpacked release archive, newest version
+#: first (the same `sort -V | tail -1` REMOTE_BIN_LOOKUP applies on a host).
+LOCAL_BIN_GLOBS = (
+    "scene-render/target/release/scene-render",       # cargo build --release in the checkout
+    "scene-render/scene-render",                      # a release binary dropped into the checkout
+    "scene-render/dist/scene-render-*/scene-render",  # the release workflow's own dist/
+    "scene-render-*/scene-render",                    # an unpacked release archive
+    "scene-render-*/scene-render-*/scene-render",     # ... inside a folder of archives
+    "render/scene-render-*/scene-render",             # the hosts' convention
+    "render/scene-render",
+)
+
+
+def local_roots() -> tuple[Path, ...]:
+    """The directories LOCAL_BIN_GLOBS are tried under: beside this checkout, then
+    the user's src/ and home, then /opt (where a host keeps /opt/scene-render)."""
+    here = Path(__file__).resolve().parent.parent
+    return (here.parent, Path.home() / "src", Path.home(), Path("/opt"))
+
+
+def _version_key(path: Path) -> tuple:
+    """Order paths like `sort -V`: every run of digits in every component as an
+    int, so scene-render-v0.10.0 sorts after scene-render-v0.7.1."""
+    return tuple(tuple(int(n) for n in re.findall(r"\d+", part)) for part in path.parts)
+
+
+def _binary_under(directory: Path) -> Path | None:
+    """The engine inside a directory RS_RENDER_BIN names: the binary itself, or the
+    one unpacked archive (or newest of several) the directory holds."""
+    direct = directory / "scene-render"
+    if direct.is_file():
+        return direct
+    found = [p for p in directory.glob("scene-render-*/scene-render") if p.is_file()]
+    return max(found, key=_version_key) if found else None
 
 
 def engine() -> Path | None:
     """The engine binary, wherever this machine keeps it."""
     env = os.environ.get("RS_RENDER_BIN")
-    if env and Path(env).is_file():
-        return Path(env)
+    if env:
+        named = Path(env)
+        if named.is_file():
+            return named
+        if named.is_dir():
+            inside = _binary_under(named)
+            if inside:
+                return inside
     found = shutil.which("scene-render")
     if found:
         return Path(found)
-    here = Path(__file__).resolve().parent.parent
-    for candidate in (here.parent / "scene-render", Path.home() / "src/scene-render"):
-        binary = candidate / "target" / "release" / "scene-render"
-        if binary.is_file():
-            return binary
+    for root in local_roots():
+        for pattern in LOCAL_BIN_GLOBS:
+            if "*" not in pattern:
+                binary = root / pattern
+                if binary.is_file():
+                    return binary
+                continue
+            matches = [p for p in root.glob(pattern) if p.is_file()]
+            if matches:
+                return max(matches, key=_version_key)
     return None
 
 
@@ -681,6 +733,89 @@ def _run_remote(cmd: list[str], project_root: Path, host: str, *, verbose: bool,
     return proc
 
 
+def validate_findings(report: dict) -> list[str]:
+    """The diagnostics of one `validate --format json` run, as finding strings.
+
+    Reads both shapes the engine has printed: the bare `{"valid", "files"}`
+    of engines before 0.6.0, and the `scene-render-cli/1` envelope since,
+    whose `result` holds the same files. The envelope's own `diagnostics`
+    (findings about no one file) and an `error` that is not plain invalidity
+    (a usage or I/O failure) are reported too, so nothing the engine said is
+    dropped on the floor.
+    """
+    result = report.get("result")
+    body = result if isinstance(result, dict) else report
+    findings: list[str] = []
+
+    def line(diag) -> str:
+        if not isinstance(diag, dict):
+            return f"error[]: {diag}"
+        sev = str(diag.get("severity") or "error").lower()
+        code = diag.get("code") or ""
+        at = diag.get("label") or diag.get("id") or diag.get("node") or diag.get("path") or ""
+        msg = diag.get("message") or str(diag)
+        return f"{sev}[{code}] ({at}): {msg}" if at else f"{sev}[{code}]: {msg}"
+
+    for file in body.get("files") or []:
+        for diag in (file.get("diagnostics") if isinstance(file, dict) else None) or []:
+            findings.append(line(diag))
+    for diag in report.get("diagnostics") or []:
+        text = line(diag)
+        if text not in findings:
+            findings.append(text)
+    error = report.get("error")
+    if isinstance(error, dict) and error.get("kind") not in (None, "invalid"):
+        findings.append(f"error[{error.get('kind')}]: {error.get('message') or error}")
+    elif isinstance(error, str) and error:
+        findings.append(f"error[]: {error}")
+    return findings
+
+
+def _validate_output(stdout: str, stderr: str, returncode: int) -> list[str]:
+    """What one validate run (here or on a host) amounts to, as findings."""
+    try:
+        report = json.loads(stdout[stdout.index("{"):])
+    except (ValueError, json.JSONDecodeError):
+        text = (stderr or stdout).strip()
+        return [] if returncode == 0 else [f"error: sdk:engine-failed: {text[-400:]}"]
+    if not isinstance(report, dict):
+        return [f"error: sdk:engine-failed: 'validate' printed {type(report).__name__}, not a report"]
+    findings = validate_findings(report)
+    if returncode not in (0, 1) and not findings:
+        text = (stderr or stdout).strip()
+        findings.append(f"error: sdk:engine-failed: 'validate' exited {returncode}: {text[-400:]}")
+    return findings
+
+
+def engine_validate_local(xml_bytes: bytes, binary: Path, *, timeout: float = 120.0
+                          ) -> list[str]:
+    """`validate --format json --no-assets` with the binary on this machine.
+
+    The bytes go to a temporary file (so `--no-assets`: relative paths could
+    not resolve there) that is removed afterwards. An engine that cannot run,
+    times out, or prints no report is one `error: sdk:engine-failed` finding.
+    """
+    import tempfile
+    try:
+        with tempfile.NamedTemporaryFile(prefix=".yt-validate-", suffix=".scene.xml",
+                                         delete=False) as handle:
+            handle.write(xml_bytes)
+            name = handle.name
+    except OSError as exc:
+        return [f"error: sdk:engine-failed: cannot write the temporary document: {exc}"]
+    try:
+        proc = subprocess.run([str(binary), "validate", "--format", "json", "--no-assets", name],
+                              capture_output=True, text=True, timeout=timeout)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return [f"error: sdk:engine-failed: {exc}"]
+    finally:
+        try:
+            os.unlink(name)
+        except OSError:
+            pass
+    return _validate_output(proc.stdout or "", proc.stderr or "", proc.returncode)
+
+
 def engine_validate(xml_bytes: bytes, *, host: str = "", timeout: float = 120.0
                     ) -> list[str] | None:
     """The engine's own validation of a document, as finding strings.
@@ -688,17 +823,15 @@ def engine_validate(xml_bytes: bytes, *, host: str = "", timeout: float = 120.0
     Level 3 of the SDK's ladder: the schema and the SDK's checks let a
     document through that the engine refuses (a path with no box, for one),
     so a document is not trusted until the engine has read it. Runs
-    sr_core.scene.engine.level3 against a local binary when there is one,
-    else ships the bytes to RS_RENDER_HOST and runs `validate` there. None
-    means no engine could be asked; the caller decides what that is worth.
+    `validate` against a local binary when there is one (engine_validate_local),
+    else ships the bytes to RS_RENDER_HOST and runs it there. Both read the
+    report through validate_findings, so a finding reads the same wherever the
+    engine ran. None means no engine could be asked; the caller decides what
+    that is worth.
     """
     binary = engine()
     if binary is not None:
-        try:
-            from sr_core.scene.engine import level3
-            return [str(f) for f in level3(xml_bytes, binary)]
-        except Exception as exc:  # the SDK's own EngineError, or no sr_core
-            return [f"error: sdk:engine-failed: {exc}"]
+        return engine_validate_local(xml_bytes, binary, timeout=timeout)
     host = host or remote_host(None, "validate")
     if not host:
         return None
@@ -714,21 +847,8 @@ def engine_validate(xml_bytes: bytes, *, host: str = "", timeout: float = 120.0
                               timeout=timeout)
     except (subprocess.TimeoutExpired, OSError) as exc:
         return [f"error: sdk:engine-failed: {exc}"]
-    out = proc.stdout.decode("utf-8", "replace")
-    try:
-        report = json.loads(out[out.index("{"):])
-    except (ValueError, json.JSONDecodeError):
-        text = (proc.stderr.decode("utf-8", "replace") or out).strip()
-        return [] if proc.returncode == 0 else [f"error: {text[-400:]}"]
-    findings = []
-    for file in (report.get("result") or report).get("files", []) or []:
-        for diag in file.get("diagnostics") or []:
-            sev = str(diag.get("severity", "error")).lower()
-            code = diag.get("code") or ""
-            at = diag.get("id") or diag.get("node") or ""
-            msg = diag.get("message") or str(diag)
-            findings.append(f"{sev}[{code}] ({at}): {msg}" if at else f"{sev}[{code}]: {msg}")
-    return findings
+    return _validate_output(proc.stdout.decode("utf-8", "replace"),
+                            proc.stderr.decode("utf-8", "replace"), proc.returncode)
 
 
 #: Per-job report statuses (AUTO-32).
