@@ -1687,7 +1687,11 @@ class Workspace:
                   "parented to it) with every set solid; a penetration deeper than a "
                   "tenth of the hero's smallest dimension is an error naming the time, "
                   "the object and the depth. Key its path to clear every set solid: "
-                  "the floor, the walls and the furniture of the set.", "",
+                  "the floor, the walls and the furniture of the set. A hero that touches "
+                  "an object by design (attached to it, not passing through it) is declared "
+                  f"joined with `<meta name=\"{geometry.ATTACH_META}\" value=\"<hero id> "
+                  "<object id or prefix*> ...\"/>` (a trailing * names every id with that "
+                  "prefix), and the nodes it follows by `parent` never count.", "",
                   "Resting rule: a resting hero's lowest point equals the surface's top. "
                   "y points down (the floor is y=0, up is negative), so a surface's top "
                   "is its centre y minus half its height: a box at y=-77 with "
@@ -2092,8 +2096,9 @@ class Workspace:
         life), and every hero group's world box is intersected with every
         set solid. A penetration is an error naming the time, the hero, the
         object, the depth and the fix; a declared rest
-        (`<meta name="hero-rests" ...>`) is checked for floating. `runner`
-        replaces EVAL_RUNNER's (a test's seam)."""
+        (`<meta name="hero-rests" ...>`) is checked for floating, and a
+        declared attachment (`<meta name="hero-attached" ...>`) is no
+        penetration. `runner` replaces EVAL_RUNNER's (a test's seam)."""
         path = self.dir / name
         if not path.is_file():
             return ["error: the author wrote no document"]
@@ -2110,6 +2115,7 @@ class Workspace:
             if not geometry.hero_groups(objects):
                 continue                      # a 2D symbol, or one with no hero
             rests = geometry.rests_declared(text, prefix="shot/")
+            attached = geometry.attachments_declared(text, prefix="shot/")
             held = shots.get(fact["id"]) or [{"label": "", "at": 0.0, "seconds": fact["duration"]}]
             times = geometry.sample_times(held, step)
             files = dict(extra)
@@ -2121,7 +2127,7 @@ class Workspace:
             # evaluated light elements keep these ids; the camera is the
             # world's own, under the include id `shot`.
             report = geometry.evaluate(
-                objects, times, run, rests=rests,
+                objects, times, run, rests=rests, attached=attached,
                 cameras=geometry.document_cameras(text, symbol=fact["id"], prefix="shot/"),
                 lights=geometry.document_lights(text), frame=frame, step=step)
             out += geometry.findings(report, symbol=fact["id"], shots=held)

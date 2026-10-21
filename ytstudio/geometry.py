@@ -17,7 +17,12 @@ of the hero's smallest dimension is a penetration -- a resting contact
 passes, a merge does not -- recorded with the time, the hero, the object,
 the depth and the axis. Where a document declares that the hero comes to
 rest on a surface (`<meta name="hero-rests" value="<hero> <surface>
-<time>"/>`), a hero floating above it at that time is a finding too.
+<time>"/>`), a hero floating above it at that time is a finding too. A
+hero is no penetration of what it is attached to: the nodes it follows by
+`parent`, and the objects a document declares it joined to by design
+(`<meta name="hero-attached" value="<hero> <object or prefix*> ..."/>`, a
+cap on the strand it caps); those overlaps still count for every other
+check.
 
 Axes, from the schema: y points down (the camera's doc: "y points down",
 "z points into the scene"), so a floor is y = 0 and up is negative; the
@@ -65,6 +70,8 @@ TOLERANCE_SHARE = 0.10
 SOLID_OPACITY = 0.5
 #: `<meta name="hero-rests" value="<hero id> <surface id> <seconds>"/>`
 REST_META = "hero-rests"
+#: `<meta name="hero-attached" value="<hero id> <object id or prefix*> ..."/>`
+ATTACH_META = "hero-attached"
 #: The schema's defaults: radius 50 (width and height twice it), depth 10, text size 100.
 DEFAULT_RADIUS, DEFAULT_DEPTH, TEXT_SIZE = 50.0, 10.0, 100.0
 TEXT_ADVANCE = 0.6          # rough width of a character as a share of the text size
@@ -186,35 +193,65 @@ def scene_objects(scene_text: str, base: Path) -> list[dict]:
     return _composed(scene_text, "", Path(base))
 
 
+def _meta_values(doc_text: str, name: str) -> list[str]:
+    """The `value` of every `<meta name=name value>` in the document."""
+    out: list[str] = []
+    for tag in re.findall(r"<meta\b[^>]*>", doc_text):
+        key = re.search(r'\bname="([^"]*)"', tag)
+        value = re.search(r'\bvalue="([^"]*)"', tag)
+        if key and value and key.group(1) == name:
+            out.append(value.group(1))
+    return out
+
+
 def rests_declared(doc_text: str, prefix: str = "") -> list[dict]:
     """Where the document says the hero comes to rest: each
     `<meta name="hero-rests" value="<hero> <surface> <seconds>"/>`."""
     out: list[dict] = []
-    for tag in re.findall(r"<meta\b[^>]*>", doc_text):
-        name = re.search(r'\bname="([^"]*)"', tag)
-        value = re.search(r'\bvalue="([^"]*)"', tag)
-        if not name or not value or name.group(1) != REST_META:
-            continue
-        parts = value.group(1).split()
+    for value in _meta_values(doc_text, REST_META):
+        parts = value.split()
         at = _float(parts[2]) if len(parts) == 3 else None
         if at is not None:
             out.append({"hero": prefix + parts[0], "surface": prefix + parts[1], "at": at})
     return out
 
 
-def scene_rests(scene_text: str, base: Path) -> list[dict]:
-    """The declared rests of a scene and of every file it includes, qualified."""
+def attachments_declared(doc_text: str, prefix: str = "") -> list[dict]:
+    """What the document says the hero is joined to by design: each
+    `<meta name="hero-attached" value="<hero> <object> [more ...]"/>`, one
+    row per object. An object ending `*` names every id starting with what
+    precedes it; a bare `*` would switch the check off and is ignored."""
+    out: list[dict] = []
+    for value in _meta_values(doc_text, ATTACH_META):
+        hero, *objects = value.split() or [""]
+        out += [{"hero": prefix + hero, "object": prefix + obj}
+                for obj in objects if obj != "*"]
+    return out
+
+
+def _scene_declared(scene_text: str, base: Path, declared) -> list[dict]:
     root = _parse(scene_text)
     if root is None:
         return []
-    out = rests_declared(scene_text)
+    out = declared(scene_text)
     for inc in root.iter("include"):
         src, iid = inc.get("src"), inc.get("id") or ""
         path = Path(base) / (src or "")
         if src and path.is_file():
-            out += rests_declared(path.read_text(encoding="utf-8", errors="replace"),
-                                  prefix=f"{iid}/" if iid else "")
+            out += declared(path.read_text(encoding="utf-8", errors="replace"),
+                            prefix=f"{iid}/" if iid else "")
     return out
+
+
+def scene_rests(scene_text: str, base: Path) -> list[dict]:
+    """The declared rests of a scene and of every file it includes, qualified."""
+    return _scene_declared(scene_text, base, rests_declared)
+
+
+def scene_attachments(scene_text: str, base: Path) -> list[dict]:
+    """The declared attachments of a scene and of every file it includes,
+    qualified."""
+    return _scene_declared(scene_text, base, attachments_declared)
 
 
 def document_duration(doc_text: str) -> float:
@@ -484,6 +521,30 @@ def hero_groups(objects: list[dict]) -> dict[str, list[str]]:
             seen.add(pid)
             pid = by_id[pid].get("parent")
     return groups
+
+
+def ancestors(objects: list[dict], oid: str) -> list[str]:
+    """The nodes `oid` follows through `parent`, the nearest first; a
+    parent cycle is cut."""
+    by_id = {o["id"]: o for o in objects}
+    out: list[str] = []
+    pid = (by_id.get(oid) or {}).get("parent")
+    while pid and pid in by_id and pid != oid and pid not in out:
+        out.append(pid)
+        pid = by_id[pid].get("parent")
+    return out
+
+
+def joined(hero: str, oid: str, attached) -> bool:
+    """Whether an attachment row joins `hero` to `oid`: the object named,
+    or a prefix ending `*` that `oid` starts with."""
+    for row in attached:
+        obj = row["object"]
+        if row["hero"] != hero:
+            continue
+        if oid == obj or (obj.endswith("*") and oid.startswith(obj[:-1])):
+            return True
+    return False
 
 
 def group_bounds(bounds: dict[str, Box], groups: dict[str, list[str]]) -> dict[str, Box]:
@@ -860,10 +921,12 @@ def merged_advice(span: dict) -> str:
 
 
 def penetrations(bounds: dict[str, Box], hero_ids, set_ids, tolerance: float | None = None,
-                 *, time: float = 0.0) -> list[dict]:
+                 *, time: float = 0.0, attached=()) -> list[dict]:
     """Every hero box inside a set solid by more than the tolerance
     (default: a tenth of that hero's smallest dimension, so a resting
-    contact passes and a merge fails), as records."""
+    contact passes and a merge fails), as records. A solid an `attached`
+    row joins the hero to (`{"hero", "object"}`, see `joined`) touches it
+    by design and is skipped."""
     out: list[dict] = []
     for hero in hero_ids:
         hb = bounds.get(hero)
@@ -872,7 +935,7 @@ def penetrations(bounds: dict[str, Box], hero_ids, set_ids, tolerance: float | N
         tol = tolerance_of(hb) if tolerance is None else float(tolerance)
         for oid in set_ids:
             ob = bounds.get(oid)
-            if ob is None or oid == hero:
+            if ob is None or oid == hero or joined(hero, oid, attached):
                 continue
             hit = overlap(hb, ob)
             if hit and hit[0] > tol:
@@ -917,10 +980,11 @@ def sample_times(shots: list[dict], step: float = STEP, *, duration: float | Non
 
 
 def summarise(records: list[dict], *, floating: list[dict], times: list[float],
-              evaluated: int, heroes: dict, solids: list[str], rests=(),
+              evaluated: int, heroes: dict, solids: list[str], rests=(), attached=(),
               reads_merged=(), screen: str = "not checked: no camera") -> dict:
     """The report: the records, the worst per hero and object (its depth,
-    time, how many samples and between which), the floats."""
+    time, how many samples and between which), the floats, the declared
+    rests and attachments."""
     worst: dict[tuple[str, str], dict] = {}
     for r in records:
         key = (r["hero"], r["object"])
@@ -935,24 +999,33 @@ def summarise(records: list[dict], *, floating: list[dict], times: list[float],
             row.update(depth=r["depth"], time=r["time"], axis=r["axis"], tolerance=r["tolerance"],
                        hero_bottom=r.get("hero_bottom"), surface_top=r.get("surface_top"))
     return {"status": "ok", "times": list(times), "evaluated": evaluated, "heroes": heroes,
-            "solids": solids, "rests": list(rests), "penetrations": records,
-            "worst": list(worst.values()), "floating": list(floating),
+            "solids": solids, "rests": list(rests), "attached": list(attached),
+            "penetrations": records, "worst": list(worst.values()), "floating": list(floating),
             "reads_merged": list(reads_merged), "screen": screen}
 
 
-def evaluate(objects: list[dict], times: list[float], runner, *, rests=(), cameras=(),
-             lights=(), frame: tuple[int, int] = (1920, 1080), step: float = STEP) -> dict:
+def evaluate(objects: list[dict], times: list[float], runner, *, rests=(), attached=(),
+             cameras=(), lights=(), frame: tuple[int, int] = (1920, 1080),
+             step: float = STEP) -> dict:
     """The check over one document: `runner(times)` -> one eval frame per
     time (the seam; production is one job on a host, a test a function).
     Every hero group's union box is intersected with every set solid at
-    each time; declared rests are evaluated too and checked for floating.
-    With `cameras` (and `lights`, `frame` in pixels) the screen is checked
-    as well: the spans where the hero reads as merged into a surface."""
+    each time, except the solids the hero is attached to (the declared
+    `attached` rows and the nodes it follows by `parent`); declared rests
+    are evaluated too and checked for floating. With `cameras` (and
+    `lights`, `frame` in pixels) the screen is checked as well: the spans
+    where the hero reads as merged into a surface."""
     heroes = hero_groups(objects)
     parts = {p for ids in heroes.values() for p in ids}
+    # A hero is attached to what it follows by `parent` as surely as to
+    # what is declared; only the penetration path skips either (floating,
+    # reads-merged and the shadows still see both).
+    joints = list(attached) + [{"hero": h, "object": a} for h in heroes
+                               for a in ancestors(objects, h)]
     base = {"times": list(times), "heroes": heroes, "solids": solids(objects, exclude=parts),
-            "rests": list(rests), "evaluated": 0, "penetrations": [], "worst": [], "floating": [],
-            "reads_merged": [], "screen": "not checked"}
+            "rests": list(rests), "attached": list(attached), "evaluated": 0,
+            "penetrations": [], "worst": [], "floating": [], "reads_merged": [],
+            "screen": "not checked"}
     if not heroes:
         return base | {"status": "skipped", "why": "no `hero-` object3D: nothing to keep out of the set"}
     if runner is None:
@@ -974,7 +1047,7 @@ def evaluate(objects: list[dict], times: list[float], runner, *, rests=(), camer
         bounds |= group_bounds(bounds, heroes)
         present = solids(now, exclude=parts)
         if t in sampled:
-            records += penetrations(bounds, list(heroes), present, time=t)
+            records += penetrations(bounds, list(heroes), present, time=t, attached=joints)
             if cameras:
                 cams, active = overlay_cameras(list(cameras), fr)
                 cam = next((c for c in cams if c["id"] == active), None)
@@ -989,7 +1062,7 @@ def evaluate(objects: list[dict], times: list[float], runner, *, rests=(), camer
                     floats.append(row)
     screen = ("checked" if cameras else "not checked: no camera in the document")
     return summarise(records, floating=floats, times=times, evaluated=evaluated,
-                     heroes=heroes, solids=base["solids"], rests=rests,
+                     heroes=heroes, solids=base["solids"], rests=rests, attached=attached,
                      reads_merged=merged_spans(candidates, times, step=step), screen=screen)
 
 
@@ -1023,6 +1096,10 @@ def advice(row: dict, shots=(), rests=()) -> str:
         text += (f"; if it is meant to come to rest on `{obj}`, declare it "
                  f"(`<meta name=\"{REST_META}\" value=\"{hero} {obj} <seconds>\"/>`) "
                  "and key the contact to touch, not sink")
+    text += (f"; if `{hero}` and `{obj}` touch by design (one is attached to the other), do not "
+             f"pull them apart: declare them joined (`<meta name=\"{ATTACH_META}\" "
+             f"value=\"{hero} {obj}\"/>`; an id ending in * names every id with that prefix) "
+             "and that overlap is no longer a penetration")
     return text
 
 
@@ -1179,11 +1256,13 @@ def check_project(scene: Path, root: Path, shots: list[dict], *, host: str = "",
                   step: float = STEP, runner=None) -> dict:
     """The check `yt qa` and `yt gate` run over a project's scene: its
     includes resolved, every shot stepped (the document's duration when it
-    has no shots), the declared rests read from the included files."""
+    has no shots), the declared rests and attachments read from the
+    included files."""
     scene = Path(scene)
     text = scene.read_text(encoding="utf-8", errors="replace")
     objects = scene_objects(text, scene.parent)
     rests = scene_rests(text, scene.parent)
+    attached = scene_attachments(text, scene.parent)
     cameras = scene_cameras(text, scene.parent)
     times = sample_times(shots, step, duration=document_duration(text))
     try:
@@ -1191,7 +1270,7 @@ def check_project(scene: Path, root: Path, shots: list[dict], *, host: str = "",
     except ValueError:
         doc_rel = scene.name
     run = runner if runner is not None else engine_runner(doc_rel, root=Path(root), host=host)
-    report = evaluate(objects, times, run, rests=rests, cameras=cameras,
+    report = evaluate(objects, times, run, rests=rests, attached=attached, cameras=cameras,
                       lights=document_lights(text), frame=document_frame(text), step=step)
     report["scene"] = str(scene)
     report["step"] = step
