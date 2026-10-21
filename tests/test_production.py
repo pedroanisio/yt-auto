@@ -136,6 +136,28 @@ class BuildApplies(unittest.TestCase):
                              f"burn={burn}")
             self.assertEqual(manifest["cues"], len(want))
 
+    def test_a_caption_that_cannot_be_made_legal_is_a_finding_naming_it(self):
+        # AUTO-64: a take far faster than the reading speed, next shot right after
+        fast = " ".join(["ab"] * 60)
+        sections = [Section(heading="Open", shots=[
+            Shot(label="1.1", n=1, visual="v", narration=fast, seconds=4.5, at=0),
+            Shot(label="1.2", n=2, visual="v", narration="and it turns",
+                 seconds=3, at=4.5)])]
+        words = fast.split()
+        step = 4.5 / len(words)
+        voice = {"takes": [
+            {"label": "1.1", "at": 0.0, "seconds": 4.5, "text": fast,
+             "words": [dict(word=w, start=round(i * step, 3), end=round((i + 1) * step, 3))
+                       for i, w in enumerate(words)]},
+            {"label": "1.2", "at": 4.5, "seconds": 3.0, "text": "and it turns"}]}
+        _, manifest = build.SceneBuilder(
+            _idea(), sections, self.root, vfx=self.vfx, voice=voice,
+            edit=None, verbose=False, audio=False).build()
+        named = [f for f in manifest["findings"] if "caption" in f and "ab ab" in f]
+        self.assertTrue(named, manifest["findings"])
+        self.assertTrue(all(f.startswith("warning:") for f in named))
+        self.assertIn("characters a second", named[0])
+
     def test_captions_off_and_blocking_reach_the_manifest(self):
         edit = {"coverage": [], "captions_off": ["2.1"], "tail_seconds": 0.5,
                 "notes": "the end card carries its own words",
