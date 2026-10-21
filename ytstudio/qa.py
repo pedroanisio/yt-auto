@@ -453,7 +453,8 @@ ALWAYS_BLOCKING = ("penetration", "reads-merged", "proof-mismatch")
 #: and its latest proof frame, 24 s on, by 7.9 (what a world restarted at
 #: t=0 under a later shot looks like); another world's frame by 24.6. So the
 #: line sits well above the noise and under the quietest restart measured.
-#: Both frames are kept under qa/pass-NN/proof/ for a reviewer to look at.
+#: The film's frame is kept under qa/pass-NN/proof/ and the author's stays in
+#: vfx/vNN/frames/, so a reviewer can look at both.
 PROOF_DIFF = 4.0
 PROOF_BAND = (230, 820)           # stage rows at PROOF_BAND_FRAME height
 PROOF_BAND_FRAME = 1080
