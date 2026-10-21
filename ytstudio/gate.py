@@ -232,6 +232,11 @@ def plan_remote(found: dict, extras: list[str], project_root: Path, host: str, *
         excludes=("__pycache__/", "fixtures/", "evidence/", "*.md")))
     plan.syncs.append(render_stage.sync_up_args(
         tools, host, f"{root}/tools/audio", delete=False, excludes=("__pycache__/",)))
+    if found.get("audio tools"):
+        # the bundled sr-* tools merge into the same directory, after the tools dir's own files
+        plan.syncs.append(render_stage.sync_up_args(
+            Path(found["audio tools"]), host, f"{root}/tools/audio", delete=False,
+            excludes=("__pycache__/",)))
     for local, remote in plan.paths.items():
         if remote.startswith(root + "/inputs/") and local != found["encode report"]:
             plan.syncs.append(render_stage.sync_up_args(
@@ -447,6 +452,45 @@ def tools_dir(explicit: str | None) -> Path | None:
     return None
 
 
+#: The three tools production_gate.py runs from --tools-dir, by name.
+AUDIO_TOOLS = ("sr-audiocheck", "sr-margin", "sr-sibilance")
+AUDIO_TOOLS_HINT = ("bundled in ytstudio/audiotools; restore the file from the repo, or "
+                    "put one of that name in --tools-dir")
+
+
+def bundled_tools() -> Path:
+    """The audio tools that ship with yt (stdlib python and ffmpeg; see audiotools/sr_audio.py)."""
+    return Path(__file__).resolve().parent / "audiotools"
+
+
+def ensure_executable(directory: Path) -> None:
+    """production_gate.py runs <tools-dir>/<name> directly, so the tools need the
+    execute bit, which a zip or a filesystem without modes drops."""
+    for name in AUDIO_TOOLS:
+        path = directory / name
+        try:
+            if path.is_file() and not os.access(path, os.X_OK):
+                path.chmod(path.stat().st_mode | 0o755)
+        except OSError:
+            pass
+
+
+def audio_tool_paths(tools: Path | None) -> dict[str, str]:
+    """Where each audio tool is found (the tools dir first, then the bundle); "" when nowhere."""
+    found = {}
+    for name in AUDIO_TOOLS:
+        candidates = ([tools / name] if tools else []) + [bundled_tools() / name]
+        found[name] = next((str(c) for c in candidates if c.is_file()), "")
+    return found
+
+
+def audio_tools_to_ship(tools: Path | None) -> Path | None:
+    """The bundle, when the tools dir lacks any of the three; None when it has them all."""
+    if tools and all((tools / name).is_file() for name in AUDIO_TOOLS):
+        return None
+    return bundled_tools() if bundled_tools().is_dir() else None
+
+
 def inputs(project, args, host: str = "") -> tuple[dict, list[str]]:
     """Everything the gate needs, and what is still missing.
 
@@ -482,6 +526,15 @@ def inputs(project, args, host: str = "") -> tuple[dict, list[str]]:
     # A voice end of 0 is a value (a wordless one-shot film), not an absence.
     missing = [name for name, value in found.items()
                if not value and not (name == "voice end" and value == 0)]
+    # each audio tool by name, so the preflight and the run name the one that is missing
+    tools = tools_dir(args.tools_dir)
+    shipped = audio_tools_to_ship(tools)
+    if shipped:
+        ensure_executable(shipped)
+        found["audio tools"] = str(shipped)
+    paths = audio_tool_paths(tools)
+    found.update(paths)
+    missing += [name for name, where in paths.items() if not where]
     return found, missing
 
 
@@ -495,7 +548,7 @@ def local_command(found: dict, extras: list[str], *, frames: bool, loudness_targ
            "--scene", found["scene"], "--video", found["video"],
            "--engine", found["engine"],
            "--encode-report", found["encode report"],
-           "--tools-dir", found["tools dir"],
+           "--tools-dir", found.get("audio tools") or found["tools dir"],
            "--voice-end", str(found["voice end"]),
            "--loudness-target", str(loudness_target)]
     for caption in [found["captions"], *extras]:
@@ -563,7 +616,8 @@ def run(args) -> int:
                                 "start), or --voice FILE / --voice-end SECONDS",
                    "scene": "yt build, or --scene FILE",
                    "engine": HOST_HINT, "ffprobe": HOST_HINT,
-                   "gate": GATE_HINT, "tools dir": TOOLS_HINT}
+                   "gate": GATE_HINT, "tools dir": TOOLS_HINT,
+                   **{name: AUDIO_TOOLS_HINT for name in AUDIO_TOOLS}}
             print("\n  to complete it:")
             for name in missing:
                 print(f"    {name:<14} {how.get(name, '?')}")

@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+"""sr-margin PROJECT --scene SCENE: the narration's margin over everything else, per line.
+
+Env SR is the engine binary. Exit 0 pass, 1 a line under the floor, 2 could not measure.
+sr_audio.py beside this file holds the measurement and its thresholds.
+"""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from sr_audio import margin_main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(margin_main())

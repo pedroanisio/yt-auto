@@ -784,6 +784,16 @@ is rewritten for the copy, the gate runs with the host's engine and ffprobe,
 the output comes back and the directory is removed (`--keep-remote` keeps
 it). `--local` runs it here.
 
+The gate's three audio checks live in `ytstudio/audiotools/`: `sr-margin`
+(the narration's margin over the rest of the mix, per line and per worst 3 s,
+floor 11 dB), `sr-audiocheck` (true peak, digital silence, DC offset, loudness
+range inside the narration) and `sr-sibilance` (5-10 kHz bursts per take).
+Python standard library and ffmpeg only, so they run on a render host; they ship
+into the job's `tools/audio` beside `tail_check.py` whenever the tools directory
+lacks them. `yt doctor` and `yt gate --preflight` name each one that is missing.
+Only the true-peak ceiling and the 11 dB floor are standard figures; the other
+limits are named working conventions in `sr_audio.py`.
+
 `production_gate.py` fails closed on the first requirement that does not
 hold, so `gate.json` carries `stopped_by`: the requirement (identification,
 captions, loudness, true peak, scopes, a tool that failed), the message, the

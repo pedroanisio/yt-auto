@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+"""sr-sibilance PROJECT: sibilant bursts (5-10 kHz) in each narration take.
+
+Exit 0 pass, 1 a finding, 2 could not measure. sr_audio.py beside this file holds the
+measurement and its thresholds.
+"""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from sr_audio import sibilance_main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(sibilance_main())

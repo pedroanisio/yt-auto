@@ -1,0 +1,15 @@
+#!/usr/bin/env python3
+"""sr-audiocheck PROJECT VIDEO --scene SCENE: peak, silence, DC offset and loudness swing
+of the delivered file's decoded audio.
+
+Exit 0 pass, 1 a finding, 2 could not measure. sr_audio.py beside this file holds the
+measurements and their thresholds.
+"""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from sr_audio import audiocheck_main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(audiocheck_main())

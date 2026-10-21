@@ -128,6 +128,20 @@ def check_environment(work: Path) -> Report:
                else "production_gate.py not found; yt gate cannot run")
 
     try:
+        from . import gate as gatelib
+        where = gatelib.audio_tool_paths(gatelib.tools_dir(None))
+        absent = [name for name, path in where.items() if not path]
+    except Exception:
+        absent = []
+    if absent:
+        report.add("warn", "audio tools", f"missing: {', '.join(absent)}; the technical gate "
+                   "stops at the first one", "restore ytstudio/audiotools from the repo, or put "
+                   "the tools in the --tools-dir / YT_TOOLS_DIR directory")
+    else:
+        report.add("ok", "audio tools", "sr-audiocheck, sr-margin, sr-sibilance found "
+                   "(the gate's technical pass can run them)")
+
+    try:
         from .voice import ENGINES, pick_engine
         usable = [n for n, e in ENGINES.items() if e.available()[0]]
         chosen = pick_engine("auto")
