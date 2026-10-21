@@ -329,6 +329,36 @@ def delivery_evidence(project: workspace.Project, build: dict | None
     return missing
 
 
+def check_renders(project: workspace.Project, report: Report) -> None:
+    """List the render jobs that did not render (AUTO-32): every render*.json and every
+    kit-frame report under .cache/reports/ that carries a status. A job that timed out,
+    lacked an input or failed leaves one; this is where an operator reads it, not from
+    a hung author or a missing frame."""
+    paths = sorted(project.root.glob("render*.json")) + sorted(
+        (project.root / ".cache" / "reports").glob("*.json"))
+    for path in paths:
+        rep = read_json(path, warn=False)
+        if not isinstance(rep, dict) or rep.get("status") not in render.STATUSES:
+            continue
+        status = rep["status"]
+        if status == "rendered":
+            continue
+        job = rep.get("job") or path.stem
+        spent = f" after {float(rep.get('seconds') or 0):g} s"
+        detail = (f"timed out{spent}" if status == "timeout"
+                  else "missing " + ", ".join(rep.get("missing_inputs") or []) if status == "blocked-inputs"
+                  else f"failed{spent}")
+        if rep.get("outcome_unknown"):
+            detail += " (outcome unknown: the host never reported)"
+        note = str(rep.get("message") or "")[:100]
+        where = path.relative_to(project.root).as_posix()
+        report.add("warn", "render-jobs", f"{job} {status}: {detail}" + (f" -- {note}" if note else "")
+                   + f" [{where}]",
+                   {"timeout": "lower the document's cost drivers or render it in windows",
+                    "blocked-inputs": "produce the missing files, then " + _cmd("build", project),
+                    }.get(status, "read the report, then re-run the job"))
+
+
 def check_project(project: workspace.Project) -> Report:
     report = Report(project.root.name)
     done = project.done()
@@ -726,6 +756,8 @@ def check_project(project: workspace.Project) -> Report:
             report.add("ok", "delivery", f"{READY_TO_PUBLISH}: a clean final render, "
                        f"gate deliverable, QA {qa_done.get('pass', '')} at "
                        f"{qa_done.get('overall', '?')}")
+
+    check_renders(project, report)
 
     # -- pilot -------------------------------------------------------------
     # The pilot writes its own document (segment outputs, schema raised to
