@@ -619,6 +619,7 @@ class SceneBuilder:
                  width: int = 1920,
                  height: int = 1080, fps: str = "30", codec: str = "h264",
                  background: str = "", lang: str = "", captions: bool = True,
+                 burn_captions: bool = False,
                  audio: bool = True, loudness: float = -14.0,
                  true_peak: float = -1.0, normalize: str = "integrated",
                  limiter: bool = True,
@@ -650,6 +651,7 @@ class SceneBuilder:
         self.width, self.height, self.fps = width, height, fps
         self.codec = codec
         self.captions, self.audio = captions, audio
+        self.burn_captions = burn_captions
         self.loudness, self.true_peak = loudness, true_peak
         self.normalize = normalize
         self.limiter = limiter
@@ -1347,6 +1349,14 @@ class SceneBuilder:
             kind = pick(enum_of("captionTrack", "kind"), "subtitles", "captions")
             if kind:
                 track.kind = kind
+            # Burned captions share the lower band with the authored type
+            # (measured on the Euler draft: tallies, formulas and name labels
+            # printed under them in four sections); a platform takes the
+            # sidecar track, which the viewer turns on. --burn-captions burns.
+            mode = pick(enum_of("captionTrack", "mode"),
+                        "burn" if self.burn_captions else "sidecar")
+            if mode:
+                track.mode = mode
             spoken = [p for p in placed if p.narration
                       and p.label not in edit["captions_off"]]
             for i, p in enumerate(spoken):
@@ -1657,6 +1667,9 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                    help="background colour; default comes from styles.json")
     p.add_argument("--lang", default="",
                    help="caption language (default: the narration's)")
+    p.add_argument("--burn-captions", action="store_true", dest="burn_captions",
+                   help="burn the captions into the picture instead of a sidecar track "
+                        "(they share the lower band with the authored type)")
     p.add_argument("--no-captions", action="store_true", dest="no_captions",
                    help="leave the caption track out")
     p.add_argument("--no-audio", action="store_true", dest="no_audio",
@@ -1716,7 +1729,8 @@ def run(args) -> int:
         dossier=dossier, vfx=vfx, sound=sound,
         width=args.width, height=args.height, fps=args.fps,
         codec=args.codec, background=args.background, lang=args.lang,
-        captions=not args.no_captions, audio=not args.no_audio,
+        captions=not args.no_captions, burn_captions=args.burn_captions,
+        audio=not args.no_audio,
         loudness=args.loudness, true_peak=args.true_peak,
         normalize=args.normalize, limiter=not args.no_limiter,
         bitrate=args.bitrate,

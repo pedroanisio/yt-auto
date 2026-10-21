@@ -88,6 +88,21 @@ class BuildApplies(unittest.TestCase):
         self.assertIn("1.2", manifest["placeholders"])
         self.assertTrue(any("nothing.png" in f for f in manifest["findings"]))
 
+    def test_captions_are_a_sidecar_track_unless_asked_to_burn(self):
+        # measured on the Euler draft: burned captions printed over the authored
+        # tallies, formulas and name labels in four sections
+        from xml.etree import ElementTree
+        edit = {"coverage": [], "captions_off": [], "tail_seconds": 0.5, "notes": "",
+                "blocking": []}
+        data, _ = self.builder(edit).build()
+        track = ElementTree.fromstring(data).find("captions/captionTrack")
+        self.assertEqual(track.get("mode"), "sidecar")
+        burned = build.SceneBuilder(_idea(), _sections(), self.root, vfx=self.vfx, edit=edit,
+                                    verbose=False, audio=False, burn_captions=True)
+        data, _ = burned.build()
+        self.assertEqual(ElementTree.fromstring(data).find("captions/captionTrack").get("mode"),
+                         "burn")
+
     def test_captions_off_and_blocking_reach_the_manifest(self):
         edit = {"coverage": [], "captions_off": ["2.1"], "tail_seconds": 0.5,
                 "notes": "the end card carries its own words",
