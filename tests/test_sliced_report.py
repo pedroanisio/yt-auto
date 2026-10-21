@@ -116,7 +116,7 @@ class EncodeSliced(unittest.TestCase):
         if out == "mix.wav":
             rep = mix_report()
         else:
-            rep = slice_report(int(out[6:8]), start, end)
+            rep = slice_report(int(out.rpartition("slice-")[2][:2]), start, end)
         return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(rep) if "--json" in cmd else "",
                                            stderr="")
 

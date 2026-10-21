@@ -94,7 +94,7 @@ REMOTE_BINS = ("scene-render", "$HOME/src/scene-render/target/release/scene-rend
 #: review by-products, this project's own rendered outputs and the proof
 #: frames. props/ and sound/ travel: the scene references them.
 SYNC_EXCLUDES = (".cache/", "*.bak", "raw/", "review-frames/", "vfx-stubs/", "qa/",
-                 "decisions/", "video*.mp4", "pilot*.mp4", "/mix.wav",
+                 "decisions/", "video*.mp4", "pilot*.mp4", "/mix.wav", ".slices/",
                  "/*.png", "/*.pdf", "vfx/frames/", "vfx/v*/frames/", ".estimate-*")
 
 #: What comes back from the host after a run: results, never the inputs.
@@ -277,11 +277,43 @@ def sync_up_args(source: Path, host: str, remote: str, *, file: bool = False,
     return argv
 
 
+def named_outputs(cmd: list[str]) -> tuple[str, ...]:
+    """The project-relative paths a command is told to write (`-o`, `--report`), or none
+    when it names no `-o` (an encode of a declared `--output` writes files the document
+    names, so the pull-back falls back to PULL_BACK). Absolute and `..` paths are not
+    the project's and are dropped."""
+    if "-o" not in cmd[:-1]:
+        return ()
+    names: list[str] = []
+    for n, token in enumerate(cmd[:-1]):
+        if token in ("-o", "--report"):
+            path = Path(cmd[n + 1])
+            if not path.is_absolute() and ".." not in path.parts and str(path) != "." \
+                    and str(path) not in names:
+                names.append(str(path))
+    return tuple(names)
+
+
 def pull_back_args(host: str, remote: str, dest: Path,
-                   patterns: tuple[str, ...] = PULL_BACK) -> list[str]:
-    """rsync argv bringing a job's results (PULL_BACK) from host:remote to dest."""
-    return (["rsync", "-az", "-e", SSH_COMMAND, "--include=*/"] + [f"--include={p}" for p in patterns]
-            + ["--exclude=*", f"{host}:{remote}/", f"{dest}/"])
+                   patterns: tuple[str, ...] = PULL_BACK,
+                   named: tuple[str, ...] = ()) -> list[str]:
+    """rsync argv bringing a job's results from host:remote to dest.
+
+    With `named` (see named_outputs) only those paths come back (a directory whole);
+    otherwise the PULL_BACK patterns. Either way `--update`: the job directory is a
+    copy of the mirror, so a report or asset the job did not write is older than the
+    project's own if anything wrote it since, and an older copy never replaces a newer file.
+    """
+    head = ["rsync", "-az", "--update", "-e", SSH_COMMAND]
+    tail = ["--exclude=*", f"{host}:{remote}/", f"{dest}/"]
+    if named:
+        rules: list[str] = []
+        for name in named:
+            parts = Path(name).parts
+            rules += [f"--include=/{'/'.join(parts[:k])}/" for k in range(1, len(parts))]
+            rules += [f"--include=/{name}", f"--include=/{name}/***"]
+        return head + list(dict.fromkeys(rules)) + tail
+    return head + ["--include=*/"] + [f"--include={p}" for p in patterns] + tail
 
 
 #: What a detached job leaves beside its directory: output, errors, exit status, pid.
@@ -620,7 +652,7 @@ def _run_remote(cmd: list[str], project_root: Path, host: str, *, verbose: bool,
         if not settled:
             return proc                 # outcome unknown: no pull-back, no removal
         refuse_remote()
-        pulled = subprocess.run(pull_back_args(host, remote, project_root),
+        pulled = subprocess.run(pull_back_args(host, remote, project_root, named=named_outputs(relative)),
                                 capture_output=True, text=True)
         if pulled.returncode and verbose:
             print(f"  warning: could not pull results back: {pulled.stderr.strip()[:200]}",
@@ -1351,7 +1383,8 @@ def memory_reports(report_path: Path) -> list[dict]:
 
 def encode_sliced(scene: str, project_root: Path, *, slices: int, quality: str | None,
                   start: float, end: float, strict: bool, verbose: bool,
-                  report_path: Path | None = None) -> int:
+                  report_path: Path | None = None, output: str | None = None,
+                  keep_remote: bool = False, parallel: int | None = None) -> int:
     """A long encode across every usable host: video slices, one audio mix, join.
 
     Each slice is its own --start/--end encode (the only split that crosses a
@@ -1360,8 +1393,16 @@ def encode_sliced(scene: str, project_root: Path, *, slices: int, quality: str |
     slices are joined by stream copy and the mix muxed in, on that same host.
     The slices' and the mix's reports are merged into the render.json an
     unsliced encode writes (`report_path`, default the project's render.json).
+
+    The slices live in `.slices/<key>/` (the mirror leaves it out): a failed run keeps
+    the finished ones, and a run with the same scene, shipped files, engines and range reuses
+    them (any changed file, or a reference that cannot be read, reuses nothing); the join
+    removes the directory once the film is written. `output` NAME writes NAME.mp4
+    (with the report the caller names) instead of video.mp4; `keep_remote` leaves the
+    join's job directory on the host.
     """
     report_path = report_path or project_root / "render.json"
+    film = f"{Path(output).stem}.mp4" if output else "video.mp4"
     began = time.monotonic()
 
     def fail(message: str, host: str = "") -> int:
@@ -1391,23 +1432,52 @@ def encode_sliced(scene: str, project_root: Path, *, slices: int, quality: str |
         print(f"  {slices} slice(s) over {', '.join(h.addr for h in usable)}; audio mix on {big.addr}",
               file=sys.stderr)
     rel_scene = str(Path(scene).resolve().relative_to(project_root.resolve()))
+    try:
+        scene_bytes = Path(scene).read_bytes()
+    except OSError:
+        scene_bytes = b""
+    # Keyed like the still cache: the scene, every file it ships or includes, the engines
+    # and the options. A reference that cannot be read leaves the inputs unknown: no reuse.
+    refs = reference_files(scene_bytes.decode("utf-8", "replace"), Path(scene).resolve().parent)
+    engines = "|".join(sorted(f"{h.addr}={engine_info(h.addr)['version']}:{engine_info(h.addr)['sha256']}"
+                              for h in usable))
+    key = still_fingerprint(scene_bytes, {}, rel_scene, start, quality or "", engines,
+                            options=repr((strict, end, slices, parallel)),
+                            extra=refs)[:12] if refs is not None else ""
+    reusable = bool(key)
+    key = key or hashlib.sha1(os.urandom(16)).hexdigest()[:12]
+    rel_dir = f".slices/{key}"
+    slice_dir = project_root / rel_dir
 
     def one(i: int, rng: tuple[float, float]) -> tuple[int, int, str, dict]:
         host = usable[i % len(usable)]
-        out = f"slice-{i:02d}.mp4"
+        out = f"{rel_dir}/slice-{i:02d}.mp4"
+        done = project_root / out
+        kept = done.with_suffix(".json")             # the slice's own report, written once it succeeded
+        if reusable and done.is_file() and done.stat().st_size and kept.is_file():
+            envelope = read_json(kept, warn=False)
+            if isinstance(envelope, dict):
+                if verbose:
+                    print(f"  slice {i}: reusing {out}", file=sys.stderr)
+                return (i, 0, "", envelope)
         cmd = ["scene-render", "encode", rel_scene, "-o", out, "--no-upload", "--json",
                "--start", str(rng[0]), "--end", str(rng[1])]
         if quality:
             cmd += ["--quality", quality]
         if strict:
             cmd.append("--strict")
+        if parallel is not None:
+            cmd += ["--parallel", str(parallel)]
         proc = _run_remote(cmd, project_root, host.addr, verbose=verbose)
         measured = gpu_measurement(getattr(proc, "gpu_peak_mb", None), rng[1] - rng[0],
                                    host.addr, host.gpu_mem_mb, getattr(proc, "gpu_source", ""))
         if measured:
             peaks[i] = measured
-        return (i, proc.returncode, (proc.stderr or proc.stdout).strip()[-200:],
-                _envelope(proc.stdout))
+        envelope = _envelope(proc.stdout)
+        if proc.returncode == 0 and done.is_file():
+            write_json(kept, envelope)
+        lines = [ln for ln in (proc.stderr or proc.stdout or "").strip().splitlines() if ln.strip()]
+        return (i, proc.returncode, lines[-1].strip() if lines else "no output", envelope)
 
     with ThreadPoolExecutor(max_workers=len(usable)) as pool:
         results = list(pool.map(lambda ir: one(*ir), enumerate(ranges)))
@@ -1418,41 +1488,64 @@ def encode_sliced(scene: str, project_root: Path, *, slices: int, quality: str |
         return fail("; ".join(f"slice {i} failed ({code}): {tail}" for i, code, tail, _ in failed),
                     big.addr)
 
-    # The mix runs in a directory that is kept until the join: every slice is
-    # in that project copy, pushed again by the audio run's sync after the
-    # pull-backs above, and the join happens there.
+    # The mix runs in a directory that is kept until the join; the slices, which
+    # the mirror leaves out, are sent there once, and the join happens there.
     remote = remote_dir(project_root.name, "audio", job_tag())
     mix = _run_remote(["scene-render", "encode", rel_scene, "-o", "mix.wav", "--no-upload", "--json",
                        "--start", str(start), "--end", str(end)], project_root, big.addr,
                       verbose=verbose, remote=remote, keep_remote=True)
     try:
+        if mix.returncode == 0:
+            refuse_remote()
+            sent = subprocess.run(sync_up_args(slice_dir, big.addr, f"{remote}/slices", delete=False,
+                                               excludes=("*.json",)),
+                                  capture_output=True, text=True)
+            if sent.returncode != 0:
+                print(f"  could not send the slices to {big.addr}: {sent.stderr.strip()[-300:]}",
+                      file=sys.stderr)
+                return fail(f"could not send the slices to {big.addr}: {sent.stderr.strip()[-300:]}",
+                            big.addr)
         if mix.returncode != 0:
             print(f"  audio mix failed: {(mix.stderr or mix.stdout).strip()[-200:]}", file=sys.stderr)
             return fail(f"audio mix failed: {(mix.stderr or mix.stdout).strip()[-200:]}", big.addr)
         join = (f"cd {shlex.quote(remote)} && "
-                "printf 'file slice-%02d.mp4\n' " + " ".join(str(i) for i in range(slices)) + " > slices.txt && "
+                "printf 'file slices/slice-%02d.mp4\n' " + " ".join(str(i) for i in range(slices)) + " > slices.txt && "
                 "ffmpeg -y -loglevel error -f concat -safe 0 -i slices.txt -c copy joined.mp4 && "
                 "ffmpeg -y -loglevel error -i joined.mp4 -i mix.wav -map 0:v -map 1:a -c:v copy "
-                "-c:a aac -b:a 192k -shortest video.mp4 && rm -f joined.mp4 && ls -la video.mp4")
+                f"-c:a aac -b:a 192k -shortest {shlex.quote(film)} && rm -f joined.mp4 && "
+                f"ls -la {shlex.quote(film)}")
         refuse_remote()
         proc = subprocess.run(ssh_argv(big.addr, join), capture_output=True, text=True)
         if proc.returncode != 0:
             print(f"  join failed on {big.addr}: {proc.stderr.strip()[-300:]}", file=sys.stderr)
             return fail(f"join failed on {big.addr}: {proc.stderr.strip()[-300:]}", big.addr)
-        pull = ["rsync", "-az", "-e", SSH_COMMAND, f"{big.addr}:{remote}/video.mp4", f"{project_root}/video.mp4"]
+        pull = ["rsync", "-az", "-e", SSH_COMMAND, f"{big.addr}:{remote}/{film}", f"{project_root}/{film}"]
         refuse_remote()
-        subprocess.run(pull, capture_output=True, text=True)
+        pulled = subprocess.run(pull, capture_output=True, text=True)
+        if pulled.returncode != 0 or not (project_root / film).is_file():
+            why = f"could not pull {film} from {big.addr}: {(pulled.stderr or '').strip()[-300:]}"
+            print(f"  {why}", file=sys.stderr)
+            return fail(why, big.addr)             # the slices stay: the next run joins again
     finally:
-        remove_remote(big.addr, remote, verbose=verbose)
+        if keep_remote:
+            if verbose:
+                print(f"  kept {big.addr}:{remote}", file=sys.stderr)
+        else:
+            remove_remote(big.addr, remote, verbose=verbose)
+    shutil.rmtree(slice_dir, ignore_errors=True)
+    try:
+        slice_dir.parent.rmdir()
+    except OSError:
+        pass
     report = merge_slice_reports([r[3] for r in results], _envelope(mix.stdout),
-                                 str(project_root.resolve() / "video.mp4"), start, end)
+                                 str(project_root.resolve() / film), start, end)
     report = job_report("encode", "rendered", envelope=report, command="encode",
                         seconds=time.monotonic() - began, engine=engine_info(big.addr),
                         gpu_memory=max(peaks.values(), default=None,
                                        key=lambda m: m["peak_mb"] / m["programme_seconds"]))
     write_job_report(report_path, report)
     print(f"wrote {report_path}", file=sys.stderr)
-    print(f"wrote {project_root / 'video.mp4'}  (joined from {slices} slices; "
+    print(f"wrote {project_root / film}  (joined from {slices} slices; "
           f"audio mixed once on {big.addr})", file=sys.stderr)
     return 0
 
@@ -1760,8 +1853,9 @@ def run(args) -> int:
             return 1
         return encode_sliced(scene, project.root, slices=slices, quality=args.quality,
                              start=args.start or 0.0, end=end, strict=args.strict,
-                             verbose=not args.quiet,
-                             report_path=report_path_for(Path(project.out("render")), job, None))
+                             verbose=not args.quiet, report_path=report_path,
+                             output=args.output, keep_remote=args.keep_remote,
+                             parallel=args.parallel)
 
     began = time.monotonic()
     try:

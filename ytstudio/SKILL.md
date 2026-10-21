@@ -210,7 +210,7 @@ to the host with the most RAM (192.168.199.7, 125 GB, RTX 3050), stills,
 frame ranges and validation to the one with the least (192.168.199.13,
 15 GB, RTX 3070 Ti, the faster GPU). `--host` pins one, `--local` is for a
 machine that has the engine, `--slices N` splits a long encode across both
-hosts with the mix rendered once (more slices, and slices even without `--slices`, when the GPU memory rate an encode measured into its report's `gpu_memory` needs them; a still's peak is not a rate and is ignored; with no encode measured, the count stays and the output says so); give every `<layer>` of a long world a start/end or the vfx gate warns, since unbounded layers stay loaded.
+hosts with the mix rendered once (more slices, and slices even without `--slices`, when the GPU memory rate an encode measured into its report's `gpu_memory` needs them; a still's peak is not a rate and is ignored; with no encode measured, the count stays and the output says so); give every `<layer>` of a long world a start/end or the vfx gate warns, since unbounded layers stay loaded. A pull-back never overwrites a newer local file and a still brings back only its own output; slices live in `.slices/<key>/` (not mirrored, reused after a failed run, removed after the join) and `--slices` honours `--output` and `--keep-remote`.
 
 - **Iterate at draft, deliver at final.** `--quality draft` for every look
   and `--still T` or `--frames A..B` for one frame or a range. The delivery

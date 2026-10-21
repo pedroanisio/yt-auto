@@ -72,6 +72,7 @@ docs/compute.md's rule -- memory, not GPU: a full encode and the audio mix go
 to the host with the most RAM, stills and frames to the one with the least,
 which is the faster GPU. `--slices N` splits a long encode across every host
 (one `--start/--end` range each, the audio mixed once, joined by stream copy; a job on a GPU host samples the engine's own processes every 0.2 s (`nvidia-smi pmon`, graphics included; accounting mode, then a memory.used delta, as fallbacks) into the report's `gpu_memory`; a still records a peak only, an encode a peak over the range it rendered, and only an encode's rate counts: the count rises, and an unsliced encode slices on its own, until a slice fits the smallest host's GPU memory; with no encode measured, the count stays and the output says so (a still's peak is named and ignored). The vfx gate warns of layers with no start/end).
+A job pulls back only the files its own `-o` and `--report` name, with `--update` so an older remote copy never replaces a newer local file; sliced encodes keep their slices in `.slices/<key>/` (never mirrored, reused after a failed run, removed once the film is joined), and honour `--output` (NAME.mp4, render-NAME.json) and `--keep-remote`.
 Each host keeps one mirror of the project, refreshed incrementally; every
 job runs in a directory of its own hardlinked from it, the video, stills and
 report come back, and the job directory is removed. `yt gate` runs the same
