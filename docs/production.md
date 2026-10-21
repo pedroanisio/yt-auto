@@ -97,7 +97,7 @@ All paths are relative to the project directory, `work/<slug>/`.
 
 | File | What production takes from it |
 |---|---|
-| `script.json` | The spine. Per shot: `visual`, `on_screen` (the super), `narration`, `style`, `source`, `seconds`, `label`, `section`. |
+| `script.json` | The spine. Per shot: `visual`, `on_screen_text` (the words a viewer reads, one string each), `on_screen` (the animator's direction for them, not measured), `narration`, `style`, `source`, `seconds`, `label`, `section`. |
 | `styles.json` | The design system: the primary treatment's `palette` and its semantic roles, `typography`, `motion`, planned `shots`, `combination`, and what was ruled out. |
 | `vfx.json` | The build plan. Per effect: `type`, `technique` (the drawing steps), `tools`, `seconds`, `difficulty`, `template` for shared rigs. Under `authoring`: the active `version` (`vfx/vNN/`), every version kept, the review rounds and scores per section, and the shot -> {file, symbol} map the build reads -- one world symbol per section, its shots as phases. Under `reach`: which constructs each symbol uses against everything the engine offers (`usage`, `report` by family, the manifest's caveats) and the model's audit -- per effect `strongest` or `upgrade` with the stronger construct named, and a 0-10 reach score. QA reads it, so "weak motion" can name the construct left unused. |
 | `props.json` | The CC0 props `yt props` fetched from Poly Haven under `props/<kind>/<id>/`: per item `kind`, `file`, `files`, `licence`, `credit`, `source_url`. The vfx brief lists them so the author places real models, HDRIs and textures. |
@@ -138,16 +138,33 @@ One scene-render document, `scene.xml`, built with the `sr_core.scene` SDK:
   the narration; a `silence` cue as a window on the music and effects buses'
   volume (the voice and the room carry on); and a
   `<master>` with `normalize`, `loudness`, `truePeak`, `limiter`
-- `<captions>` — cues split on real word boundaries, at most two lines
+- `<colorManagement>` — the film's one colour pipeline, as the colourist
+  decided it: `acescg` working space, a tone mapping operator, an exposure
+  and, when the treatment calls for a grade, one ASC CDL look (slope, offset,
+  power, saturation, mix) listed in the pipeline's `looks`. A section's own
+  pipeline is never merged. Omitted when no look was chosen or the render
+  check dropped it
+- `<captions>` — cues split on real word boundaries, at most two lines; a
+  sidecar track (`mode="sidecar"`) unless the build is run with
+  `--burn-captions`
 - `<output>` — explicit `bitrate`, `maxBitrate`, `bufferSize`, `preset`; never `crf`
 
-Plus `build.json`: what was drawn, what remains placeholder, the audio placed
-(`audio_tracks`, `buses`, `silence_windows`), the cues it could not place
+Plus `build.json`, whose keys are: `idea`; `scene` (size, frame rate,
+duration, background, codec, language, the output and loudness settings);
+`look` (the colour look applied, or null), `look_check` (the verdict on the
+rendered still: `applied`, `revised`, `dropped`, `not checked` or `none
+chosen`) and `look_declined` (the look the model chose when it was not
+applied); `timeline`; `layers` (what was drawn, what remains placeholder);
+`placeholders`; `publishable`; `timing`; `editorial`; `design`; `hoisted`
+and `includes`; `fonts`; the audio placed (`audio_tracks`,
+`narration_tracks`, `buses`, `silence_windows`), the cues it could not place
 (`audio_missing`), the transient staging (`audio_staging`: the bed level,
 the headroom derived from the loudness and true-peak targets, the shift and
-the cues shifted), the findings, and the digests of the inputs used.
-`publishable` is false while a placeholder, a blocking editorial note or a
-sound design of which nothing reached the mix remains.
+the cues shifted); `cues` and `markers`; the reading checks `legibility` and
+`stale_takes`; the `findings`; the `shots` as placed; and the `engine` report
+of the decisions taken. `publishable` is false while a placeholder, a
+blocking editorial note, a picture that ends before its narration or a sound
+design of which nothing reached the mix remains.
 
 ### The frame, in bands
 
@@ -159,8 +176,9 @@ At 1920×1080, scaling proportionally elsewhere:
 820 – 1080   caption safe area; nothing else may enter it
 ```
 
-Burned-in captions live in the bottom band. Every collision found so far came
-from ignoring it.
+The captions are a sidecar track the viewer turns on, unless the build is run
+with `--burn-captions`; the band stays reserved either way, because burned
+captions collided with every authored label that ignored it.
 
 ---
 
@@ -178,8 +196,8 @@ jitter when animated. The emphasis weight is used only for emphasis.
 the camera moves only when the shot is about movement, and then with purpose.
 Easing on every transition. A beat that starts before its narration is wrong.
 
-**Information.** Every `on_screen` super is rendered, up long enough to read at
-17 characters per second. A figure appears when the voice says it, not before.
+**Information.** Every string in a shot's `on_screen_text` is rendered, up long enough to
+read at 17 characters per second. A figure appears when the voice says it, not before.
 
 **Audio.** Narration at measured positions; music and effects from
 `sound.json`, gain staged across bus and track; silence is a cue with a
