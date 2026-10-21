@@ -115,12 +115,12 @@ itself, and `--project DIR` names a directory directly.
 | `yt research` | the idea | `dossier.json`, `README.md`, `claims.csv`, `assets.csv`, `raw/`; with `--download`, `downloads/` | yes |
 | `yt styles` | dossier | `styles.json`, `styles.md` | yes |
 | `yt script` | dossier, styles | `script.json`, `script.md`, `narration.txt`, `shotlist.csv` | yes |
-| `yt props` | script, styles (or phrases given) | `props/<kind>/<id>/`, `props.json` | no (Poly Haven, all CC0) |
+| `yt props` | script, styles (or phrases given) | `props/<kind>/<id>/`, `props.json` | yes (two decisions: `phrases`, the search phrases picked from the catalogue's vocabulary, and `keep`, the candidates worth building with, each with its `fit` note; the files are Poly Haven, all CC0) |
 | `yt voice` | script | `voice/`, `voice.json`, `narration.vtt`, `.srt` | yes (casting, retakes) |
 | `yt retime` | script, voice | `retime.json`, the screenplay's measured lengths (`script.json.bak` kept) | yes (accept, rerecord, rewrite, keep) |
 | `yt keyframe` | script, voice, styles, props (what `yt vfx` reads) | the vfx plan, the lead section in `vfx/vNN/`, `keyframe/keyframe.png`, `keyframe/frames.png`, `keyframe.json`, `keyframe.md` | yes (the vfx plan; one author agent, one attempt, no vision review; `--sheet`: the older composed frame) |
 | `yt vfx` | script, voice, styles, props | `vfx/vNN/<section>.scene.xml`, `vfx/vNN/frames/`, `vfx.json`, `vfx.md`, `vfx.csv` | yes (one author agent per section, a frame review per round) |
-| `yt sound` | script | `sound.json`, `sound.md`, `cues.csv`; with `--fetch`, `sound/` and `sound/index.json` | yes (spotting; the fetch judges each candidate that passes the level checks against its cue, from its evidence and a spectrogram, and records the verdict in the cue's `judgement`) |
+| `yt sound` | script | `sound.json`, `sound.md`, `cues.csv`; with `--fetch`, `sound/` and `sound/index.json` | yes (spotting; `yt sound --review` listens back and fixes its own important and blocking findings, one revision of the cue's design fields each, two rounds at most, and `yt sound --review --report-only` only reports them; the fetch judges each candidate that passes the level checks against its cue, from its evidence and a spectrogram, and records the verdict in the cue's `judgement`) |
 | `yt build` | all of the above | `scene.xml`, `build.json`, `vfx/vNN/<section>.include.scene.xml` | yes (coverage, captions, tail, blocking) |
 | `yt render` | `scene.xml` | `video.mp4`, `render.json` (a still, a validation, an audio pass or a pilot writes `render-<job>.json`) | no |
 
@@ -149,7 +149,8 @@ and skips a stage whose output exists unless it is named in
 `--quick` drops the deliberation, polish, fact-check and listen-back passes
 and renders at draft). It always passes `--fetch` to `yt sound`;
 `cli.run_extras` lists what each stage gets and `cli.stage_argv` builds the
-argv (`yt props` takes only `--project` and `--quiet`).
+argv (`yt render` is the only stage handed no model flags, `cli.NO_MODEL`;
+`yt props` asks a model and takes them like the rest).
 
 **The look-lock.** `yt keyframe` takes the look from the film itself, so
 nothing made for it is thrown away. It builds `yt vfx`'s own planner
@@ -166,7 +167,9 @@ showing the most becomes `keyframe/keyframe.png` and every proof frame goes
 on `keyframe/frames.png`. The operator runs `yt keyframe --approve` (tied to
 the section document's digest), or `--reject "notes"`, which puts the notes
 at the top of the lead section's brief next time; `--fresh` plans and
-authors it again. Once approved, `yt vfx` carries that section forward
+authors it again. `--approve` refuses a record whose digests no longer match
+the files (the document or program changed after the record was written, a
+stopped run): run `yt keyframe` again before approving. Once approved, `yt vfx` carries that section forward
 (`vfx.look_section`, `carried_from`, $0) and every other author's brief and
 review name its program as the look to copy -- palette and type constants,
 the helpers that build labels, formulas and recurring objects, the camera
@@ -210,6 +213,13 @@ other catalogues, another licence policy or an older searcher
 `--download` writes `downloads/` and gives each asset in `dossier.json` its
 `file` (an STL becomes OBJ, the original kept as `source_file`); that `file`
 is what the vfx and keyframe briefs offer the authors.
+
+**Research scales to the film's length.** `yt research` reads the idea's
+stated runtime ("60 seconds", "8-12 min"). A film under ten minutes shrinks the
+question depth, the shot count and the claim ceiling linearly (a 60 s film:
+2 questions, 6 shots, about 40 claims); ten minutes or more, or no stated
+length, plans as before. `--depth` or `--shots` given on the command line
+always wins.
 
 **The fact-check binds the picture.** `yt script --verify` writes its flags into script.json (`check`). Its blocker and important flags reach the people who draw the film, verbatim (`vfx.picture_constraints`): the vfx planner, each section's brief and reviewer (the whole-film flags plus that section's shots), and the keyframe brief. A claim the narration avoids can still be shown wrong by a picture.
 
@@ -267,6 +277,29 @@ hosts with the mix rendered once (more slices, and slices even without `--slices
   replaced by a pilot's. A report that came back from a host has its paths
   rewritten to the project here. `render.run_job(...)` is how another stage
   runs one engine command the same way.
+- **Stills are cached by fingerprint.** A still whose scene bytes, every
+  file it references, time, quality, options and engine identity match an
+  earlier one is served from `.cache/stills/` of the project (or
+  `$YT_STILL_CACHE`) with no host, ssh or rsync, and the note says `served
+  from cache`. A still with an unreadable reference, or an engine of unknown
+  identity, is never cached. Delete the directory to force a render.
+- **Every job leaves a status.** A render job's report (`render.json`,
+  `render-<job>.json`, a kit still's under `.cache/reports/`) carries
+  `status`: `rendered`, `failed`, `timeout` or `blocked-inputs` (the files
+  it lacked are listed), and `outcome_unknown` when a detached job never
+  reported. `yt doctor`'s `render-jobs` area lists every one that did not
+  render, with the fix: lower the cost drivers or render in windows, produce
+  the missing files and `yt build`, or read the report and run again.
+- **A dropped ssh does not kill the job.** A job runs detached on the host
+  (`nohup setsid`), records its pid, output and exit status, and survives a
+  dropped ssh. Only the exit marker it writes is authoritative: with none,
+  `yt render` attaches again (bounded), a job whose pid is gone is reported
+  lost, and when the polls run out the job directory stays and the output
+  says where. Never pull back or remove under a live job. A host's ssh is
+  checked again before routing and a refusing host is skipped for the next;
+  `yt doctor` warns `accepts TCP on the ssh port but not SSH` for a host
+  that answers the port and not the login: restart sshd there or take it
+  out of `RS_RENDER_HOSTS`.
 - **Mix once.** `--audio-only` builds the whole mix and tells you whether
   the audio graph fits in memory. A `--start/--end` range does not make it
   cheaper; the mix is assembled entire either way.
@@ -372,8 +405,11 @@ a pass older than `video.mp4` or `scene.xml` is scored again first), with
   appears; otherwise the snapshot is restored (for vfx that means
   `vfx.json`'s active version; the new `vfx/vNN/` stays on disk).
 - **Stops** at READY TO PUBLISH (or `--target` with nothing blocking), at
-  `--max-passes` (3), when the next pass's estimate (the last pass's cost,
-  or $10 for a vfx pass) exceeds what is left of `--budget-usd` (15), when a
+  `--max-passes` (3), when the next pass's estimate exceeds what is left of
+  `--budget-usd` (15) -- `improve.stage_estimates` prices each stage of the
+  pass from its own report (`measured`), else from a like project (`like`),
+  else an assumed default (`assumed`), and only a pass with nothing measured
+  falls back to the last pass's cost; `--dry-run` prints the table -- when a
   defect survives three briefed passes (a mechanical one by kind, shot and
   objects; a prose one by a cached model decision), or when only human
   decisions remain.
@@ -413,12 +449,18 @@ hand-authored world showed the cost.
 
 - **The kit** (`ytstudio/sdkkit.py`). `install(dir)` gives an author's
   workspace `srkit.py` (`S`, `FRAME`, `save`), `kit.py` (`describe`, `enum`,
-  `build`, `check`, `frame`) and `kit/`. That directory holds sr-core's own
+  `build`, `check`, `precheck`, `frame`) and `kit/`. That directory holds sr-core's own
   `SDK-GUIDE.md`; an `ENGINE.md` with the engine's capability manifest,
   every attribute the schema documents as renderer-dependent (the path
   tracer drops clearcoat, sheen, anisotropy, iridescence and dispersion) and
-  the last probe run's scores; and `examples/`, programs that built,
+  the last probe run's scores; `kit/engine_facts.json`, those facts stamped
+  with the engine version they were verified on (flagged when it changes);
+  and `examples/`, programs that built,
   validated and rendered on the engine. Their values are placeholders.
+  `kit.py precheck <doc or frame.png>` runs the mechanical part of the
+  reviewers' checklist (`framecheck.CHECKLIST`) before a frame is paid for,
+  and `kit.py frame` stops a still at 420 s (`sdkkit.STILL_BUDGET`) rather
+  than wait on a render that will not finish; `kit.py` prints the time left.
   `AUTHOR_SYSTEM`, `AUTHOR_TOOLS` and `BRIEF` are what a stage hands such an
   author.
 - **The build.** `python3 kit.py build <program.py>` runs the program twice
@@ -517,6 +559,7 @@ hand-authored world showed the cost.
 
 | Trap | What happens | What to do |
 |---|---|---|
+| The machine suspends mid-stage | a stage waiting on a model or a render host looks idle, so the desktop sleeps and the wait is lost | every stage but `yt ls`, `yt assets` and `yt props` (`cli.LOCAL_ONLY`) holds a `systemd-inhibit` sleep and idle lock for its life; with the tool absent it warns `systemd-inhibit not found` and nothing keeps the machine awake: install it or stop the suspend by hand |
 | `light/@castShadow` defaults to false | every object floats: no contact, no grounding, whatever its y | set it on the light that should ground the scene; the kit's build warns (`rule:shadow`) |
 | A dome lights but is not seen | `environmentVisible` defaults to false: the sky or HDRI lights and reflects, and the background stays black | set `environmentVisible` when the environment is the backdrop |
 | A glTF at the wrong size | the engine imports y-up metre models at 100 scene units per metre with a half turn about x, before the object's scale; scaling by the raw bounds makes it 100 times too big | `kit/examples/model_and_environment.py` reads the bounds, applies the node transforms and grounds the model |
