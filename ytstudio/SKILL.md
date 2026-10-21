@@ -429,6 +429,14 @@ hand-authored world showed the cost.
     `vfx/vNN/` and carries the others forward from the active version
     (`carried_from`, $0). Continuity, reach and plan are then redone.
     `--sections` refuses `--fresh`.
+  - `yt vfx --recover` rebuilds the record of a run that ended before it saved
+    one (the stage writes 12-author only when every section is done, so a
+    kill, a timeout or a crash loses all of it): each section goes back on its
+    best reviewed round from `vfx/vNN/rounds/` and the cached reviews, a
+    section never reviewed is recorded with an error for `--sections N`, and
+    the film-wide stages run. Nothing is authored. Measured on the Euler film:
+    a 6 h run killed by a wrapping `timeout` came back for the price of the
+    continuity pass. Never wrap `yt vfx` in a timeout shorter than its clock.
   - `vfx.json` and `keyframe.json` record each document's `program` and
     `provenance`.
 - **`yt probe`.** `--list` shows the classes, `--only` picks some,

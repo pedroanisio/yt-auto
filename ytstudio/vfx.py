@@ -2147,7 +2147,7 @@ class VfxPlanner:
                  author_bar: float = 7.0, fresh: bool = False,
                  verbose: bool = True, sections_only: set[int] | None = None,
                  lead: int | None = None, look_notes: list[str] | None = None,
-                 relook: bool = False) -> None:
+                 relook: bool = False, recover: bool = False) -> None:
         self.idea: Idea = bundle["idea"]
         self.bundle = bundle
         self.dossier = dossier
@@ -2194,6 +2194,12 @@ class VfxPlanner:
         self.relook = bool(relook)
         if self.relook:
             self._stale |= {"12-author", "12-continuity", "14-reach", "15-plan"}
+        #: `--recover`: a run that ended before it saved its record (killed,
+        #: timed out, crashed) left its rounds on disk; rebuild the record from
+        #: them and the cached reviews instead of authoring anything.
+        self.recover = bool(recover)
+        if self.recover:
+            self._stale |= {"12-author", "12-continuity", "13-scene", "14-reach", "15-plan"}
         #: The approved look the sections of this run are authored against
         #: (its approval digest, "" for none) and the section it came from.
         self._look_digest = ""
@@ -3101,12 +3107,77 @@ class VfxPlanner:
                 "version": (record or {}).get("version") or self.ws.version,
                 "usage": asdict(self.usage)}
 
+    def recovered(self, outline: dict, effects: list[dict]) -> list[dict]:
+        """The authoring record of the last version, rebuilt from what its run
+        left on disk: each section's kept rounds (vfx/vNN/rounds/<stem>/rNN)
+        and the reviews the harness cached for them. A section goes back on its
+        best reviewed round; one with no reviewed round goes back on its last
+        and is recorded with an error, so the scene leaves it out and
+        `--sections N` authors it again. No model is asked and nothing renders."""
+        have = Workspace.versions(self.ws.base)
+        if not have:
+            raise ValueError("--recover needs an authored version under vfx/; there is none")
+        self.ws = Workspace(self.ws.root, version=have[-1])
+        by_heading = {s["section"]: s for s in effects}
+        out: list[dict] = []
+        for n, section in enumerate(outline.get("sections", []), 1):
+            group = by_heading.get(section.get("heading", ""), {})
+            if not group.get("effects"):
+                continue
+            name = self.ws.doc_name(n, section)
+            stem = name[:-len(".scene.xml")]
+            kept = self.ws.dir / self.ws.ROUNDS_DIR / stem
+            numbers = sorted(int(d.name[1:]) for d in kept.glob("r[0-9][0-9]")
+                             if (d / name).is_file()) if kept.is_dir() else []
+            rounds = []
+            for r in numbers:
+                saved = read_json(self.ws.root / harness.DECISIONS_DIR / "vfx"
+                                  / f"review-{self.ws.version}-{n:02d}-r{r}.json", warn=False) or {}
+                review = saved.get("result") if isinstance(saved.get("result"), dict) else None
+                score = review.get("score") if review else None
+                rounds.append({"round": r, "symbols": [], "errors": 0 if review else 1,
+                               "score": float(score) if score is not None else None,
+                               "fidelity": (review or {}).get("fidelity"), "review": review,
+                               "timed_out": False, "findings": [],
+                               "cost_usd": float(saved.get("cost_usd") or 0.0)})
+            best = max((r for r in rounds if r["score"] is not None),
+                       key=lambda r: (r["score"], r["round"]), default=None)
+            chosen = best or (rounds[-1] if rounds else None)
+            if chosen is not None:
+                self.ws.restore_round(name, chosen["round"])
+            final = self.ws.dir / name
+            findings = [] if best else [
+                f"error: recovered: no round of section {n} was reviewed before the run "
+                f"ended; author it again (`yt vfx --sections {n}`)"]
+            text = final.read_text(encoding="utf-8", errors="replace") if final.is_file() else ""
+            worlds = self._worlds(section, group)
+            program = self.ws.program_name(name)
+            self._say(f"    [{n}] {name}: " + (f"round {best['round']} ({best['score']:g}/10)"
+                                               if best else "no reviewed round"))
+            out.append({"n": n, "section": section.get("heading", ""),
+                        "file": f"{self.ws.rel}/{name}", "version": self.ws.version,
+                        "program": f"{self.ws.rel}/{program}" if (self.ws.dir / program).is_file() else "",
+                        "provenance": sdkkit.provenance_of(final) if final.is_file() else None,
+                        "symbols": [f["id"] for f in symbol_facts(text)], "findings": findings,
+                        "tool_calls": 0, "props_declined": props_declined(text),
+                        "worlds": [{"id": w["id"], "start": w["start"], "seconds": w["seconds"],
+                                    "shots": [s["label"] for s in w["shots"]],
+                                    "phases": [e["id"] for e in w["phases"]]} for w in worlds],
+                        "revisions": max(numbers) if numbers else 0, "rounds": rounds,
+                        "best_round": chosen["round"] if chosen else None,
+                        "score": best["score"] if best else None,
+                        "review": best["review"] if best else None,
+                        "cost_usd": round(sum(r["cost_usd"] for r in rounds), 4),
+                        "recovered": True, **self._provenance(n, findings)})
+        return out
+
     def run(self) -> dict:
         outline = self.outline()
         style = self.style()
         tokens = tokens_from(style)
         effects = self.effects(outline, style)
-        authored = self.author(outline, effects, style, tokens)
+        authored = (self._stage("12-author", lambda: self.recovered(outline, effects))
+                    if self.recover else self.author(outline, effects, style, tokens))
         continuity = self.continuity(authored)
         scene = self.scene_map(effects, authored)
         self.dossier.save("13-scene", scene)
@@ -3385,6 +3456,11 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
     p.add_argument("--fresh", action="store_true",
                    help="redo every stage, authoring included, into the next vfx/vNN/ "
                         "instead of reusing cached ones")
+    p.add_argument("--recover", action="store_true",
+                   help="rebuild the record of a run that ended before saving it (killed, timed "
+                        "out, crashed) from vfx/vNN/rounds and the cached reviews, then finish "
+                        "the film-wide stages; nothing is authored, a section with no reviewed "
+                        "round is marked for `--sections`")
     p.add_argument("--relook", action="store_true",
                    help="put the approved look into the film: carry the section `yt keyframe` "
                         "authored and author every other section again against it, on the "
@@ -3402,7 +3478,7 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
 
 def planner_from_args(args, idea: Idea, project, *, sections_only: set[int] | None = None,
                       lead: int | None = None, look_notes: list[str] | None = None,
-                      relook: bool = False) -> VfxPlanner:
+                      relook: bool = False, recover: bool = False) -> VfxPlanner:
     """The planner `yt vfx` runs, built from the project's files and the flags;
     `yt keyframe` builds the same one for its look pass (`lead`), so the plan it
     makes is the plan `yt vfx` reuses. A flag a command does not define takes
@@ -3445,7 +3521,7 @@ def planner_from_args(args, idea: Idea, project, *, sections_only: set[int] | No
         frame=(flag("width", FRAME[0]), flag("height", FRAME[1])), direction=direction,
         revisions=flag("revisions", 2), author_bar=flag("author_bar", 7.0),
         fresh=bool(flag("fresh", False)), sections_only=sections_only, lead=lead,
-        look_notes=look_notes, relook=relook, verbose=verbose)
+        look_notes=look_notes, relook=relook, recover=recover, verbose=verbose)
 
 
 def run(args) -> int:
@@ -3464,12 +3540,17 @@ def run(args) -> int:
             return 2
 
     relook = bool(getattr(args, "relook", False))
+    recover = bool(getattr(args, "recover", False))
+    if recover and (args.fresh or sections_only or relook):
+        print("error: --recover rebuilds the last run's record as it stands; it takes neither "
+              "--fresh, --sections nor --relook", file=sys.stderr)
+        return 2
     if relook and (args.fresh or sections_only):
         print("error: --relook carries the approved section and authors all the others on the "
               "cached plan; it takes neither --fresh nor --sections", file=sys.stderr)
         return 2
     planner = planner_from_args(args, idea, project, sections_only=sections_only,
-                                relook=relook)
+                                relook=relook, recover=recover)
     dossier = planner.dossier
     try:
         from . import keyframe
