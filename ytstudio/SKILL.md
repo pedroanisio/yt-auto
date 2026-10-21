@@ -260,7 +260,10 @@ hosts with the mix rendered once (more slices, and slices even without `--slices
   Whether this pipeline has priority there is the owner's call.
 - **Disk on .7 is the binding constraint.** It had about 14 GB free when
   measured, and a 13-minute master is 1.7 GB. Check `df` before a long
-  encode, clean intermediates, and do not leave masters there. The mirrors
+  encode, clean intermediates, and do not leave masters there; `yt doctor`
+  probes each host's free space where the mirrors live and warns under
+  `doctor.LOW_DISK_GB`, and warns when the encode host has no ffprobe (the
+  gate runs there). The mirrors
   under `/tmp/yt-render/<slug>/mirror/` persist by design; `yt render
   --title X --prune-remote` is how a finished project's copy comes off.
 - **ffmpeg is not on this workstation,** and neither is ffprobe, so `yt

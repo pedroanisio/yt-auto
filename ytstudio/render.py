@@ -356,6 +356,7 @@ class Host:
     gpu: str = ""
     gpu_mem_mb: int = 0     # the GPU's total memory (nvidia-smi), 0 when it has none or did not say
     ffprobe: str = ""       # ffprobe there, which the delivery gate needs
+    disk_free_gb: int = 0   # free GB on the filesystem that holds REMOTE_ROOT; 0 when it did not say
     sha256: str = ""        # the binary's hash there, "" when it could not be read
     error: str = ""
 
@@ -387,6 +388,12 @@ def parse_mb(text: str) -> int:
     return int(match.group(1)) if match else 0
 
 
+def parse_gb(text: str) -> int:
+    """A whole number of GB out of `df -BG` text such as `14G`; 0 when it is not one."""
+    match = re.match(r"\s*(\d+)G?\s*$", text or "")
+    return int(match.group(1)) if match else 0
+
+
 def probe(addr: str, *, timeout: float = 12.0) -> Host:
     """One ssh round trip: engine, RAM, cores, GPU. Cached for the process;
     `ssh_alive` is what notices a host that went away afterwards."""
@@ -400,7 +407,11 @@ def probe(addr: str, *, timeout: float = 12.0) -> Host:
               "echo \"GPU=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)\"; "
               "echo \"GPUMEM=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null"
               " | sort -n | head -1)\"; "
-              "echo \"FFPROBE=$(command -v ffprobe 2>/dev/null)\"")
+              "echo \"FFPROBE=$(command -v ffprobe 2>/dev/null)\"; "
+              # the mirrors and every job live under REMOTE_ROOT, so its parent's
+              # filesystem is the one an encode fills (docs/compute.md: disk on .7)
+              f"echo \"DISK=$(df -P -BG {shlex.quote(str(Path(REMOTE_ROOT).parent))} 2>/dev/null"
+              " | awk 'NR==2{print $4}')\"")
     host = Host(addr=addr)
     refuse_remote()
     try:
@@ -431,6 +442,8 @@ def probe(addr: str, *, timeout: float = 12.0) -> Host:
             host.gpu_mem_mb = parse_mb(value)
         elif key == "FFPROBE":
             host.ffprobe = value
+        elif key == "DISK":
+            host.disk_free_gb = parse_gb(value)
     _HOSTS[addr] = host
     return host
 

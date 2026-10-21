@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -36,6 +37,19 @@ MARK = {"fail": "x", "warn": "!", "note": "·", "ok": "+"}
 
 #: Narration engines that prove the timeline but must not be published.
 SCRATCH_ENGINES = ("stub", "espeak")
+
+#: Below this many GB free where a host keeps its mirrors and jobs, an encode
+#: is at risk: a 13-minute master is 1.7 GB, the mirror persists by design, and
+#: the slices of one encode sit beside it (SKILL.md "Rendering").
+LOW_DISK_GB = 10
+
+#: (module, distribution, what it unlocks): the third-party packages the stages
+#: import at runtime, found by a missing-import traceback otherwise.
+RUNTIME_PACKAGES = (
+    ("PIL", "Pillow", "the frame gate, yt qa's mechanical pass and the contact sheets"),
+    ("numpy", "numpy", "yt sound --synth and the kokoro voice"),
+    ("scipy", "scipy", "yt sound --synth"),
+)
 
 #: Captions over this many characters per second fail the delivery gate.
 CPS_LIMIT = 17.0
@@ -155,6 +169,15 @@ def check_environment(work: Path) -> Report:
     except Exception as exc:
         report.add("warn", "voice", f"could not probe engines: {exc}")
 
+    missing = [(module, dist, unlocks) for module, dist, unlocks in RUNTIME_PACKAGES
+               if importlib.util.find_spec(module) is None]
+    for module, dist, unlocks in missing:
+        report.add("warn", "packages", f"{module} is not importable here; it serves {unlocks}",
+                   f"pip install {dist}")
+    if not missing:
+        report.add("ok", "packages", ", ".join(m for m, _, _ in RUNTIME_PACKAGES)
+                   + " importable (the frame checks, the synthesis and the offline voice can run)")
+
     ffmpeg = shutil.which("ffmpeg")
     report.add("ok" if ffmpeg else "note", "ffmpeg",
                f"ffmpeg at {ffmpeg}" if ffmpeg
@@ -211,8 +234,22 @@ def check_hosts(report: Report, hosts: list) -> None:
                 roles.append("encode, audio")
             if h is small:
                 roles.append("stills, frames, validate")
+            disk = f", {h.disk_free_gb} GB free" if h.disk_free_gb else ""
             report.add("ok", "engine", f"{h.version} on {h.addr} ({h.ram_gb} GB, "
-                       f"{h.cores} cores, {h.gpu or 'no gpu'}) -> {'; '.join(roles) or 'slices'}")
+                       f"{h.cores} cores, {h.gpu or 'no gpu'}{disk}) -> {'; '.join(roles) or 'slices'}")
+            if 0 < h.disk_free_gb < LOW_DISK_GB:
+                report.add("warn", "engine", f"{h.addr} has {h.disk_free_gb} GB free where its "
+                           f"mirrors and jobs live (under {LOW_DISK_GB}); a long encode can fill it",
+                           f"clean {render.REMOTE_ROOT} there, or `yt render --title X "
+                           "--prune-remote` for a finished project")
+            if not h.ffprobe:
+                if h is big:
+                    report.add("warn", "engine", f"no ffprobe on {h.addr}, the host an encode and "
+                               "the gate go to: `yt gate` cannot run there",
+                               "install ffmpeg on that host, or `yt gate --host` one that has it")
+                else:
+                    report.add("note", "engine", f"no ffprobe on {h.addr}; the gate runs on "
+                               f"{big.addr if big else 'the encode host'}, not there")
         elif h.error and render.tcp_open(h.addr):
             report.add("warn", "engine", f"{h.addr}: accepts TCP on the ssh port but not SSH "
                        f"({_clip(h.error, 80)}); jobs sent there would hang",
