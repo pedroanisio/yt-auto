@@ -26,7 +26,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from claude_engine import Usage  # noqa: E402
-from ytstudio import assets, research  # noqa: E402
+from ytstudio import assets, harness, research  # noqa: E402
 from ytstudio.core import Idea  # noqa: E402
 
 
@@ -365,9 +365,10 @@ class Dossier(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
-        patcher = mock.patch.object(research, "ClaudeEngine", FakeEngine)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for target, name in ((research, "ClaudeEngine"), (harness, "ENGINE")):
+            patcher = mock.patch.object(target, name, FakeEngine)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         FakeEngine.calls = []
         idea = Idea(title="Comets", genre="explainer", description="What a tail is.")
         self.dossier = research.Dossier(Path(self._tmp.name), idea, at=Path(self._tmp.name))

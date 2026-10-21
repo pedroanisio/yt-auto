@@ -450,7 +450,7 @@ class Injection(ImproveCase):
                 plant(self.root, "vfx")
             FakeEngine.json_calls = []
             planner = self._planner()
-            planner._ask_json("plan it", {"type": "object", "required": []})
+            planner._decide("plan", "plan it", {"type": "object", "required": []})
             planner._stream(FakeEngine(None), 1, "author it")
             reviewer = harness.Harness(self.root, "vfx", verbose=False)
             for call in FakeEngine.json_calls:
@@ -483,8 +483,7 @@ class Injection(ImproveCase):
                 if present:
                     plant(self.root, name)
                 FakeEngine.json_calls = []
-                with patch.object(module, "ClaudeEngine", FakeEngine):
-                    make()._ask("decide", {"type": "object", "required": []})
+                make()._ask("decide", "ask", {"type": "object", "required": []})
                 self.assertEqual(FEEDBACK in FakeEngine.json_calls[0]["system"], present,
                                  f"{name} with feedback={present}")
 

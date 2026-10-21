@@ -33,10 +33,10 @@ from dataclasses import asdict, fields
 from datetime import date
 from pathlib import Path
 
-from claude_engine import ClaudeEngine, ClaudeError, EngineConfig, Usage
+from claude_engine import ClaudeError, EngineConfig
 
 from . import harness, workspace
-from .core import Idea, _key, _merge_usage, compact, wrap
+from .core import Idea, _key, compact, wrap
 from .core import write_json as dump_json
 
 #: Each batch is nudged towards a slice of this pool, which is what keeps a
@@ -240,7 +240,8 @@ class Generator:
     def __init__(self, config: EngineConfig, *, niche: str | None = None,
                  inspo: list[str] | None = None, rich: bool = False,
                  genres: tuple[str, ...] = GENRE_POOL, jobs: int = 3,
-                 exclude: list[str] | None = None, verbose: bool = True) -> None:
+                 exclude: list[str] | None = None, verbose: bool = True,
+                 root: Path | str | None = None) -> None:
         self.config = config
         self.niche = niche
         self.inspo = inspo or []
@@ -248,7 +249,15 @@ class Generator:
         self.genres = genres
         self.jobs = max(1, jobs)
         self.verbose = verbose
-        self.usage = Usage()
+        #: Every batch and the ranking are recorded and checked like any stage's
+        #: decisions, but asked afresh on each run: a second run is a request
+        #: for more ideas, not for the same ones.
+        self.harness = harness.Harness(
+            root or ".", "ideas", model=config.model or "sonnet", effort=config.effort,
+            fallback_model=config.fallback_model, role=SYSTEM, fresh=True,
+            verbose=verbose, timeout=config.timeout or 900.0)
+        self.usage = self.harness.usage
+        self._batches = 0
         self.ideas: list[Idea] = []
         self.spare: list[Idea] = []
         self.seen: set[str] = {_key(t) for t in (exclude or [])}
@@ -256,25 +265,19 @@ class Generator:
 
     # -- internals ---------------------------------------------------------
 
-    def _engine(self) -> ClaudeEngine:
-        """A fresh engine per worker: threads must not share usage counters."""
-        return harness.build_engine(EngineConfig(**asdict(self.config)), ClaudeEngine)
-
     def _say(self, msg: str) -> None:
         if self.verbose:
             print(msg, file=sys.stderr)
 
     def _batch(self, want: int, genres: tuple[str, ...], used: list[str]) -> list[Idea]:
-        engine = self._engine()
-        try:
-            data = engine.ask_json(
-                build_prompt(want, niche=self.niche, genres=genres,
-                             used=used, inspo=self.inspo, rich=self.rich),
-                idea_schema(self.rich),
-                system=SYSTEM,
-            )
-        finally:
-            _merge_usage(self.usage, engine.usage)
+        with self.harness.lock:
+            self._batches += 1
+            name = f"batch-{self._batches:02d}"
+        data = self.harness.decide(
+            name,
+            build_prompt(want, niche=self.niche, genres=genres,
+                         used=used, inspo=self.inspo, rich=self.rich),
+            idea_schema(self.rich))
         return [Idea.from_raw(raw) for raw in data.get("ideas", [])]
 
     def _absorb(self, ideas: list[Idea], limit: int) -> int:
@@ -326,19 +329,19 @@ class Generator:
         return self.ideas
 
 
-def rank(engine: ClaudeEngine, ideas: list[Idea], *, niche: str | None = None
+def rank(decider: harness.Harness, ideas: list[Idea], *, niche: str | None = None
          ) -> list[Idea]:
     """Score every idea 1-10 on effort-to-audience value, best first."""
     listing = "\n".join(f"{n}. [{i.genre}] {i.title} -- {i.description}"
                         for n, i in enumerate(ideas, 1))
     context = f" for a channel about {niche}" if niche else ""
-    data = engine.ask_json(
+    data = decider.decide(
+        "rank",
         f"Score each of these {len(ideas)} video ideas{context} from 1-10 on "
         "effort-to-value: likely watch-time and search demand against how hard "
         "it is to make well. Be discriminating -- use the full range, and say "
         f"in one short clause why.\n\n{listing}",
         RANK_SCHEMA,
-        system=SYSTEM,
     )
     for row in data.get("ranked", []):
         index = int(row.get("n", 0)) - 1
@@ -530,7 +533,7 @@ def run(args) -> int:
     config = EngineConfig(tools=(), model=args.model)
     generator = Generator(
         config, niche=args.niche, inspo=inspo, rich=args.rich, genres=genres,
-        jobs=args.jobs, exclude=exclude, verbose=not args.quiet,
+        jobs=args.jobs, exclude=exclude, verbose=not args.quiet, root=work,
     )
 
     try:
@@ -546,13 +549,11 @@ def run(args) -> int:
     if args.rank:
         if not args.quiet:
             print("ranking...", file=sys.stderr)
-        ranker = harness.build_engine(config, ClaudeEngine)
         try:
-            ideas = rank(ranker, ideas, niche=args.niche)
+            ideas = rank(generator.harness, ideas, niche=args.niche)
         except ClaudeError as exc:
             print(f"warning: ranking failed ({exc}); leaving order as generated",
                   file=sys.stderr)
-        _merge_usage(usage, ranker.usage)
 
     print_ideas(ideas)
 

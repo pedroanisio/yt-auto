@@ -243,18 +243,21 @@ def investigate(ws: Workspace, *, model: str, budget_usd: float, verbose: bool) 
         if verbose:
             print("  assessment.json missing or incomplete; extracting the verdict",
                   file=sys.stderr)
-        extractor = harness.build_engine(EngineConfig(tools=(), model=model), ClaudeEngine)
+        extractor = harness.Harness(ws.root, "assess", model=model, role=SYSTEM,
+                                    verbose=verbose)
         try:
-            verdict = extractor.ask_json(
+            verdict = extractor.decide(
+                "verdict",
                 "From this investigation, fill the verdict exactly as the schema asks, "
                 "adding nothing that is not in the text. If a field has no support in "
                 "the text, say so in it.\n\n" + "\n\n".join(texts)[-12000:],
-                VERDICT_SCHEMA, system=SYSTEM)
+                VERDICT_SCHEMA)
         except ClaudeError as exc:
             verdict = {"feasible": "no", "summary": f"no verdict could be produced: {exc}",
                        "approach": [], "constructs": [], "engine_limits": [], "risks": [],
                        "render_estimate": "", "pipeline": [], "missing": ["an assessment"]}
         engine.usage.cost_usd += extractor.usage.cost_usd
+        verdict["engine"] = extractor.report()
     verdict["tool_calls"] = calls
     verdict["cost_usd"] = round(engine.usage.cost_usd, 4)
     return verdict

@@ -49,7 +49,7 @@ class Schema(unittest.TestCase):
     def test_the_spot_prompt_carries_it(self):
         asked = {}
         d = designer()
-        d._ask = lambda prompt, schema: asked.setdefault("p", prompt) and {"cues": []}
+        d._ask = lambda name, prompt, schema: asked.setdefault("p", prompt) and {"cues": []}
         d.spot_whole()
         self.assertIn("search_description", asked["p"])
 

@@ -52,8 +52,8 @@ import wave
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
-from claude_engine import ClaudeEngine, ClaudeError, EngineConfig, Usage
-from .core import (Idea, _merge_usage, read_json, slugify, timecode, wrap,
+from claude_engine import ClaudeError, EngineConfig, Usage
+from .core import (Idea, read_json, slugify, timecode, wrap,
                    write_json)
 from .ideas import CHANNEL_STYLES, style_brief
 from . import freesound, harness, house, workspace
@@ -429,7 +429,11 @@ class SoundDesigner:
         self.house = house
         self.house_digest = house_digest or {}
         self.verbose = verbose
-        self.usage = Usage()
+        #: The stage's one door to the model; each question is a named decision.
+        self.harness = harness.Harness(
+            root or ".", "sound", model=model, role=SYSTEM,
+            house_digest=self.house_digest, verbose=verbose)
+        self.usage = self.harness.usage
         self.palette: dict = {}
 
     # -- plumbing ----------------------------------------------------------
@@ -438,14 +442,8 @@ class SoundDesigner:
         if self.verbose:
             print(msg, file=sys.stderr)
 
-    def _ask(self, prompt: str, schema: dict) -> dict:
-        engine = harness.build_engine(
-            EngineConfig(tools=(), model=self.model), ClaudeEngine)
-        try:
-            return engine.ask_json(prompt, schema, system=harness.with_feedback(
-                SYSTEM, self.root, "sound"))
-        finally:
-            _merge_usage(self.usage, engine.usage)
+    def _ask(self, name: str, prompt: str, schema: dict) -> dict:
+        return self.harness.decide(name, prompt, schema)
 
     def _brief(self) -> str:
         bits = [f"Title: {self.idea.title}", f"Genre: {self.idea.genre}",
@@ -542,7 +540,7 @@ class SoundDesigner:
             f"{TARGET_LUFS} LUFS integrated, with true peak at -1 dBTP).\n\n"
             "Finally, name a few reference tracks or scores as direction for "
             "the composer -- what to listen to for the feel, not what to use.")
-        self.palette = self._ask("\n\n".join(parts), PALETTE_SCHEMA)
+        self.palette = self._ask("palette", "\n\n".join(parts), PALETTE_SCHEMA)
         return self.palette
 
     # -- stage two: spot it ------------------------------------------------
@@ -601,7 +599,7 @@ class SoundDesigner:
             "point is the words, and give every cue a reason that names what "
             "the viewer gets from it. State the level each cue sits at "
             "relative to the narration.\n\n" + self._sourcing())
-        data = self._ask("\n\n".join(parts), CUES_SCHEMA)
+        data = self._ask(f"spot-{index:02d}", "\n\n".join(parts), CUES_SCHEMA)
 
         cues = []
         for raw in data.get("cues", []):
@@ -628,7 +626,7 @@ class SoundDesigner:
             "Say in each cue's purpose what has to be happening on screen for "
             "it to work, since the picture is not written yet.\n\n"
             + self._sourcing())
-        data = self._ask("\n\n".join(parts), CUES_SCHEMA)
+        data = self._ask("spot-whole", "\n\n".join(parts), CUES_SCHEMA)
         cues = []
         for raw in data.get("cues", []):
             cue = Cue.from_raw(raw)
@@ -640,7 +638,7 @@ class SoundDesigner:
     # -- stage three: listen back ------------------------------------------
 
     def review(self, cues: list[Cue], stats: dict, *,
-               only: list[str] | None = None) -> dict:
+               only: list[str] | None = None, name: str = "review") -> dict:
         self._say(f"[review] {len(only) if only else len(cues)} cues, "
                   f"{stats['music_share']}% of the runtime scored")
         sheet = "\n".join(
@@ -680,7 +678,7 @@ class SoundDesigner:
                 + ": flag a problem that is still there or one the change "
                 "introduced, and flag no other cue.")
         try:
-            return self._ask("\n\n".join(parts), REVIEW_SCHEMA)
+            return self._ask(name, "\n\n".join(parts), REVIEW_SCHEMA)
         except ClaudeError as exc:
             self._say(f"[review] failed ({exc})")
             return {}
@@ -715,7 +713,7 @@ class SoundDesigner:
                  "cue is already right, or the fix would break another cue, "
                  "answer keep and say why in one clause."]
         try:
-            data = self._ask("\n\n".join(parts), REVISE_SCHEMA)
+            data = self._ask(f"revise-{cue.cue_id}", "\n\n".join(parts), REVISE_SCHEMA)
         except ClaudeError as exc:
             self._say(f"[revise] {cue.cue_id} failed ({exc}); keeping it")
             return {"applied": None, "why": f"revision failed: {exc}"}
@@ -783,7 +781,8 @@ class SoundDesigner:
                     kept[f["cue"]] = result["why"]
             if not changed:
                 break
-            again = self.review(cues, coverage(cues, self.runtime), only=changed)
+            again = self.review(cues, coverage(cues, self.runtime), only=changed,
+                                name=f"review-recheck-{used}")
             if not again:
                 break
             review["flags"] = (
@@ -839,6 +838,7 @@ class SoundDesigner:
             "house": self.house_digest,
             "failed_sections": failures,
             "usage": asdict(self.usage),
+            "engine": self.harness.report(),
         }
 
 

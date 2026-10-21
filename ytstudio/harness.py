@@ -30,6 +30,7 @@ import hashlib
 import json
 import os
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -85,8 +86,10 @@ def isolate_sessions() -> None:
         claude_engine.set_defaults(settings=ISOLATED_SETTINGS)
 
 
-class HarnessError(RuntimeError):
-    """The model could not be asked, or did not answer the question."""
+class HarnessError(ClaudeError):
+    """The model could not be asked, or did not answer the question. A
+    `ClaudeError`, so a stage that already carries on past a failed ask
+    carries on past an unanswered one."""
 
 
 #: Which CLI `ENGINE` drives, by name. Anything but "claude" is part of a
@@ -243,6 +246,8 @@ class Harness:
     timeout: float = 900.0
     usage: Usage = field(default_factory=Usage)
     decisions: list[Decision] = field(default_factory=list)
+    #: Held while an answer is booked, so threads may share one harness.
+    lock: Any = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         self.root = Path(self.root)
@@ -311,6 +316,14 @@ class Harness:
                                f"outside the schema's enum: {', '.join(bad[:5])}")
         return result
 
+    def _book(self, usage: Usage) -> None:
+        with self.lock:
+            _merge_usage(self.usage, usage)
+
+    def _note(self, decision: Decision) -> None:
+        with self.lock:
+            self.decisions.append(decision)
+
     def _engine(self, **config: Any):
         return ENGINE(EngineConfig(model=self.model, effort=self.effort,
                                    fallback_model=self.fallback_model,
@@ -326,8 +339,7 @@ class Harness:
         saved = self._cached(name, digest)
         if saved is not None:
             self._say(f"[{self.stage}] {name}: decided earlier, same inputs")
-            self.decisions.append(Decision(name, True, digest,
-                                           float(saved.get("cost_usd") or 0)))
+            self._note(Decision(name, True, digest, float(saved.get("cost_usd") or 0)))
             return saved["result"]
         self._say(f"[{self.stage}] {name}: asking {self._asked_as}")
         engine = self._engine(tools=())
@@ -336,10 +348,10 @@ class Harness:
         except ClaudeError as exc:
             raise HarnessError(f"[{self.stage}] {name}: {exc}") from exc
         finally:
-            _merge_usage(self.usage, engine.usage)
+            self._book(engine.usage)
         self._check(name, result, schema)
         self._save(name, digest, result, kind="decide", cost=engine.usage.cost_usd)
-        self.decisions.append(Decision(name, False, digest, engine.usage.cost_usd))
+        self._note(Decision(name, False, digest, engine.usage.cost_usd))
         return result
 
     def inspect(self, name: str, prompt: str, schema: dict, *, cwd: Path,
@@ -362,10 +374,9 @@ class Harness:
         saved = self._cached(name, digest)
         if saved is not None:
             self._say(f"[{self.stage}] {name}: inspected earlier, same evidence")
-            self.decisions.append(Decision(name, True, digest,
-                                           float(saved.get("cost_usd") or 0),
-                                           kind="inspect",
-                                           tool_calls=int(saved.get("tool_calls") or 0)))
+            self._note(Decision(name, True, digest, float(saved.get("cost_usd") or 0),
+                                kind="inspect",
+                                tool_calls=int(saved.get("tool_calls") or 0)))
             return saved["result"]
 
         self._say(f"[{self.stage}] {name}: {self._asked_as} is reading {cwd}")
@@ -389,7 +400,7 @@ class Harness:
         except ClaudeError as exc:
             raise HarnessError(f"[{self.stage}] {name}: {exc}") from exc
         finally:
-            _merge_usage(self.usage, engine.usage)
+            self._book(engine.usage)
         cost = engine.usage.cost_usd
 
         result = read_json(cwd / form, warn=False) if form else None
@@ -413,12 +424,11 @@ class Harness:
             except ClaudeError as exc:
                 raise HarnessError(f"[{self.stage}] {name}: {exc}") from exc
             finally:
-                _merge_usage(self.usage, extractor.usage)
+                self._book(extractor.usage)
             cost += extractor.usage.cost_usd
         self._check(name, result, schema, enums=True)
         self._save(name, digest, result, kind="inspect", cost=cost, tool_calls=calls)
-        self.decisions.append(Decision(name, False, digest, cost, kind="inspect",
-                                       tool_calls=calls))
+        self._note(Decision(name, False, digest, cost, kind="inspect", tool_calls=calls))
         return result
 
     # -- accounting --------------------------------------------------------

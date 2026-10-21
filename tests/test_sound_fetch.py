@@ -216,7 +216,7 @@ class Schema(unittest.TestCase):
     def test_the_spotting_prompt_asks_for_the_query(self):
         designer = sound.SoundDesigner(Idea(title="t", genre="g", description="d"), verbose=False)
         asked = {}
-        designer._ask = lambda prompt, schema: asked.setdefault("prompt", prompt) and {"cues": []}
+        designer._ask = lambda name, prompt, schema: asked.setdefault("prompt", prompt) and {"cues": []}
         designer.spot_whole()
         self.assertIn("search_description", asked["prompt"])
 
