@@ -62,5 +62,62 @@ class ImageLayer(unittest.TestCase):
                             ElementTree.tostring(layer))
 
 
+class MeasuredRuns(unittest.TestCase):
+    """Takes measured by `yt voice` sit apart by a breath, so consecutive
+    shots of one world never touch; they must still share one include, or
+    the world restarts at t=0 at every cut (QA: "shot 1.2 replays the
+    opening", "4.2 rewinds the world")."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        (self.root / "vfx").mkdir()
+        (self.root / "vfx" / "open.scene.xml").write_text("<scene/>")
+
+    def build(self, by_label, shots, measured=True):
+        idea = Idea.from_raw({"title": "A film", "genre": "explainer", "description": "p"})
+        sections = [Section(heading="Open", shots=shots[:2]), Section(heading="Close", shots=shots[2:])]
+        vfx = {"scene": {"by_label": {k: {"file": "vfx/open.scene.xml", "symbol": v}
+                                      for k, v in by_label.items()}}}
+        # the measured takes, a breath apart, as voice.json records them
+        voice = {"takes": [{"label": s.label, "at": s.at, "seconds": s.seconds}
+                           for s in shots]} if measured else None
+        data, _ = build.SceneBuilder(idea, sections, self.root, vfx=vfx, voice=voice,
+                                     audio=False, verbose=False).build()
+        self.root_el = ElementTree.fromstring(data)
+        return self.root_el.findall(".//include")
+
+    def shots(self):
+        # a 0.35 s breath inside the section, 0.8 s between sections
+        return [Shot(label="1.1", n=1, visual="a", narration="one", seconds=4, at=0),
+                Shot(label="1.2", n=2, visual="b", narration="two", seconds=3, at=4.35),
+                Shot(label="2.1", n=3, visual="c", narration="three", seconds=3, at=8.15)]
+
+    def test_a_breath_between_takes_does_not_split_the_world(self):
+        includes = self.build({"1.1": "fx-a", "1.2": "fx-a", "2.1": "fx-b"}, self.shots())
+        self.assertEqual([(i.get("id"), i.get("symbol")) for i in includes],
+                         [("shot-1.1", "fx-a"), ("shot-2.1", "fx-b")])
+        self.assertEqual((includes[0].get("start"), includes[0].get("end")), ("0", "7.35"))
+        # the beats stay on the measured takes, not on the stretched span
+        beats = [(m.get("label"), m.get("time")) for m in self.root_el.iter("marker")
+                 if m.get("kind") == "beat"]
+        self.assertEqual(beats, [("1.1", "0"), ("1.2", "4.35"), ("2.1", "8.15")])
+
+    def test_a_shot_in_the_gap_still_splits_it(self):
+        # 1.2 is not drawn by fx-a, so fx-a's two uses stay two includes
+        includes = self.build({"1.1": "fx-a", "2.1": "fx-a"}, self.shots())
+        self.assertEqual([i.get("id") for i in includes], ["shot-1.1", "shot-2.1"])
+
+    def test_a_shot_that_abuts_both_uses_still_splits_them(self):
+        # script-timed shots touch exactly: a placeholder 1.2 at [4, 7]
+        # between two uses of fx-a must keep them two includes
+        shots = [Shot(label="1.1", n=1, visual="a", narration="one", seconds=4, at=0),
+                 Shot(label="1.2", n=2, visual="b", narration="two", seconds=3, at=4),
+                 Shot(label="2.1", n=3, visual="c", narration="three", seconds=3, at=7)]
+        includes = self.build({"1.1": "fx-a", "2.1": "fx-a"}, shots, measured=False)
+        self.assertEqual([i.get("id") for i in includes], ["shot-1.1", "shot-2.1"])
+
+
 if __name__ == "__main__":
     unittest.main()

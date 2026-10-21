@@ -815,9 +815,14 @@ class SceneBuilder:
                     span[1] = round(film_end + tail, 3)
         # Consecutive shots the same symbol draws are one include: the symbol
         # carries its whole run on one clock, so restarting it per shot would
-        # snap its camera back to t=0 at every cut. Spans that touch and name
-        # the same {file, symbol} fold into the first; a symbol used again
-        # after something else stays a separate include.
+        # snap its camera back to t=0 at every cut. Spans that name the same
+        # {file, symbol} fold into the first when nothing else is placed
+        # between them: measured takes sit a breath apart, and the world runs
+        # on through the breath. A symbol used again after another shot stays
+        # a separate include.
+        def gap_is_empty(after: float, before: float) -> bool:
+            return not any(after - 1e-3 < q.at < before - 1e-3 for q in placed)
+
         merged: dict[str, str] = {}
         owners = sorted(spans, key=lambda label: spans[label][0])
         run_owner = None
@@ -826,7 +831,7 @@ class SceneBuilder:
             if (run_owner is not None
                     and self.vfx_symbols[run_owner]["file"] == hit["file"]
                     and self.vfx_symbols[run_owner]["symbol"] == hit["symbol"]
-                    and spans[label][0] <= spans[run_owner][1] + 1e-3):
+                    and gap_is_empty(spans[run_owner][1], spans[label][0])):
                 spans[run_owner][1] = max(spans[run_owner][1], spans[label][1])
                 merged[label] = run_owner
                 del spans[label]
