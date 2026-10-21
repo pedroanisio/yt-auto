@@ -56,7 +56,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from claude_engine import ClaudeError, EngineConfig, Usage
-from . import framecheck, geometry, harness, house, reach, render, sdkkit, workspace
+from . import fonts, framecheck, geometry, harness, house, reach, render, sdkkit, workspace
 from .core import Idea, _key, _merge_usage, read_json, slugify, write_json
 from .framecheck import DIM_STD, FLAT_STD, frame_stats, judge_frame  # noqa: F401  (re-exported)
 from .ideas import CHANNEL_STYLES
@@ -1856,6 +1856,8 @@ class Workspace:
                                  + (f" — {el['why']}" if el.get("why") else ""))
             lines.append("")
         program = self.program_name(doc)
+        lines += ["Fonts: text may use only the families the repo ships ("
+                  + ", ".join(fonts.families()) + "); any other family fails `yt build`.", ""]
         lines += [sdkkit.BRIEF, sdkkit.time_line(AUTHOR_TIMEOUT), "## Deliverable", "",
                   f"Write `{program}` in this directory: a Python program that builds the "
                   f"section with the SDK and saves `{doc}`, a complete scene-render document "

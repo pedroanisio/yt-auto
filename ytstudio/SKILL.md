@@ -67,6 +67,8 @@ came from breaking one of them.
    family (Inter, Inter Display, Lora, Source Sans 3, STIX Two Text, Liberation,
    DejaVu); a brand face
    such as JetBrains Mono or IBM Plex fails the build, it does not fall back.
+   The same refusal reaches the author earlier: `sdkkit.rule_findings` reports it as
+   `error: rule:font` in the author's own `kit.py build`, and both author briefs list the families.
 8. **A placeholder is disqualifying,** not deductible. While any remain the
    verdict is NOT READY whatever the other scores say.
 9. **Nothing heavy runs on this workstation.** Renders, encodes, mixes and
