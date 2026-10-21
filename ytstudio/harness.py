@@ -165,6 +165,46 @@ def missing_fields(result: Any, schema: dict) -> list[str]:
     return [name for name in required if name not in result]
 
 
+_JSON_TYPES: dict[str, Callable[[Any], bool]] = {
+    "number": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
+    "integer": lambda v: (isinstance(v, int) and not isinstance(v, bool))
+    or (isinstance(v, float) and v.is_integer()),
+    "string": lambda v: isinstance(v, str),
+    "boolean": lambda v: isinstance(v, bool),
+    "array": lambda v: isinstance(v, list),
+    "object": lambda v: isinstance(v, dict),
+    "null": lambda v: v is None,
+}
+
+
+def type_errors(result: Any, schema: dict, path: str = "") -> list[str]:
+    """Where an answer holds a value of another type than the schema declares, as
+    `path is 'pytype', not jsontype`, through nested objects and arrays (AUTO-65:
+    a string where the schema says number passed missing_fields and reached the
+    stage). Missing fields are `missing_fields`' business."""
+    bad: list[str] = []
+    declared = schema.get("type")
+    kinds = [declared] if isinstance(declared, str) else list(declared or [])
+    known = [k for k in kinds if k in _JSON_TYPES]
+    if path and known and not any(_JSON_TYPES[k](result) for k in known):
+        bad.append(f"{path} is {type(result).__name__!r}, not {' or '.join(known)}")
+        return bad
+    if isinstance(result, dict):
+        for name, sub in (schema.get("properties") or {}).items():
+            if name in result and isinstance(sub, dict):
+                bad += type_errors(result[name], sub, f"{path}.{name}" if path else name)
+    elif isinstance(result, list) and isinstance(schema.get("items"), dict):
+        for n, item in enumerate(result):
+            bad += type_errors(item, schema["items"], f"{path}[{n}]")
+    return bad
+
+
+#: Appended to the question when the first answer did not hold to the schema.
+RETRY_INSTRUCTION = (
+    "\n\nYour previous answer did not hold to the schema: %s. Answer the same "
+    "question again, with every required field present and of the declared type.")
+
+
 def enum_violations(result: Any, schema: dict, path: str = "") -> list[str]:
     """Where an answer holds a value outside the schema's `enum`, as `path=value`,
     through nested objects and arrays. Missing fields are `missing_fields`' business."""
@@ -349,6 +389,14 @@ class Harness:
         engine = self._engine(tools=())
         try:
             result = engine.ask_json(prompt, schema, system=self.system)
+            # invariant 3: validate, retry once with the problem named, then
+            # fail (a missing field) or let the stage record its fallback (a type)
+            problems = ([f"{f} is missing" for f in missing_fields(result, schema)]
+                        + type_errors(result, schema))
+            if problems:
+                self._say(f"[{self.stage}] {name}: asking again ({'; '.join(problems[:3])})")
+                result = engine.ask_json(prompt + RETRY_INSTRUCTION % "; ".join(problems[:10]),
+                                         schema, system=self.system)
         except ClaudeError as exc:
             raise HarnessError(f"[{self.stage}] {name}: {exc}") from exc
         finally:

@@ -4,7 +4,9 @@ Every production stage decides through it, so what the tests pin is the
 contract the stages rely on: a decision is asked once per distinct input and
 served from the project afterwards; a changed input is asked again; `fresh`
 discards the cache; an agentic inspection that files no form is extracted
-from its own words; and a failure is an error, never a silent default.
+from its own words; an answer that misses a required field or holds one of
+another type is asked again once, with the problem named; and a failure is
+an error, never a silent default.
 """
 
 import json
@@ -17,6 +19,8 @@ from ytstudio import harness
 
 SCHEMA = {"type": "object", "properties": {"answer": {"type": "string"}},
           "required": ["answer"]}
+NUMBER = {"type": "object", "properties": {"tail": {"type": "number"}},
+          "required": ["tail"]}
 
 
 class FakeEngine:
@@ -121,9 +125,52 @@ class Decide(HarnessCase):
         self.assertFalse((self.root / "decisions").exists())
 
     def test_a_result_that_misses_a_required_field_is_an_error(self):
-        FakeEngine.answers = [{"nothing": 1}]
+        FakeEngine.answers = [{"nothing": 1}, {"nothing": 2}]
         with self.assertRaises(harness.HarnessError):
             self.make().decide("edit", "p", SCHEMA)
+
+    def test_a_missing_field_is_asked_again_once_with_the_field_named(self):
+        # invariant 3: validate, retry once, then fail
+        FakeEngine.answers = [{"nothing": 1}, {"answer": "yes"}]
+        self.assertEqual(self.make().decide("edit", "p", SCHEMA), {"answer": "yes"})
+        self.assertEqual(len(FakeEngine.json_calls), 2)
+        self.assertIn("answer", FakeEngine.json_calls[1]["prompt"])
+        self.assertIn("p", FakeEngine.json_calls[1]["prompt"])
+
+    def test_a_wrong_type_is_asked_again_once_and_the_good_answer_kept(self):
+        # AUTO-65: a string where the schema says number used to reach the stage
+        FakeEngine.answers = [{"tail": "a beat"}, {"tail": 1.5}]
+        got = self.make().decide("edit", "p", NUMBER)
+        self.assertEqual(got, {"tail": 1.5})
+        self.assertEqual(len(FakeEngine.json_calls), 2)
+        retry = FakeEngine.json_calls[1]["prompt"]
+        self.assertIn("tail", retry)
+        self.assertIn("number", retry)
+        saved = json.loads((self.root / "decisions" / "build" / "edit.json").read_text())
+        self.assertEqual(saved["result"], {"tail": 1.5})
+
+    def test_a_second_wrong_type_goes_to_the_stages_fallback(self):
+        # the stage replaces it and records the finding (AUTO-50); the harness
+        # does not fail a decision whose fields are all there
+        FakeEngine.answers = [{"tail": "a beat"}, {"tail": "still a beat"}]
+        got = self.make().decide("edit", "p", NUMBER)
+        self.assertEqual(got, {"tail": "still a beat"})
+        self.assertEqual(len(FakeEngine.json_calls), 2)
+
+    def test_a_good_answer_is_asked_once(self):
+        FakeEngine.answers = [{"tail": 2}]
+        self.make().decide("edit", "p", NUMBER)
+        self.assertEqual(len(FakeEngine.json_calls), 1)
+
+    def test_the_editors_tail_is_retried_before_the_builds_default(self):
+        from ytstudio import build
+        good = {"coverage": [], "captions_off": [], "tail_seconds": 1.0, "notes": "",
+                "blocking": []}
+        FakeEngine.answers = [dict(good, tail_seconds="half a second"), good]
+        got = self.make().decide("edit", "p", build.EDIT_SCHEMA)
+        self.assertEqual(got["tail_seconds"], 1.0)
+        self.assertEqual(len(FakeEngine.json_calls), 2)
+        self.assertIn("tail_seconds", FakeEngine.json_calls[1]["prompt"])
 
 
 class Inspect(HarnessCase):
@@ -182,6 +229,32 @@ class Helpers(unittest.TestCase):
                   "properties": {"a": {}, "b": {}}}
         self.assertEqual(harness.missing_fields({"a": 1}, schema), ["b"])
         self.assertEqual(harness.missing_fields("not an object", schema), ["a", "b"])
+
+    def test_type_errors_name_each_field_and_its_declared_type(self):
+        schema = {"type": "object", "required": ["n", "i", "s", "b", "a", "o"],
+                  "properties": {"n": {"type": "number"}, "i": {"type": "integer"},
+                                 "s": {"type": "string"}, "b": {"type": "boolean"},
+                                 "a": {"type": "array", "items": {"type": "number"}},
+                                 "o": {"type": "object", "required": ["x"],
+                                       "properties": {"x": {"type": "string"}}},
+                                 "maybe": {"type": ["number", "null"]}}}
+        good = {"n": 1, "i": 2, "s": "x", "b": False, "a": [1, 2.5],
+                "o": {"x": "y"}, "maybe": None}
+        self.assertEqual(harness.type_errors(good, schema), [])
+        bad = {"n": "1", "i": 2.5, "s": 3, "b": "no", "a": [1, "two"],
+               "o": {"x": 4}, "maybe": "z"}
+        errors = harness.type_errors(bad, schema)
+        for where in ("n", "i", "s", "b", "a[1]", "o.x", "maybe"):
+            self.assertTrue(any(e.startswith(where + " ") for e in errors), (where, errors))
+        self.assertIn("n is 'str', not number", errors)
+
+    def test_a_bool_is_not_a_number_and_an_integral_float_is_an_integer(self):
+        schema = {"properties": {"n": {"type": "number"}, "i": {"type": "integer"}}}
+        self.assertEqual(harness.type_errors({"n": True}, schema), ["n is 'bool', not number"])
+        self.assertEqual(harness.type_errors({"i": 3.0}, schema), [])
+
+    def test_missing_fields_are_missing_fields_business(self):
+        self.assertEqual(harness.type_errors({}, NUMBER), [])
 
     def test_brief_renders_json_the_model_can_read(self):
         text = harness.brief("Shots", [{"label": "1.1", "seconds": 4.5}])
