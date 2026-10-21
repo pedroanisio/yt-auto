@@ -64,10 +64,9 @@ ARTIFACTS = {
 
 #: Stage name -> the artifact that proves it ran, in pipeline order.
 STAGES = (("research", "dossier"), ("styles", "styles"),
-          ("script", "script"), ("props", "props"), ("keyframe", "keyframe"),
-          ("voice", "voice"),
-          ("retime", "retime"), ("vfx", "vfx"), ("sound", "sound"), ("build", "scene"),
-          ("render", "video"))
+          ("script", "script"), ("props", "props"), ("voice", "voice"),
+          ("retime", "retime"), ("keyframe", "keyframe"), ("vfx", "vfx"),
+          ("sound", "sound"), ("build", "scene"), ("render", "video"))
 
 IDEAS_FILE = "ideas.json"
 STORE_FILE = "ideas.store.json"

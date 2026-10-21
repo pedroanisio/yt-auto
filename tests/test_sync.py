@@ -171,7 +171,9 @@ class RunOrder(unittest.TestCase):
     def test_retime_runs_between_voice_and_vfx(self):
         order = list(cli.PIPELINE)
         self.assertEqual(order.index("retime"), order.index("voice") + 1)
-        self.assertEqual(order.index("vfx"), order.index("retime") + 1)
+        # only the look (the lead section, timed to the measured read) sits between
+        self.assertEqual(order.index("keyframe"), order.index("retime") + 1)
+        self.assertEqual(order.index("vfx"), order.index("keyframe") + 1)
         self.assertEqual(workspace.Project(Path("/x")).path("retime").name, "retime.json")
 
 

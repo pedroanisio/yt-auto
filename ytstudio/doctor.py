@@ -623,21 +623,34 @@ def check_project(project: workspace.Project) -> Report:
                        f"look at {look['frame'] or 'keyframe/keyframe.png'}, then "
                        f"{_cmd('keyframe', project, '--approve')}",
                        _cmd("keyframe", project, "--approve"))
+        elif look["state"] == "failed":
+            why = keyframe.approvable(keyframe.load_record(project.root)) or "nothing was rendered"
+            report.add("warn", "keyframe", f"the look pass failed and cannot be approved: {why}",
+                       _cmd("keyframe", project))
         elif look["state"] == "rejected":
             report.add("warn", "keyframe", f"the keyframe was rejected: {_clip(look['notes'])}",
                        _cmd("keyframe", project))
         elif look["state"] == "stale":
-            report.add("warn", "keyframe", "keyframe.scene.xml changed after it was "
-                       "approved; the look on disk is not the approved one",
+            report.add("warn", "keyframe", f"{look['document'] or 'the keyframe document'} "
+                       "changed after it was approved; the look on disk is not the approved one",
                        _cmd("keyframe", project, "--approve"))
         else:
             report.add("ok", "keyframe", f"approved {look['at']} · {shown}")
     if vfx:
+        # A look taken from the film enters an existing animation with
+        # --relook; --fresh would replan and author its section again too.
+        section_look = keyframe.load_record(project.root).get("source") == "section"
         if look["state"] != "approved":
+            first = (_cmd("keyframe", project, "--approve")
+                     if look["state"] == "pending" and section_look else _cmd("keyframe", project))
             report.add("warn", "vfx", "the animation was authored without an approved "
                        "keyframe; no look was locked for it to inherit",
-                       _cmd("keyframe", project) + ", approve it, then "
-                       + _cmd("vfx", project, "--fresh"))
+                       first + ", then " + (_cmd("vfx", project, "--relook") if section_look
+                                            else _cmd("vfx", project, "--fresh")))
+        elif section_look:
+            if not keyframe.film_carries_look(project.root, vfx):
+                report.add("warn", "vfx", "the animation does not hold the approved look: "
+                           "its section is another authoring", _cmd("vfx", project, "--relook"))
         elif _mtime(project.path("vfx")) < look["epoch"]:
             report.add("warn", "vfx", "vfx.json predates the approved keyframe; it was "
                        "authored against an earlier look", _cmd("vfx", project, "--fresh"))

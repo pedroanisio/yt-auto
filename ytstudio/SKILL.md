@@ -86,44 +86,73 @@ itself, and `--project DIR` names a directory directly.
 | `yt styles` | dossier | `styles.json`, `styles.md` | yes |
 | `yt script` | dossier, styles | `script.json`, `script.md`, `narration.txt`, `shotlist.csv` | yes |
 | `yt props` | script, styles (or phrases given) | `props/<kind>/<id>/`, `props.json` | no (Poly Haven, all CC0) |
-| `yt keyframe` | styles, script, props, dossier assets, the assessment | `keyframe/keyframe.scene.xml`, `keyframe/keyframe.png`, `keyframe.json`, `keyframe.md` | yes (the elements; one author agent; a vision review per round) |
 | `yt voice` | script | `voice/`, `voice.json`, `narration.vtt`, `.srt` | yes (casting, retakes) |
 | `yt retime` | script, voice | `retime.json`, the screenplay's measured lengths (`script.json.bak` kept) | yes (accept, rerecord, rewrite, keep) |
+| `yt keyframe` | script, voice, styles, props (what `yt vfx` reads) | the vfx plan, the lead section in `vfx/vNN/`, `keyframe/keyframe.png`, `keyframe/frames.png`, `keyframe.json`, `keyframe.md` | yes (the vfx plan; one author agent, one attempt, no vision review; `--sheet`: the older composed frame) |
 | `yt vfx` | script, voice, styles, props | `vfx/vNN/<section>.scene.xml`, `vfx/vNN/frames/`, `vfx.json`, `vfx.md`, `vfx.csv` | yes (one author agent per section, a frame review per round) |
 | `yt sound` | script | `sound.json`, `sound.md`, `cues.csv`; with `--fetch`, `sound/` and `sound/index.json` | yes (spotting; the fetch asks nothing) |
 | `yt build` | all of the above | `scene.xml`, `build.json`, `vfx/vNN/<section>.include.scene.xml` | yes (coverage, captions, tail, blocking) |
 | `yt render` | `scene.xml` | `video.mp4`, `render.json` (a still, a validation, an audio pass or a pilot writes `render-<job>.json`) | no |
 
 `yt run` (`yt run --title X`) walks research, styles, script, props,
-keyframe, voice, retime, vfx, sound, build, render in that order -- `yt
-props` after the script so the vfx brief can list real assets, `yt keyframe`
-right after it so the look is locked from those assets before anything is
-authored (`--skip keyframe` leaves it out), `yt retime` between voice and
-vfx so nothing is authored against the screenplay's guess once the read is
-measured (a `rerecord` verdict records those takes again and retimes once
-more; `rewrite`, or a read sent back twice, stops the run) -- and skips a stage whose output exists unless it is named in
+voice, retime, keyframe, vfx, sound, build, render in that order -- `yt
+props` after the script so the vfx brief can list real assets, `yt retime`
+after voice so nothing is authored against the screenplay's guess once the
+read is measured (a `rerecord` verdict records those takes again and
+retimes once more; `rewrite`, or a read sent back twice, stops the run),
+`yt keyframe` right after it so the look is a section of the film timed to
+that read, and the run STOPS before `yt vfx` while the look awaits the
+operator (`yt keyframe --approve`, then `yt run` again; a rejected look is
+authored again with the notes; `--skip keyframe` runs without a look) --
+and skips a stage whose output exists unless it is named in
 `--redo` (`--redo all` repeats everything, `--skip` leaves stages out,
 `--quick` drops the deliberation, polish, fact-check and listen-back passes
 and renders at draft). It always passes `--fetch` to `yt sound`;
 `cli.run_extras` lists what each stage gets and `cli.stage_argv` builds the
 argv (`yt props` takes only `--project` and `--quiet`).
 
-**The look-lock.** `yt keyframe` is a studio's style frame: one 1920x1080
-frame composing the film's most qualified visual elements together in the
-chosen treatment -- the hero in its environment under its key light, the
-materials that matter, the palette roles as swatches, one type sample in the
-film's language, the camera language -- each labelled with its source (a
-props id, a licensed asset, or authored). One harness decision picks and
-ranks the elements (at most eight) from styles, script, props, the dossier
-and the assessment; an author agent composes `keyframe/keyframe.scene.xml`
-in the same workspace `yt vfx` gives its authors; the frame renders on the
-still host; `framecheck` runs the eyeless checks; a vision review scores it
-and the findings go back verbatim for up to `--rounds` (2) while under
-`--bar` (7). The operator then runs `yt keyframe --approve`, or `yt keyframe
---reject "notes"` so the notes lead both model calls next time; `--fresh`
-picks and composes again. An approved keyframe is the look every vfx world
-inherits (`keyframe.approved_keyframe`), and `yt doctor` warns when the
-animation was authored without one or predates it.
+**The look-lock.** `yt keyframe` takes the look from the film itself, so
+nothing made for it is thrown away. It builds `yt vfx`'s own planner
+(`vfx.planner_from_args`), plans every section (cached; `yt vfx` reuses the
+plan) and authors the lead section (`--section`, default the one named last,
+else 1) into `vfx/vNN/`: the mechanical gate judges it (the program built
+twice, the engine's validation, proof frames at every shot, the frame,
+legibility and geometry rules), a revision goes back only for what the gate
+finds, and no vision review is paid for before the operator has seen it
+(`VfxPlanner(lead=N)`, record "12-lead"). A look the gate failed (errors, no
+frame) cannot be approved (`keyframe.approvable`) and `yt run` authors it
+again. The frame
+showing the most becomes `keyframe/keyframe.png` and every proof frame goes
+on `keyframe/frames.png`. The operator runs `yt keyframe --approve` (tied to
+the section document's digest), or `--reject "notes"`, which puts the notes
+at the top of the lead section's brief next time; `--fresh` plans and
+authors it again. Once approved, `yt vfx` carries that section forward
+(`vfx.look_section`, `carried_from`, $0) and every other author's brief and
+review name its program as the look to copy -- palette and type constants,
+the helpers that build labels, formulas and recurring objects, the camera
+language -- with `fidelity` scored against it; they read `keyframe/look.py`
+(the approved bytes), never another version's directory. The look's section
+enters the film in two places only: the first animation after the approval,
+and `yt vfx --relook`, which carries it into an existing animation and
+authors every other section again on the same plan (a broken attempt keeps
+the section it replaces; no score contest across looks). After that the
+active version is the film: `--sections N` re-authors the look's section like
+any other (a sound re-authoring then stands for the look, `reauthored_look`),
+and a broken attempt at it keeps the look. `yt vfx --fresh` replans and
+authors everything; `yt keyframe --fresh` replans and forgets the authoring
+made under the old plan. An approved look is the operator's: a re-run
+downstream of voice or retime keeps it, and only `--fresh`, another
+`--section` or another `--width/--height` replaces it. `yt run` stops before
+vfx while a look is pending (and names the `--redo` that goes on), authors a
+failed or rejected look again, and runs `yt vfx --relook` (then build and
+render) when the approved look is not in the animation (`keyframe.film_carries_look`).
+`yt doctor` warns when the animation was
+authored without an approved look or does not hold it, and names
+`yt vfx --relook` rather than `--fresh`; a failed look pass is a warning
+whose fix is `yt keyframe`. Measured on the Euler run
+(2026-10-20): the separate style frame cost 51 min and $20 for a frame the
+film never used. `--sheet` still composes that frame (elements, rounds of
+review, `--rounds`, `--bar`) when a look is wanted before any section.
 
 **The research's assets.** `yt research` fills its shot list from every
 catalogue in `--asset-sources` (default all of `assets.SOURCES`): NASA
@@ -400,6 +429,14 @@ hand-authored world showed the cost.
     `vfx/vNN/` and carries the others forward from the active version
     (`carried_from`, $0). Continuity, reach and plan are then redone.
     `--sections` refuses `--fresh`.
+  - `yt vfx --recover` rebuilds the record of a run that ended before it saved
+    one (the stage writes 12-author only when every section is done, so a
+    kill, a timeout or a crash loses all of it): each section goes back on its
+    best reviewed round from `vfx/vNN/rounds/` and the cached reviews, a
+    section never reviewed is recorded with an error for `--sections N`, and
+    the film-wide stages run. Nothing is authored. Measured on the Euler film:
+    a 6 h run killed by a wrapping `timeout` came back for the price of the
+    continuity pass. Never wrap `yt vfx` in a timeout shorter than its clock.
   - `vfx.json` and `keyframe.json` record each document's `program` and
     `provenance`.
 - **`yt probe`.** `--list` shows the classes, `--only` picks some,
@@ -445,7 +482,7 @@ hand-authored world showed the cost.
 | Off-camera object3D | the engine reports it (only an encode computes it); the shot shows nothing | name the hero `hero-…` so the frame gate makes it an error; fix the camera or the geometry in the vfx source |
 | Flat, black, clipped or dark frame | the frame gate in `yt vfx` and `yt qa`'s mechanical pass report it | the subject is unframed, unlit, overexposed or elsewhere; look again |
 | Frozen window, or a jump inside a shot | `yt qa` measures it from one half-second frame window (at most 16 frames) around the midpoint; frozen needs every step and the whole window still | author movement across the shot, or ease the key; the finding names the owner |
-| Hero inside the set (a penetration) | the hero's path passes through a set solid, or it comes to rest inside one; a still cannot show a merge, the reviewers mention it and never block on it, and the delivery gate has no notion of a solid | the geometry check does: `yt vfx`'s gate, `yt qa`'s mechanical `penetration` and `yt gate`'s blocking item evaluate the world every 0.25 s (`scene-render eval`, no GPU, one job) and fail a `hero-` box inside a set solid by more than a tenth of its smallest dimension, naming time, object and depth; key its path to clear the set, key the rest to touch and declare it with `<meta name="hero-rests" value="<hero> <surface> <seconds>"/>` so floating is caught too |
+| Hero inside the set (a penetration) | the hero's path passes through a set solid, or it comes to rest inside one; a still cannot show a merge, the reviewers mention it and never block on it, and the delivery gate has no notion of a solid | the geometry check does: `yt vfx`'s gate, `yt qa`'s mechanical `penetration` and `yt gate`'s blocking item evaluate the world every 0.25 s (`scene-render eval`, no GPU, one job) and fail a `hero-` box inside a set solid by more than a tenth of its smallest dimension, naming time, object and depth; key its path to clear the set, key the rest to touch and declare it with `<meta name="hero-rests" value="<hero> <surface> <seconds>"/>` so floating is caught too; a hero that touches an object by design (a cap on its strand) is not pulled apart but declared joined with `<meta name="hero-attached" value="<hero> <object or prefix*> ..."/>`, and the nodes it follows by `parent` never count |
 | Hero reads merged into the set | the hero is above a surface in 3D, but on screen it lies over that surface's top with no shadow of it there and too little clearance for parallax, so the viewer sees it sunk into the surface; no box intersects | the same check projects the evaluated camera (calibrated against a render to under 1 px): over a farther surface's visible top by more than 30% of its screen area, under 25% of the camera distance above it, no shadow of it on the surface, for 0.5 s or more, is `reads merged`, an error in `yt vfx`, a blocking mechanical finding in `yt qa`, a blocking row in `yt gate`; cast its shadow onto the surface, lift the line of sight toward the surface's plane, or frame them apart |
 | A pilot's sync over the film's | the old remote dir was keyed by slug only; a pilot overwrote a finished film | fixed: every job owns `/tmp/yt-render/<slug>/<job>-<tag>/` hardlinked from the mirror, and only the encode writes `render.json` |
 | A job writing into a tree the mirror lacks | the mirror excludes `qa/` and other output trees, so `-o qa/.../x.png` had no parent directory on the host | fixed: the job script creates the parent of every `-o`/`--report` path before the engine runs |

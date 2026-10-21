@@ -1,18 +1,34 @@
 #!/usr/bin/env python3
-"""Lock the look before `yt vfx` spends: one composed frame for the operator's approval.
+"""Lock the look before `yt vfx` spends: the film's lead section, for the operator's approval.
 
-    yt keyframe --title monty                 # elements, document, frame, review
+    yt keyframe --title monty                 # plan the film, author section 1 once
     yt keyframe --title monty --approve       # record the approval on disk
-    yt keyframe --title monty --reject "the main surface reads as plastic; a warmer key"
-    yt keyframe --title monty --fresh --rounds 3 --bar 8
+    yt keyframe --title monty --reject "the labels are too small; a warmer key"
+    yt keyframe --title monty --section 3     # take the look from another section
+    yt keyframe --title monty --sheet         # the older separate style frame
 
-A studio locks a style frame before animation starts. This stage is that
-frame for the pipeline: ONE 1920x1080 picture that presents the video's most
-qualified visual elements together, in the chosen treatment -- the hero
-subject in its environment under its key light, the materials of the surfaces
-that matter, the palette roles as swatches, one typography sample in the
-film's language, the camera language -- each labelled with its source. An
-operator approves or rejects it before `yt vfx` authors the film.
+A studio locks a style frame before animation starts. Here that frame is
+part of the film: `yt vfx`'s own planner plans every section (the plan
+`yt vfx` reuses) and authors the lead section ONCE, judged by the mechanical
+gate alone -- the program builds twice to the same document, the engine
+validates it, proof frames render at every shot, the frame, legibility and
+geometry rules run -- with no vision review and no revision round paid for
+before the operator has seen it. The frame showing the most becomes
+keyframe/keyframe.png and every proof frame goes on keyframe/frames.png.
+`--approve` records the approval against the section document's digest;
+`yt vfx` then carries the section forward (`vfx.look_section`) and every
+other author's brief names its program as the look to copy: its palette and
+type constants, the helpers that build its labels, formulas and recurring
+objects, and its camera language. `--reject "notes"` puts the notes at the
+top of the lead section's brief on the next run. `yt run` stops before
+`yt vfx` while a look awaits approval, and runs the keyframe again when it
+was rejected. The keyframe runs after `yt retime`, so the section is timed
+to the measured narration it will play under.
+
+With `--sheet` the stage composes a separate style frame instead, as it did
+before: one 1920x1080 picture of the video's most qualified visual elements,
+reviewed in rounds. That frame is not part of the film. What follows
+describes that path.
 
 Two model calls, both through the harness:
 
@@ -71,8 +87,10 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import sys
 import time
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
@@ -245,7 +263,7 @@ def operator_notes(record: dict) -> list[dict]:
 
 
 def approval_state(root: Path) -> dict:
-    """none | pending | approved | rejected | stale, with what the record says.
+    """none | pending | approved | rejected | stale | failed, with what the record says.
 
     `stale` is an approval whose document has changed since: the digest no
     longer matches, so the look on disk is not the one that was approved.
@@ -256,7 +274,7 @@ def approval_state(root: Path) -> dict:
     state = str(approval.get("state") or "")
     out = {"state": "none", "at": "", "notes": "", "digest": "", "score": record.get("score"),
            "epoch": 0.0, "document": record.get("document", ""), "frame": record.get("frame", "")}
-    if not record or state not in ("pending", "approved", "rejected"):
+    if not record or state not in ("pending", "approved", "rejected", "failed"):
         return out
     out.update(state=state, at=str(approval.get("at") or ""),
                notes=str(approval.get("notes") or ""), digest=str(approval.get("digest") or ""),
@@ -279,7 +297,54 @@ def approved_keyframe(root: Path) -> dict | None:
             "frame": record.get("frame") or f"{KEYFRAME_DIR}/{FRAME_NAME}",
             "elements": record.get("elements") or [], "hero": record.get("hero", ""),
             "camera": record.get("camera", ""), "treatment": record.get("treatment", ""),
+            "source": record.get("source") or "sheet", "section": record.get("section"),
+            "program": record.get("program") or "", "sheet": record.get("sheet") or "",
+            "record": record.get("record"), "frame_size": record.get("frame_size"),
+            "look_program": record.get("look_program") or "",
             "approved_at": state["at"], "digest": state["digest"]}
+
+
+def look_needs_redo(root: Path) -> bool:
+    """A look taken from the film that cannot be approved: its pass failed
+    (gate errors, no frame) or its document is gone. `yt run` authors it again."""
+    record = load_record(root)
+    if record.get("source") != "section":
+        return False
+    if not (Path(root) / str(record.get("document") or "")).is_file():
+        return True
+    return (record.get("approval") or {}).get("state") == "failed" or bool(approvable(record))
+
+
+def film_carries_look(root: Path, vfx_data: dict | None = None) -> bool:
+    """Whether the animation holds the approved look from the film: its
+    section in vfx.json is the approved document, or a sound authoring of it
+    the operator asked for under this look (`reauthored_look`). True when there
+    is no such look or no animation yet: nothing then waits on `--relook`."""
+    look = approved_keyframe(root)
+    record = load_record(root)
+    if not look or record.get("source") != "section" or record.get("section") is None:
+        return True
+    if vfx_data is None:
+        vfx_data = read_json(Path(root) / workspace.ARTIFACTS["vfx"], warn=False)
+    if not vfx_data:
+        return True
+    row = next((a for a in vfx_data.get("authored") or []
+                if isinstance(a, dict) and a.get("n") == record["section"]), None)
+    if row is None:
+        return False
+    return (document_digest(Path(root) / str(row.get("file") or "")) == look["digest"]
+            or row.get("reauthored_look") == look["digest"])
+
+
+def approvable(record: dict) -> str:
+    """"" when a look from the film can be approved, else why not."""
+    if record.get("source") != "section":
+        return ""
+    if record.get("errors"):
+        return f"its gate found {len(record['errors'])} error(s): {record['errors'][0][:160]}"
+    if not record.get("frame"):
+        return "no proof frame was rendered"
+    return ""
 
 
 def _record_for_approval(root: Path) -> tuple[dict, Path]:
@@ -313,6 +378,9 @@ def approve(root: Path) -> dict:
     mixed = record_mismatch(root, record)
     if mixed:
         raise KeyframeError(f"{mixed}; run `yt keyframe` again before approving")
+    refused = approvable(record)
+    if refused:
+        raise KeyframeError(f"the look cannot be approved: {refused}; run `yt keyframe` again")
     record["approval"] = {"state": "approved", "notes": "", "digest": document_digest(doc),
                           "at": _now()}
     write_json(record_path(root), record)
@@ -961,6 +1029,196 @@ class KeyframeStage:
 
 
 # --------------------------------------------------------------------------- #
+# the look from the film itself
+# --------------------------------------------------------------------------- #
+
+#: The lead section's proof frames side by side, beside the chosen frame.
+SHEET_NAME = "frames.png"
+#: The section the look comes from unless `--section` names another.
+DEFAULT_SECTION = 1
+#: Sections planned at once in the look pass: the plan covers the whole film,
+#: and `yt vfx` reuses it.
+LOOK_JOBS = 8
+#: The lead section's spend cap (sessions and the gate), as `yt vfx` gives a section.
+LOOK_BUDGET_USD = vfx.SECTION_BUDGET_USD
+#: The look's program and document, kept where every section author may read them.
+LOOK_PROGRAM = "look.py"
+LOOK_DOC = "look.scene.xml"
+
+
+def frame_matches(record: dict, args) -> bool:
+    """Whether a look was framed at the size this run asks for (`--width`,
+    `--height`); a record from before the size was kept matches."""
+    size = record.get("frame_size")
+    want = (getattr(args, "width", None), getattr(args, "height", None))
+    return not size or None in want or tuple(size) == tuple(want)
+
+
+def proof_frames(root: Path, record: dict) -> list[Path]:
+    """The proof frames the gate rendered for one section, in the order the
+    film plays them: world by world (the record's order), then time."""
+    doc = Path(root) / str(record.get("file") or "")
+    name = doc.name
+    stem = name[:-len(".scene.xml")] if name.endswith(".scene.xml") else doc.stem
+    order = {str(w.get("id")): i for i, w in enumerate(record.get("worlds") or [])
+             if isinstance(w, dict)}
+
+    def key(path: Path) -> tuple:
+        parts = path.stem.split("__")
+        symbol = parts[1] if len(parts) > 2 else ""
+        try:
+            at = float(parts[-1].rstrip("s"))
+        except ValueError:
+            at = 0.0
+        return (order.get(symbol, len(order)), symbol, at, path.name)
+
+    return sorted((doc.parent / "frames").glob(f"{stem}__*.png"), key=key)
+
+
+def pick_frame(frames: list[Path]) -> Path | None:
+    """The frame that shows the most: the highest spread of luminance, the
+    earliest on a tie. A flat or empty proof frame never stands for the look."""
+    from PIL import Image, ImageStat
+    best, spread = None, -1.0
+    for path in frames:
+        try:
+            with Image.open(path) as im:
+                value = ImageStat.Stat(im.convert("L").resize((160, 90))).stddev[0]
+        except OSError:
+            continue
+        if value > spread:
+            best, spread = path, value
+    return best
+
+
+def contact_sheet(frames: list[Path], out: Path, *, columns: int = 4,
+                  width: int = 480) -> Path | None:
+    """Every proof frame of the section on one sheet, labelled with its
+    symbol and time, for the operator to judge the look across the shots."""
+    from PIL import Image, ImageDraw
+    if not frames:
+        return None
+    height, strip = width * 9 // 16, 22
+    rows = (len(frames) + columns - 1) // columns
+    sheet = Image.new("RGB", (columns * width, rows * (height + strip)), "black")
+    draw = ImageDraw.Draw(sheet)
+    for i, path in enumerate(frames):
+        x, y = (i % columns) * width, (i // columns) * (height + strip)
+        try:
+            with Image.open(path) as im:
+                sheet.paste(im.convert("RGB").resize((width, height)), (x, y + strip))
+        except OSError:
+            continue
+        parts = path.stem.split("__")
+        draw.text((x + 4, y + 4), " @ ".join(parts[1:]) if len(parts) > 1 else path.stem,
+                  fill="white")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    sheet.save(out)
+    return out
+
+
+class SectionLook:
+    """The look from the film itself. `yt vfx`'s own planner plans the film
+    and authors its lead section once; the mechanical gate judges it (build,
+    validation, frames, the legibility and geometry rules) and no vision
+    review is paid for; its frames go in front of the operator, and once
+    approved `yt vfx` carries the section forward and authors the others
+    against its program. Nothing made here is thrown away."""
+
+    def __init__(self, args, idea: Idea, project: workspace.Project, *,
+                 section: int | None = None, verbose: bool = True) -> None:
+        self.args = args
+        self.idea = idea
+        self.project = project
+        self.root = Path(project.root)
+        self.previous = load_record(self.root)
+        # A section named once stays the look's source until another is named.
+        asked = section or (self.previous.get("asked_section")
+                            if self.previous.get("source") == "section" else None)
+        self.section = max(1, int(asked or DEFAULT_SECTION))
+        self.verbose = verbose
+        self.notes = operator_notes(self.previous)
+        self.usage = Usage()
+
+    def reusable(self) -> dict | None:
+        """The last look when nothing asks for a new one: a look from this
+        section, pending or approved, whose files still match the record."""
+        if getattr(self.args, "fresh", False):
+            return None
+        rec = self.previous
+        if rec.get("source") != "section" or rec.get("asked_section") != self.section:
+            return None
+        if approval_state(self.root)["state"] not in ("pending", "approved"):
+            return None
+        if not (self.root / str(rec.get("document") or "")).is_file() or approvable(rec):
+            return None
+        if not frame_matches(rec, self.args):
+            return None
+        return None if record_mismatch(self.root, rec) else rec
+
+    def run(self) -> dict:
+        planner = vfx.planner_from_args(self.args, self.idea, self.project, lead=self.section,
+                                        look_notes=[n["notes"] for n in self.notes])
+        try:
+            result = planner.run_lead()
+        finally:
+            _merge_usage(self.usage, planner.usage)
+        rec = result["record"]
+        if not rec:
+            raise KeyframeError("the look pass authored nothing: no section has planned effects")
+        frames = proof_frames(self.root, rec)
+        out = self.root / KEYFRAME_DIR
+        out.mkdir(parents=True, exist_ok=True)
+        chosen = pick_frame(frames)
+        frame_rel = sheet_rel = ""
+        for stale in (out / FRAME_NAME, out / SHEET_NAME, out / LOOK_PROGRAM, out / LOOK_DOC):
+            stale.unlink(missing_ok=True)       # never show an earlier look as this one
+        if chosen is not None:
+            shutil.copy2(chosen, out / FRAME_NAME)
+            frame_rel = f"{KEYFRAME_DIR}/{FRAME_NAME}"
+        if contact_sheet(frames, out / SHEET_NAME) is not None:
+            sheet_rel = f"{KEYFRAME_DIR}/{SHEET_NAME}"
+        doc = self.root / rec["file"]
+        program = self.root / rec["program"] if rec.get("program") else None
+        # The other sections' authors may read keyframe/, not another vfx
+        # version: the look's program and document are kept here for them.
+        look_program = look_doc = ""
+        if program is not None and program.is_file():
+            shutil.copy2(program, out / LOOK_PROGRAM)
+            look_program = f"{KEYFRAME_DIR}/{LOOK_PROGRAM}"
+        if doc.is_file():
+            shutil.copy2(doc, out / LOOK_DOC)
+            look_doc = f"{KEYFRAME_DIR}/{LOOK_DOC}"
+        style = result.get("style") or {}
+        findings = [f for f in rec.get("findings") or [] if not f.startswith("note")]
+        record = {"idea": compact(self.idea), "stack": STACK, "house": planner.house_digest,
+                  "source": "section", "section": rec["n"], "asked_section": self.section,
+                  "heading": rec.get("section", ""), "version": rec.get("version"),
+                  "document": rec["file"], "program": rec.get("program", ""),
+                  "frame": frame_rel, "sheet": sheet_rel, "look_program": look_program,
+                  "look_document": look_doc, "frame_size": list(planner.frame),
+                  "frames": [str(p.relative_to(self.root)) for p in frames],
+                  "chosen_frame": str(chosen.relative_to(self.root)) if chosen else "",
+                  "record": rec, "findings": findings,
+                  "errors": [f for f in findings if f.startswith("error")],
+                  "rounds": rec.get("rounds") or [], "score": None,
+                  "treatment": style.get("look", ""), "camera": style.get("camera_language", ""),
+                  "hero": "", "elements": [], "operator_notes": self.notes,
+                  "cost_usd": round(self.usage.cost_usd, 4), "usage": asdict(self.usage),
+                  "document_digest": document_digest(doc),
+                  "program_digest": document_digest(program) if program else None,
+                  "approval": {"state": "pending", "notes": "", "digest": document_digest(doc),
+                               "at": _now()},
+                  "when": _now()}
+        if not doc.is_file() or approvable(record):
+            # Nothing the operator could approve: `yt run` authors it again.
+            record["approval"]["state"] = "failed"
+        write_json(record_path(self.root), record)
+        write_sheet(self.root, record)
+        return record
+
+
+# --------------------------------------------------------------------------- #
 # the sheet
 # --------------------------------------------------------------------------- #
 
@@ -973,6 +1231,8 @@ def write_sheet(root: Path, record: dict) -> Path:
              f"**Approval: {approval.get('state', 'none')}**"
              + (f" ({approval.get('at', '')})" if approval.get("at") else "")
              + (f" — notes: {approval['notes']}" if approval.get("notes") else ""), ""]
+    if record.get("source") == "section":
+        return _write_section_sheet(Path(root), record, lines)
     if record.get("frame"):
         lines += [f"![keyframe]({record['frame']})", "", f"Frame: `{record['frame']}` · "
                   f"document: `{record.get('document', '')}`", ""]
@@ -1028,6 +1288,50 @@ def write_sheet(root: Path, record: dict) -> Path:
     return path
 
 
+def _write_section_sheet(root: Path, record: dict, lines: list[str]) -> Path:
+    """keyframe.md for a look taken from the film: the chosen frame, the
+    contact sheet, the section and its files, the gate's findings, the commands."""
+    rec = record.get("record") or {}
+    lines += [f"The look is section {record.get('section')} of the film, "
+              f"**{record.get('heading', '')}**, authored once in `{record.get('version', '')}` "
+              "and judged by the mechanical gate only. Approve it and `yt vfx` carries it "
+              "forward and authors the other sections against it.", ""]
+    if record.get("frame"):
+        lines += [f"![keyframe]({record['frame']})", "",
+                  f"Frame: `{record['frame']}` (from `{record.get('chosen_frame', '')}`)", ""]
+    else:
+        lines += ["No proof frame was rendered; see the findings below.", ""]
+    if record.get("sheet"):
+        lines += [f"All {len(record.get('frames') or [])} proof frames: `{record['sheet']}`", "",
+                  f"![frames]({record['sheet']})", ""]
+    lines += [f"Program: `{record.get('program', '')}` · document: `{record.get('document', '')}`  ",
+              f"Treatment: {record.get('treatment', '')}  ",
+              f"Camera: {record.get('camera', '')}  ",
+              f"Cost: ${record.get('cost_usd', 0):g} (planning the film and authoring this section)",
+              "", "## Worlds", ""]
+    for w in rec.get("worlds") or []:
+        lines.append(f"- `{w.get('id', '')}` at {w.get('start', 0)}s for {w.get('seconds', 0)}s: "
+                     f"shots {', '.join(str(s) for s in w.get('shots') or [])}")
+    findings = record.get("findings") or []
+    lines += ["", "## The gate", ""] + ([f"- {f}" for f in findings] or ["- no finding"])
+    notes = operator_notes(record)
+    if notes:
+        lines += ["", "## Operator's notes", ""] + [f"- ({n.get('at', '')}) {n['notes']}"
+                                                   for n in notes]
+    refused = approvable(record)
+    if refused:
+        lines += ["", f"**This look cannot be approved: {refused}.** Run `yt keyframe` again."]
+    lines += ["", "## Commands", ""]
+    if not refused:
+        lines += [f"    yt keyframe --project {root} --approve",
+                  f"    yt keyframe --project {root} --reject \"what is wrong, in your words\""]
+    lines += [f"    yt keyframe --project {root} --fresh      # plan and author the section again",
+              ""]
+    path = Path(root) / "keyframe.md"
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
 # --------------------------------------------------------------------------- #
 # cli
 # --------------------------------------------------------------------------- #
@@ -1050,30 +1354,44 @@ def house_rules(args, project) -> tuple[str, dict]:
 def register(sub, parents=()) -> argparse.ArgumentParser:
     p = sub.add_parser(
         "keyframe", parents=list(parents),
-        help="lock the look: one composed frame of the film's elements, for approval",
+        help="lock the look: the film's lead section, authored once, for approval",
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--section", type=int, default=None,
+                   help=f"the section the look comes from (1-based; default the one named "
+                        f"last, else {DEFAULT_SECTION}; the first section with planned effects "
+                        "when it has none)")
+    p.add_argument("--jobs", type=int, default=LOOK_JOBS,
+                   help=f"sections planned at once (default {LOOK_JOBS}); the plan covers the "
+                        "film and `yt vfx` reuses it")
+    p.add_argument("--sheet", action="store_true",
+                   help="compose a separate style frame of the film's elements instead (the "
+                        "older look-lock, reviewed in rounds; its frame is not part of the film)")
     p.add_argument("--rounds", type=int, default=DEFAULT_ROUNDS,
-                   help="revision rounds the author gets after the first frame when the "
-                        f"review is under the bar (default {DEFAULT_ROUNDS})")
+                   help="with --sheet: revision rounds the author gets after the first frame "
+                        f"when the review is under the bar (default {DEFAULT_ROUNDS})")
     p.add_argument("--bar", type=float, default=DEFAULT_BAR,
-                   help=f"review score (0-10) under which the frame goes back (default {DEFAULT_BAR:g})")
-    p.add_argument("--budget-usd", type=float, default=2.0, dest="budget_usd",
-                   help="spend cap for one authoring session (default 2)")
+                   help=f"with --sheet: review score (0-10) under which the frame goes back "
+                        f"(default {DEFAULT_BAR:g})")
+    p.add_argument("--budget-usd", type=float, default=None, dest="budget_usd",
+                   help=f"spend cap for one authoring session (default {LOOK_BUDGET_USD:g}; "
+                        "2 with --sheet)")
     p.add_argument("--fresh", action="store_true",
-                   help="pick the elements and compose again, ignoring cached decisions")
+                   help="plan and author the look again (with --sheet: pick and compose "
+                        "again), ignoring cached decisions")
     p.add_argument("--approve", action="store_true",
                    help="record the operator's approval of the keyframe on disk")
     p.add_argument("--reject", metavar="NOTES",
                    help="record a rejection with notes; the next run obeys them first")
     p.add_argument("--host", metavar="USER@HOST",
                    help="render the frame on this machine (default: the fast still host)")
-    workspace.add_inputs(p, "script", "styles")
+    vfx.add_planning_args(p)
+    workspace.add_inputs(p, "script", "voice", "styles")
     p.set_defaults(run=run)
     return p
 
 
 def run(args) -> int:
-    idea, project = workspace.resolve(args, inputs=("script", "styles"))
+    idea, project = workspace.resolve(args, inputs=("script", "voice", "styles"))
     verbose = not args.quiet
     if args.approve and args.reject is not None:
         print("error: --approve and --reject together make no sense", file=sys.stderr)
@@ -1089,7 +1407,14 @@ def run(args) -> int:
               + (f": {state['notes']}" if state.get("notes") else ""))
         print(f"  {project.root / record.get('frame', '')}" if record.get("frame") else "")
         if state["state"] == "rejected":
-            print(f"  next: yt keyframe --project {project.root}   (your notes lead both calls)")
+            print(f"  next: yt keyframe --project {project.root}   (your notes lead the author)")
+        elif record.get("source") == "section" and not film_carries_look(project.root):
+            print(f"  next: yt vfx --project {project.root} --relook   (the animation exists: "
+                  f"section {record.get('section')} is carried into it and the others are "
+                  "authored again against it)")
+        elif record.get("source") == "section":
+            print(f"  next: yt vfx --project {project.root}   (section {record.get('section')} "
+                  "is carried forward; the other sections are authored against it)")
         else:
             print(f"  next: yt vfx --project {project.root}   (the author inherits this look)")
         return 0
@@ -1099,6 +1424,10 @@ def run(args) -> int:
         print("error: no engine reachable (RS_RENDER_HOSTS unset, no local binary); the "
               "keyframe is a rendered frame, so there is nothing to make", file=sys.stderr)
         return 1
+    if not args.sheet:
+        return run_section_look(args, idea, project, verbose=verbose)
+    if args.budget_usd is None:
+        args.budget_usd = 2.0
     rules, digest = house_rules(args, project)
     if verbose:
         print(f"keyframe for {STACK}: {idea.title}\n  -> {project.root}/{KEYFRAME_DIR}/"
@@ -1134,3 +1463,57 @@ def run(args) -> int:
         print("\nno frame was rendered; fix the errors above and run again", file=sys.stderr)
     print(f"{stage.usage}", file=sys.stderr)
     return 0 if record["frame"] else 1
+
+
+def run_section_look(args, idea: Idea, project: workspace.Project, *, verbose: bool) -> int:
+    """`yt keyframe` without --sheet: the look is the film's lead section."""
+    if args.budget_usd is None:
+        args.budget_usd = LOOK_BUDGET_USD
+    current = load_record(project.root)
+    state = approval_state(project.root)["state"]
+    if (state == "approved" and not args.fresh and frame_matches(current, args)
+            and (args.section is None or (current.get("source") == "section"
+                                          and args.section == current.get("asked_section")))):
+        # An approved look is the operator's decision; only --fresh or another
+        # --section replaces it, never a re-run downstream of voice or retime.
+        print(f"{idea.title} — the look is approved ({current.get('source') or 'sheet'}"
+              + (f", section {current.get('section')}" if current.get("source") == "section" else "")
+              + f"): {project.root / (current.get('frame') or '')}")
+        print("  --fresh authors a new one", file=sys.stderr)
+        return 0
+    look = SectionLook(args, idea, project, section=args.section, verbose=verbose)
+    reused = look.reusable()
+    if reused is not None:
+        state = approval_state(project.root)["state"]
+        print(f"{idea.title} — the look (section {reused.get('section')}, "
+              f"{reused.get('version')}) is {state}: {project.root / reused.get('frame', '')}")
+        if state == "pending":
+            print(f"approve: yt keyframe --project {project.root} --approve")
+            print(f"reject:  yt keyframe --project {project.root} --reject \"notes\"")
+        print("  --fresh plans and authors it again", file=sys.stderr)
+        return 0
+    if verbose:
+        print(f"keyframe for {STACK}: {idea.title}\n  the look is section {look.section} of "
+              "the film, authored once and judged by the gate; nothing is thrown away",
+              file=sys.stderr)
+    try:
+        record = look.run()
+    except (harness.HarnessError, ClaudeError, KeyframeError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"\n{idea.title} — THE LOOK: section {record['section']}, {record['heading']}")
+    print(f"  {record['document']} · {len(record['frames'])} proof frame(s) · "
+          f"{len(record['errors'])} error(s) · ${record['cost_usd']:g}")
+    for f in record["findings"][:8]:
+        print(f"  {f}")
+    print(f"\n{project.root}/\n  {record_path(project.root).name}\n  keyframe.md")
+    if record["frame"]:
+        print(f"\nframe:  {project.root / record['frame']}")
+        if record["sheet"]:
+            print(f"frames: {project.root / record['sheet']}")
+        print(f"approve: yt keyframe --project {project.root} --approve")
+        print(f"reject:  yt keyframe --project {project.root} --reject \"notes\"")
+    else:
+        print("\nno proof frame was rendered; fix the errors above and run again", file=sys.stderr)
+    print(f"{look.usage}", file=sys.stderr)
+    return 0 if record["frame"] and not record["errors"] else 1

@@ -1156,6 +1156,11 @@ def shot_times(shots: list[dict], duration: float, *, apart: float = 1.0) -> lis
     return sorted(mids)
 
 
+def has_errors(record: dict) -> bool:
+    """Whether a section record carries a gate error (or a failed authoring)."""
+    return any(str(f).startswith("error") for f in record.get("findings") or [])
+
+
 def passes_gate(record: dict) -> bool:
     """A section record that passed its gate and was reviewed."""
     return (record.get("score") is not None
@@ -1376,8 +1381,29 @@ def approved_look(root: Path) -> dict | None:
     return {"document": data.get("document") or "keyframe/keyframe.scene.xml",
             "frame": data.get("frame") or "keyframe/keyframe.png",
             "elements": data.get("elements") or [],
+            "source": data.get("source") or "sheet", "section": data.get("section"),
+            "program": data.get("program") or "", "sheet": data.get("sheet") or "",
+            "record": data.get("record"), "frame_size": data.get("frame_size"),
+            "look_program": data.get("look_program") or "",
             "approved_at": str((data.get("approval") or {}).get("at") or ""),
             "digest": str((data.get("approval") or {}).get("digest") or "")}
+
+
+def look_section(root: Path) -> dict | None:
+    """The section record of an approved look that came from the film itself
+    (`yt keyframe` authored it), when its document is still on disk; `yt vfx`
+    carries it forward instead of authoring that section again."""
+    look = approved_look(root)
+    if not look or look.get("source") != "section":
+        return None
+    record = look.get("record")
+    if not isinstance(record, dict) or record.get("n") is None:
+        return None
+    if not (Path(root) / str(record.get("file") or "")).is_file():
+        return None
+    if any(str(f).startswith("error") for f in record.get("findings") or []):
+        return None
+    return dict(record, look=True, frame_size=look.get("frame_size"))
 
 
 def prop_textures(root: Path, item: dict) -> list[Path]:
@@ -1603,7 +1629,7 @@ class Workspace:
               tokens: dict[str, str], frame: tuple[int, int], section: dict,
               effects: list[dict], words: dict[str, dict], assets: list[dict],
               direction_block: str = "", worlds: list[dict] | None = None,
-              constraints: list[dict] | None = None) -> Path:
+              constraints: list[dict] | None = None, look: bool = True) -> Path:
         """What the author of one section has to make, and the facts it has:
         one world symbol per section (or per planned cut), its shots as
         phases at their offsets, the hero convention, the props, the gate."""
@@ -1661,7 +1687,11 @@ class Workspace:
                   "parented to it) with every set solid; a penetration deeper than a "
                   "tenth of the hero's smallest dimension is an error naming the time, "
                   "the object and the depth. Key its path to clear every set solid: "
-                  "the floor, the walls and the furniture of the set.", "",
+                  "the floor, the walls and the furniture of the set. A hero that touches "
+                  "an object by design (attached to it, not passing through it) is declared "
+                  f"joined with `<meta name=\"{geometry.ATTACH_META}\" value=\"<hero id> "
+                  "<object id or prefix*> ...\"/>` (a trailing * names every id with that "
+                  "prefix), and the nodes it follows by `parent` never count.", "",
                   "Resting rule: a resting hero's lowest point equals the surface's top. "
                   "y points down (the floor is y=0, up is negative), so a surface's top "
                   "is its centre y minus half its height: a box at y=-77 with "
@@ -1783,8 +1813,29 @@ class Workspace:
                                  f"[{it.get('licence', '')}"
                                  + (f", {it['credit']}" if it.get("credit") else "") + "]")
                 lines.append("")
-        look = approved_look(self.root)
-        if look:
+        look = approved_look(self.root) if look else None
+        if look and look.get("source") == "section":
+            rel = lambda key: os.path.relpath(self.root / look[key], self.dir)  # noqa: E731
+            shown = [f"`{rel('frame')}`"] if look.get("frame") else []
+            if look.get("sheet"):
+                shown.append(f"`{rel('sheet')}` (all its proof frames)")
+            # The author may read its own directory and keyframe/, never another
+            # version's; keyframe/look.py is the approved program, byte for byte.
+            program_ref = rel("look_program") if look.get("look_program") else ""
+            lines += [f"## The approved look (section {look.get('section')} of this film, "
+                      f"approved {look.get('approved_at', '')})", "",
+                      f"The operator approved section {look.get('section')} as the film's "
+                      "look. It is part of this film, and yours must read as the same film. "
+                      + (f"Read its program `{program_ref}` first, " if program_ref
+                         else "")
+                      + (f"look at {' and '.join(shown)}. " if shown else "")
+                      + "Reuse its constructions: copy into your program its palette and type "
+                      "constants, the helper functions that build its labels, formulas, "
+                      "cards, materials, lights and recurring objects, and its camera "
+                      "language, and change only what your shots require. Do not import or "
+                      "run that program; copy what you need. The review scores fidelity "
+                      "to it.", ""]
+        elif look:
             doc_rel = os.path.relpath(self.root / look["document"], self.dir)
             png_rel = os.path.relpath(self.root / look["frame"], self.dir)
             lines += [f"## The approved look (keyframe, approved {look.get('approved_at', '')})", "",
@@ -2045,8 +2096,9 @@ class Workspace:
         life), and every hero group's world box is intersected with every
         set solid. A penetration is an error naming the time, the hero, the
         object, the depth and the fix; a declared rest
-        (`<meta name="hero-rests" ...>`) is checked for floating. `runner`
-        replaces EVAL_RUNNER's (a test's seam)."""
+        (`<meta name="hero-rests" ...>`) is checked for floating, and a
+        declared attachment (`<meta name="hero-attached" ...>`) is no
+        penetration. `runner` replaces EVAL_RUNNER's (a test's seam)."""
         path = self.dir / name
         if not path.is_file():
             return ["error: the author wrote no document"]
@@ -2063,6 +2115,7 @@ class Workspace:
             if not geometry.hero_groups(objects):
                 continue                      # a 2D symbol, or one with no hero
             rests = geometry.rests_declared(text, prefix="shot/")
+            attached = geometry.attachments_declared(text, prefix="shot/")
             held = shots.get(fact["id"]) or [{"label": "", "at": 0.0, "seconds": fact["duration"]}]
             times = geometry.sample_times(held, step)
             files = dict(extra)
@@ -2074,7 +2127,7 @@ class Workspace:
             # evaluated light elements keep these ids; the camera is the
             # world's own, under the include id `shot`.
             report = geometry.evaluate(
-                objects, times, run, rests=rests,
+                objects, times, run, rests=rests, attached=attached,
                 cameras=geometry.document_cameras(text, symbol=fact["id"], prefix="shot/"),
                 lights=geometry.document_lights(text), frame=frame, step=step)
             out += geometry.findings(report, symbol=fact["id"], shots=held)
@@ -2098,7 +2151,9 @@ class VfxPlanner:
                  words: dict[str, dict] | None = None, frame: tuple[int, int] = FRAME,
                  direction: dict | None = None, revisions: int = 2,
                  author_bar: float = 7.0, fresh: bool = False,
-                 verbose: bool = True, sections_only: set[int] | None = None) -> None:
+                 verbose: bool = True, sections_only: set[int] | None = None,
+                 lead: int | None = None, look_notes: list[str] | None = None,
+                 relook: bool = False, recover: bool = False) -> None:
         self.idea: Idea = bundle["idea"]
         self.bundle = bundle
         self.dossier = dossier
@@ -2130,6 +2185,31 @@ class VfxPlanner:
         self.sections_only = set(sections_only or ())
         self._stale = ({"12-author", "12-continuity", "14-reach", "15-plan"}
                        if self.sections_only else set())
+        #: The look pass (`yt keyframe`): only this section is authored, once,
+        #: judged by the mechanical gate alone, for the operator to approve as
+        #: the film's look; `yt vfx` then carries it forward (`approved_look`).
+        self.lead = lead
+        self.look_notes = [str(n) for n in look_notes or () if str(n).strip()]
+        # The look pass pays for no vision review: the revision rounds go back
+        # to the author only for what the gate finds (errors), never for a score.
+        self.review = lead is None
+        if lead is not None:
+            self._stale.add("12-lead")
+        #: `--relook`: put the approved look into an existing film -- carry its
+        #: section from the look pass and author every other section against it.
+        self.relook = bool(relook)
+        if self.relook:
+            self._stale |= {"12-author", "12-continuity", "14-reach", "15-plan"}
+        #: `--recover`: a run that ended before it saved its record (killed,
+        #: timed out, crashed) left its rounds on disk; rebuild the record from
+        #: them and the cached reviews instead of authoring anything.
+        self.recover = bool(recover)
+        if self.recover:
+            self._stale |= {"12-author", "12-continuity", "13-scene", "14-reach", "15-plan"}
+        #: The approved look the sections of this run are authored against
+        #: (its approval digest, "" for none) and the section it came from.
+        self._look_digest = ""
+        self._look_n: int | None = None
         self.usage = Usage()
         #: Section authors and reviewers run in a pool; each reports here once.
         self._account_lock = threading.Lock()
@@ -2418,7 +2498,21 @@ class VfxPlanner:
             "camera key, light, material, animation or geometry to change, and to what.",
         ])
         look = approved_look(self.ws.root)
-        if look:
+        if look and look.get("source") == "section":
+            prompt += "\n\n" + "\n\n".join([
+                harness.brief(f"The approved look (the operator approved section "
+                              f"{look.get('section')} of this film as its look)", {
+                                  "frame": str(self.ws.root / look["frame"]) if look.get("frame") else "",
+                                  "frames": str(self.ws.root / look["sheet"]) if look.get("sheet") else "",
+                                  "program": str(self.ws.root / look["look_program"]) if look.get("look_program") else "",
+                                  "document": str(self.ws.root / look["document"])}),
+                "Read the approved frames first. Score `fidelity` 0-10: how faithfully the "
+                "proof frames read as the same film -- its palette, type, construction of "
+                "labels and formulas, materials, lights and camera language. A section that "
+                "departs from the approved look is wrong, whatever else it does well: name "
+                "every departure as a finding with the fix being to copy the approved "
+                "section's construct, and do not score the section above its fidelity."])
+        elif look:
             prompt += "\n\n" + "\n\n".join([
                 harness.brief("The approved look (the operator approved this keyframe as the "
                               "film's look)", {
@@ -2480,7 +2574,15 @@ class VfxPlanner:
                               effects=effects, words=self.words,
                               assets=self.bundle.get("assets", []),
                               direction_block=self._direction_block(), worlds=worlds,
-                              constraints=self.bundle.get("picture_check") or [])
+                              constraints=self.bundle.get("picture_check") or [],
+                              look=self.lead is None)
+        if self.look_notes and n == self.lead:
+            # A rejected look comes back with the operator's words; they lead.
+            brief.write_text("## The operator's notes on the last look\n\nThe operator "
+                             "rejected the previous version of this section as the film's "
+                             "look. These notes outrank everything else in this brief:\n\n"
+                             + "\n".join(f"- {note}" for note in self.look_notes) + "\n\n"
+                             + brief.read_text(encoding="utf-8"), encoding="utf-8")
         name = self.ws.doc_name(n, section)
         program = self.ws.program_name(name)
         engine = harness.ENGINE(EngineConfig(
@@ -2544,8 +2646,9 @@ class VfxPlanner:
                 findings = built + findings
             errors = [f for f in findings if f.startswith("error")]
             paid = reviewer.usage.cost_usd
-            review = None if errors else self._review(reviewer, n, name, section, worlds, round_no)
-            if not errors:
+            review = (None if errors or not self.review
+                      else self._review(reviewer, n, name, section, worlds, round_no))
+            if not errors and self.review:
                 review_costs.append(reviewer.usage.cost_usd - paid)
             score = float(review["score"]) if review and review.get("score") is not None else None
             rounds.append({"round": round_no, "symbols": symbols, "errors": len(errors),
@@ -2655,19 +2758,54 @@ class VfxPlanner:
                 "cost_usd": round(engine.usage.cost_usd + reviewer.usage.cost_usd, 4),
                 "budget": self.spend.row(n),
                 "timed_out_usage": timed_out_usage(engine.usage),
-                "engine": reviewer.report()}
+                "engine": reviewer.report(), **self._provenance(n, findings)}
 
     def author(self, outline: dict, effects: list[dict], style: dict,
                tokens: dict[str, str]) -> list[dict]:
-        """One agent per section, in a new vfx/vNN/; the previous version stays."""
+        """One agent per section, in a new vfx/vNN/; the previous version stays.
+
+        In the look pass (`lead`) only that section is authored, once, and the
+        record is kept as "12-lead"; otherwise a section the operator approved
+        as the look is carried forward like one `--sections` leaves alone."""
         sections = outline.get("sections", [])
         by_heading = {s["section"]: s for s in effects}
+        lead_mode = self.lead is not None
+        look = None if lead_mode else approved_look(self.ws.root)
+        self._look_digest = str((look or {}).get("digest") or "")
+
+        # The approved look's section enters the film in two places only: the
+        # first animation after the look (nothing authored yet), and --relook.
+        # After that the active version is the film: --sections and the
+        # competition below treat that section like any other. A --fresh run
+        # replans, so the look pass (made for the old plan) is not carried;
+        # keyframe/look.py still leads every brief.
+        approved = None if lead_mode or self.fresh else look_section(self.ws.root)
+        if approved is not None and approved.get("frame_size") \
+                and tuple(approved["frame_size"]) != tuple(self.frame):
+            self._say(f"  the approved look was authored at {tuple(approved['frame_size'])}, "
+                      f"this run frames {tuple(self.frame)}; it is not carried")
+            approved = None
+        if self.relook and approved is None:
+            raise ValueError("--relook needs an approved look from the film (yt keyframe "
+                             "--approve) at this frame size, and no --fresh")
+        self._look_n = int(approved["n"]) if approved is not None else None
 
         previous = {}
-        if self.sections_only:
+        if self.sections_only or self.relook:
             for rec in self.dossier.load("12-author") or []:
                 if isinstance(rec, dict) and rec.get("n") is not None:
                     previous[int(rec["n"])] = rec
+        if self.relook:
+            planned = {n for n, s in enumerate(sections, 1)
+                       if by_heading.get(s.get("heading", ""), {}).get("effects")}
+            self.sections_only = planned - {self._look_n}
+            previous[self._look_n] = approved
+            carry = {self._look_n}
+        else:
+            carry = {n for n in previous if n not in self.sections_only}
+            if approved is not None and not self.sections_only:
+                previous[self._look_n] = approved
+                carry.add(self._look_n)
 
         def work() -> list[dict]:
             version = self.ws.new_version()
@@ -2675,22 +2813,32 @@ class VfxPlanner:
             jobs = [(n, s, by_heading.get(s.get("heading", ""), {}))
                     for n, s in enumerate(sections, 1)]
             jobs = [j for j in jobs if j[2].get("effects")]
+            if lead_mode:
+                pick = [j for j in jobs if j[0] == self.lead] or jobs[:1]
+                if pick and pick[0][0] != self.lead:
+                    self._say(f"  section {self.lead} has no planned effects; the look comes "
+                              f"from section {pick[0][0]}")
+                    self.lead = pick[0][0]
+                jobs = pick
             shots: dict[str, list[dict]] = {}
             for _, s, group in jobs:
                 for w in self._worlds(s, group):
                     shots[w["id"]] = w["shots"]
             self.ws.write_shots(shots)
             carried: list[dict] = []
-            if self.sections_only:
+            if carry:
                 for n, s, group in list(jobs):
-                    if n in self.sections_only or n not in previous:
+                    if n not in carry:
                         continue
                     record = self.ws.carry_section(previous[n], n)
                     if record is not None:
                         carried.append(record)
                         jobs.remove((n, s, group))
                 self._say(f"  carrying section(s) {', '.join(str(r['n']) for r in carried) or 'none'} "
-                          f"forward from {', '.join(sorted({str(r.get('carried_from')) for r in carried})) or '-'}")
+                          f"forward from {', '.join(sorted({str(r.get('carried_from')) for r in carried})) or '-'}"
+                          + (f" (section {approved['n']} is the approved look)"
+                             if approved is not None and any(r["n"] == approved["n"] for r in carried)
+                             else ""))
             stage_usd = (self.stage_budget_usd if self.stage_budget_usd is not None
                          else self.budget_usd * len(jobs))
             self.spend = SpendBudget(self.budget_usd, stage_usd)
@@ -2722,7 +2870,17 @@ class VfxPlanner:
             # replaces: the new one is kept only if it is at least as good.
             for i, record in enumerate(authored):
                 before = previous.get(record["n"]) if self.sections_only else None
-                if before is not None and keeps_previous(before, record):
+                if before is None:
+                    continue
+                broken = has_errors(record)
+                if self.relook:
+                    # judged against another look: only a broken attempt loses
+                    keep = broken and not has_errors(before)
+                elif before.get("look"):
+                    keep = broken           # the look has no score; a sound attempt wins
+                else:
+                    keep = keeps_previous(before, record)
+                if keep:
                     kept = self.ws.keep_previous(before, record, record["n"])
                     if kept is not None:
                         self._say(f"    [{record['n']}] the new attempt "
@@ -2730,7 +2888,7 @@ class VfxPlanner:
                                   f"({before.get('score')}); that version is kept")
                         authored[i] = kept
             return sorted(carried + authored, key=lambda r: r["n"])
-        return self._stage("12-author", work)
+        return self._stage("12-lead" if lead_mode else "12-author", work)
 
     def _failed_record(self, n: int, section: dict, group: dict, exc: Exception) -> dict:
         """What is recorded for a section whose authoring raised: nothing it
@@ -2746,7 +2904,20 @@ class VfxPlanner:
                             "shots": [s["label"] for s in w["shots"]],
                             "phases": [e["id"] for e in w["phases"]]} for w in worlds],
                 "revisions": 0, "rounds": [], "best_round": None, "score": None,
-                "review": None, "cost_usd": 0.0}
+                "review": None, "cost_usd": 0.0, **self._provenance(n, ["error"])}
+
+    def _provenance(self, n: int, findings: list) -> dict:
+        """What a section record says about the look: made as the look (the
+        look pass), the look it was authored against, and -- when it is a
+        sound authoring of the look's own section the operator asked for --
+        that it now stands for that look in the film."""
+        out = {"look_digest": self._look_digest}
+        if self.lead is not None and n == self.lead:
+            out["look"] = True
+        if (self._look_n == n and n in self.sections_only and self._look_digest
+                and not any(str(f).startswith("error") for f in findings or [])):
+            out["reauthored_look"] = self._look_digest
+        return out
 
     def continuity(self, authored: list[dict]) -> dict:
         """One proof frame from each section, side by side: do they read as
@@ -2923,12 +3094,96 @@ class VfxPlanner:
 
     # -- run ---------------------------------------------------------------
 
-    def run(self) -> dict:
+    def run_lead(self) -> dict:
+        """The look pass: plan every section (cached for `yt vfx`), author the
+        lead one once and return its record; nothing film-wide is computed."""
+        if self.lead is None:
+            raise ValueError("run_lead needs a lead section")
+        if self.fresh:
+            # A new plan: what was authored under the old one no longer fits it.
+            for name in ("12-author", "12-continuity", "13-scene", "14-reach", "15-plan"):
+                self.dossier.drop(name)
         outline = self.outline()
         style = self.style()
         tokens = tokens_from(style)
         effects = self.effects(outline, style)
         authored = self.author(outline, effects, style, tokens)
+        record = next((r for r in authored if r.get("n") == self.lead), None)
+        return {"record": record, "style": style, "tokens": tokens,
+                "version": (record or {}).get("version") or self.ws.version,
+                "usage": asdict(self.usage)}
+
+    def recovered(self, outline: dict, effects: list[dict]) -> list[dict]:
+        """The authoring record of the last version, rebuilt from what its run
+        left on disk: each section's kept rounds (vfx/vNN/rounds/<stem>/rNN)
+        and the reviews the harness cached for them. A section goes back on its
+        best reviewed round; one with no reviewed round goes back on its last
+        and is recorded with an error, so the scene leaves it out and
+        `--sections N` authors it again. No model is asked and nothing renders."""
+        have = Workspace.versions(self.ws.base)
+        if not have:
+            raise ValueError("--recover needs an authored version under vfx/; there is none")
+        self.ws = Workspace(self.ws.root, version=have[-1])
+        by_heading = {s["section"]: s for s in effects}
+        out: list[dict] = []
+        for n, section in enumerate(outline.get("sections", []), 1):
+            group = by_heading.get(section.get("heading", ""), {})
+            if not group.get("effects"):
+                continue
+            name = self.ws.doc_name(n, section)
+            stem = name[:-len(".scene.xml")]
+            kept = self.ws.dir / self.ws.ROUNDS_DIR / stem
+            numbers = sorted(int(d.name[1:]) for d in kept.glob("r[0-9][0-9]")
+                             if (d / name).is_file()) if kept.is_dir() else []
+            rounds = []
+            for r in numbers:
+                saved = read_json(self.ws.root / harness.DECISIONS_DIR / "vfx"
+                                  / f"review-{self.ws.version}-{n:02d}-r{r}.json", warn=False) or {}
+                review = saved.get("result") if isinstance(saved.get("result"), dict) else None
+                score = review.get("score") if review else None
+                rounds.append({"round": r, "symbols": [], "errors": 0 if review else 1,
+                               "score": float(score) if score is not None else None,
+                               "fidelity": (review or {}).get("fidelity"), "review": review,
+                               "timed_out": False, "findings": [],
+                               "cost_usd": float(saved.get("cost_usd") or 0.0)})
+            best = max((r for r in rounds if r["score"] is not None),
+                       key=lambda r: (r["score"], r["round"]), default=None)
+            chosen = best or (rounds[-1] if rounds else None)
+            if chosen is not None:
+                self.ws.restore_round(name, chosen["round"])
+            final = self.ws.dir / name
+            findings = [] if best else [
+                f"error: recovered: no round of section {n} was reviewed before the run "
+                f"ended; author it again (`yt vfx --sections {n}`)"]
+            text = final.read_text(encoding="utf-8", errors="replace") if final.is_file() else ""
+            worlds = self._worlds(section, group)
+            program = self.ws.program_name(name)
+            self._say(f"    [{n}] {name}: " + (f"round {best['round']} ({best['score']:g}/10)"
+                                               if best else "no reviewed round"))
+            out.append({"n": n, "section": section.get("heading", ""),
+                        "file": f"{self.ws.rel}/{name}", "version": self.ws.version,
+                        "program": f"{self.ws.rel}/{program}" if (self.ws.dir / program).is_file() else "",
+                        "provenance": sdkkit.provenance_of(final) if final.is_file() else None,
+                        "symbols": [f["id"] for f in symbol_facts(text)], "findings": findings,
+                        "tool_calls": 0, "props_declined": props_declined(text),
+                        "worlds": [{"id": w["id"], "start": w["start"], "seconds": w["seconds"],
+                                    "shots": [s["label"] for s in w["shots"]],
+                                    "phases": [e["id"] for e in w["phases"]]} for w in worlds],
+                        "revisions": max(numbers) if numbers else 0, "rounds": rounds,
+                        "best_round": chosen["round"] if chosen else None,
+                        "score": best["score"] if best else None,
+                        "review": best["review"] if best else None,
+                        "cost_usd": round(sum(r["cost_usd"] for r in rounds), 4),
+                        "recovered": True, **self._provenance(n, findings)})
+        return out
+
+    def run(self) -> dict:
+        outline = self.outline()
+        style = self.style()
+        tokens = tokens_from(style)
+        effects = self.effects(outline, style)
+        authored = (self._stage("12-author", lambda: self.recovered(outline, effects))
+                    if self.recover else self.author(outline, effects, style, tokens))
         continuity = self.continuity(authored)
         scene = self.scene_map(effects, authored)
         self.dossier.save("13-scene", scene)
@@ -3171,15 +3426,23 @@ def write_vfx(dossier: Dossier, data: dict) -> list[Path]:
 # cli
 # --------------------------------------------------------------------------- #
 
+def add_planning_args(p) -> None:
+    """The flags that shape the plan and the frame. `yt keyframe` plans the
+    film for `yt vfx` and authors its lead section, so both take them."""
+    p.add_argument("--inspo", default="",
+                   help="comma-separated channels to match visually")
+    p.add_argument("--per-section", type=int, default=3,
+                   help="effects per section (default 3)")
+    p.add_argument("--width", type=int, default=FRAME[0], help="frame width (1920)")
+    p.add_argument("--height", type=int, default=FRAME[1], help="frame height (1080)")
+
+
 def register(sub, parents=()) -> argparse.ArgumentParser:
     p = sub.add_parser(
         "vfx", parents=list(parents),
         help="plan the animation and have the model author it for scene-render",
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--inspo", default="",
-                   help="comma-separated channels to match visually")
-    p.add_argument("--per-section", type=int, default=3,
-                   help="effects per section (default 3)")
+    add_planning_args(p)
     p.add_argument("--jobs", type=int, default=2,
                    help="sections planned and authored in parallel (default 2)")
     p.add_argument("--budget-usd", type=float, default=SECTION_BUDGET_USD, dest="budget_usd",
@@ -3190,8 +3453,6 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                         "(default: --budget-usd times the sections authored)")
     p.add_argument("--budget-hours", type=float,
                    help="refinement hours available; shapes what to cut")
-    p.add_argument("--width", type=int, default=FRAME[0], help="frame width (1920)")
-    p.add_argument("--height", type=int, default=FRAME[1], help="frame height (1080)")
     p.add_argument("--revisions", type=int, default=2,
                    help="rounds the author gets to fix what the frame gate and the "
                         "review find (default 2)")
@@ -3201,6 +3462,15 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
     p.add_argument("--fresh", action="store_true",
                    help="redo every stage, authoring included, into the next vfx/vNN/ "
                         "instead of reusing cached ones")
+    p.add_argument("--recover", action="store_true",
+                   help="rebuild the record of a run that ended before saving it (killed, timed "
+                        "out, crashed) from vfx/vNN/rounds and the cached reviews, then finish "
+                        "the film-wide stages; nothing is authored, a section with no reviewed "
+                        "round is marked for `--sections`")
+    p.add_argument("--relook", action="store_true",
+                   help="put the approved look into the film: carry the section `yt keyframe` "
+                        "authored and author every other section again against it, on the "
+                        "same plan (what `yt doctor` names when the animation predates the look)")
     p.add_argument("--sections", metavar="N[,M]",
                    help="re-author only these sections (1-based, as in 02-...) into the next "
                         "vfx/vNN/, carrying the others' programs, documents and scores "
@@ -3212,12 +3482,18 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
     return p
 
 
-def run(args) -> int:
-    idea, project = workspace.resolve(args, inputs=("script", "voice", "styles"))
+def planner_from_args(args, idea: Idea, project, *, sections_only: set[int] | None = None,
+                      lead: int | None = None, look_notes: list[str] | None = None,
+                      relook: bool = False, recover: bool = False) -> VfxPlanner:
+    """The planner `yt vfx` runs, built from the project's files and the flags;
+    `yt keyframe` builds the same one for its look pass (`lead`), so the plan it
+    makes is the plan `yt vfx` reuses. A flag a command does not define takes
+    `yt vfx`'s default."""
+    verbose = not args.quiet
     if project.has("dossier"):
         bundle = load_dossier(project.root, idea)
     else:
-        if not args.quiet:
+        if verbose:
             print("no research in this project; planning from the idea alone",
                   file=sys.stderr)
         bundle = {"idea": idea, "outline": {}, "claims": [], "assets": [], "premise": ""}
@@ -3228,7 +3504,6 @@ def run(args) -> int:
     words = voice_words(project.source("voice", workspace.override(args, "voice")))
     direction = read_json(project.source("styles", workspace.override(args, "styles")),
                           warn=False) or {}
-    verbose = not args.quiet
     if verbose:
         print(f"planning visuals for {STACK}: {bundle['idea'].title}\n  -> {dossier.dir}"
               + ("" if sections else "\n  (no screenplay yet: effects will not map to shots)")
@@ -3237,7 +3512,26 @@ def run(args) -> int:
     if render.engine() is None and not render.remote_host(args):
         print("warning: no engine reachable (RS_RENDER_HOST unset, no local binary); "
               "documents will pass only the SDK's checks", file=sys.stderr)
+    rules, digest = house.for_args(args, project, "vfx")
+    if rules and verbose:
+        print(f"standards: {', '.join(digest['sources'])}", file=sys.stderr)
+    flag = lambda name, default: getattr(args, name, default)  # noqa: E731
+    return VfxPlanner(
+        bundle, dossier, Workspace(project.root), model=args.model, house=rules,
+        house_digest=digest,
+        inspo=[s.strip() for s in str(flag("inspo", "") or "").split(",") if s.strip()],
+        per_section=flag("per_section", 3), jobs=flag("jobs", 2),
+        budget_usd=flag("budget_usd", SECTION_BUDGET_USD),
+        stage_budget_usd=flag("stage_budget_usd", None), budget_hours=flag("budget_hours", None),
+        sections=sections, words=words,
+        frame=(flag("width", FRAME[0]), flag("height", FRAME[1])), direction=direction,
+        revisions=flag("revisions", 2), author_bar=flag("author_bar", 7.0),
+        fresh=bool(flag("fresh", False)), sections_only=sections_only, lead=lead,
+        look_notes=look_notes, relook=relook, recover=recover, verbose=verbose)
 
+
+def run(args) -> int:
+    idea, project = workspace.resolve(args, inputs=("script", "voice", "styles"))
     sections_only: set[int] = set()
     if getattr(args, "sections", None):
         try:
@@ -3251,24 +3545,35 @@ def run(args) -> int:
                   "plan they were authored to would change under them", file=sys.stderr)
             return 2
 
-    rules, digest = house.for_args(args, project, "vfx")
-    if rules and verbose:
-        print(f"standards: {', '.join(digest['sources'])}", file=sys.stderr)
-    planner = VfxPlanner(
-        bundle, dossier, Workspace(project.root), model=args.model, house=rules,
-        house_digest=digest,
-        inspo=[s.strip() for s in args.inspo.split(",") if s.strip()],
-        per_section=args.per_section, jobs=args.jobs, budget_usd=args.budget_usd,
-        stage_budget_usd=args.stage_budget_usd, budget_hours=args.budget_hours, sections=sections, words=words,
-        frame=(args.width, args.height), direction=direction,
-        revisions=args.revisions, author_bar=args.author_bar, fresh=args.fresh,
-        sections_only=sections_only,
-        verbose=verbose)
+    relook = bool(getattr(args, "relook", False))
+    recover = bool(getattr(args, "recover", False))
+    if recover and (args.fresh or sections_only or relook):
+        print("error: --recover rebuilds the last run's record as it stands; it takes neither "
+              "--fresh, --sections nor --relook", file=sys.stderr)
+        return 2
+    if relook and (args.fresh or sections_only):
+        print("error: --relook carries the approved section and authors all the others on the "
+              "cached plan; it takes neither --fresh nor --sections", file=sys.stderr)
+        return 2
+    planner = planner_from_args(args, idea, project, sections_only=sections_only,
+                                relook=relook, recover=recover)
+    dossier = planner.dossier
+    try:
+        from . import keyframe
+        pending = keyframe.approval_state(project.root)["state"] == "pending"
+    except ImportError:
+        pending = False
+    if pending and not args.quiet:
+        print("note: a look awaits approval (yt keyframe --approve); until it is approved "
+              "every section is authored without it", file=sys.stderr)
     try:
         data = planner.run()
     except ClaudeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
     scene = data["scene"]
     for eid, why in scene["dropped"].items():
