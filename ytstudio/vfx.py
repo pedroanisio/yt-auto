@@ -2155,7 +2155,8 @@ class VfxPlanner:
                  author_bar: float = 7.0, fresh: bool = False,
                  verbose: bool = True, sections_only: set[int] | None = None,
                  lead: int | None = None, look_notes: list[str] | None = None,
-                 relook: bool = False, recover: bool = False) -> None:
+                 relook: bool = False, recover: bool = False,
+                 take_attempt: set[int] | None = None, take_why: str = "") -> None:
         self.idea: Idea = bundle["idea"]
         self.bundle = bundle
         self.dossier = dossier
@@ -2206,7 +2207,11 @@ class VfxPlanner:
         #: timed out, crashed) left its rounds on disk; rebuild the record from
         #: them and the cached reviews instead of authoring anything.
         self.recover = bool(recover)
-        if self.recover:
+        #: `--take-attempt N`: the operator takes a section's new attempt over
+        #: the version the competition kept (`taken`).
+        self.take_attempt = set(take_attempt or ())
+        self.take_why = take_why
+        if self.recover or self.take_attempt:
             self._stale |= {"12-author", "12-continuity", "13-scene", "14-reach", "15-plan"}
         #: The approved look the sections of this run are authored against
         #: (its approval digest, "" for none) and the section it came from.
@@ -3130,62 +3135,114 @@ class VfxPlanner:
         out: list[dict] = []
         for n, section in enumerate(outline.get("sections", []), 1):
             group = by_heading.get(section.get("heading", ""), {})
-            if not group.get("effects"):
-                continue
-            name = self.ws.doc_name(n, section)
-            stem = name[:-len(".scene.xml")]
-            kept = self.ws.dir / self.ws.ROUNDS_DIR / stem
-            numbers = sorted(int(d.name[1:]) for d in kept.glob("r[0-9][0-9]")
-                             if (d / name).is_file()) if kept.is_dir() else []
-            rounds = []
-            for r in numbers:
-                saved = read_json(self.ws.root / harness.DECISIONS_DIR / "vfx"
-                                  / f"review-{self.ws.version}-{n:02d}-r{r}.json", warn=False) or {}
-                review = saved.get("result") if isinstance(saved.get("result"), dict) else None
-                score = review.get("score") if review else None
-                rounds.append({"round": r, "symbols": [], "errors": 0 if review else 1,
-                               "score": float(score) if score is not None else None,
-                               "fidelity": (review or {}).get("fidelity"), "review": review,
-                               "timed_out": False, "findings": [],
-                               "cost_usd": float(saved.get("cost_usd") or 0.0)})
-            best = max((r for r in rounds if r["score"] is not None),
-                       key=lambda r: (r["score"], r["round"]), default=None)
-            chosen = best or (rounds[-1] if rounds else None)
-            if chosen is not None:
-                self.ws.restore_round(name, chosen["round"])
-            final = self.ws.dir / name
-            findings = [] if best else [
-                f"error: recovered: no round of section {n} was reviewed before the run "
-                f"ended; author it again (`yt vfx --sections {n}`)"]
-            text = final.read_text(encoding="utf-8", errors="replace") if final.is_file() else ""
-            worlds = self._worlds(section, group)
-            program = self.ws.program_name(name)
-            self._say(f"    [{n}] {name}: " + (f"round {best['round']} ({best['score']:g}/10)"
-                                               if best else "no reviewed round"))
-            out.append({"n": n, "section": section.get("heading", ""),
-                        "file": f"{self.ws.rel}/{name}", "version": self.ws.version,
-                        "program": f"{self.ws.rel}/{program}" if (self.ws.dir / program).is_file() else "",
-                        "provenance": sdkkit.provenance_of(final) if final.is_file() else None,
-                        "symbols": [f["id"] for f in symbol_facts(text)], "findings": findings,
-                        "tool_calls": 0, "props_declined": props_declined(text),
-                        "worlds": [{"id": w["id"], "start": w["start"], "seconds": w["seconds"],
-                                    "shots": [s["label"] for s in w["shots"]],
-                                    "phases": [e["id"] for e in w["phases"]]} for w in worlds],
-                        "revisions": max(numbers) if numbers else 0, "rounds": rounds,
-                        "best_round": chosen["round"] if chosen else None,
-                        "score": best["score"] if best else None,
-                        "review": best["review"] if best else None,
-                        "cost_usd": round(sum(r["cost_usd"] for r in rounds), 4),
-                        "recovered": True, **self._provenance(n, findings)})
+            if group.get("effects"):
+                out.append(dict(self._from_rounds(n, section, group), recovered=True))
         return out
+
+    def _from_rounds(self, n: int, section: dict, group: dict) -> dict:
+        """One section's record from its kept rounds in this version and the
+        reviews cached for them; its best reviewed round is put back in place,
+        or its last with an error when none was reviewed."""
+        name = self.ws.doc_name(n, section)
+        stem = name[:-len(".scene.xml")]
+        kept = self.ws.dir / self.ws.ROUNDS_DIR / stem
+        numbers = sorted(int(d.name[1:]) for d in kept.glob("r[0-9][0-9]")
+                         if (d / name).is_file()) if kept.is_dir() else []
+        rounds = []
+        for r in numbers:
+            saved = read_json(self.ws.root / harness.DECISIONS_DIR / "vfx"
+                              / f"review-{self.ws.version}-{n:02d}-r{r}.json", warn=False) or {}
+            review = saved.get("result") if isinstance(saved.get("result"), dict) else None
+            score = review.get("score") if review else None
+            rounds.append({"round": r, "symbols": [], "errors": 0 if review else 1,
+                           "score": float(score) if score is not None else None,
+                           "fidelity": (review or {}).get("fidelity"), "review": review,
+                           "timed_out": False, "findings": [],
+                           "cost_usd": float(saved.get("cost_usd") or 0.0)})
+        best = max((r for r in rounds if r["score"] is not None),
+                   key=lambda r: (r["score"], r["round"]), default=None)
+        chosen = best or (rounds[-1] if rounds else None)
+        if chosen is not None:
+            self.ws.restore_round(name, chosen["round"])
+        final = self.ws.dir / name
+        findings = [] if best else [
+            f"error: recovered: no round of section {n} was reviewed before the run "
+            f"ended; author it again (`yt vfx --sections {n}`)"]
+        text = final.read_text(encoding="utf-8", errors="replace") if final.is_file() else ""
+        worlds = self._worlds(section, group)
+        program = self.ws.program_name(name)
+        self._say(f"    [{n}] {name}: " + (f"round {best['round']} ({best['score']:g}/10)"
+                                           if best else "no reviewed round"))
+        return {"n": n, "section": section.get("heading", ""),
+                "file": f"{self.ws.rel}/{name}", "version": self.ws.version,
+                "program": f"{self.ws.rel}/{program}" if (self.ws.dir / program).is_file() else "",
+                "provenance": sdkkit.provenance_of(final) if final.is_file() else None,
+                "symbols": [f["id"] for f in symbol_facts(text)], "findings": findings,
+                "tool_calls": 0, "props_declined": props_declined(text),
+                "worlds": [{"id": w["id"], "start": w["start"], "seconds": w["seconds"],
+                            "shots": [s["label"] for s in w["shots"]],
+                            "phases": [e["id"] for e in w["phases"]]} for w in worlds],
+                "revisions": max(numbers) if numbers else 0, "rounds": rounds,
+                "best_round": chosen["round"] if chosen else None,
+                "score": best["score"] if best else None,
+                "review": best["review"] if best else None,
+                "cost_usd": round(sum(r["cost_usd"] for r in rounds), 4),
+                **self._provenance(n, findings)}
+
+    def taken(self, outline: dict, effects: list[dict]) -> list[dict]:
+        """`--take-attempt N`: the operator overrides the competition after the
+        fact. A section whose new attempt lost to the version it replaced (its
+        record says `kept_from`; the attempt's rounds sit in rounds/<stem>.attempt)
+        gets the attempt back -- its rounds swap places with the kept ones and
+        its best reviewed round goes in place -- with the operator's reason on
+        the record. The other sections keep theirs. Nothing is authored."""
+        records = [r for r in self.dossier.load("12-author") or [] if isinstance(r, dict)]
+        if not records:
+            raise ValueError("--take-attempt needs an authoring record; run `yt vfx` first")
+        version = next((r.get("version") for r in records if r.get("version")), None)
+        self.ws = Workspace(self.ws.root, version=version)
+        by_heading = {s["section"]: s for s in effects}
+        sections = outline.get("sections", [])
+        out = []
+        for record in records:
+            n = int(record["n"])
+            if n not in self.take_attempt:
+                out.append(record)
+                continue
+            if not record.get("kept_from") or n > len(sections):
+                raise ValueError(f"section {n} kept its new attempt already; there is no "
+                                 "earlier version to override")
+            section = sections[n - 1]
+            stem = self.ws.doc_name(n, section)[:-len(".scene.xml")]
+            rounds = self.ws.dir / self.ws.ROUNDS_DIR
+            aside = rounds / f"{stem}.attempt"
+            if not aside.is_dir():
+                raise ValueError(f"section {n}'s attempt is not on disk ({aside})")
+            beaten = rounds / f"{stem}.kept"
+            if beaten.exists():
+                shutil.rmtree(beaten)
+            if (rounds / stem).is_dir():
+                (rounds / stem).rename(beaten)
+            aside.rename(rounds / stem)
+            new = self._from_rounds(n, section, by_heading.get(section.get("heading", ""), {}))
+            new["taken"] = {"over": record.get("kept_from"), "its_score": record.get("score"),
+                            "why": self.take_why or "taken by the operator"}
+            self._say(f"    [{n}] the attempt ({new.get('score')}) replaces "
+                      f"{record.get('kept_from')}'s ({record.get('score')}): {new['taken']['why']}")
+            out.append(new)
+        return sorted(out, key=lambda r: r["n"])
 
     def run(self) -> dict:
         outline = self.outline()
         style = self.style()
         tokens = tokens_from(style)
         effects = self.effects(outline, style)
-        authored = (self._stage("12-author", lambda: self.recovered(outline, effects))
-                    if self.recover else self.author(outline, effects, style, tokens))
+        if self.take_attempt:
+            authored = self._stage("12-author", lambda: self.taken(outline, effects))
+        elif self.recover:
+            authored = self._stage("12-author", lambda: self.recovered(outline, effects))
+        else:
+            authored = self.author(outline, effects, style, tokens)
         continuity = self.continuity(authored)
         scene = self.scene_map(effects, authored)
         self.dossier.save("13-scene", scene)
@@ -3469,6 +3526,12 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                         "out, crashed) from vfx/vNN/rounds and the cached reviews, then finish "
                         "the film-wide stages; nothing is authored, a section with no reviewed "
                         "round is marked for `--sections`")
+    p.add_argument("--take-attempt", metavar="N[,M]", dest="take_attempt",
+                   help="take these sections' new attempts over the earlier versions the "
+                        "competition kept (their record says kept_from), e.g. when the kept "
+                        "one cannot render; nothing is authored")
+    p.add_argument("--why", default="", help="with --take-attempt: the operator's reason, "
+                                              "kept on the record")
     p.add_argument("--relook", action="store_true",
                    help="put the approved look into the film: carry the section `yt keyframe` "
                         "authored and author every other section again against it, on the "
@@ -3486,7 +3549,8 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
 
 def planner_from_args(args, idea: Idea, project, *, sections_only: set[int] | None = None,
                       lead: int | None = None, look_notes: list[str] | None = None,
-                      relook: bool = False, recover: bool = False) -> VfxPlanner:
+                      relook: bool = False, recover: bool = False,
+                      take_attempt: set[int] | None = None, take_why: str = "") -> VfxPlanner:
     """The planner `yt vfx` runs, built from the project's files and the flags;
     `yt keyframe` builds the same one for its look pass (`lead`), so the plan it
     makes is the plan `yt vfx` reuses. A flag a command does not define takes
@@ -3529,7 +3593,8 @@ def planner_from_args(args, idea: Idea, project, *, sections_only: set[int] | No
         frame=(flag("width", FRAME[0]), flag("height", FRAME[1])), direction=direction,
         revisions=flag("revisions", 2), author_bar=flag("author_bar", 7.0),
         fresh=bool(flag("fresh", False)), sections_only=sections_only, lead=lead,
-        look_notes=look_notes, relook=relook, recover=recover, verbose=verbose)
+        look_notes=look_notes, relook=relook, recover=recover, take_attempt=take_attempt,
+        take_why=take_why, verbose=verbose)
 
 
 def run(args) -> int:
@@ -3549,6 +3614,18 @@ def run(args) -> int:
 
     relook = bool(getattr(args, "relook", False))
     recover = bool(getattr(args, "recover", False))
+    take: set[int] = set()
+    if getattr(args, "take_attempt", None):
+        try:
+            take = {int(x) for x in str(args.take_attempt).split(",") if x.strip()}
+        except ValueError:
+            print(f"error: --take-attempt takes section numbers (got {args.take_attempt!r})",
+                  file=sys.stderr)
+            return 2
+        if args.fresh or sections_only or relook or recover:
+            print("error: --take-attempt changes the record as it stands; it takes neither "
+                  "--fresh, --sections, --relook nor --recover", file=sys.stderr)
+            return 2
     if recover and (args.fresh or sections_only or relook):
         print("error: --recover rebuilds the last run's record as it stands; it takes neither "
               "--fresh, --sections nor --relook", file=sys.stderr)
@@ -3558,7 +3635,8 @@ def run(args) -> int:
               "cached plan; it takes neither --fresh nor --sections", file=sys.stderr)
         return 2
     planner = planner_from_args(args, idea, project, sections_only=sections_only,
-                                relook=relook, recover=recover)
+                                relook=relook, recover=recover, take_attempt=take,
+                                take_why=str(getattr(args, "why", "") or ""))
     dossier = planner.dossier
     try:
         from . import keyframe

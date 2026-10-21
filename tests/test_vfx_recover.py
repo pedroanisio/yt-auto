@@ -51,6 +51,30 @@ class Recover(Case):
         self.assertTrue(two["findings"][0].startswith("error: recovered"))
         self.assertIn("--sections 2", two["findings"][0])
 
+    def test_take_attempt_puts_back_a_new_attempt_the_competition_beat(self):
+        # measured on the Euler film: the re-authored section 7 (5.5) lost to
+        # the version it replaced (6.0), which no 8 GB GPU could encode
+        FakeEngine.docs = [WORLD_DOC, TWO_DOC]
+        FakeEngine.reviews = [{"frames": [], "score": 8, "summary": "heavy"},
+                              {"frames": [], "score": 8, "summary": "two"}]
+        self.author(self.planner(revisions=0, jobs=1))
+        FakeEngine.docs = [WORLD_DOC.replace("#AAAAAA", "#BBBBBB")]
+        FakeEngine.reviews = [{"frames": [], "score": 5, "summary": "light"}]
+        kept = {r["n"]: r for r in self.author(self.planner(revisions=0, jobs=1,
+                                                            sections_only={1}))}
+        self.assertEqual(kept[1]["kept_from"], "v01")
+        FakeEngine.stream_calls = []
+        planner = self.planner(take_attempt={1}, take_why="v01's section 1 cannot encode")
+        taken = {r["n"]: r for r in planner.taken(OUTLINE, GROUPS)}
+        self.assertEqual(FakeEngine.stream_calls, [])
+        self.assertEqual(taken[1]["score"], 5.0)
+        self.assertEqual(taken[1]["taken"]["over"], "v01")
+        self.assertIn("cannot encode", taken[1]["taken"]["why"])
+        self.assertIn("#BBBBBB", (self.root / taken[1]["file"]).read_text())
+        self.assertEqual(taken[2], kept[2])                       # the others untouched
+        with self.assertRaises(ValueError):                       # nothing left to take
+            self.planner(take_attempt={2}).taken(OUTLINE, GROUPS)
+
     def test_recover_needs_an_authored_version(self):
         with self.assertRaises(ValueError):
             self.planner(recover=True).recovered(OUTLINE, GROUPS)

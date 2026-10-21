@@ -440,6 +440,11 @@ hand-authored world showed the cost.
     the film-wide stages run. Nothing is authored. Measured on the Euler film:
     a 6 h run killed by a wrapping `timeout` came back for the price of the
     continuity pass. Never wrap `yt vfx` in a timeout shorter than its clock.
+  - `yt vfx --take-attempt N --why "..."` overrides the competition after the
+    fact: a section whose new attempt lost to the version it replaced
+    (`kept_from`) gets the attempt back from `rounds/<stem>.attempt`, with the
+    reason on its record (`taken`). On the Euler film the kept version of
+    section 7 scored higher and could not be encoded on any 8 GB GPU.
   - `vfx.json` and `keyframe.json` record each document's `program` and
     `provenance`.
 - **`yt probe`.** `--list` shows the classes, `--only` picks some,
