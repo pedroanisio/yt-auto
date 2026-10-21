@@ -146,11 +146,14 @@ CUES_SCHEMA = {
                     "level": {"type": "string"},
                     "source": {"type": "string"},
                     "search": {"type": "array", "items": {"type": "string"}},
+                    "search_description": {"type": "string"},
+                    "synth_spec": {"type": "string"},
                     "query": {"type": "string"},
                     "note": {"type": "string"},
                 },
                 "required": ["kind", "name", "at", "seconds", "purpose",
-                             "description", "source", "query"],
+                             "description", "source", "search_description",
+                             "synth_spec"],
             },
         }
     },
@@ -221,6 +224,8 @@ class Cue:
     level: str = ""
     source: str = ""
     search: list[str] = field(default_factory=list)
+    search_description: str = ""
+    synth_spec: str = ""
     query: str = ""
     note: str = ""
     cue_id: str = ""
@@ -241,7 +246,8 @@ class Cue:
         clean = {k: v for k, v in raw.items() if k in known and v is not None}
         for key in ("kind", "name", "shot", "purpose", "description", "motif",
                     "instrumentation", "tempo", "sync", "entry", "exit",
-                    "level", "source", "query", "note"):
+                    "level", "source", "search_description", "synth_spec",
+                    "query", "note"):
             if key in clean:
                 clean[key] = str(clean[key]).strip()
         clean["kind"] = clean.get("kind", "music").lower()
@@ -442,38 +448,40 @@ class SoundDesigner:
             bits.append(f"Wanted feeling: {self.mood}")
         return "\n".join(bits)
 
-    #: Every spotting prompt ends with this: the fetch step searches a sound
-    #: library with `query`, so it has to name the sound, not the intention.
+    #: Every spotting prompt ends with this: the pipeline gets a sound by a
+    #: catalogue search or by synthesis, so each cue is written for both and
+    #: the fetch never searches on the cue's name.
     QUERY_ASK = (
-        "For every cue except silence also give `query`: the 2-5 plain words "
-        "a sound-library search (Freesound) would match. Name the sound "
-        "itself -- the material, the action, the instrument, the room -- not "
-        "its purpose, its level or its processing. A music cue's query names "
-        "a library bed that could stand in for it (instrument and character); "
-        "if nothing in a library could, say so in `source` and still give the "
-        "nearest query.")
+        "The pipeline gets every sound one of two ways: it searches a "
+        "catalogue (Freesound) or it synthesises the sound. Nobody records "
+        "or composes anything, so write each cue for those two. For every "
+        "cue except silence give `search_description`: what the sound is, in "
+        "the 2-6 plain words a sound library titles and tags it with -- the "
+        "material, the action, the instrument, the room -- not its purpose, "
+        "its level, its processing or the cue's name. A music cue's "
+        "description names a library bed that could stand in for it "
+        "(instrument and character). Also give `synth_spec`: the sound "
+        "itself as synthesis would build it -- oscillators, resonant modes or "
+        "noise colour and band, the envelope and the movement over time. If "
+        "the sound is noise, ask for it as noise, with its colour, band and "
+        "envelope. In `source` say which path the cue takes: `catalogue` or "
+        "`synth`.")
 
     def _sourcing(self) -> str:
         if self.free_only:
-            text = ("Sourcing is restricted: every cue and effect must be "
-                    "something you record yourself, a public-domain or CC0 "
-                    "recording, or a CC-BY recording whose credit line you "
-                    "state. No subscription libraries and no commissioned "
-                    "score. For found audio give the catalogue and the exact "
-                    "search terms; Freesound, Internet Archive, NASA audio "
-                    "and the BBC sound effects library are the usual sources.")
+            text = ("Sourcing is restricted to public-domain or CC0 "
+                    "recordings, CC-BY recordings (the credit line travels "
+                    "with the file) and original synthesis. No subscription "
+                    "libraries.")
         elif self.library:
-            text = ("Available for sourcing: " + ", ".join(self.library)
-                    + ". Prefer them over commissioning, and give the search "
-                    "terms and descriptors that would find each cue there. "
-                    "Say which cues are worth recording or commissioning "
-                    "instead because no library will have them.")
+            text = ("Catalogues to describe cues for: " + ", ".join(self.library)
+                    + ", and Freesound. Describe each cue in the words those "
+                    "libraries use; a cue none of them would have is a "
+                    "synthesis.")
         else:
-            text = ("For each cue say how to get it: recorded yourself (say "
-                    "how, and with what), found in an open catalogue (give the "
-                    "catalogue and search terms), licensed from a subscription "
-                    "library (give the descriptors to search), or commissioned "
-                    "from a composer (give them tempo, key and character).")
+            text = ("Each cue is either found in Freesound or synthesised: "
+                    "describe it for the search and specify it for the "
+                    "synthesis.")
         return text + "\n\n" + self.QUERY_ASK
 
     def _context(self) -> list[str]:
@@ -860,19 +868,23 @@ def _words(text: str, *, limit: int) -> str:
 
 
 def cue_queries(cue: dict) -> list[str]:
-    """What to search for, in order: the model's `query`, its search terms,
-    each layer the cue is built from (a layer names a sound; its qualifier
-    after the comma does not), the cue's name, and the name shortened to its
-    first three and then two sounding words."""
-    candidates = [cue.get("query") or ""]
+    """What to search for, in order: the cue's `search_description` (whole if
+    short enough for a library to AND, then shortened), its `query`, its
+    search terms, and each layer it is built from (a layer names a sound; its
+    qualifier after the comma does not). The cue's name is never a query: it
+    labels the cue sheet, not a sound."""
+    candidates: list[str] = []
+    described = " ".join(re.sub(
+        r"[^a-z0-9]+", " ", str(cue.get("search_description") or "").lower()).split())
+    if described:
+        if len(described.split()) <= 6:
+            candidates.append(described)
+        candidates += [_words(described, limit=n) for n in (4, 3, 2)]
+    candidates.append(cue.get("query") or "")
     candidates += [s for s in (cue.get("search") or []) if isinstance(s, str)]
     for layer in cue.get("layers") or []:
         if isinstance(layer, str):
             candidates.append(_words(re.split(r"[,:;(]", layer, 1)[0], limit=3))
-    name = re.sub(r"[^a-z0-9]+", " ", str(cue.get("name") or "").lower()).strip()
-    candidates.append(name)
-    candidates.append(_words(name, limit=3))
-    candidates.append(_words(name, limit=2))
     out: list[str] = []
     for text in candidates:
         text = " ".join(str(text).lower().split())
@@ -1016,7 +1028,11 @@ project root two directories up (`Path(__file__).resolve().parents[2]`).
 - Level: peak between -18 and -3 dBFS; never clip, never silence.
 - Original: no samples, no recordings, no downloaded audio, no voice. Build each
   sound from oscillators, filtered noise, envelopes and resonances, the way
-  the cue's description, layers and sync point ask. A tuned impact is a damped
+  the cue's `synth_spec` (first), description, layers and sync point ask.
+  `search_description` says what the sound is, so the result must sound like
+  it. Noise is the material only where `synth_spec` asks for noise; never
+  stand in band-passed noise for a sound the spec describes as tones, modes
+  or movement. A tuned impact is a damped
   mode with a fast attack; water is a rising cavity mode plus band-passed
   noise; a room is low, slow, broadband; a score cue follows its tempo and
   instrumentation as far as synthesis can.
@@ -1059,7 +1075,7 @@ sys.exit(1 if bad else 0)
 #: The cue fields an author is handed: what the sound must be and when.
 _BRIEF_FIELDS = ("kind", "name", "at", "seconds", "description", "purpose",
                  "layers", "sync", "instrumentation", "tempo", "motif",
-                 "entry", "exit")
+                 "entry", "exit", "search_description", "synth_spec")
 
 
 def synth_targets(root: str | Path, data: dict) -> list[dict]:
