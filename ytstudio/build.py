@@ -1726,7 +1726,10 @@ class SceneBuilder:
                 take.setdefault("at", p.at)
                 take.setdefault("seconds", p.seconds)
                 takes.append(take)
-            split, _, _ = designer.caption_cues(takes, film_end=duration)
+            split, _, illegal = designer.caption_cues(takes, film_end=duration)
+            if illegal:
+                # AUTO-64: a take faster than the reading speed is named, not hidden
+                include_findings.extend(designer.caption_findings(split))
             for chunk in split:
                 cue = track.add_cue(start=chunk.start, end=chunk.end)
                 cue.text = chunk.text

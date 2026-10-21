@@ -279,11 +279,49 @@ def _halves(c: Chunk, k: int) -> tuple[Chunk, Chunk]:
             Chunk(cut, c.end, " ".join(tokens[k:])))
 
 
-def _place(c: Chunk, lo: float, hi: float | None) -> tuple[list[Chunk], int, int]:
+#: How many placements one chunk's cut search may try before it settles for the
+#: best it has (AUTO-64: the search is exponential in the words of a chunk).
+PLACE_BUDGET = 2000
+
+
+def illegal_reason(c: Chunk) -> str | None:
+    """Why the delivery gate would refuse this cue, or None when it reads in time."""
+    lines = wrap_lines(c.text)
+    chars, seconds = sum(len(x) for x in lines), c.end - c.start
+    if seconds <= 0 or chars / seconds > CAPTION_CPS:
+        rate = f"{chars / seconds:.1f}" if seconds > 0 else "unbounded"
+        return (f"{chars} characters in {max(seconds, 0):.2f} s is {rate} characters a "
+                f"second, over {CAPTION_CPS:g}")
+    if seconds < CAPTION_MIN_SECONDS - 0.001:
+        return f"on screen {seconds:.2f} s, under {CAPTION_MIN_SECONDS:g} s"
+    return None
+
+
+def caption_findings(cues: list[Chunk]) -> list[str]:
+    """A warning naming each cue the gate would refuse: its time, its text, why."""
+    out = []
+    for c in cues:
+        reason = illegal_reason(c)
+        if reason:
+            text = c.text if len(c.text) <= 40 else c.text[:39] + "…"
+            out.append(f"warning: caption at {c.start:.2f} s ({text!r}) cannot be made "
+                       f"legal: {reason}; there is no gap to lengthen it into")
+    return out
+
+
+def _place(c: Chunk, lo: float, hi: float | None,
+           budget: list[int] | None = None) -> tuple[list[Chunk], int, int]:
     """One chunk as legal cues between `lo` (the previous cue's end) and `hi`
     (the next start, or the film's end): lengthen it into the gap after, then
     start it earlier into the gap before, then cut it at a word boundary.
-    Returns the cues, how many stay illegal, and how many were cut short."""
+    Returns the cues, how many stay illegal, and how many were cut short.
+
+    A chunk whose characters cannot be read in all the room there is, however
+    it is cut, is not cut: it is placed once and counted illegal. The cut search
+    is also bounded by PLACE_BUDGET placements, after which the best so far stands."""
+    if budget is None:
+        budget = [PLACE_BUDGET]
+    budget[0] -= 1
     need = max(CAPTION_MIN_SECONDS, need_seconds(wrap_lines(c.text)))
     end = max(c.end, c.start + need)
     if hi is not None and end > hi - 0.001:
@@ -293,20 +331,25 @@ def _place(c: Chunk, lo: float, hi: float | None) -> tuple[list[Chunk], int, int
     if start >= lo:
         return [Chunk(round(start, 3), round(end, 3), c.text, c.parts)], 0, cut
     tokens = c.text.split()
+    # no cut makes room: the pieces together still need this long at CAPTION_CPS
+    least = max(CAPTION_MIN_SECONDS, sum(len(t) for t in tokens) / CAPTION_CPS)
     best = None
-    for k in sorted(range(1, len(tokens)),
-                    key=lambda k: abs(len(" ".join(tokens[:k])) - len(c.text) / 2)):
-        left, right = _halves(c, k)
-        first, bad1, cut1 = _place(left, lo, right.start)
-        rest, bad2, cut2 = _place(right, first[-1].end, hi)
-        got = (first + rest, bad1 + bad2, cut1 + cut2)
-        if got[1] == 0:
-            return got
-        if best is None or got[1] < best[1]:
-            best = got
+    if hi is None or hi - lo >= least:
+        for k in sorted(range(1, len(tokens)),
+                        key=lambda k: abs(len(" ".join(tokens[:k])) - len(c.text) / 2)):
+            if budget[0] <= 0:
+                break
+            left, right = _halves(c, k)
+            first, bad1, cut1 = _place(left, lo, right.start, budget)
+            rest, bad2, cut2 = _place(right, first[-1].end, hi, budget)
+            got = (first + rest, bad1 + bad2, cut1 + cut2)
+            if got[1] == 0:
+                return got
+            if best is None or got[1] < best[1]:
+                best = got
     if best is not None:
         return best
-    start = max(lo, min(c.start, end - need))      # one word: as long as the gaps allow
+    start = max(lo, min(c.start, end - need))      # as long as the gaps allow
     return [Chunk(round(start, 3), round(end, 3), c.text, c.parts)], 1, cut
 
 

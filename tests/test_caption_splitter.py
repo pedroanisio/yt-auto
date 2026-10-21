@@ -154,6 +154,49 @@ class TooFast(unittest.TestCase):
         cues, _, illegal = design.caption_cues(rows, film_end=5)
         self.assertEqual(illegal, 1)
 
+    def test_a_take_faster_than_the_reading_speed_is_placed_in_bounded_time(self):
+        # AUTO-64: 40 characters a second with no gap to lengthen into; the cut
+        # search used to recurse on pieces that could never fit and hang the build
+        import signal
+        text = " ".join(["ab"] * 120)
+        seconds = round(len(text) / 40.0, 3)
+        rows = self.rows(text, seconds, gap_before=0.0)
+
+        def hung(*_):
+            raise TimeoutError("caption_cues did not finish in 1 s")
+        old = signal.signal(signal.SIGALRM, hung)
+        signal.setitimer(signal.ITIMER_REAL, 1.0)
+        try:
+            cues, _, illegal = design.caption_cues(rows, film_end=200)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, old)
+        self.assertGreaterEqual(illegal, 1)
+        self.assertEqual(" ".join(c.text for c in cues),
+                         " ".join(r["text"] for r in rows))
+        self.assertTrue(all(a.end <= b.start for a, b in zip(cues, cues[1:])))
+        self.assertTrue(all(c.end > c.start for c in cues))
+        # every cue the gate would refuse is named; the legal ones are not
+        named = [c for c in cues if design.illegal_reason(c)]
+        self.assertTrue(named)
+        self.assertLessEqual(len(named), illegal)
+
+    def test_a_spent_budget_keeps_every_word_and_never_overlaps(self):
+        from unittest import mock
+        rows = self.rows(self.TEXT[:70].rstrip(), 3.96, gap_before=0.35)
+        with mock.patch.object(design, "PLACE_BUDGET", 1):
+            cues, _, _ = design.caption_cues(rows, film_end=120)
+        self.assertEqual(" ".join(c.text for c in cues),
+                         " ".join(r["text"] for r in rows))
+        self.assertTrue(all(a.end <= b.start for a, b in zip(cues, cues[1:])))
+
+    def test_illegal_reason_names_the_rate_and_is_none_for_a_legal_cue(self):
+        fast = design.Chunk(1.0, 1.5, "far too many characters here")
+        reason = design.illegal_reason(fast)
+        self.assertIn("characters a second", reason)
+        self.assertIn("17", reason)
+        self.assertIsNone(design.illegal_reason(design.Chunk(0.0, 3.0, "plenty of time")))
+
     def test_write_captions_warns_and_ends_inside_the_film(self):
         import contextlib
         import io
