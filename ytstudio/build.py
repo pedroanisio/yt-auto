@@ -1033,11 +1033,20 @@ class SceneBuilder:
             span = spans.setdefault(source, [p.at, p.at + p.seconds])
             span[0] = min(span[0], p.at)
             span[1] = max(span[1], p.at + p.seconds)
+        asked = self.edit.get("tail_seconds", 0.5)
         try:
-            tail = float(self.edit.get("tail_seconds", 0.5))
+            tail = float(asked)
+            if tail != tail:
+                raise ValueError(asked)
         except (TypeError, ValueError):
             tail = 0.5
-        tail = min(5.0, max(0.0, tail))
+            findings.append(f"warning: the editor's tail_seconds {asked!r} is not a "
+                            f"number; the film holds {tail:g} s after the last shot")
+        held = min(5.0, max(0.0, tail))
+        if held != tail:
+            findings.append(f"warning: the editor's tail_seconds {asked!r} is outside "
+                            f"0..5; the film holds {held:g} s after the last shot")
+        tail = held
         # The hold after the last shot is a hold on its last frame, so the
         # effect that ends the film runs through the tail; otherwise the tail
         # shows the bare project background.
@@ -1198,20 +1207,27 @@ class SceneBuilder:
                                     "once")
             elif length is None or length > window:
                 track.clipOut = window
-            for key, attr in (("fade_in", "fadeIn"), ("fade_out", "fadeOut")):
+            def number(key: str) -> float:
                 try:
-                    fade = float(cue.get(key) or 0)
+                    return float(cue.get(key) or 0)
                 except (TypeError, ValueError):
-                    fade = 0.0
+                    findings.append(f"warning: cue {cue_id} has {key} "
+                                    f"{cue.get(key)!r}, which is not a number; "
+                                    "0 is used")
+                    return 0.0
+
+            for key, attr in (("fade_in", "fadeIn"), ("fade_out", "fadeOut")):
+                fade = number(key)
                 if fade > 0:
                     setattr(track, attr, round(min(fade, window), 3))
-            try:
-                trim = float(cue.get("gain_db") or 0)
-            except (TypeError, ValueError):
-                trim = 0.0
-            routed.append([bus, track,
-                           (level_db(str(cue.get("level") or "")) or 0.0) + trim,
-                           kind, window, cue_id])
+            trim = number("gain_db")
+            said = str(cue.get("level") or "").strip()
+            level = level_db(said)
+            if level is None and said:
+                findings.append(f"warning: cue {cue_id} has a level written in "
+                                f"words only ({said[:60]!r}); it is mixed at 0 dB "
+                                "trim")
+            routed.append([bus, track, (level or 0.0) + trim, kind, window, cue_id])
 
         # Transients first: the limiter runs after normalisation, so a hit
         # far above the bed is limited after the lift and the programme loses
@@ -1497,9 +1513,9 @@ class SceneBuilder:
                     id=ident(f"card-{p.label}"),
                     text=f"{p.label}\n\n{body}",
                     width=int(self.width * 0.8), height=int(self.height * 0.7),
-                    size=max(18, int(self.height / 28)))
+                    size=design.size("label"))
                 asset.align = "center"
-                asset.color = "#F2F5F7"
+                asset.color = design.role("ink")
                 placeholders.append(p.label)
 
             layer = composition.add_layer(id=shot_id, asset=asset.id)
@@ -1670,15 +1686,25 @@ class SceneBuilder:
                 track.mode = mode
             spoken = [p for p in placed if p.narration
                       and p.label not in edit["captions_off"]]
-            for i, p in enumerate(spoken):
-                end = p.at + p.seconds
-                nxt = spoken[i + 1].at if i + 1 < len(spoken) else None
-                if nxt is not None and end > nxt:
-                    end = max(p.at + 0.05, nxt - 0.001)
-                cue = track.add_cue(start=p.at, end=round(end, 3))
-                cue.text = " ".join(p.narration.split())
-                if p.speaker:
-                    cue.speaker = p.speaker
+            # The cues are the one splitter's (design.caption_cues), from the
+            # voice.json takes, so burned-in and sidecar captions are the same
+            # cues; a spoken shot with no take is split from its own timing.
+            taken = {t.get("label"): t for t in (self.voice or {}).get("takes", [])}
+            takes = []
+            for p in spoken:
+                take = dict(taken.get(p.label) or {})
+                take.setdefault("text", p.narration)
+                take.setdefault("at", p.at)
+                take.setdefault("seconds", p.seconds)
+                takes.append(take)
+            split, _, _ = designer.caption_cues(takes, film_end=duration)
+            for chunk in split:
+                cue = track.add_cue(start=chunk.start, end=chunk.end)
+                cue.text = chunk.text
+                owner = next((p for p in reversed(spoken)
+                              if p.at <= chunk.start + 0.001), None)
+                if owner is not None and owner.speaker:
+                    cue.speaker = owner.speaker
                 cues += 1
 
         output = scene.add_output(path="video.mp4", codec=self.codec)

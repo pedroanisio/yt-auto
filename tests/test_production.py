@@ -103,6 +103,39 @@ class BuildApplies(unittest.TestCase):
         self.assertEqual(ElementTree.fromstring(data).find("captions/captionTrack").get("mode"),
                          "burn")
 
+    def test_burn_sidecar_and_both_carry_the_cues_of_the_one_splitter(self):
+        # the sidecar writer and the build's track place design.caption_cues,
+        # so burned-in and sidecar captions are the same cues
+        from xml.etree import ElementTree
+        from ytstudio import design
+        long = ("the first thing to say is that a long sentence has to be cut "
+                "into lines a viewer can read in the time it is on screen and "
+                "then it goes on for a while longer than that")
+        sections = [Section(heading="Open", shots=[
+            Shot(label="1.1", n=1, visual="v", narration=long, seconds=20, at=0),
+            Shot(label="1.2", n=2, visual="v", narration="and it turns",
+                 seconds=3, at=20.5)])]
+        words = long.split()
+        step = 18.0 / len(words)
+        voice = {"takes": [
+            {"label": "1.1", "at": 0.0, "seconds": 20.0, "text": long,
+             "words": [dict(word=w, start=round(i * step, 3),
+                            end=round((i + 1) * step, 3))
+                       for i, w in enumerate(words)]},
+            {"label": "1.2", "at": 20.5, "seconds": 3.0, "text": "and it turns"}]}
+        want, _, _ = design.caption_cues(voice["takes"])
+        self.assertGreater(len(want), 2)
+        for burn in (False, True):
+            data, manifest = build.SceneBuilder(
+                _idea(), sections, self.root, vfx=self.vfx, voice=voice,
+                edit=None, verbose=False, audio=False, burn_captions=burn).build()
+            track = ElementTree.fromstring(data).find("captions/captionTrack")
+            got = [(float(c.get("start")), float(c.get("end")), c.get("text") or c.text)
+                   for c in track.findall("cue")]
+            self.assertEqual(got, [(c.start, c.end, c.text) for c in want],
+                             f"burn={burn}")
+            self.assertEqual(manifest["cues"], len(want))
+
     def test_captions_off_and_blocking_reach_the_manifest(self):
         edit = {"coverage": [], "captions_off": ["2.1"], "tail_seconds": 0.5,
                 "notes": "the end card carries its own words",
