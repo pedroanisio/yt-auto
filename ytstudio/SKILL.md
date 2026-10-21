@@ -39,7 +39,13 @@ came from breaking one of them.
    a schema and the house rules, cached by digest under
    `work/<slug>/decisions/<stage>/`. A deterministic default that silently
    replaces the model's answer is a decision nobody made: validate, retry
-   once, then fail or record the fallback as a finding.
+   once, then fail or record the fallback as a finding. Every stage's
+   structured judgement goes this way: styles, script, sound, research, the vfx
+   planner, ideas and assess decide under `decisions/<stage>/`, the answer is
+   checked for the schema's required fields, and the stage's record carries the
+   harness's `engine` report beside `usage`. `ideas` is recorded and checked
+   but always asked afresh. The web-agent passes in `research` and the
+   `assess` investigator are agents, not decisions.
 4. **Edit the owning stage, never the output.** `scene.xml` is compiled by
    `yt build`; the `vfx/vNN/*.scene.xml` documents are authored by `yt vfx`.
    Fix the source stage and re-run. Authoring is versioned: every run lands
@@ -133,6 +139,18 @@ their harness account there. `yt improve` reads cost through
 `spend.cost_in`, which takes `usage.cost_usd`, else the older `cost_usd`, else
 the older `engine.cost_usd`, so records written before still read. `sound.json`
 and `build.json` are not on the shape yet.
+
+**What `yt build` does with a bad number.** A malformed editor or
+sound-designer number (`tail_seconds`, a cue's `fade_in`, `fade_out` or
+`gain_db`, a `level` written in words only) is replaced by its default and
+also recorded as a `warning:` finding in `build.json`, naming the field, the
+cue and the value used. The caption track places the same
+`design.caption_cues` as the sidecar, from the `voice.json` takes, so
+burned-in and sidecar captions are the same cues. The placeholder card draws
+with the design's ink and label size, no literal colour. `yt build` prints
+"N include(s) for M shots" and warns, in the manifest's `findings` and its
+`split_worlds` key, when one symbol's run of consecutive shots in a section is
+left in more than one include.
 
 `yt run` (`yt run --title X`) walks research, styles, script, props,
 voice, retime, keyframe, vfx, sound, build, render in that order -- `yt
@@ -347,7 +365,17 @@ blocking editorial note. It is not a delivery verdict. The order is:
    category under 8.5, nothing blocking and no placeholder. A blocking
    mechanical finding (flat, clipped, frozen, a jump, an off-camera object
    on the hook, the ending or more than one sampled shot) blocks on its own
-   and caps `visual_quality` and `animation_vfx` at 6 until it is fixed;
+   and caps `visual_quality` and `animation_vfx` at 6 until it is fixed.
+   QA's mechanical pass also compares the film with the authors' proof
+   frames: for each world's latest proof frame it renders the film at the
+   build's placement of the world's first shot plus the frame's time in the
+   world and compares the stage bands (rows 230..820 of 1080). A difference
+   above `qa.PROOF_DIFF` (4; measured: 0.12 for a matching pair, 7.9 for a
+   sparse world's opening state against 24 s on, 24.6 for another world) is a
+   `proof-mismatch`, owned by `build` and always blocking: it caps
+   `visual_quality` and `animation_vfx` and blocks READY. A film with no proof
+   frames gets a note in the scorecard. The film's frame is kept under
+   `qa/pass-NN/proof/`; the author's stays in `vfx/vNN/frames/`;
    with no audio track in `build.json`, `sound_design` and `music_score`
    are 2.0 by rule. Each pass keeps its frames, frame windows, contact
    sheet, scorecard and findings under `qa/pass-NN/`, so the next pass is a
@@ -561,6 +589,7 @@ hand-authored world showed the cost.
 |---|---|---|
 | The machine suspends mid-stage | a stage waiting on a model or a render host looks idle, so the desktop sleeps and the wait is lost | every stage but `yt ls`, `yt assets` and `yt props` (`cli.LOCAL_ONLY`) holds a `systemd-inhibit` sleep and idle lock for its life; with the tool absent it warns `systemd-inhibit not found` and nothing keeps the machine awake: install it or stop the suspend by hand |
 | `light/@castShadow` defaults to false | every object floats: no contact, no grounding, whatever its y | set it on the light that should ground the scene; the kit's build warns (`rule:shadow`) |
+| Sections reviewed 5-6.5 while the first watch finds dozens of blocking findings | the build split a world into per-shot includes that restart at t=0 | read the build's include line and its split-world warning (`split_worlds` in `build.json`); QA's `proof-mismatch` names the world and the time |
 | A dome lights but is not seen | `environmentVisible` defaults to false: the sky or HDRI lights and reflects, and the background stays black | set `environmentVisible` when the environment is the backdrop |
 | A glTF at the wrong size | the engine imports y-up metre models at 100 scene units per metre with a half turn about x, before the object's scale; scaling by the raw bounds makes it 100 times too big | `kit/examples/model_and_environment.py` reads the bounds, applies the node transforms and grounds the model |
 | A dark metal shows no reflection | a metal's reflectance is its `baseColor`; a dark base swallows the environment and any iridescent film | give a metal a light base colour and let roughness and the environment make the look |
