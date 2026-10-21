@@ -98,19 +98,23 @@ class Synth(unittest.TestCase):
 class FetchUsesDescription(unittest.TestCase):
     def test_fetch_searches_only_description_derived_queries(self):
         seen = []
-        real = freesound.best
+        real_best, real_ranked = freesound.best, freesound.ranked
 
         def fake_best(queries, **kw):
             seen.extend(queries)
             return None, ""
 
-        freesound.best = fake_best
+        def fake_ranked(queries, **kw):     # the fetch's search since AUTO-38
+            seen.extend(queries)
+            return [], ""
+
+        freesound.best, freesound.ranked = fake_best, fake_ranked
         try:
             with tempfile.TemporaryDirectory() as root:
                 data = {"cues": [cue(name="C arrives", search_description="bell tone")]}
                 sound.fetch(root, data, token="t", say=lambda m: None)
         finally:
-            freesound.best = real
+            freesound.best, freesound.ranked = real_best, real_ranked
         self.assertEqual(seen, ["bell tone"])
 
 

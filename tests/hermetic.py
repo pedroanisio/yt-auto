@@ -11,11 +11,23 @@ from __future__ import annotations
 import os
 from unittest import mock
 
+#: The host variables a faked remote must not inherit: env.load() (called by
+#: freesound.token(), for one) copies the real hosts from the key files into
+#: os.environ, so a test that fakes ssh would otherwise probe them.
+HOST_VARS = ("RS_RENDER_HOSTS", "RS_RENDER_HOST")
+
+
+def _only_named_hosts(env: dict) -> None:
+    for name in HOST_VARS:
+        os.environ.pop(name, None)
+    os.environ.update(env)
+
 
 def fake_remote(case, **env: str) -> None:
     """For one TestCase: YT_NO_REMOTE off (and `env` set), restored on cleanup."""
-    patcher = mock.patch.dict(os.environ, env)
+    patcher = mock.patch.dict(os.environ, {})
     patcher.start()
+    _only_named_hosts(env)
     os.environ.pop("YT_NO_REMOTE", None)
     case.addCleanup(patcher.stop)
 
@@ -25,6 +37,7 @@ def fake_remote_module(module) -> None:
     import unittest
     patcher = mock.patch.dict(os.environ, {})
     patcher.start()
+    _only_named_hosts({})
     os.environ.pop("YT_NO_REMOTE", None)
     unittest.addModuleCleanup(patcher.stop)
 
@@ -33,5 +46,6 @@ def fake_remote_class(cls) -> None:
     """For setUpClass: the same, restored by cls.doClassCleanups."""
     patcher = mock.patch.dict(os.environ, {})
     patcher.start()
+    _only_named_hosts({})
     os.environ.pop("YT_NO_REMOTE", None)
     cls.addClassCleanup(patcher.stop)
