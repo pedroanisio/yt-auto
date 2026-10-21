@@ -26,7 +26,8 @@ def record(cost_usd: Any = 0.0, model: Any = "", calls: Any = 0, **more: Any) ->
 def from_report(report: dict) -> dict:
     """From `Harness.report()`: what the stage's decisions paid, under which model."""
     return record(report.get("cost_usd"), report.get("model"), report.get("calls"),
-                  by_model=report.get("by_model") or {})
+                  by_model=report.get("by_model") or {},
+                  unmetered_calls=report.get("unmetered_calls", 0))
 
 
 def from_usage(usage: Any, model: Any = "") -> dict:
@@ -55,6 +56,11 @@ def cost_in(doc: Any) -> float | None:
     synthesis cost, when it has one, is added."""
     if not isinstance(doc, dict):
         return None
+    # A bridge call has no bill to measure. Do not turn a legacy numeric zero
+    # into a measured-free estimate for a subsequent production run.
+    for item in (doc, doc.get("usage"), doc.get("engine")):
+        if isinstance(item, dict) and item.get("unmetered_calls"):
+            return None
     for path in (("usage", "cost_usd"), ("cost_usd",), ("engine", "cost_usd")):
         value: Any = doc
         for key in path:

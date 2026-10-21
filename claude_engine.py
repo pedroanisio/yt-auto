@@ -168,6 +168,8 @@ class Usage:
     cache_creation_tokens: int = 0
     cost_usd: float = 0.0
     calls: int = 0
+    # Chat-session bridge calls have no exposed billing/token measurements.
+    unmetered_calls: int = 0
     duration_ms: int = 0
     #: The same counters per model that actually answered (the CLI's
     #: `modelUsage`), so a fallback model's share is visible.
@@ -200,6 +202,7 @@ class Usage:
         self.calls += 1
 
     def add(self, result: dict) -> None:
+        self.unmetered_calls += int(bool(result.get("unmetered")))
         u = result.get("usage") or {}
         self.input_tokens += u.get("input_tokens", 0)
         self.output_tokens += u.get("output_tokens", 0)
@@ -228,6 +231,7 @@ class Usage:
         self.cache_creation_tokens += other.cache_creation_tokens
         self.cost_usd += other.cost_usd
         self.calls += other.calls
+        self.unmetered_calls += other.unmetered_calls
         self.duration_ms += other.duration_ms
         self.timed_out_calls += other.timed_out_calls
         self.timed_out_cost_usd += other.timed_out_cost_usd
@@ -245,6 +249,9 @@ class Usage:
         return asdict(self)
 
     def __str__(self) -> str:
+        if self.unmetered_calls:
+            return (f"{self.calls} call(s) · {self.unmetered_calls} unmetered; "
+                    "token and cost totals are incomplete")
         return (f"{self.calls} call(s) · {self.input_tokens}in/"
                 f"{self.output_tokens}out tokens · "
                 f"{self.cache_read_tokens} cached · "
