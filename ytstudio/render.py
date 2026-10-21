@@ -39,6 +39,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
@@ -173,12 +174,79 @@ def output_dirs(cmd: list[str]) -> list[str]:
     return dirs
 
 
-def job_script(mirror: str, job: str, binary: str, rest: str, *, dirs: list[str] = ()) -> str:
+#: The line a sampled job prints on stderr: the peak GPU memory (MiB) it saw.
+GPU_MARK = "__YT_GPU_PEAK_MB__="
+GPU_PEAK_FILE = ".gpu-peak"
+GPU_PIDS_FILE = ".gpu-pids"
+GPU_PERIOD = "0.2"
+
+
+def job_script(mirror: str, job: str, binary: str, rest: str, *, dirs: list[str] = (),
+               sample_gpu: bool = False) -> str:
     """The whole remote script: link the job dir from the mirror, enter it,
-    make the output directories, run the engine."""
+    make the output directories, run the engine.
+
+    With `sample_gpu`, on a host that has nvidia-smi, the engine runs beside a sampler
+    (every GPU_PERIOD s) that sums the framebuffer of the engine's own processes -- the
+    job shell's descendants -- from `nvidia-smi pmon -s m`, which lists graphics processes
+    too. After the run, accounting mode's per-process maximum is read as well (it sees a
+    render shorter than a period). With neither, the rise of memory.used over a baseline
+    taken just before the engine started is the fallback. The result is one GPU_MARK line
+    on stderr: "<MiB> <pmon|accounted|baseline-delta>". The sampler writes nothing to
+    stdout, is killed on every exit path (a trap), and the engine's exit code is kept; a
+    host without nvidia-smi runs the engine exactly as an unsampled job does."""
     made = "".join(f"mkdir -p {shlex.quote(d)} && " for d in dirs)
-    return (f"{link_job_script(mirror, job)} && cd {shlex.quote(job)} && "
-            f"{made}{binary} {rest}")
+    head = f"{link_job_script(mirror, job)} && cd {shlex.quote(job)} && {made}"
+    plain = f"{binary} {rest}"
+    if not sample_gpu:
+        return f"{head}{plain}"
+    tree = ("ps -eo pid=,ppid= 2>/dev/null | awk -v r=$$ '{p[$1]=$2} END{for(i in p){x=i; "
+            "while((x in p)&&x!=r){x=p[x]} if(x==r&&i!=r)print i}}' | tr '\\n' ' '")
+    pmon = ("nvidia-smi pmon -c 1 -s m 2>/dev/null | awk -v t=\"$t\" 'BEGIN{n=split(t,a,\" \"); "
+            "for(i=1;i<=n;i++)w[a[i]]=1} /^# *gpu/{for(i=1;i<=NF;i++)if($i==\"fb\")c=i-1; next} "
+            "/^#/{next} c&&($2 in w){s+=$c+0} END{print s+0}'")
+    accounted = ("nvidia-smi --query-accounted-apps=pid,max_memory_usage --format=csv,noheader,nounits "
+                 f"2>/dev/null | awk -v t=\"$(sort -u {GPU_PIDS_FILE} 2>/dev/null | tr '\\n' ' ')\" "
+                 "'BEGIN{n=split(t,a,\" \"); for(i=1;i<=n;i++)w[a[i]]=1} "
+                 "{gsub(/,/,\" \")} ($1 in w){s+=$2+0} END{print s+0}'")
+    used = ("nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null "
+            "| awk '{s+=$1} END{print s+0}'")
+    sampler = (f"( pm=0; mx=0; while kill -0 $$ 2>/dev/null; do t=$({tree}); "
+               f"echo $t | tr ' ' '\\n' >> {GPU_PIDS_FILE}; "
+               f"x=$({pmon}); [ \"$x\" -gt \"$pm\" ] && pm=$x; "
+               f"x=$({used}); [ \"$x\" -gt \"$mx\" ] && mx=$x; "
+               f"echo \"$pm $mx\" > {GPU_PEAK_FILE}; sleep {GPU_PERIOD} 2>/dev/null || sleep 1; "
+               "done ) >/dev/null 2>&1")
+    # per-process figures win over the baseline delta whenever either saw something
+    done = (f"__gpu_done() {{ kill $s 2>/dev/null; wait $s 2>/dev/null; pm=0; mx=0; "
+            f"read pm mx < {GPU_PEAK_FILE} 2>/dev/null; ac=$({accounted}); v=0; k=; "
+            "if [ \"$pm\" -gt 0 ] || [ \"$ac\" -gt 0 ]; then "
+            "if [ \"$pm\" -ge \"$ac\" ]; then v=$pm; k=pmon; else v=$ac; k=accounted; fi; "
+            "elif [ $((mx - base)) -gt 0 ]; then v=$((mx - base)); k=baseline-delta; fi; "
+            f"[ \"$v\" -gt 0 ] && echo {GPU_MARK}$v $k >&2; "
+            f"rm -f {GPU_PEAK_FILE} {GPU_PIDS_FILE}; }}")
+    sampled = (f"{done}; base=$({used}); {sampler} & s=$!; trap __gpu_done EXIT; "
+               f"trap 'exit 143' INT TERM HUP; {plain}; c=$?; exit $c")
+    return f"{head}if command -v nvidia-smi >/dev/null 2>&1; then {sampled}; else {plain}; fi"
+
+
+def take_gpu_peak(proc) -> int | None:
+    """The peak GPU memory (MiB) a sampled job printed, taken out of proc.stderr (so the
+    marker is never shown or stored as an error); None when the job was not sampled or saw
+    none. How it was measured is left on proc.gpu_source."""
+    found = None
+    kept = []
+    proc.gpu_source = ""
+    for line in (proc.stderr or "").splitlines(keepends=True):
+        if line.startswith(GPU_MARK):
+            value, _, source = line[len(GPU_MARK):].strip().partition(" ")
+            found = parse_mb(value) or None
+            proc.gpu_source = source
+        else:
+            kept.append(line)
+    if found is not None:
+        proc.stderr = "".join(kept)
+    return found
 
 
 def prune_remote(hosts_: list[str], slug: str, *, verbose: bool = False) -> None:
@@ -254,6 +322,7 @@ class Host:
     ram_gb: int = 0
     cores: int = 0
     gpu: str = ""
+    gpu_mem_mb: int = 0     # the GPU's total memory (nvidia-smi), 0 when it has none or did not say
     ffprobe: str = ""       # ffprobe there, which the delivery gate needs
     sha256: str = ""        # the binary's hash there, "" when it could not be read
     error: str = ""
@@ -280,6 +349,12 @@ def host_names(args=None) -> list[str]:
     return names
 
 
+def parse_mb(text: str) -> int:
+    """A whole number of MiB out of nvidia-smi's `csv,noheader,nounits` text; 0 when it is not one."""
+    match = re.match(r"\s*(\d+)\s*$", text or "")
+    return int(match.group(1)) if match else 0
+
+
 def probe(addr: str, *, timeout: float = 12.0) -> Host:
     """One ssh round trip: engine, RAM, cores, GPU. Cached for the process;
     `ssh_alive` is what notices a host that went away afterwards."""
@@ -291,6 +366,8 @@ def probe(addr: str, *, timeout: float = 12.0) -> Host:
               f"echo \"SHA=$(sha256sum \"$B\" 2>/dev/null | cut -d' ' -f1)\"; else echo ENGINE=; fi; "
               "echo \"RAM=$(free -g | awk 'NR==2{print $2}')\"; echo \"CORES=$(nproc)\"; "
               "echo \"GPU=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)\"; "
+              "echo \"GPUMEM=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null"
+              " | sort -n | head -1)\"; "
               "echo \"FFPROBE=$(command -v ffprobe 2>/dev/null)\"")
     host = Host(addr=addr)
     refuse_remote()
@@ -318,6 +395,8 @@ def probe(addr: str, *, timeout: float = 12.0) -> Host:
             host.cores = int(value or 0)
         elif key == "GPU":
             host.gpu = value
+        elif key == "GPUMEM":
+            host.gpu_mem_mb = parse_mb(value)
         elif key == "FFPROBE":
             host.ffprobe = value
     _HOSTS[addr] = host
@@ -532,10 +611,12 @@ def _run_remote(cmd: list[str], project_root: Path, host: str, *, verbose: bool,
                   os.environ.get("RS_RENDER_REMOTE_BIN") or REMOTE_BIN_LOOKUP)
         relative = _relativize(cmd, project_root)
         rest = " ".join(shlex.quote(t) for t in relative[1:])
-        script = job_script(mirror, remote, binary, rest, dirs=output_dirs(relative))
+        script = job_script(mirror, remote, binary, rest, dirs=output_dirs(relative),
+                            sample_gpu=bool(known and known.gpu))
         if verbose:
             print(f"  ssh {host} {script}", file=sys.stderr)
         proc, settled = _run_detached(host, script, remote, verbose=verbose)
+        proc.gpu_peak_mb = take_gpu_peak(proc)
         if not settled:
             return proc                 # outcome unknown: no pull-back, no removal
         refuse_remote()
@@ -694,7 +775,8 @@ def _bundle_missing(doc_text: str, bundle: dict[str, bytes], doc_path: str) -> l
 def job_report(job: str, status: str | None = None, *, exit_code: int = 0, stdout: str = "",
                stderr: str = "", seconds: float = 0.0, envelope: dict | None = None,
                missing: list[str] | tuple = (), timeout_seconds: float | None = None,
-               engine: dict | None = None, message: str = "", command: str | None = None) -> dict:
+               engine: dict | None = None, message: str = "", command: str | None = None,
+               gpu_memory: dict | None = None) -> dict:
     """The one report shape of every render job: the engine's scene-render-cli/1
     envelope (kept when it printed one, made when it did not) plus
 
@@ -706,6 +788,8 @@ def job_report(job: str, status: str | None = None, *, exit_code: int = 0, stdou
         engine          {version, sha256, path}
         outcome_unknown true when a detached job never reported
         message         a line on what went wrong, empty when nothing did
+        gpu_memory      {peak_mb, programme_seconds, host, host_total_mb} when the job ran
+                        sampled on a GPU host (see gpu_measurement); absent otherwise
     """
     env = dict(envelope if envelope is not None else _envelope(stdout))
     unknown = "remote job outcome unknown" in (stderr or "")
@@ -738,6 +822,8 @@ def job_report(job: str, status: str | None = None, *, exit_code: int = 0, stdou
                 "outcome_unknown": unknown, "message": message})
     if timed_out and timeout_seconds is not None:
         env["timeout_seconds"] = timeout_seconds
+    if gpu_memory:
+        env["gpu_memory"] = gpu_memory
     return env
 
 
@@ -1151,6 +1237,118 @@ def merge_slice_reports(slices: list[dict], mix: dict, video: str, start: float,
             "result": {"outputs": [output]}}
 
 
+def gpu_measurement(peak_mb: int | None, programme_seconds: float | None = None, host: str = "",
+                    host_total_mb: int = 0, source: str = "") -> dict | None:
+    """What a sampled job recorded, for the report. An encode: {kind "encode", peak_mb,
+    programme_seconds (the range it rendered), host, host_total_mb, source}. A still or
+    frames job (no `programme_seconds`): the same with kind "still" and no seconds -- one
+    frame's peak is not a rate. None when nothing was sampled or no GPU memory was seen."""
+    if not peak_mb or (programme_seconds is not None and programme_seconds <= 0):
+        return None
+    block = {"kind": "still" if programme_seconds is None else "encode", "peak_mb": int(peak_mb)}
+    if programme_seconds is not None:
+        block["programme_seconds"] = round(float(programme_seconds), 3)
+    block.update(host=host, host_total_mb=int(host_total_mb or 0), source=source)
+    return block
+
+
+def measured_mb_per_second(*reports: dict | None) -> float | None:
+    """Peak GPU memory per second of programme, the largest over the encode reports that
+    carry a `gpu_memory` block with the range they rendered; None when none does, so nothing
+    is guessed. A still's block has no seconds and is never read as a rate."""
+    best = None
+    for report in reports:
+        block = (report or {}).get("gpu_memory")
+        if not isinstance(block, dict) or block.get("kind") == "still":
+            continue
+        try:
+            peak, seconds = float(block["peak_mb"]), float(block["programme_seconds"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if peak > 0 and seconds > 0:
+            best = max(best or 0.0, peak / seconds)
+    return best
+
+
+def still_peak_mb(*reports: dict | None) -> int | None:
+    """The largest still-only peak (MiB) among the reports; informative, never a rate."""
+    peaks = [int(b["peak_mb"]) for b in ((r or {}).get("gpu_memory") for r in reports)
+             if isinstance(b, dict) and b.get("kind") == "still" and b.get("peak_mb")]
+    return max(peaks, default=None)
+
+
+def memory_model(*reports: dict | None) -> tuple[float, float, str] | None:
+    """(base, growth, basis): peak(seconds) = base + growth * seconds, in MiB and MiB/s.
+    Most of an encode's peak is the fixed cost of one frame, so dividing it by the seconds
+    rendered over-predicts a long film. With a still's peak (the largest) that is the base and
+    growth = (encode peak - base) / encode seconds, the largest over the encodes, floored at 0.
+    With no still but two encodes of different lengths, both terms are fitted from the shortest
+    and the longest. With one encode and no still the model is the whole-peak rate with a
+    base of 0 -- an upper bound, and the basis says so. None when there is no encode."""
+    points = []
+    for report in reports:
+        block = (report or {}).get("gpu_memory")
+        if not isinstance(block, dict) or block.get("kind") == "still":
+            continue
+        try:
+            peak, seconds = float(block["peak_mb"]), float(block["programme_seconds"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if peak > 0 and seconds > 0:
+            points.append((peak, seconds))
+    if not points:
+        return None
+    still = still_peak_mb(*reports)
+    if still:
+        growth = max(max(0.0, (peak - still) / sec) for peak, sec in points)
+        return float(still), growth, f"base {still} MiB from a still"
+    (p1, s1), (p2, s2) = min(points, key=lambda x: x[1]), max(points, key=lambda x: x[1])
+    if s2 > s1:
+        growth = max(0.0, (p2 - p1) / (s2 - s1))
+        base = max(0.0, p1 - growth * s1) if growth else max(p1, p2)
+        return base, growth, f"fitted from encodes of {s1:g} s and {s2:g} s"
+    return 0.0, measured_mb_per_second(*reports) or 0.0, \
+        "no still to give the base: whole-peak rate, an upper bound"
+
+
+def plan_slices(slices: int, start: float, end: float, hosts: list[Host], *,
+                model: tuple[float, float, str] | None, still_peak: int | None = None,
+                headroom: float = 0.8) -> tuple[int, str]:
+    """(count, why): at least `slices`, and enough that one slice's GPU memory (`model`'s base
+    plus its growth per second times the slice's length) fits the smallest usable host's GPU
+    memory times `headroom`; both terms are printed. A still alone (`still_peak`, no encode)
+    is one frame, not a model, so it is ignored and the line says so. With no model, or no host
+    that reports its GPU memory, the requested count and a line saying so. A base that alone
+    exceeds the GPU cannot be cured by slicing: the count is kept and the line says so."""
+    if not model:
+        ignored = (f" (a still's peak of {still_peak} MiB is one frame, not a rate: ignored)"
+                   if still_peak else "")
+        return slices, (f"GPU memory not measured as a rate (no encode report has gpu_memory)"
+                        f"{ignored}: keeping {slices} slice(s)")
+    totals = [h.gpu_mem_mb for h in hosts if h.usable and h.gpu_mem_mb > 0]
+    if not totals or end <= start:
+        return slices, (f"GPU memory measured but no usable host reports its GPU's total: "
+                        f"keeping {slices} slice(s)")
+    base, growth, basis = model
+    smallest = min(totals)
+    cap = smallest * headroom
+    length = end - start
+    why = (f"measured GPU memory = {base:.0f} MiB base + {growth:.1f} MiB/s of programme "
+           f"({basis}); {length:.0f} s needs {base + growth * length:.0f} MiB against "
+           f"{smallest} MiB x {headroom:g} on the smallest GPU")
+    if base >= cap:
+        return slices, why + ": the base alone does not fit, slicing cannot help"
+    need = 1 if growth <= 0 else max(1, math.ceil(length * growth / (cap - base) - 1e-9))
+    return max(slices, need), why
+
+
+def memory_reports(report_path: Path) -> list[dict]:
+    """The reports beside `report_path` that may carry a GPU measurement: the encode's own
+    and the still / frames jobs' (render-still.json, render-frames.json)."""
+    paths = [report_path] + [report_path.with_name(f"render-{job}.json") for job in ("still", "frames")]
+    return [r for r in (read_json(p, warn=False) for p in paths if p.is_file()) if isinstance(r, dict)]
+
+
 def encode_sliced(scene: str, project_root: Path, *, slices: int, quality: str | None,
                   start: float, end: float, strict: bool, verbose: bool,
                   report_path: Path | None = None) -> int:
@@ -1179,7 +1377,16 @@ def encode_sliced(scene: str, project_root: Path, *, slices: int, quality: str |
         print("error: no host with the engine; set RS_RENDER_HOSTS", file=sys.stderr)
         return fail("no host with the engine; set RS_RENDER_HOSTS")
     big = pick_host(usable, "audio")
+    known = memory_reports(report_path)
+    fitted, why = plan_slices(slices, start, end, usable, model=memory_model(*known),
+                              still_peak=still_peak_mb(*known))
+    if fitted != slices:
+        print(f"  {slices} slice(s) asked, {fitted} used: {why}", file=sys.stderr)
+        slices = fitted
+    elif "not measured" in why or "no usable host" in why:
+        print(f"  {why}", file=sys.stderr)
     ranges = _slice_ranges(start, end, slices)
+    peaks: dict[int, dict] = {}
     if verbose:
         print(f"  {slices} slice(s) over {', '.join(h.addr for h in usable)}; audio mix on {big.addr}",
               file=sys.stderr)
@@ -1195,6 +1402,10 @@ def encode_sliced(scene: str, project_root: Path, *, slices: int, quality: str |
         if strict:
             cmd.append("--strict")
         proc = _run_remote(cmd, project_root, host.addr, verbose=verbose)
+        measured = gpu_measurement(getattr(proc, "gpu_peak_mb", None), rng[1] - rng[0],
+                                   host.addr, host.gpu_mem_mb, getattr(proc, "gpu_source", ""))
+        if measured:
+            peaks[i] = measured
         return (i, proc.returncode, (proc.stderr or proc.stdout).strip()[-200:],
                 _envelope(proc.stdout))
 
@@ -1236,7 +1447,9 @@ def encode_sliced(scene: str, project_root: Path, *, slices: int, quality: str |
     report = merge_slice_reports([r[3] for r in results], _envelope(mix.stdout),
                                  str(project_root.resolve() / "video.mp4"), start, end)
     report = job_report("encode", "rendered", envelope=report, command="encode",
-                        seconds=time.monotonic() - began, engine=engine_info(big.addr))
+                        seconds=time.monotonic() - began, engine=engine_info(big.addr),
+                        gpu_memory=max(peaks.values(), default=None,
+                                       key=lambda m: m["peak_mb"] / m["programme_seconds"]))
     write_job_report(report_path, report)
     print(f"wrote {report_path}", file=sys.stderr)
     print(f"wrote {project_root / 'video.mp4'}  (joined from {slices} slices; "
@@ -1525,14 +1738,27 @@ def run(args) -> int:
                   "construct or accept the wait", file=sys.stderr)
         write_json(project.root / "estimate.json", est)
         return 0
-    if args.slices > 1 and job == "encode" and host:
-        duration = (read_json(project.source("build"), warn=False) or {}).get("scene", {}).get("duration")
-        end = args.end if args.end is not None else float(duration or 0)
+    world = float(((read_json(project.source("build"), warn=False) or {}).get("scene") or {})
+                  .get("duration") or 0)
+    slices = args.slices
+    end_ = args.end if args.end is not None else world
+    if job == "encode" and host and not args.output and slices <= 1 and end_:
+        # An unsliced encode of a long world is where the GPU ran out: ask the measurement.
+        known = memory_reports(report_path)
+        slices, why = plan_slices(1, args.start or 0.0, end_, [h for h in hosts() if h.usable],
+                                  model=memory_model(*known),
+                                  still_peak=still_peak_mb(*known))
+        if slices > 1 and not args.quiet:
+            print(f"  encoding in {slices} slices without --slices: {why}", file=sys.stderr)
+        elif not args.quiet:
+            print(f"  {why}", file=sys.stderr)
+    if slices > 1 and job == "encode" and host:
+        end = args.end if args.end is not None else world
         if not end:
             print("error: --slices needs the scene's duration; run `yt build` first or pass --end",
                   file=sys.stderr)
             return 1
-        return encode_sliced(scene, project.root, slices=args.slices, quality=args.quality,
+        return encode_sliced(scene, project.root, slices=slices, quality=args.quality,
                              start=args.start or 0.0, end=end, strict=args.strict,
                              verbose=not args.quiet,
                              report_path=report_path_for(Path(project.out("render")), job, None))
@@ -1629,7 +1855,14 @@ def run(args) -> int:
         job, exit_code=proc.returncode, stdout="" if envelope is not None else proc.stdout or "",
         stderr=proc.stderr or "", envelope=envelope if envelope is not None else {},
         seconds=time.monotonic() - began, command=job,
-        engine=engine_info(host, binary if not host else None)))
+        engine=engine_info(host, binary if not host else None),
+        gpu_memory=gpu_measurement(
+            getattr(proc, "gpu_peak_mb", None),
+            # a still or frames job is a peak only; an encode's rate is over the range it renders
+            (args.end if args.end is not None else world) - (args.start or 0.0)
+            if job == "encode" else None,
+            host, next((h.gpu_mem_mb for h in hosts() if h.addr == host), 0) if host else 0,
+            getattr(proc, "gpu_source", ""))))
     print(f"wrote {report_path}", file=sys.stderr)
 
     if report:
