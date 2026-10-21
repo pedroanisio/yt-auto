@@ -380,7 +380,10 @@ as section 7 says, renders one frame window per sample on the render host
 the mechanical findings first (a flat or clipped still, a frozen window, a
 jump, the objects `render.json` says the camera never framed — each
 with an owner and a fix, blocking on the hook, the ending or when repeated
-across shots), has the model read the frames and the contact sheet as images
+across shots; and `proof-mismatch`, owned by `build` and always blocking: the
+film at a world's proof-frame time differs from the author's proof frame by
+more than `qa.PROOF_DIFF` in the stage band, which is what a world split into
+includes that restart at t=0 looks like), has the model read the frames and the contact sheet as images
 and file the scorecard, applies the bar of section 2 mechanically (a blocking
 mechanical finding caps `visual_quality` and `animation_vfx` at 6; no audio
 track in `build.json` fixes `sound_design` and `music_score` at 2.0), and

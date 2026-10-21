@@ -231,8 +231,11 @@ schema)` asks one structured question and `Harness.inspect(name, prompt,
 schema, cwd=…)` lets an agent read files — frames, a PDF, a report — before it
 answers, with read-only tools. Both write the answer under
 `decisions/<stage>/<name>.json` with a digest of everything the model saw, so
-a stage re-run with the same inputs costs nothing and a changed input is asked
-again; `--fresh` asks regardless. Each stage's record (`research.json`,
+a stage re-run with the same inputs costs nothing (the answers are served from
+`decisions/<stage>/`) and a changed input is asked again; `--fresh` asks
+again where the stage has it. `yt ideas` records its decisions but always
+asks afresh. The web-agent passes in `yt research` and the `yt assess`
+investigator are agents, not decisions. Each stage's record (`research.json`,
 `styles.json`, `script.json`, `vfx.json`, `keyframe.json`, `props.json`,
 `assess.json`) carries its spend once, under `usage`: `{cost_usd, model,
 calls}`. `engine` is not that key: it names the TTS engine in `voice.json`
@@ -633,6 +636,14 @@ Each shot is drawn by the first of these that applies:
 4. **An honest placeholder** for what was blocked, counted and named. A
    placeholder is disqualifying, so the manifest carries `publishable: false`
    while any remain, and so does anything the editor listed under `blocking`.
+   The card draws in the design's `ink` role at its `label` size, with no
+   literal colour.
+
+A malformed number from the editor (`tail_seconds`) or the sound designer (a
+cue's `fade_in`, `fade_out` or `gain_db`, or a `level` written in words only)
+is replaced by its default (`tail_seconds` 0.5, the others 0) and recorded as
+a `warning:` in `build.json`'s `findings`, naming the field, the cue and the
+value used.
 
 An `<include>` carries neither the included document's styles, paints nor
 lights (the engine warns, E12), so the builder lifts them: every `<light>`
@@ -653,7 +664,10 @@ manifest does not list is a build error).
 
 Every shot and section also becomes a marker, because a marker survives
 re-timing and a timecode does not. Supers are checked for reading time and
-captions are split on word boundaries.
+captions are split on word boundaries. The build's caption track places the
+same `design.caption_cues` as the sidecar, from the `voice.json` takes (a
+spoken shot with no take is split from its own timing), so burned-in and
+sidecar captions are the same cues.
 
 The mix is the sound design's. Every cue of `sound.json` that has a file
 (`yt sound --fetch`) becomes an `<audio>` asset and an `<audioTrack>` on the
