@@ -104,7 +104,14 @@ def check_environment(work: Path) -> Report:
     report = Report("environment")
 
     claude = shutil.which("claude")
-    if claude:
+    if os.environ.get("YT_ENGINE") == "bridge":
+        if os.environ.get("YT_BRIDGE_DIR") and importlib.util.find_spec("jsonschema"):
+            report.add("note", "bridge", "chat bridge configured; an active chat worker "
+                       "must service the queue (not an unattended model service)")
+        else:
+            report.add("fail", "bridge", "bridge needs YT_BRIDGE_DIR and jsonschema",
+                       "set YT_BRIDGE_DIR; pip install -r requirements-bridge.txt")
+    elif claude:
         report.add("ok", "claude", f"claude CLI at {claude}")
     else:
         report.add("fail", "claude", "the `claude` CLI is not on PATH; no stage "

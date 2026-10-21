@@ -99,7 +99,8 @@ ENGINE_NAME = "claude"
 
 def use_engine(name: str) -> None:
     """Run every harness call on `name`: "claude" (claude_engine, the
-    default) or "codex" (codex_engine, the OpenAI Codex CLI). `YT_ENGINE`
+    default), "codex" (the OpenAI Codex CLI), or "bridge" (active chat).
+    `YT_ENGINE`
     in the environment picks it at import."""
     global ENGINE, ENGINE_NAME
     if name == "claude":
@@ -107,8 +108,11 @@ def use_engine(name: str) -> None:
     elif name == "codex":
         import codex_engine
         ENGINE = codex_engine.CodexEngine
+    elif name == "bridge":
+        from bridge_engine import BridgeEngine
+        ENGINE = BridgeEngine
     else:
-        raise HarnessError(f"unknown engine {name!r} (claude | codex)")
+        raise HarnessError(f"unknown engine {name!r} (claude | codex | bridge)")
     ENGINE_NAME = name
 
 
@@ -442,6 +446,7 @@ class Harness:
             "cost_usd": round(sum(d.cost_usd for d in self.decisions
                                   if not d.cached), 4),
             "calls": self.usage.calls,
+            "unmetered_calls": self.usage.unmetered_calls,
             "by_model": self.usage.by_model,
             "decisions": [{"name": d.name, "kind": d.kind, "cached": d.cached,
                            "digest": d.digest, "cost_usd": round(d.cost_usd, 4),

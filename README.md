@@ -27,6 +27,11 @@ example under a ChatGPT sign-in), set `CODEX_PRICES` or a token cap with
 
 ## Requirements
 
+For a supported interactive alternative to CLI model access, see
+[`docs/chat-bridge.md`](docs/chat-bridge.md): `YT_ENGINE=bridge` lets an active
+chat session answer the pipeline's queued requests. It supports read-only
+research and screenplay work; it is not an unattended model service.
+
 - `claude` on PATH (`claude --version`)
 - An authenticated session: `claude auth`, `claude setup-token`, or `ANTHROPIC_API_KEY`
 - Python 3.10+
