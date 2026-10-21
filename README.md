@@ -576,7 +576,17 @@ under `unfilled[]` with the queries tried. With a `sound.json` already in the
 project `--fetch` reuses it and asks the model nothing; `--fresh` spots again
 first. The keys are `FREESOUND_CLIENT_ID` and `FREESOUND_CLIENT_SECRET`
 (the secret is the token the API wants); without one nothing is fetched and
-only the name is reported. `yt run` always passes `--fetch`.
+only the name is reported. `yt run` always passes `--fetch`. Each fetched file is
+measured on a render host (one ssh per batch; ffmpeg's ebur128: integrated
+loudness, true peak, and the noise floor, the level of the quietest tenth of
+400 ms windows) and the cue gets the `gain_db` that brings it to its design
+level: by loudness for music and ambience, by peak for every other kind. A source
+the track's gain cap cannot reach, or whose noise floor the lift would raise
+within 12 dB of the narration level the sheet states (else the programme target),
+is refused with the measured floor and gain, and the next-ranked hit of the same
+search is tried (three in all) before the cue is left unfilled. With no render
+host, or `YT_NO_REMOTE` set, nothing is measured: the summary and the stage's
+output say `NOT LEVELLED`, and a later `--fetch` measures the kept files.
 
 ### `yt build`
 

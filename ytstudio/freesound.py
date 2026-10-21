@@ -243,15 +243,23 @@ def search(query: str, *, want_seconds: float, token: str,
     return hits
 
 
-def best(queries: list[str], *, want_seconds: float, token: str
-         ) -> tuple[Hit | None, str]:
-    """The first query with an allowed hit wins; returns (hit, query used)."""
+def ranked(queries: list[str], *, want_seconds: float, token: str
+           ) -> tuple[list[Hit], str]:
+    """Every allowed hit of the first query that has any, best first, and
+    that query. One search serves every fallback a caller may need."""
     for query in queries:
         hits = rank(search(query, want_seconds=want_seconds, token=token),
                     want=want_seconds)
         if hits:
-            return hits[0], query
-    return None, ""
+            return hits, query
+    return [], ""
+
+
+def best(queries: list[str], *, want_seconds: float, token: str
+         ) -> tuple[Hit | None, str]:
+    """The first query with an allowed hit wins; returns (hit, query used)."""
+    hits, query = ranked(queries, want_seconds=want_seconds, token=token)
+    return (hits[0], query) if hits else (None, "")
 
 
 def download(hit: Hit, dest: Path) -> int:
