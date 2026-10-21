@@ -115,6 +115,8 @@ class FakeEngine:
     doc: str = WORLD_DOC
     time_out_on: int = 0        # the n-th author call raises the engine's timeout
     stale_frame: bool = False   # the author leaves a frame of its own in frames/
+    docs: list = []             # per author call, the document it writes (else `doc`)
+    crash_on: int = 0           # the n-th author call breaks its program and the CLI exits 1
 
     def __init__(self, config):
         self.config = config
@@ -139,7 +141,11 @@ class FakeEngine:
                 (Path(self.config.cwd) / name).write_text("<scene>half-edited</scene>",
                                                          encoding="utf-8")
                 raise harness.ClaudeError("claude timed out after 3600.0s")
-            author_program(Path(self.config.cwd), name, FakeEngine.doc)
+            if FakeEngine.crash_on == authored:
+                (Path(self.config.cwd) / (name[:-10] + ".py")).write_text("this is not python(")
+                raise harness.ClaudeError("claude exited with code 1")
+            author_program(Path(self.config.cwd), name,
+                           FakeEngine.docs.pop(0) if FakeEngine.docs else FakeEngine.doc)
             if FakeEngine.stale_frame:
                 stale = Path(self.config.cwd) / "frames" / f"{name[:-10]}__9s.png"
                 stale.parent.mkdir(exist_ok=True)
@@ -636,6 +642,7 @@ class Review(unittest.TestCase):
         FakeEngine.stream_calls, FakeEngine.json_calls, FakeEngine.reviews = [], [], []
         FakeEngine.doc = WORLD_DOC
         FakeEngine.time_out_on = 0
+        FakeEngine.docs, FakeEngine.crash_on = [], 0
         idea = Idea(title="T", genre="g", description="d")
         bundle = {"idea": idea, "outline": {}, "claims": [], "assets": [], "premise": ""}
         self.ws = vfx.Workspace(self.root)
@@ -747,6 +754,106 @@ class Review(unittest.TestCase):
         stem = doc["file"].rsplit("/", 1)[1][:-len(".scene.xml")]
         self.assertFalse((frames / f"{stem}__9s.png").exists())        # the author's own
         self.assertTrue(list(frames.glob(f"{stem}__world-open__*.png")))  # the gate's proofs
+
+    def test_the_section_ends_on_its_best_reviewed_round(self):
+        FakeEngine.reviews = [{"frames": [], "score": 6, "summary": "the best"},
+                              {"frames": [], "score": 4, "summary": "worse"},
+                              {"frames": [], "score": 3, "summary": "worse still"}]
+        FakeEngine.docs = [WORLD_DOC, WORLD_DOC.replace("#AAAAAA", "#BBBBBB"),
+                           WORLD_DOC.replace("#AAAAAA", "#CCCCCC")]
+        doc = self.author()[0]
+        self.assertEqual([r["score"] for r in doc["rounds"]], [6, 4, 3])
+        self.assertEqual(doc["best_round"], 0)
+        self.assertEqual(doc["score"], 6)
+        self.assertEqual(doc["review"]["summary"], "the best")
+        kept = (self.root / doc["file"]).read_text()
+        self.assertIn("#AAAAAA", kept)                        # round 0's document is back
+        self.assertNotIn("#CCCCCC", kept)
+        self.assertIsNotNone(doc["provenance"])               # and still its program's output
+        stem = doc["file"].rsplit("/", 1)[1][:-len(".scene.xml")]
+        rounds = self.root / "vfx" / "v01" / "rounds" / stem
+        self.assertEqual(sorted(p.name for p in rounds.iterdir()), ["r00", "r01", "r02"])
+
+    def test_a_final_revision_that_crashes_falls_back_to_the_best_round(self):
+        FakeEngine.reviews = [{"frames": [], "score": 5, "summary": "round zero"}]
+        FakeEngine.crash_on = 2                               # the only revision crashes
+        self.planner.revisions = 1
+        doc = self.author()[0]
+        self.assertEqual(doc["score"], 5)
+        self.assertEqual(doc["best_round"], 0)
+        self.assertEqual(doc["symbols"], ["world-open"])
+        self.assertFalse([f for f in doc["findings"] if f.startswith("error")])
+        program = self.root / doc["program"]
+        self.assertNotIn("not python", program.read_text())   # the crashed edit is gone
+        scene = self.planner.scene_map([self.group], [doc])
+        self.assertIn("1.1", scene["by_label"])                # the build can place it
+
+    def test_a_section_whose_authoring_raises_is_an_error_record(self):
+        with patch.object(self.planner, "_author_one", side_effect=RuntimeError("boom")):
+            doc = self.author()[0]
+        self.assertIsNone(doc["score"])
+        self.assertIn("boom", doc["findings"][0])
+        self.assertEqual(doc["worlds"][0]["id"], "world-open")
+
+    def test_sections_re_authors_only_those_and_carries_the_rest(self):
+        FakeEngine.reviews = [{"frames": [], "score": 8, "summary": "first"}]
+        first = self.author()[0]
+        self.assertEqual(first["version"], "v01")
+        idea = Idea(title="T", genre="g", description="d")
+        bundle = {"idea": idea, "outline": {}, "claims": [], "assets": [], "premise": ""}
+        FakeEngine.stream_calls = []
+        self.planner = vfx.VfxPlanner(
+            bundle, Dossier(self.root, idea, at=self.root), vfx.Workspace(self.root),
+            model="sonnet", sections=[SECTION], revisions=2, author_bar=7.0, verbose=False,
+            sections_only={2})                                 # section 1 is not asked for
+        carried = self.author()[0]
+        self.assertEqual(carried["version"], "v02")
+        self.assertEqual(carried["carried_from"], "v01")
+        self.assertEqual(carried["score"], 8)
+        self.assertEqual(carried["cost_usd"], 0.0)
+        self.assertTrue((self.root / carried["file"]).is_file())
+        self.assertTrue((self.root / carried["program"]).is_file())
+        self.assertIsNotNone(vfx.sdkkit.provenance_of(self.root / carried["file"]))
+        self.assertFalse([c for c in FakeEngine.stream_calls if "Write" in c["tools"]])
+        # and asking for section 1 authors it again
+        self.planner.sections_only, self.planner._stale = {1}, {"12-author"}
+        FakeEngine.reviews = [{"frames": [], "score": 9, "summary": "again"}]
+        again = self.author()[0]
+        self.assertEqual(again["version"], "v03")
+        self.assertNotIn("carried_from", again)
+        self.assertEqual(again["score"], 9)
+
+    def test_a_worse_re_authored_section_keeps_the_version_it_replaced(self):
+        FakeEngine.reviews = [{"frames": [], "score": 8, "summary": "first"}]
+        FakeEngine.docs = [WORLD_DOC]
+        self.planner.revisions = 0
+        first = self.author()[0]
+        idea = Idea(title="T", genre="g", description="d")
+        bundle = {"idea": idea, "outline": {}, "claims": [], "assets": [], "premise": ""}
+        self.planner = vfx.VfxPlanner(
+            bundle, Dossier(self.root, idea, at=self.root), vfx.Workspace(self.root),
+            model="sonnet", sections=[SECTION], revisions=0, author_bar=7.0, verbose=False,
+            sections_only={1})
+        FakeEngine.reviews = [{"frames": [], "score": 5, "summary": "worse"}]
+        FakeEngine.docs = [WORLD_DOC.replace("#AAAAAA", "#BBBBBB")]
+        kept = self.author()[0]
+        self.assertEqual(kept["version"], "v02")
+        self.assertEqual(kept["kept_from"], "v01")
+        self.assertEqual(kept["score"], 8)
+        self.assertEqual(kept["attempt"]["score"], 5)
+        self.assertGreater(kept["cost_usd"], 0)                 # the attempt was paid for
+        self.assertIn("#AAAAAA", (self.root / kept["file"]).read_text())
+        stem = kept["file"].rsplit("/", 1)[1][:-len(".scene.xml")]
+        self.assertTrue((self.root / "vfx" / "v02" / "rounds" / f"{stem}.attempt").is_dir())
+
+    def test_which_version_of_a_section_is_kept(self):
+        good, better = {"score": 6, "findings": []}, {"score": 7, "findings": []}
+        broken = {"score": None, "findings": ["error: hero penetrates the set"]}
+        self.assertTrue(vfx.keeps_previous(good, broken))
+        self.assertTrue(vfx.keeps_previous(better, good))
+        self.assertFalse(vfx.keeps_previous(good, better))
+        self.assertFalse(vfx.keeps_previous(good, dict(good)))  # a tie keeps the new one
+        self.assertFalse(vfx.keeps_previous(broken, good))
 
     def test_the_review_scores_fidelity_to_an_approved_keyframe(self):
         approve_keyframe(self.root)

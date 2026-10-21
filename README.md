@@ -91,9 +91,11 @@ what is missing and which command fixes it.
 ./yt styles   --title lithography --rich
 ./yt script   --title lithography --minutes 12 --polish --verify
 ./yt props    --title lithography                      # CC0 models, HDRIs, textures
-./yt keyframe --title lithography                      # lock the look: one frame, for approval
 ./yt voice    --title lithography --engine espeak      # scratch narration, free
-./yt vfx      --title lithography --budget-hours 40
+./yt retime   --title lithography                      # the screenplay takes the measured read
+./yt keyframe --title lithography                      # lock the look: section 1, for approval
+./yt keyframe --title lithography --approve            # after looking at keyframe.md
+./yt vfx      --title lithography --budget-hours 40    # carries section 1, authors the rest
 ./yt sound    --title lithography --review --fetch     # the cue sheet, then its files
 ./yt build    --title lithography                      # the scene-render document
 ./yt render   --title lithography --quality draft
@@ -116,7 +118,7 @@ Or all of it at once, for one idea:
 | `yt styles` | visual treatments ranked against the video's message, with shots, palette, type, motion | $0.06–0.10 |
 | `yt script` | the full AV screenplay: picture, narration verbatim, supers, assets, citations | **$0.51** for 3 minutes with polish and fact-check |
 | `yt props` | CC0 glTF models, HDRIs and texture maps from Poly Haven under `props/`, listed in `props.json` for the vfx brief | no model calls, no key |
-| `yt keyframe` | the look-lock, composed by the author as a program with the SDK: one 1920x1080 frame of the hero, environment, key light, materials, palette roles, type sample and camera language, each labelled with its source, reviewed and awaiting the operator's approval | one decision, one author session and one vision review per round |
+| `yt keyframe` | the look-lock from the film itself: `yt vfx`'s plan for every section and the lead section authored once, judged by the mechanical gate, its frames awaiting the operator's approval; `yt vfx` then carries it and authors the rest against it (`--sheet`: the older separate style frame) | the vfx plan and one author session; no vision review |
 | `yt voice` | one WAV per shot, measured drift against the script, captions | no model calls; ElevenLabs bills per character, local engines are free |
 | `yt vfx` | every effect specified and costed, then one world `<symbol>` per section, written by the author as a Python program with the sr-core SDK that the stage builds itself (determinism and provenance checked), with a single camera, its shots as phases, proof frames checked (frame, camera and geometry: a hero that penetrates a set solid, or that reads merged into one on screen with no shadow, is an error with time, object and depth) and reviewed, versioned under `vfx/vNN/` | scales with `--per-section`, `--budget-usd` per section, `--revisions` |
 | `yt sound` | effects, ambience, score, motifs, mix targets, cue sheet; with `--fetch`, a CC0/CC-BY file per cue from Freesound under `sound/` | **$1.07** for 3 minutes with listen-back |
@@ -157,8 +159,8 @@ work/
     ├── styles.json  styles.md
     ├── script.json  script.md  narration.txt  shotlist.csv
     ├── props/<kind>/<id>/  props.json   CC0 models, HDRIs, textures from Poly Haven
-    ├── keyframe/    keyframe.scene.xml  keyframe.png  brief.md   the look-lock frame
-    ├── keyframe.json  keyframe.md       its elements, scores and approval
+    ├── keyframe/    keyframe.png  frames.png                    the look: the lead section's frames
+    ├── keyframe.json  keyframe.md       the section, its gate findings and approval
     ├── voice/       voice.json  narration.vtt  narration.srt  voice.wav
     ├── vfx/vNN/<section>.scene.xml     one authored world per section, per round
     │   ├── frames/                     the proof frames the gate and the review read
@@ -364,9 +366,38 @@ film keeps its own length instead of being padded to half a minute.
 
 ### `yt keyframe`
 
-Locks the look before `yt vfx` spends: a studio's style frame. One composed
-1920x1080 frame presents the video's most qualified visual elements together,
-in the chosen treatment, for the operator's approval.
+Locks the look before `yt vfx` spends, and the look is part of the film. It
+builds the same planner `yt vfx` runs, plans every section (the plan `yt
+vfx` reuses) and authors the lead section (`--section`, default 1) once into
+`vfx/vNN/`. The mechanical gate judges it: the program built twice to the
+same document, the engine's validation, proof frames at every shot, the
+frame, legibility and geometry rules. No vision review and no revision round
+is paid for before the operator has looked. The frame that shows the most is
+copied to `keyframe/keyframe.png` and every proof frame is tiled on
+`keyframe/frames.png`; `keyframe.json` records the section, its program and
+document, the gate's findings and the approval, and `keyframe.md` is the
+sheet for a human.
+
+`yt keyframe --approve` records the approval against the section document's
+digest. `yt vfx` then carries the section forward at $0 and every other
+author's brief and review name its program (`keyframe/look.py`) as the look
+to copy (palette and type constants, the helpers that build labels, formulas
+and recurring objects, the camera language). A look approved after the
+animation exists goes in with `yt vfx --relook`: the section is carried and
+the others are authored again on the same plan. `--reject "notes"` records the rejection and
+the next run puts the notes at the top of the lead section's brief. `yt run`
+stops before `yt vfx` while a look awaits approval. On the Euler film the
+separate style frame this replaces took 51 minutes and $20 for a frame the
+film never used.
+
+`--section` · `--jobs` · `--budget-usd` · `--fresh` · `--approve` ·
+`--reject` · `--sheet` · `--inspo` · `--per-section` · `--width` · `--height`
+
+#### `yt keyframe --sheet`: the separate style frame
+
+One composed 1920x1080 frame presents the video's most qualified visual
+elements together, in the chosen treatment, for the operator's approval. It
+is not part of the film.
 
 One harness decision picks the elements from `styles.json` (treatment,
 palette roles via `design.py`, typography, motion), `script.json` (what is
@@ -441,7 +472,8 @@ Writes `voice/` (one file per shot), `voice.json`, `narration.vtt` and
 `narration.srt`, plus `voice.wav` with `--stitch`. `--layout sequential` (the
 default) places takes back to back with real gaps and gives the honest runtime;
 `--layout planned` uses the script's own timecodes and warns when a take runs
-into the next, because then the audio genuinely overlaps.
+into the next, because then the audio genuinely overlaps. A screenplay with no
+narration gets a descriptive captions track and a wordless `voice.json` instead (see `docs/production.md`).
 
 `--format` picks what the hosted engine returns: the default `pcm_<rate>` is
 wrapped as WAV here and level-matched, while `mp3_44100_128` and friends are
@@ -498,8 +530,16 @@ construct left unused. The planner and the author both see the whole
 vocabulary, and `examples.scene.xml` now proves a lit 3D set with a physical
 camera and particles alongside the 2D constructs.
 
-`--per-section` · `--jobs` · `--budget-usd` per section · `--budget-hours` ·
-`--width` · `--height` · `--revisions` · `--author-bar` · `--inspo` · `--fresh`
+`--budget-usd` (15) is one section's budget for its author sessions and its
+reviews together, and `--stage-budget-usd` caps all sections (default: the
+section budget times the sections). The run prints its estimate before any
+agent starts and its spend against both budgets after; a section that cannot
+pay another session and review stops and keeps its best reviewed round. An
+author is told its session's cap, and at 80% of it is asked for its build and
+a still (as at 80% of its time) rather than being cut off with exit 1.
+
+`--per-section` · `--jobs` · `--budget-usd` per section · `--stage-budget-usd` ·
+`--budget-hours` · `--width` · `--height` · `--revisions` · `--author-bar` · `--inspo` · `--fresh`
 
 ### `yt sound`
 
@@ -618,6 +658,18 @@ on target). `build.json` records it under `audio_staging` (`bed_db`,
 `headroom_db`, `shift_db`, `crest_db`, `crest_from`, the cues `shifted`) and a note says by how much;
 transients with no bed under them are a warning, because the target will be
 missed. Nothing changes the loudness target itself.
+
+**Fonts.** Every text node (`text`, `span`, `textStyle`, and `object3D`
+text) is pinned to a licensed file the repo ships under `ytstudio/fonts`
+(Inter, Inter Display, Lora, Liberation Sans/Serif/Mono, DejaVu
+Sans/Serif/Sans Mono; licences in `ytstudio/fonts/LICENSES`). The build
+resolves family, weight and style (`fonts.py`), copies the file to the
+project's `fonts/` so the render sync ships it, adds the `<font>` asset
+(with its sha256 and licence) and points the node at it; the cleaned include
+copies get `fontFile`. A family with no file is an `error:` finding and
+blocks the build; the explicit alias table (Helvetica, Arial, `serif`,
+`monospace`…) and nearest-weight choices are listed under `fonts.notes` in
+`build.json`. A node naming no family gets DejaVu Sans.
 
 `--width` · `--height` · `--fps` · `--codec` (checked against the schema's own
 list) · `--bitrate` and friends (never `crf`) · `--loudness` · `--true-peak`
@@ -926,12 +978,13 @@ read as real. It never says how to get there and names no film.
 ### `yt run`
 
 Every stage in order for one idea — research, styles, script, props,
-keyframe, voice, retime, vfx, sound, build, render — skipping any whose
-output is already in the project. `yt keyframe` follows props so the look is
-locked from real assets before anything is authored (`--skip keyframe`
-leaves it out; the frame still awaits `yt keyframe --approve`). `yt retime`
-sits between voice and vfx so nothing is authored against the screenplay's
-guess once the read is measured. `--redo stage[,stage]` or `--redo all` forces them, `--skip` leaves
+voice, retime, keyframe, vfx, sound, build, render — skipping any whose
+output is already in the project. `yt retime` follows voice so nothing is
+authored against the screenplay's guess once the read is measured; `yt
+keyframe` follows it, so the look is a section of the film timed to that
+read, and the run stops before `yt vfx` until the look is approved (`yt
+keyframe --approve`, then `yt run` again; a rejected look is authored again
+with the notes; `--skip keyframe` runs without one). `--redo stage[,stage]` or `--redo all` forces them, `--skip` leaves
 stages out, and `--quick` drops the quality passes (deliberation, polish,
 fact-check, listen-back) for a cheaper first draft and renders at draft
 quality. `cli.run_extras` is the flags each stage gets (`--rich` and

@@ -36,12 +36,40 @@ import tempfile
 import time
 from pathlib import Path
 
-from claude_engine import ClaudeError
+from claude_engine import ClaudeError, _partial_cost
 
 from . import framecheck
 from .scene_sdk import sdk
 
 KIT_DIR = "kit"
+
+#: Reference libraries of complete SDK programs that rendered on this engine,
+#: one folder each with an INDEX.md (see kit/REFERENCES.md in a workspace). They
+#: are read, never run, and live outside git; SR_KIT_REFERENCES moves them.
+REFERENCES_DIR = Path(os.environ.get("SR_KIT_REFERENCES")
+                      or Path(__file__).resolve().parent.parent / "_tmp" / "kit-references")
+
+
+def reference_libraries() -> list[Path]:
+    """The reference libraries present: folders under REFERENCES_DIR with an INDEX.md."""
+    if not REFERENCES_DIR.is_dir():
+        return []
+    return sorted(p for p in REFERENCES_DIR.iterdir() if (p / "INDEX.md").is_file())
+
+
+def references_text(libraries: list[Path]) -> str:
+    """kit/REFERENCES.md: where each library is and how an author uses it."""
+    lines = ["# Reference libraries", "",
+             "Complete programs written with the SDK, built and rendered on this engine, far",
+             "more of them than kit/examples/. Start from a library's INDEX.md: it lists every",
+             "program by subject and by the SDK elements and effect types it uses, with a",
+             "thumbnail of what it renders. Read a program to see how a construct is written",
+             "and copy the construction into your own program. Never run them (they import",
+             "helpers of their own library), and their colours, sizes and texts are not a look",
+             "for this film.", ""]
+    for lib in libraries:
+        lines.append(f"- `{lib}/INDEX.md`")
+    return "\n".join(lines) + "\n"
 EXAMPLES_SRC = Path(__file__).resolve().parent / "kit" / "examples"
 #: What authors went to the engine's source for, stamped with the engine version
 #: it was verified on; ENGINE.md prints it and flags it when the version differs.
@@ -334,6 +362,9 @@ def install(directory: Path, *, frame: tuple[int, int] | None = None, fps: int =
         (kit / "examples" / path.name).write_text(path.read_text(encoding="utf-8"),
                                                   encoding="utf-8")
     (kit / "examples" / "README.md").write_text(examples_index(), encoding="utf-8")
+    libraries = reference_libraries()
+    if libraries:
+        (kit / "REFERENCES.md").write_text(references_text(libraries), encoding="utf-8")
     return {"dir": str(directory), "engine_source": engine.get("source"),
             "renderer_notes": len(notes), "examples": [p.name for p in example_files()]}
 
@@ -350,7 +381,11 @@ AUTHOR_SYSTEM = (
     "kit.py frame <doc> --at <seconds>`) and look at every PNG with the Read tool: "
     "a black, flat, floating or wrong frame means the work is not done. You use "
     "what a program can do -- loops, functions, parameters, seeded randomness -- and "
-    "you never invent an asset file, a font or a value the schema does not accept."
+    "you never invent an asset file, a font or a value the schema does not accept. "
+    "You write and edit files with the Write and Edit tools; the shell is for running "
+    "`python3 kit.py ...` and your program, and a shell command that writes a file "
+    "(a heredoc, `>`, `sed -i`) is denied. A denial names that one command, never the "
+    "shell: when one is denied, do it with the right tool and keep building."
 )
 
 #: The tools such an agent gets: its workspace's files and a shell for the kit.
@@ -376,6 +411,7 @@ def author_config(workspace: Path, *, project_root: Path | None = None,
     if project_root:
         dirs = [str(Path(project_root) / name) for name in AUTHOR_READ_DIRS
                 if (Path(project_root) / name).is_dir()]
+    dirs += [str(lib) for lib in reference_libraries()]     # read, never written
     allowed = [t for t in AUTHOR_TOOLS if t != "Bash"]
     allowed += [f"Bash({cmd})" for cmd in AUTHOR_SHELL]
     allowed += [f"Bash(python3 {p})" for p in programs]
@@ -398,6 +434,9 @@ random generator where variation is wanted.
 - `kit/ENGINE.md`: what the engine approximates or ignores, per renderer. Pick the
   renderer for what the picture needs, knowing what it drops.
 - `kit/examples/`: programs that rendered on this engine. Their values are placeholders.
+- `kit/REFERENCES.md`, when present: libraries of hundreds of complete programs that
+  rendered, indexed by subject and technique (`grep` their INDEX.md for an element or
+  an effect type, Read a thumbnail); read and adapt them, never run them.
 - `python3 kit.py describe <element>` before writing an attribute you have not used.
 - `python3 kit.py build <program.py>` until it reports 0 errors and a deterministic
   document; then `python3 kit.py frame <doc> --at <seconds>` and Read every PNG.
@@ -405,6 +444,10 @@ random generator where variation is wanted.
   the document and the frames you rendered; run it before you call a frame done.
 - Stay in your workspace: the kit, the examples, this brief and the project directories
   it names are all you need; anything else is denied.
+- Write the program with the Write tool and change it with Edit. The shell runs
+  `python3 kit.py ...`, `python3 sr.py ...` and your program; a shell command that
+  writes a file (a heredoc, `>`, `sed -i`) is denied. A denial is about that one
+  command, not the shell: the build and the frames still run.
 - `kit.py` prints the time left on every build and frame (`SRKIT_DEADLINE`). Keep a
   program that builds and a still you have looked at: when your time reaches 80% you
   are stopped and asked to build and render the current program at once.
@@ -477,13 +520,136 @@ def finish_prompt(program: str = "the program", document: str = "the document",
             "reply with one line. Do it now; start nothing new.")
 
 
-def stream_round(engine, prompt: str, *, system: str, resume=False, finish: str | None = None):
+#: The share of a session's dollar cap at which an author is stopped and asked to build
+#: and render what it has, as the clock does at CUTOFF.
+BUDGET_CUTOFF = 0.8
+
+#: The result subtype the claude CLI ends a session with at its `--max-budget-usd`.
+BUDGET_STOP = "error_max_budget_usd"
+
+#: The environment variable by which the kit learns what is left of the session's cap: the
+#: path of a small JSON file `stream_round` keeps current.
+BUDGET_FILE_VAR = "SRKIT_BUDGET_FILE"
+BUDGET_FILE = ".srkit-budget"
+
+#: Less than this left of the cap, a finish call could not build and render anything.
+MIN_FINISH_USD = 0.25
+
+_TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_read_input_tokens",
+               "cache_creation_input_tokens")
+
+
+def budget_line(cap: float) -> str:
+    """What the author is told of its session's money, as it is told its time."""
+    return (f"## Your budget\n\nThis session may spend ${cap:g}. At {BUDGET_CUTOFF:.0%} "
+            f"(${cap * BUDGET_CUTOFF:.2f}) you are stopped and asked to build the current "
+            "program and render a still of it, which is then reviewed; what is not built by "
+            "then is lost. `kit.py` prints the budget left on every build and frame.\n")
+
+
+def budget_left_line(env: dict | None = None) -> str:
+    """What `kit.py` prints beside the time left: the session's money left, or nothing
+    when no budget file is set (a person running the kit by hand)."""
+    path = (os.environ if env is None else env).get(BUDGET_FILE_VAR)
+    try:
+        state = json.loads(Path(path).read_text(encoding="utf-8"))
+        left, cap = float(state["left"]), float(state["cap"])
+    except (TypeError, ValueError, KeyError, OSError):
+        return ""
+    if left <= 0:
+        return "budget left: none: build and render what you have now"
+    return (f"budget left: ${left:.2f} of ${cap:g} for this session; keep a program that "
+            "builds and a still you have looked at")
+
+
+class _Meter:
+    """The dollars a session has spent so far, from the stream's per-message usage
+    (the latest per message id), priced as the engine prices a cut-off call. A call
+    whose model has no price is not metered here: `stream_round` runs it under the
+    mark as the CLI's own budget instead."""
+
+    def __init__(self, cap: float, path: Path | None):
+        self.cap, self.path, self.done = cap, path, 0.0
+        self.seen: dict[str, tuple[str | None, dict]] = {}
+        self.write()
+
+    def note(self, event) -> None:
+        raw = getattr(event, "raw", None) or {}
+        if raw.get("type") == "result":         # the call ended: its cost is known
+            self.done += float(raw.get("total_cost_usd") or self.call_spent() or 0.0)
+            self.seen.clear()
+        elif raw.get("type") == "assistant":
+            inner = raw.get("message") or {}
+            if isinstance(inner.get("usage"), dict):
+                self.seen[str(inner.get("id") or len(self.seen))] = (
+                    inner.get("model"), inner["usage"])
+        self.write()
+
+    def tokens(self) -> dict[str, int]:
+        total = dict.fromkeys(_TOKEN_KEYS, 0)
+        for _, usage in self.seen.values():
+            for key in _TOKEN_KEYS:
+                total[key] += int(usage.get(key) or 0)
+        return total
+
+    def call_spent(self) -> float | None:
+        cost = 0.0
+        for model, usage in self.seen.values():
+            part = _partial_cost({k: int(usage.get(k) or 0) for k in _TOKEN_KEYS}, model)
+            if part is None:
+                return None
+            cost += part
+        return cost
+
+    def spent(self) -> float:
+        return self.done + (self.call_spent() or 0.0)
+
+    def left(self) -> float:
+        return max(0.0, self.cap - self.spent())
+
+    def at_mark(self) -> bool:
+        return (bool(self.seen) and self.call_spent() is not None
+                and self.spent() >= BUDGET_CUTOFF * self.cap)
+
+    def book(self, engine) -> None:
+        """The stream was abandoned at the mark, so the engine saw no end to book:
+        book what it spent as a cut-off call."""
+        cost = self.call_spent()
+        if not self.seen or cost is None:
+            return
+        lock = getattr(engine, "_lock", None)
+        if lock is not None:
+            with lock:
+                engine.usage.add_partial(self.tokens(), cost=cost, estimated=True)
+        else:
+            engine.usage.add_partial(self.tokens(), cost=cost, estimated=True)
+        self.done += cost
+        self.seen.clear()
+        self.write()
+
+    def write(self) -> None:
+        if self.path is None:
+            return
+        try:
+            self.path.write_text(json.dumps({"left": round(self.left(), 4), "cap": self.cap}),
+                                 encoding="utf-8")
+        except OSError:
+            pass
+
+
+def stream_round(engine, prompt: str, *, system: str, resume=False, finish: str | None = None,
+                 budget_usd: float | None = None):
     """One author round: yield the engine's events, as `engine.stream` does, with the
     clock kept. The session's timeout is the 80% mark of the round's budget; the
     deadline reaches the kit through `SRKIT_DEADLINE`. A session cut off at the mark
     is resumed once with `finish` (build and render the current program) and the time
     left of the budget; a failure before the mark, any other failure, no session to
-    resume or no time left is raised as it was."""
+    resume or no time left is raised as it was.
+
+    With `budget_usd`, the session's dollar cap is the call's hard cap and the spend is
+    metered; at BUDGET_CUTOFF of the cap the stream is stopped and the session resumed
+    once with `finish` and the rest of the cap, the same way. What is left is written
+    where the kit reads it (`SRKIT_BUDGET_FILE`)."""
     config = getattr(engine, "config", None)
     if config is None:              # an engine that carries no clock is simply streamed
         yield from engine.stream(prompt, system=system, **({"resume": resume} if resume else {}))
@@ -493,20 +659,75 @@ def stream_round(engine, prompt: str, *, system: str, resume=False, finish: str 
     deadline = started + round_budget(timeout) if timeout else None
     if deadline is not None:
         config.env = dict(config.env or {}, **{DEADLINE_VAR: f"{deadline:.0f}"})
+    meter = None
+    if budget_usd:
+        config.max_turns_budget_usd = budget_usd
+        cwd = getattr(config, "cwd", None)
+        meter = _Meter(float(budget_usd), Path(cwd) / BUDGET_FILE if cwd else None)
+        if meter.path is not None:
+            config.env = dict(config.env or {}, **{BUDGET_FILE_VAR: str(meter.path)})
+    # A model with no configured price cannot be metered on the stream. The CLI
+    # enforces the budget itself, so its session runs under the mark and the CLI's
+    # own budget stop (with the exact cost it reports) is the mark.
+    staged = meter is not None and _partial_cost(
+        {"output_tokens": 1}, getattr(config, "model", None)) is None
+    if staged:
+        config.max_turns_budget_usd = BUDGET_CUTOFF * float(budget_usd)
+    marked = stopped = False
+    left = None
     try:
-        yield from engine.stream(prompt, system=system, **({"resume": resume} if resume else {}))
-        return
+        stream = engine.stream(prompt, system=system, **({"resume": resume} if resume else {}))
+        try:
+            for event in stream:
+                if meter is not None:
+                    meter.note(event)
+                yield event
+                if staged and event.type == "result" and event.subtype == BUDGET_STOP:
+                    stopped = True
+                if meter is not None and meter.at_mark():
+                    marked = True
+                    break
+        finally:
+            if hasattr(stream, "close"):
+                stream.close()
+        if not (marked or stopped):
+            return
     except ClaudeError as exc:
         reached = timeout and now() - started >= 0.95 * timeout
         session = getattr(engine, "session_id", None)
         left = deadline - now() if deadline is not None else 0.0
-        if not (reached and "timed out" in str(exc).lower() and session and left >= MIN_FINISH):
-            raise
-    config.timeout = left
+        if stopped:             # the CLI's exit 1 after its budget result
+            if not (session and left >= MIN_FINISH and meter.left() >= MIN_FINISH_USD):
+                raise
+        else:
+            if not (reached and "timed out" in str(exc).lower() and session
+                    and left >= MIN_FINISH):
+                raise
+            if meter is not None and meter.left() < MIN_FINISH_USD:
+                raise
+    if marked or stopped:
+        if marked:
+            meter.book(engine)      # a CLI stop is no cut-off call: the engine booked it
+        left = deadline - now() if deadline is not None else None
+        if (not getattr(engine, "session_id", None) or meter.left() < MIN_FINISH_USD
+                or (left is not None and left < MIN_FINISH)):
+            if stopped:
+                raise ClaudeError("the session stopped on its budget with too little left "
+                                  "to finish")
+            return
+    if meter is not None:
+        config.max_turns_budget_usd = meter.left()
+    if left is not None:
+        config.timeout = left
     try:
-        yield from engine.stream(finish or finish_prompt(), system=system, resume=True)
+        for event in engine.stream(finish or finish_prompt(), system=system, resume=True):
+            if meter is not None:
+                meter.note(event)
+            yield event
     finally:
         config.timeout = timeout
+        if meter is not None:
+            config.max_turns_budget_usd = budget_usd
 
 
 # --------------------------------------------------------------------------- #
@@ -547,6 +768,22 @@ def _run_program(program: Path, timeout: float) -> tuple[subprocess.CompletedPro
 SHADOW_LIGHTS = ("directional", "point", "spot", "rect-area", "disk-area", "sphere-area")
 
 
+#: The smallest text a phone viewer can read, as a share of the frame height
+#: (54 px at 1080p): the house standard's floor for labels and numbers.
+LEGIBLE_SHARE = 1 / 20
+
+#: Elements whose `size` is the height of the text they draw.
+TEXT_ELEMENTS = ("text", "textStyle", "formula")
+
+
+def _number(value) -> bool:
+    try:
+        float(value)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
 def rule_findings(data: bytes) -> list[str]:
     """The harness's rules on a document, beyond what the schema can say."""
     from xml.etree import ElementTree
@@ -560,6 +797,22 @@ def rule_findings(data: bytes) -> list[str]:
     casters = [el for el in nodes if local(el) == "light"
                and el.get("type") in SHADOW_LIGHTS]
     out = []
+    project = next((el for el in nodes if local(el) == "project"), None)
+    try:
+        height = float(project.get("height")) if project is not None else 0.0
+    except (TypeError, ValueError):
+        height = 0.0
+    if height:
+        floor = height * LEGIBLE_SHARE
+        small = sorted({f"{el.get('id') or local(el)} ({float(el.get('size')):g} px)"
+                        for el in nodes if local(el) in TEXT_ELEMENTS and _number(el.get("size"))
+                        and float(el.get("size")) < floor})
+        if small:
+            out.append(f"warning: rule:legibility: text under {floor:.0f} px (1/20 of the frame "
+                       f"height) cannot be read on a phone: {', '.join(small[:12])}"
+                       + (" ..." if len(small) > 12 else "")
+                       + "; enlarge every word that is part of the film (a style sheet's own "
+                         "notes may stay small)")
     if solids and casters and not any((el.get("castShadow") or "").strip() in ("true", "1")
                                       for el in casters):
         out.append("warning: rule:shadow: no light casts a shadow (light/@castShadow defaults "
@@ -816,13 +1069,13 @@ def frame(doc: Path, at: float, *, host: str = "", out_dir: Path | None = None,
     def still(where: str) -> tuple[bytes | None, str]:
         try:
             return render.engine_render_still(data, at, host=where, files=files,
-                                              doc_path=doc_path, timeout=budget)
+                                              doc_path=doc_path, timeout=budget,
+                                              extra=refs, cacheable=refs is not None)
         except subprocess.TimeoutExpired:
             return None, f"error: the render ran past {budget:g} s"
     doc = Path(doc).resolve()
     data = doc.read_bytes()
     text = data.decode("utf-8", "replace")
-    host = host or frame_host(text)
     # The engine runs where every referenced file can be named below it: a
     # document under vfx/vNN/ that uses ../../props/... ships from the project.
     refs = [Path(os.path.normpath(doc.parent / m.group(1))) for m in
@@ -834,16 +1087,30 @@ def frame(doc: Path, at: float, *, host: str = "", out_dir: Path | None = None,
     doc_path = doc.relative_to(root).as_posix()
     files = referenced_files(text, doc.parent, root)
     files.pop(doc_path, None)
-    asked = time.monotonic()            # the budget times the render, not this wait
-    with host_lock(host):
+    # Every file the document names, shipped or not, is part of the cache key; one
+    # that cannot be read leaves the still out of the cache altogether.
+    refs = render.reference_files(text, doc.parent)
+    # A cache hit needs no host: it is served before any ssh health check and
+    # without waiting for another render's lock.
+    hit = None if refs is None else render.cached_still(
+        data, at, host=host, files=files, doc_path=doc_path, extra=refs)
+    waited = 0.0
+    if hit:
+        png, message = hit
         started = time.monotonic()
-        waited = started - asked
-        png, message = still(host)
-        if png is None and "No such file or directory" in message:
-            # The engine binary this process found on the host is gone (a
-            # rebuild or a clean): find it again and try once more.
-            getattr(render, "_HOSTS", {}).pop(host, None)
+        host = host or message.rpartition("rendered earlier on ")[2]
+    else:
+        host = host or frame_host(text)
+        asked = time.monotonic()        # the budget times the render, not this wait
+        with host_lock(host):
+            started = time.monotonic()
+            waited = started - asked
             png, message = still(host)
+            if png is None and "No such file or directory" in message:
+                # The engine binary this process found on the host is gone (a
+                # rebuild or a clean): find it again and try once more.
+                getattr(render, "_HOSTS", {}).pop(host, None)
+                png, message = still(host)
     if png is None and any(m in message for m in UNREACHABLE):
         # A host this process found usable stopped answering: probe it again,
         # and if it is down, render where the router now sends the job.
@@ -856,7 +1123,10 @@ def frame(doc: Path, at: float, *, host: str = "", out_dir: Path | None = None,
             host = fallback
     seconds = time.monotonic() - started
     findings = [line for line in message.splitlines()[1:] if line.strip()]
-    if png is not None:
+    if png is not None and message.startswith("rendered from cache"):
+        findings.append(f"note: served from cache (rendered earlier on "
+                        f"{message.rpartition('rendered earlier on ')[2] or host or 'this machine'})")
+    elif png is not None:
         findings.append(f"note: {RENDER_NOTE} {seconds:.0f} s on {host or 'this machine'} "
                         f"({render_settings(text)})")
     if waited >= WAIT_NOTE_SECONDS:
@@ -922,6 +1192,9 @@ def _print_time_left() -> None:
     line = time_left_line()
     if line:
         print(f"\n{line}")
+    line = budget_left_line()
+    if line:
+        print(line if time_left_line() else f"\n{line}")
 
 
 def _precheck(path: Path) -> int:

@@ -51,7 +51,7 @@ from pathlib import Path
 from claude_engine import ClaudeEngine, ClaudeError, EngineConfig, Usage
 from .core import Idea, _key, _merge_usage, compact, wrap
 from .core import write_json as dump_json
-from . import harness, house, workspace
+from . import fonts, harness, house, workspace
 from .assess import stack_brief
 
 #: Deliberation stages, as accepted by --deliberate. See the module docstring.
@@ -439,7 +439,9 @@ def build_prompt(idea: Idea, *, count: int, pool: list[str], rich: bool,
             "pipeline's own stages, never other software",
             "a realistic time estimate for one video",
             "a palette direction, in words plus hex codes",
-            "a typographic direction (typeface character, not a brand name only)",
+            "a typographic direction (typeface character; choose the face from the "
+            "families this pipeline ships -- " + ", ".join(fonts.families()) +
+            " -- the build refuses any other family)",
             "a motion and pacing note: cut rhythm, camera, transitions",
             "a sound design note",
             "2-4 channels or specific videos that execute it well",

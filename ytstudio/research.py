@@ -541,6 +541,10 @@ class Dossier:
     def save(self, name: str, data: object) -> None:
         write_json(self._path(name), data)
 
+    def drop(self, name: str) -> None:
+        """Forget a cached stage, so the next run computes it again."""
+        self._path(name).unlink(missing_ok=True)
+
     def write(self, name: str, text: str) -> Path:
         path = self.dir / name
         path.write_text(text, encoding="utf-8")

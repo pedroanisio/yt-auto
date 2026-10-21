@@ -34,13 +34,6 @@
           "{dir}",
           "props"
         ],
-        "keyframe": [
-          "{python}",
-          "{repo}/ytstudio/lane.py",
-          "check",
-          "{dir}",
-          "keyframe"
-        ],
         "voice": [
           "{python}",
           "{repo}/ytstudio/lane.py",
@@ -54,6 +47,13 @@
           "check",
           "{dir}",
           "retime"
+        ],
+        "keyframe": [
+          "{python}",
+          "{repo}/ytstudio/lane.py",
+          "check",
+          "{dir}",
+          "keyframe"
         ],
         "vfx": [
           "{python}",
@@ -119,12 +119,6 @@
       "requires": "check"
     },
     {
-      "name": "keyframe",
-      "exit": "keyframe.json written and `yt doctor` reports no fail for keyframe; the operator approved the look (yt keyframe --approve)",
-      "check": "keyframe",
-      "requires": "check"
-    },
-    {
       "name": "voice",
       "exit": "voice.json written and `yt doctor` reports no fail for voice",
       "check": "voice",
@@ -134,6 +128,12 @@
       "name": "retime",
       "exit": "retime.json written and `yt doctor` reports no fail for retime; the screenplay carries the measured narration timings",
       "check": "retime",
+      "requires": "check"
+    },
+    {
+      "name": "keyframe",
+      "exit": "keyframe.json written and `yt doctor` reports no fail for keyframe; the operator approved the look (yt keyframe --approve)",
+      "check": "keyframe",
       "requires": "check"
     },
     {

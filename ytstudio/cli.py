@@ -6,7 +6,7 @@ Nine stages, each reading what the ones before it wrote:
     yt research  turn one idea into a sourced dossier, with licensed footage
     yt styles    rank the visual treatments that can carry its message
     yt script    write the full AV screenplay, shot by shot
-    yt keyframe  lock the look: one composed frame of the film's elements, for approval
+    yt keyframe  lock the look: the film's lead section, authored once, for approval
     yt voice     record the narration, measure it, caption it
     yt vfx       plan the animation and have the model author it for scene-render
     yt sound     spot the effects, ambience, score and mix against it
@@ -158,8 +158,8 @@ def run_extras(args, *, redo: set) -> dict[str, list[str]]:
         "script": ["--minutes", str(args.minutes)]
                   + ([] if quick else ["--polish", "--verify"]),
         "props": [],
-        # The look is locked once per set of inputs; a redo means pick and
-        # compose again, not replay the cached decision.
+        # The look is locked once per set of inputs; a redo means plan and
+        # author the lead section again, not replay the cached one.
         "keyframe": ["--fresh"] if redo & {"keyframe", "all"} else [],
         "voice": [],
         # The screenplay takes the narration's measured lengths before
@@ -219,6 +219,42 @@ def settle_retime(code: int, project: workspace.Project, run_stage, *,
     return code
 
 
+def look_gate(stage: str, project: workspace.Project, skip: set, redo: set = frozenset(),
+              *, say=lambda msg: print(msg, file=sys.stderr)) -> str:
+    """What the look's approval means for `stage` in `yt run`:
+
+    - "again" for the keyframe when it was rejected, changed after approval,
+      or its pass left nothing approvable: it is authored again (notes first);
+    - "stop" before vfx while a look awaits the operator: nothing downstream
+      is paid for against a look that may change;
+    - "relook" for vfx when an approved look from the film is not in the
+      animation that exists: its section is carried in and the others are
+      authored again against it (`yt vfx --relook`), and build and render follow;
+    - "" otherwise."""
+    if "keyframe" in skip or stage not in ("keyframe", "vfx"):
+        return ""
+    state = keyframe.approval_state(project.root)["state"]
+    if stage == "keyframe":
+        return ("again" if state in ("rejected", "stale")
+                or keyframe.look_needs_redo(project.root) else "")
+    if state == "pending":
+        start = PIPELINE.index("vfx")
+        rest = (list(PIPELINE[start:]) if redo & {"keyframe", "all"}
+                else [s for s in PIPELINE[start:] if s in redo])
+        again = f" --redo {','.join(rest)}" if rest else ""
+        say(f"\n== vfx: waiting for the look's approval. Look at "
+            f"{project.root / 'keyframe.md'}, then\n"
+            f"  yt keyframe --project {project.root} --approve   (or --reject \"notes\")\n"
+            f"  and `yt run --project {project.root}{again}` to continue; --skip keyframe "
+            "runs without a look")
+        return "stop"
+    if (state == "approved" and project.has("vfx")
+            and keyframe.load_record(project.root).get("source") == "section"
+            and not keyframe.film_carries_look(project.root)):
+        return "relook"
+    return ""
+
+
 def _run_pipeline(args) -> int:
     split = lambda s: [p.strip() for p in s.split(",") if p.strip()]  # noqa: E731
     skip, redo = set(split(args.skip)), set(split(args.redo))
@@ -245,13 +281,28 @@ def _run_pipeline(args) -> int:
         if stage in skip:
             print(f"\n== {stage}: skipped", file=sys.stderr)
             continue
+        look = look_gate(stage, project, skip, redo)
+        if look == "stop":
+            return 0
         if (project.has(artifacts[stage]) and "all" not in redo
-                and stage not in redo):
+                and stage not in redo and look not in ("again", "relook")):
             print(f"\n== {stage}: already done ({artifacts[stage]}); "
                   "--redo to run it again", file=sys.stderr)
             continue
+        argv_extra = dict(extra)
+        if stage == "vfx" and "keyframe" not in skip and keyframe.approved_keyframe(
+                project.root) and keyframe.load_record(project.root).get("source") == "section":
+            # The approved section is never thrown away by a --fresh replan:
+            # the first animation carries it, and an existing one takes it with
+            # --relook (the others authored again on the plan it was made under;
+            # `--redo keyframe` is what replans).
+            argv_extra["vfx"] = ["--relook"] if project.has("vfx") else []
+            if project.has("vfx"):
+                print("\n== vfx: the approved look goes into the animation: its section is "
+                      "carried and the others are authored again against it", file=sys.stderr)
+                redo = redo | {"build", "render"}
         print(f"\n== {stage}", file=sys.stderr)
-        stage_args = parser.parse_args(stage_argv(stage, base, extra))
+        stage_args = parser.parse_args(stage_argv(stage, base, argv_extra))
         code = stage_args.run(stage_args)
         if stage == "retime":
             def run_one(name: str, extra_argv: list[str]) -> int:

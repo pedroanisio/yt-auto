@@ -275,6 +275,49 @@ class Honesty(KitCase):
         self.assertEqual(path.parent, self.dir / "frames" / "kit")
 
 
+class AuthorShell(unittest.TestCase):
+    """Measured: a probe author whose heredoc write was denied read "Permission to use
+    Bash has been denied" as the whole shell and never built its program."""
+
+    def test_the_author_is_told_a_denial_is_one_command_not_the_shell(self):
+        for text in (sdkkit.AUTHOR_SYSTEM, sdkkit.BRIEF):
+            self.assertIn("Write", text)
+            self.assertIn("heredoc", text)
+            self.assertRegex(text, r"(?s)denial.*one\s+command")
+
+
+class References(unittest.TestCase):
+    """Libraries of complete programs that rendered reach every author, read-only."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="refs-"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def test_a_library_with_an_index_is_offered_and_readable_not_writable(self):
+        lib = self.root / "lib-a"
+        lib.mkdir()
+        (lib / "INDEX.md").write_text("# index")
+        (self.root / "not-a-library").mkdir()
+        ws = self.root / "ws"
+        with mock.patch.object(sdkkit, "REFERENCES_DIR", self.root), \
+                mock.patch.object(sdkkit, "ENGINE_SRC", self.root):
+            sdkkit.install(ws, frame=(64, 36))
+            cfg = sdkkit.author_config(ws, programs=["p.py"])
+        text = (ws / "kit" / "REFERENCES.md").read_text()
+        self.assertIn(str(lib / "INDEX.md"), text)
+        self.assertNotIn("not-a-library", text)
+        self.assertIn("never run", text.lower())
+        self.assertIn(str(lib), cfg["add_dirs"])
+        self.assertTrue(any(str(lib) in d for d in cfg["disallowed_tools"]))
+
+    def test_no_library_no_file(self):
+        ws = self.root / "ws"
+        with mock.patch.object(sdkkit, "REFERENCES_DIR", self.root / "absent"), \
+                mock.patch.object(sdkkit, "ENGINE_SRC", self.root):
+            sdkkit.install(ws, frame=(64, 36))
+        self.assertFalse((ws / "kit" / "REFERENCES.md").exists())
+
+
 class Rules(unittest.TestCase):
     LIT = ('<scene version="1.3"><project width="64" height="36" fps="30" duration="1"/>'
            '<symbols><symbol id="w" width="64" height="36"><object3D id="o" primitive="box"/>'
@@ -283,6 +326,14 @@ class Rules(unittest.TestCase):
     def test_a_world_whose_lights_cast_no_shadow_is_flagged(self):
         doc = self.LIT.format(lights='<light id="k" type="rect-area"/>').encode()
         self.assertTrue(any("rule:shadow" in f for f in sdkkit.rule_findings(doc)))
+
+    def test_text_a_phone_cannot_read_is_flagged(self):
+        doc = (b'<scene><project width="1920" height="1080" fps="30" duration="1"/><assets>'
+               b'<text id="t-small" text="x" size="36"/><formula id="f-big" tex="x" size="120"/>'
+               b'</assets></scene>')
+        found = sdkkit.rule_findings(doc)
+        self.assertTrue(any("rule:legibility" in f and "t-small (36 px)" in f for f in found), found)
+        self.assertFalse(any("f-big" in f for f in found))
 
     def test_castshadow_one_is_true(self):
         doc = self.LIT.format(lights='<light id="k" type="spot" castShadow="1"/>').encode()

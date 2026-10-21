@@ -208,7 +208,9 @@ def run(args) -> int:
         print(f"    {row['label']:<6} {row['from']:>3}s -> {row['to']:>3}s  "
               f"{row['delta']:+d}s")
     if not changes:
-        print("\n  nothing to change: the screenplay already matches the narration")
+        print("\n  nothing to change: " + (
+            "a wordless film has no narration to measure" if voice.get("wordless")
+            else "the screenplay already matches the narration"))
         return 0
 
     # Which of these the screenplay should take is the editor's call.

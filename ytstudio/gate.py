@@ -372,7 +372,8 @@ STOPS = (
     ("Vendor ", "assets", "build", "assets must live inside the project: `yt assets`, `yt build`"),
     ("Asset outside project", "assets", "build", "assets must live inside the project: `yt assets`, `yt build`"),
     ("Missing/empty artifact", "artifact", "render", "the named file is missing or empty"),
-    ("No caption cues found", "captions", "voice", "`yt voice` writes narration.vtt"),
+    ("No caption cues found", "captions", "voice", "`yt voice` writes narration.vtt (for a wordless film too: "
+     "descriptive captions)"),
     ("Caption", "captions", "voice", "`yt voice`"),
     ("Malformed caption", "captions", "voice", "`yt voice`"),
     ("Overlapping or unordered caption", "captions", "voice", "`yt voice`"),
@@ -478,7 +479,9 @@ def inputs(project, args, host: str = "") -> tuple[dict, list[str]]:
         "tools dir": str(tools_dir(args.tools_dir) or ""),
         "voice end": voice_end if voice_end is not None else voice.get("voice_end"),
     }
-    missing = [name for name, value in found.items() if not value]
+    # A voice end of 0 is a value (a wordless one-shot film), not an absence.
+    missing = [name for name, value in found.items()
+               if not value and not (name == "voice end" and value == 0)]
     return found, missing
 
 
@@ -555,8 +558,9 @@ def run(args) -> int:
         if missing:
             how = {"video": "yt render, or --video FILE",
                    "encode report": "yt render, or --render FILE",
-                   "captions": "yt voice, or --captions FILE",
-                   "voice end": "yt voice, or --voice FILE / --voice-end SECONDS",
+                   "captions": "yt voice (a wordless film too), or --captions FILE",
+                   "voice end": "yt voice (a wordless film too: the last shot's "
+                                "start), or --voice FILE / --voice-end SECONDS",
                    "scene": "yt build, or --scene FILE",
                    "engine": HOST_HINT, "ffprobe": HOST_HINT,
                    "gate": GATE_HINT, "tools dir": TOOLS_HINT}

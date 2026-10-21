@@ -627,11 +627,15 @@ class Registration(unittest.TestCase):
         self.assertTrue(args.approve)
         defaults = parser.parse_args(["keyframe", "--project", "work/x"])
         self.assertEqual((defaults.rounds, defaults.bar), (2, 7.0))
+        self.assertEqual((defaults.section, defaults.sheet, defaults.jobs), (None, False, 8))
+        self.assertIsNone(defaults.budget_usd)
 
-    def test_the_stage_sits_between_props_and_voice_and_owns_keyframe_json(self):
+    def test_the_stage_sits_between_retime_and_vfx_and_owns_keyframe_json(self):
+        # The look is a section of the film, so it is timed to the measured
+        # narration (after retime) and locked before the animation (vfx).
         stages = [s for s, _ in workspace.STAGES]
-        self.assertEqual(stages.index("keyframe"), stages.index("props") + 1)
-        self.assertEqual(stages.index("voice"), stages.index("keyframe") + 1)
+        self.assertEqual(stages.index("keyframe"), stages.index("retime") + 1)
+        self.assertEqual(stages.index("vfx"), stages.index("keyframe") + 1)
         self.assertEqual(dict(workspace.STAGES)["keyframe"], "keyframe")
         self.assertEqual(workspace.ARTIFACTS["keyframe"], "keyframe.json")
         self.assertIn("keyframe", cli.PIPELINE)

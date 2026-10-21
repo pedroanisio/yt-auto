@@ -329,6 +329,36 @@ def delivery_evidence(project: workspace.Project, build: dict | None
     return missing
 
 
+def check_renders(project: workspace.Project, report: Report) -> None:
+    """List the render jobs that did not render (AUTO-32): every render*.json and every
+    kit-frame report under .cache/reports/ that carries a status. A job that timed out,
+    lacked an input or failed leaves one; this is where an operator reads it, not from
+    a hung author or a missing frame."""
+    paths = sorted(project.root.glob("render*.json")) + sorted(
+        (project.root / ".cache" / "reports").glob("*.json"))
+    for path in paths:
+        rep = read_json(path, warn=False)
+        if not isinstance(rep, dict) or rep.get("status") not in render.STATUSES:
+            continue
+        status = rep["status"]
+        if status == "rendered":
+            continue
+        job = rep.get("job") or path.stem
+        spent = f" after {float(rep.get('seconds') or 0):g} s"
+        detail = (f"timed out{spent}" if status == "timeout"
+                  else "missing " + ", ".join(rep.get("missing_inputs") or []) if status == "blocked-inputs"
+                  else f"failed{spent}")
+        if rep.get("outcome_unknown"):
+            detail += " (outcome unknown: the host never reported)"
+        note = str(rep.get("message") or "")[:100]
+        where = path.relative_to(project.root).as_posix()
+        report.add("warn", "render-jobs", f"{job} {status}: {detail}" + (f" -- {note}" if note else "")
+                   + f" [{where}]",
+                   {"timeout": "lower the document's cost drivers or render it in windows",
+                    "blocked-inputs": "produce the missing files, then " + _cmd("build", project),
+                    }.get(status, "read the report, then re-run the job"))
+
+
 def check_project(project: workspace.Project) -> Report:
     report = Report(project.root.name)
     done = project.done()
@@ -511,9 +541,14 @@ def check_project(project: workspace.Project) -> Report:
             "engine": engine, "takes": len(voice.get("takes", [])),
             "spoken_seconds": voice.get("spoken_seconds"), "drift_seconds": drift,
             "too_fast": len(hot), "overlaps": len(overlaps), "timing": timing}
-        report.add("ok", "voice", f"{engine} · {len(voice.get('takes', []))} takes · "
-                   f"spoken {timecode(voice.get('spoken_seconds', 0) or 0)} · "
-                   f"drift {drift:+.0f}s")
+        if voice.get("wordless"):
+            cues = (voice.get("descriptive_captions") or {}).get("cues", 0)
+            report.add("ok", "voice", f"a wordless film with {cues} descriptive "
+                       "captions")
+        else:
+            report.add("ok", "voice", f"{engine} · {len(voice.get('takes', []))} takes · "
+                       f"spoken {timecode(voice.get('spoken_seconds', 0) or 0)} · "
+                       f"drift {drift:+.0f}s")
         if engine in SCRATCH_ENGINES:
             report.add("warn", "voice", f"narration is a {engine} scratch take, "
                        "not publishable", _cmd("voice", project, "--engine", "auto"))
@@ -588,21 +623,34 @@ def check_project(project: workspace.Project) -> Report:
                        f"look at {look['frame'] or 'keyframe/keyframe.png'}, then "
                        f"{_cmd('keyframe', project, '--approve')}",
                        _cmd("keyframe", project, "--approve"))
+        elif look["state"] == "failed":
+            why = keyframe.approvable(keyframe.load_record(project.root)) or "nothing was rendered"
+            report.add("warn", "keyframe", f"the look pass failed and cannot be approved: {why}",
+                       _cmd("keyframe", project))
         elif look["state"] == "rejected":
             report.add("warn", "keyframe", f"the keyframe was rejected: {_clip(look['notes'])}",
                        _cmd("keyframe", project))
         elif look["state"] == "stale":
-            report.add("warn", "keyframe", "keyframe.scene.xml changed after it was "
-                       "approved; the look on disk is not the approved one",
+            report.add("warn", "keyframe", f"{look['document'] or 'the keyframe document'} "
+                       "changed after it was approved; the look on disk is not the approved one",
                        _cmd("keyframe", project, "--approve"))
         else:
             report.add("ok", "keyframe", f"approved {look['at']} · {shown}")
     if vfx:
+        # A look taken from the film enters an existing animation with
+        # --relook; --fresh would replan and author its section again too.
+        section_look = keyframe.load_record(project.root).get("source") == "section"
         if look["state"] != "approved":
+            first = (_cmd("keyframe", project, "--approve")
+                     if look["state"] == "pending" and section_look else _cmd("keyframe", project))
             report.add("warn", "vfx", "the animation was authored without an approved "
                        "keyframe; no look was locked for it to inherit",
-                       _cmd("keyframe", project) + ", approve it, then "
-                       + _cmd("vfx", project, "--fresh"))
+                       first + ", then " + (_cmd("vfx", project, "--relook") if section_look
+                                            else _cmd("vfx", project, "--fresh")))
+        elif section_look:
+            if not keyframe.film_carries_look(project.root, vfx):
+                report.add("warn", "vfx", "the animation does not hold the approved look: "
+                           "its section is another authoring", _cmd("vfx", project, "--relook"))
         elif _mtime(project.path("vfx")) < look["epoch"]:
             report.add("warn", "vfx", "vfx.json predates the approved keyframe; it was "
                        "authored against an earlier look", _cmd("vfx", project, "--fresh"))
@@ -636,11 +684,16 @@ def check_project(project: workspace.Project) -> Report:
         # A cue sheet is spotted to absolute timecodes; if it was written
         # against the screenplay's estimate and the recording came in
         # shorter or longer, every cue after the first drift lands wrong.
-        if voice and voice.get("voice_end") and sound.get("runtime"):
-            ends, spotted = float(voice["voice_end"]), float(sound["runtime"])
+        # A wordless film's voice_end is where its ending starts, not where a
+        # narration stops: its cue sheet is measured against the film's end.
+        wordless = bool(voice and voice.get("wordless"))
+        ends = float((voice or {}).get("film_end" if wordless else "voice_end") or 0)
+        if ends and sound.get("runtime"):
+            spotted = float(sound["runtime"])
             if abs(spotted - ends) > ends * DRIFT_LIMIT:
                 report.add("warn", "sound", f"the cue sheet is spotted for "
-                           f"{timecode(spotted)} but the narration ends at "
+                           f"{timecode(spotted)} but the "
+                           f"{'film' if wordless else 'narration'} ends at "
                            f"{timecode(ends)}; cues land on the wrong frames",
                            _cmd("retime", project) + ", then " + _cmd("sound", project))
         if (cov.get("music_share") or 0) > 85:
@@ -684,7 +737,8 @@ def check_project(project: workspace.Project) -> Report:
             report.add("warn", "art", f"{placeholders} of {total} shots have no art "
                        "yet; the render is placeholder cards",
                        "produce the vfx stubs and assets, then " + _cmd("build", project))
-        if voice and not build.get("timeline", {}).get("from_voice"):
+        if (voice and voice.get("takes") and not voice.get("wordless")
+                and not build.get("timeline", {}).get("from_voice")):
             report.add("warn", "build", "the scene was built from screenplay "
                        "estimates, but a narration exists", _cmd("build", project))
     if "render" in done:
@@ -715,6 +769,8 @@ def check_project(project: workspace.Project) -> Report:
             report.add("ok", "delivery", f"{READY_TO_PUBLISH}: a clean final render, "
                        f"gate deliverable, QA {qa_done.get('pass', '')} at "
                        f"{qa_done.get('overall', '?')}")
+
+    check_renders(project, report)
 
     # -- pilot -------------------------------------------------------------
     # The pilot writes its own document (segment outputs, schema raised to
