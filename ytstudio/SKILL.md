@@ -56,7 +56,9 @@ came from breaking one of them.
    programs, through the kit (`ytstudio/sdkkit.py`); pipeline code never
    writes a scene's content.
 7. **An `<include>` carries neither styles, paints nor lights.** `yt build`
-   hoists them (the file's tokens win, design fills the rest) and points the
+   hoists them (the file's tokens win, design fills the rest; a light keeps its
+   `<animate>` re-timed by the include's start, and a `downloads/` image inside
+   an include is credited from the manifest or is an error) and points the
    include at a cleaned copy, `vfx/vNN/<section>.include.scene.xml`, with
    the tokens inlined and those sections dropped, so the engine raises no
    E12 warning. The authored file is never written. The same copy drops a

@@ -598,7 +598,7 @@ def hoisted(path: Path, scene_dir: Path | None = None) -> dict:
     that now declares them, or the engine looks for them beside the scene.
     """
     out = {"lights": [], "tokens": [], "text_styles": [], "paints": [],
-           "findings": []}
+           "downloads": [], "findings": []}
     src_dir = Path(path).parent
 
     def carried(element) -> dict:
@@ -623,12 +623,30 @@ def hoisted(path: Path, scene_dir: Path | None = None) -> dict:
                                       ElementTree.tostring(paint, encoding="unicode")))
     for light in root.iter("light"):
         row = carried(light)
-        if len(light):
+        # Its <animate> children are carried, to be re-timed by the include's
+        # start; any other child is not.
+        animates = [ElementTree.tostring(c, encoding="unicode")
+                    for c in light if c.tag == "animate"]
+        other = sorted({c.tag for c in light if c.tag != "animate"})
+        if other:
             out["findings"].append(
                 f"warning: {path.name}: light {row.get('id', '?')!r} has its own "
-                f"{', '.join(sorted({c.tag for c in light}))}; only its attributes "
-                "are carried into the scene")
+                f"{', '.join(other)}; only its attributes and animate are carried "
+                "into the scene")
+        if animates:
+            row["animate"] = animates
         out["lights"].append(row)
+    # Project files under downloads/ the document names itself: the build
+    # credits them from the download manifest.
+    base = Path(scene_dir) if scene_dir is not None else src_dir
+    for element in root.iter():
+        value = element.get("src") or ""
+        if not value or Path(value).is_absolute() or _URL.match(value):
+            continue
+        rel = Path(os.path.relpath(os.path.normpath(src_dir / value),
+                                   os.path.normpath(base))).as_posix()
+        if rel.startswith("downloads/") and rel not in out["downloads"]:
+            out["downloads"].append(rel)
     for token in root.iter("token"):
         if token.get("name") and token.get("value") is not None:
             out["tokens"].append((token.get("name"), token.get("value")))
@@ -1356,6 +1374,7 @@ class SceneBuilder:
         design = designer.Design.from_styles(self.styles, height=self.height)
 
         placeholders = []
+        placed_srcs: set[str] = set()      # images the build placed itself
         includes: list[tuple[str, str, float, float]] = []
         # The copy each include points at, written once per authored file.
         cleaned: dict[str, dict] = {}
@@ -1445,6 +1464,7 @@ class SceneBuilder:
                 if hit.credit:
                     asset.credit = hit.credit
                 p.asset, p.file = "image", hit.path
+                placed_srcs.add(hit.path)
             else:
                 # An honest placeholder: the shot's own description on screen,
                 # so the cut reads and the gap is visible in the render.
@@ -1480,6 +1500,8 @@ class SceneBuilder:
         text_styles: dict[str, dict] = {}
         hoist_lights = 0
         parsed: dict[str, dict] = {}
+        credited: set[str] = set()
+        downloads = local_media(self.root, self.dossier)
         lights = None
         # Paints the included content names (`url(#id)`) resolve against the
         # scene's own, so each file's are grafted in through the SDK; the
@@ -1534,17 +1556,58 @@ class SceneBuilder:
                     continue
                 if lights is None:
                     lights = scene.add_lights()
-                attrs = {k: v for k, v in row.items() if k != "id"}
+                attrs = {k: v for k, v in row.items() if k not in ("id", "animate")}
                 light = lights.add_light(id=ident(f"{include_id}-{row.get('id', 'light')}"),
                                          **attrs)
                 on = str(row.get("intensity", "1"))
-                gate = light.add_animate(property="intensity",
-                                         defaultInterpolation="hold")
+                # The light's own animation, keyed at section time t, arrives
+                # at include start + t; the gate keeps it inside the span.
+                own = [ElementTree.fromstring(x) for x in row.get("animate", ())]
+                keyed = [a for a in own if a.get("property") == "intensity"]
+                gate = light.add_animate(
+                    property="intensity",
+                    defaultInterpolation=(keyed[0].get("defaultInterpolation", "hold")
+                                          if keyed else "hold"))
                 if start > 0:
                     gate.add_key(time=0, value="0")
-                gate.add_key(time=start, value=on)
+                keys = sorted(((float(k.get("time", 0)), k) for a in keyed
+                               for k in a.iter("key")), key=lambda tk: tk[0])
+                if not keys or keys[0][0] > 0:
+                    gate.add_key(time=start, value=on)
+                for t, k in keys:
+                    if start + t < end:
+                        gate.add_key(time=round(start + t, 3),
+                                     value=k.get("value", on))
                 gate.add_key(time=end, value="0")
+                for a in own:
+                    if a in keyed:
+                        continue
+                    extra = light.add_animate(**dict(a.attrib))
+                    for k in a.iter("key"):
+                        extra.add_key(**dict(k.attrib,
+                                             time=round(start + float(k.get("time", 0)), 3)))
                 hoist_lights += 1
+            # Images the author embedded in the world are credited from the
+            # download manifest; a file the manifest does not list is an error.
+            for rel in info["downloads"]:
+                if rel in credited:
+                    continue
+                credited.add(rel)
+                hit = next((m for m in downloads if m.path == rel), None)
+                if hit is None:
+                    lifted.append(f"error: {Path(file).name} uses {rel}, which "
+                                  "raw/08-downloads.json does not list, so it has "
+                                  "no licence or credit")
+                    continue
+                if rel in placed_srcs:
+                    continue
+                asset = assets.add_image(id=ident(f"credit-{Path(rel).stem}"),
+                                         src=rel, width=self.width,
+                                         height=self.height)
+                if hit.licence:
+                    asset.license = hit.licence
+                if hit.credit:
+                    asset.credit = hit.credit
         # Every paint an include copy names must now be the scene's own.
         for info in cleaned.values():
             for ref in sorted(info["paint_refs"] - set(paint_defs)):

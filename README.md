@@ -621,7 +621,10 @@ authored file but at a cleaned copy beside it,
 the file's resolved value and the three sections dropped, so the engine
 raises no E12 warning. The authored document is read, never written.
 `build.json` records what was hoisted, which copy was cut from which file,
-and the editor's decisions under `editorial`.
+and the editor's decisions under `editorial`. A hoisted light keeps its own
+`<animate>`, re-timed by the include's start, and a `downloads/` image an
+included document embeds is credited from `raw/08-downloads.json` (a file the
+manifest does not list is a build error).
 
 Every shot and section also becomes a marker, because a marker survives
 re-timing and a timecode does not. Supers are checked for reading time and
