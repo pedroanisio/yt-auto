@@ -143,9 +143,39 @@ by hand. What `yt` itself runs is scoped by job, not by project:
 - `yt render` keeps one mirror of the project per host,
   `/tmp/yt-render/<slug>/mirror/`, refreshed by an incremental rsync before
   every job and never removed by a job. The mirror carries what a render
-  needs and nothing else: caches, `raw/`, `qa/`, `decisions/`, rendered
-  outputs, `mix.wav`, PDFs, the proof frames and the estimates stay behind;
-  `props/` and `sound/` travel because the scene references them.
+  needs and nothing else. What stays behind is `render.SYNC_EXCLUDES`
+  (`ytstudio/render.py`, the one list; `yt gate` extends it): `.cache/`,
+  `.slices/` (the per-key slice outputs), `*.bak`, `raw/`, `review-frames/`,
+  `vfx-stubs/`, `qa/`, `decisions/`, `video*.mp4`, `pilot*.mp4`, `/mix.wav`,
+  `/*.png`, `/*.pdf`, `vfx/frames/`, `vfx/v*/frames/` and `.estimate-*`.
+  `props/` and `sound/` travel because the scene references them. What
+  comes back after a job is `render.PULL_BACK`: `*.mp4`, `*.png`, `*.wav`,
+  `render.json`, `render-*.json`, `pilot*.json` and `.estimate-*.json`.
+  When the lists and this paragraph disagree, the lists are right.
+- Remote jobs run detached: the script is started with `nohup setsid` on
+  the host, so it outlives the ssh that started it, and writes its output,
+  exit code and pid beside the job directory. A dropped ssh does not kill
+  the job: `yt` re-attaches by polling (120 tries, 15 s apart) and reads the
+  result once the exit marker appears. If the pid is gone with no status
+  (host rebooted, engine killed) the job is reported lost; if the polls run
+  out with no marker the job is left in place on the host and its directory
+  is not removed.
+- `yt doctor` reports each host in one of three states:
+  - **usable**: the engine answers; the line gives version, RAM, cores,
+    GPU and the live free disk, and the routing it gets. It warns when free
+    disk is under 10 GB, and when the host has no ffprobe (`yt gate` cannot
+    run there). The "14 GB" in the table is a dated measurement; doctor's
+    number is the one to trust.
+  - **TCP-only**: the warning reads `accepts TCP on the ssh port but not
+    SSH (<error>); jobs sent there would hang`. sshd is hung or
+    half-started, not the machine unplugged. Fix: restart sshd on that
+    host, or take it out of `RS_RENDER_HOSTS`, which is doctor's own
+    advice: "restart sshd on that host, or take it out of RS_RENDER_HOSTS".
+    (.13 was in this state on 2026-10-21.)
+  - **unreachable**: the warning is the host and its error (or "no
+    scene-render binary"). Doctor's fix: "check ssh access, or unpack a
+    release under ~/render on that host". With no usable host at all
+    doctor fails: "no render host answers: yt render cannot run".
 - Each job then runs in `/tmp/yt-render/<slug>/<job>-<pid>-<suffix>/`,
   hardlinked from the mirror in about a second (`cp -al`, falling back to
   `rsync --link-dest` where cp cannot); the engine writes new files into the
