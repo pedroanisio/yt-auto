@@ -41,13 +41,12 @@ import shutil
 import struct
 import subprocess
 import sys
-import textwrap
 import time
 import wave
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
-from . import house, workspace
+from . import design, house, workspace
 from .harness import Harness, HarnessError, brief
 from .core import Idea, read_json, timecode, write_json
 from .script import Section, load_script
@@ -182,9 +181,9 @@ DESCRIBE_SCHEMA = {
 }
 
 #: The delivery gate's caption limits (scene-render production_gate.captions).
-GATE_LINE_CHARS = 42
-GATE_LINES = 2
-GATE_CPS = 17.0
+GATE_LINE_CHARS = design.CAPTION_LINE_CHARS
+GATE_LINES = design.CAPTION_LINES
+GATE_CPS = design.CAPTION_CPS
 
 
 def directions_from(retakes) -> dict[str, dict]:
@@ -919,8 +918,8 @@ def summarise(takes: list[Take], *, layout: str) -> dict:
 # captions and the stitched track
 # --------------------------------------------------------------------------- #
 
-def caption_lines(text: str, width: int = 42) -> list[str]:
-    return textwrap.wrap(text, width=width, break_long_words=False) or [text]
+def caption_lines(text: str, width: int = design.CAPTION_LINE_CHARS) -> list[str]:
+    return design.wrap_lines(text, width)
 
 
 def _stamp(seconds: float, *, comma: bool = False) -> str:
@@ -932,29 +931,30 @@ def _stamp(seconds: float, *, comma: bool = False) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}{sep}{ms:03d}"
 
 
-def write_captions(path: Path, takes: list[Take], *,
-                   srt: bool = False) -> tuple[int, int]:
-    """One cue per shot, on the voice's own timeline.
+def write_captions(path: Path, takes: list[Take], *, srt: bool = False,
+                   film_end: float | None = None) -> tuple[int, int]:
+    """The cues of `design.caption_cues`, on the voice's own timeline.
 
-    A cue is clamped so it never runs into the next one: overlapping cues are
-    invalid in both formats, and the planned layout produces them whenever a
-    take came out longer than the script budgeted. Returns how many were
+    Each take is split on its word timings into cues of at most two lines,
+    and a cue is clamped so it never runs into the next one: overlapping cues
+    are invalid in both formats, and the planned layout produces them whenever
+    a take came out longer than the script budgeted. Returns how many were
     clamped and how many ended up under the 0.7 s the delivery gate wants.
+    A cue that cannot be made legal is warned about, not hidden.
     """
-    rows = sorted(takes, key=lambda t: t.at)
-    clamped = too_short = 0
+    cues, clamped, illegal = design.caption_cues([asdict(t) for t in takes],
+                                                 film_end=film_end)
+    if illegal:
+        print(f"warning: {illegal} caption(s) cannot be made legal (a single word "
+              f"over {design.CAPTION_CPS:g} characters per second); delivery will "
+              "flag them", file=sys.stderr)
+    too_short = sum(1 for c in cues if c.end - c.start < design.CAPTION_MIN_SECONDS)
     out = [] if srt else ["WEBVTT", ""]
-    for i, take in enumerate(rows, 1):
-        start, end = take.at, take.at + take.seconds
-        nxt = rows[i].at if i < len(rows) else None
-        if nxt is not None and end > nxt:
-            end, clamped = max(start + 0.05, nxt - 0.001), clamped + 1
-        if end - start < 0.7:
-            too_short += 1
+    for i, cue in enumerate(cues, 1):
         if srt:
             out.append(str(i))
-        out.append(f"{_stamp(start, comma=srt)} --> {_stamp(end, comma=srt)}")
-        out += caption_lines(take.text)
+        out.append(f"{_stamp(cue.start, comma=srt)} --> {_stamp(cue.end, comma=srt)}")
+        out += caption_lines(cue.text)
         out.append("")
     path.write_text("\n".join(out) + "\n", encoding="utf-8")
     return clamped, too_short
@@ -1424,8 +1424,9 @@ def run(args) -> int:
         print(f"  director's notes: {str(review['notes'])[:300]}")
 
     vtt = project.out("captions")
-    clamped, too_short = write_captions(Path(vtt), takes)
-    write_captions(project.root / "narration.srt", takes, srt=True)
+    film_end = max((t.at + t.seconds for t in takes), default=None)
+    clamped, too_short = write_captions(Path(vtt), takes, film_end=film_end)
+    write_captions(project.root / "narration.srt", takes, srt=True, film_end=film_end)
     if data["overlaps"]:
         worst = max(data["overlaps"], key=lambda r: r["by"])
         print(f"warning: {len(data['overlaps'])} take(s) overlap the next one "

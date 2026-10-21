@@ -10,7 +10,9 @@ chunks cut on real word timings, and the figures a line of text carries.
 
 from __future__ import annotations
 
+import math
 import re
+import textwrap
 from dataclasses import dataclass, field
 from xml.etree import ElementTree
 
@@ -243,14 +245,103 @@ class Chunk:
     start: float
     end: float
     text: str
+    parts: tuple = ()     # (start, end) of each word, when the engine timed them
 
 
-def caption_chunks(take: dict, limit: int = 46) -> list[Chunk]:
+#: The delivery gate's caption rules, in one place: the sidecar track and the
+#: burned-in captions are both cut to these.
+CAPTION_LINE_CHARS = 42
+CAPTION_LINES = 2
+CAPTION_CPS = 17.0
+CAPTION_MIN_SECONDS = 0.7
+
+
+def wrap_lines(text: str, width: int = CAPTION_LINE_CHARS) -> list[str]:
+    return textwrap.wrap(text, width=width, break_long_words=False) or [text]
+
+
+def need_seconds(lines: list[str]) -> float:
+    """Shortest legal on-screen time for these lines at the gate's reading speed."""
+    return math.ceil(sum(len(x) for x in lines) / CAPTION_CPS * 1000) / 1000 + 0.002
+
+
+def _halves(c: Chunk, k: int) -> tuple[Chunk, Chunk]:
+    """A chunk cut after its k-th word; each half keeps its own words' times."""
+    tokens = c.text.split()
+    if len(c.parts) == len(tokens):
+        left, right = c.parts[:k], c.parts[k:]
+        return (Chunk(left[0][0], left[-1][1], " ".join(tokens[:k]), left),
+                Chunk(right[0][0], right[-1][1], " ".join(tokens[k:]), right))
+    total = sum(len(t) + 1 for t in tokens)
+    cut = round(c.start + (c.end - c.start)
+                * sum(len(t) + 1 for t in tokens[:k]) / total, 3)
+    return (Chunk(c.start, cut, " ".join(tokens[:k])),
+            Chunk(cut, c.end, " ".join(tokens[k:])))
+
+
+def _place(c: Chunk, lo: float, hi: float | None) -> tuple[list[Chunk], int, int]:
+    """One chunk as legal cues between `lo` (the previous cue's end) and `hi`
+    (the next start, or the film's end): lengthen it into the gap after, then
+    start it earlier into the gap before, then cut it at a word boundary.
+    Returns the cues, how many stay illegal, and how many were cut short."""
+    need = max(CAPTION_MIN_SECONDS, need_seconds(wrap_lines(c.text)))
+    end = max(c.end, c.start + need)
+    if hi is not None and end > hi - 0.001:
+        end = max(c.start + 0.05, hi - 0.001)
+    start = min(c.start, end - need)
+    cut = int(end < c.end)
+    if start >= lo:
+        return [Chunk(round(start, 3), round(end, 3), c.text, c.parts)], 0, cut
+    tokens = c.text.split()
+    best = None
+    for k in sorted(range(1, len(tokens)),
+                    key=lambda k: abs(len(" ".join(tokens[:k])) - len(c.text) / 2)):
+        left, right = _halves(c, k)
+        first, bad1, cut1 = _place(left, lo, right.start)
+        rest, bad2, cut2 = _place(right, first[-1].end, hi)
+        got = (first + rest, bad1 + bad2, cut1 + cut2)
+        if got[1] == 0:
+            return got
+        if best is None or got[1] < best[1]:
+            best = got
+    if best is not None:
+        return best
+    start = max(lo, min(c.start, end - need))      # one word: as long as the gaps allow
+    return [Chunk(round(start, 3), round(end, 3), c.text, c.parts)], 1, cut
+
+
+def caption_cues(takes: list[dict],
+                 film_end: float | None = None) -> tuple[list[Chunk], int, int]:
+    """Every take's chunks as legal cues: ordered, not overlapping, readable.
+
+    A cue too fast or too short is lengthened into the gap before the next
+    one, never past it; failing that it starts earlier into the gap before it
+    (never before the previous cue's end); failing that it is cut at a word
+    boundary into cues that each fit. Nothing runs past `film_end`. Returns the
+    cues, how many were cut short by the one after them, and how many could not
+    be made legal (a single word too fast for its gaps). The sidecar writer and
+    the build's caption track both place these.
+    """
+    chunks = sorted((c for t in takes for c in caption_chunks(t)), key=lambda c: c.start)
+    cues: list[Chunk] = []
+    clamped = illegal = 0
+    for i, c in enumerate(chunks):
+        nxt = chunks[i + 1].start if i + 1 < len(chunks) else film_end
+        placed, bad, cut = _place(c, cues[-1].end if cues else 0.0, nxt)
+        cues += placed
+        illegal += bad
+        clamped += cut
+    return [Chunk(c.start, c.end, c.text) for c in cues], clamped, illegal
+
+
+def caption_chunks(take: dict, limit: int = CAPTION_LINE_CHARS * CAPTION_LINES) -> list[Chunk]:
     """A take as cues short enough to read, timed by its own words.
 
     One cue per take is what clipped a caption mid-sentence: the renderer cuts
-    what does not fit rather than wrapping it. Word timings keep each chunk's
-    own clock; without them the take's duration is shared by character count.
+    what does not fit rather than wrapping it. A chunk takes words while it
+    still wraps into CAPTION_LINES lines of CAPTION_LINE_CHARS (and within
+    `limit` characters). Word timings keep each chunk's own clock; without
+    them the take's duration is shared by character count.
     """
     text = " ".join(str(take.get("text", "")).split())
     at, seconds = float(take.get("at", 0)), float(take.get("seconds", 0))
@@ -258,10 +349,12 @@ def caption_chunks(take: dict, limit: int = 46) -> list[Chunk]:
     tokens = text.split()
     if not tokens:
         return []
+    width = min(CAPTION_LINE_CHARS, limit)
     groups: list[list[int]] = [[]]
     for i, token in enumerate(tokens):
         trial = " ".join(tokens[j] for j in groups[-1] + [i])
-        if len(trial) > limit and groups[-1]:
+        if groups[-1] and (len(trial) > limit
+                           or len(wrap_lines(trial, width)) > CAPTION_LINES):
             groups.append([i])
         else:
             groups[-1].append(i)
@@ -270,7 +363,10 @@ def caption_chunks(take: dict, limit: int = 46) -> list[Chunk]:
         for group in groups:
             out.append(Chunk(round(at + float(words[group[0]]["start"]), 3),
                              round(at + float(words[group[-1]]["end"]), 3),
-                             " ".join(tokens[i] for i in group)))
+                             " ".join(tokens[i] for i in group),
+                             tuple((round(at + float(words[i]["start"]), 3),
+                                    round(at + float(words[i]["end"]), 3))
+                                   for i in group)))
         return out
     total = sum(len(t) + 1 for t in tokens)
     cursor = 0.0

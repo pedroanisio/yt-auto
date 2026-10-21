@@ -518,7 +518,7 @@ hand-authored world showed the cost.
 | A pilot's sync over the film's | the old remote dir was keyed by slug only; a pilot overwrote a finished film | fixed: every job owns `/tmp/yt-render/<slug>/<job>-<tag>/` hardlinked from the mirror, and only the encode writes `render.json` |
 | A job writing into a tree the mirror lacks | the mirror excludes `qa/` and other output trees, so `-o qa/.../x.png` had no parent directory on the host | fixed: the job script creates the parent of every `-o`/`--report` path before the engine runs |
 | Sampling a shot's start | lands in the inter-take gap and shows an empty stage | sample midpoints, as `yt qa` does |
-| One caption per shot | 145 characters do not fit; clipped mid-sentence | split on word timings, two lines at most |
+| One caption per shot | 145 characters do not fit; clipped mid-sentence | split on word timings, two lines at most; `design.caption_cues` is the one splitter (limits `design.CAPTION_*`), and `narration.vtt`/`.srt` are written from it |
 | `key/@value` is a string | a float is refused at construction | write values as text |
 | `<segment>` needs schema 1.2 | a 1.1 document is refused | raise the version where it is used |
 | An empty enumeration | means free string, not nothing allowed | do not filter against it |
