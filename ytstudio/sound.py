@@ -39,7 +39,10 @@ import array
 import csv
 import hashlib
 import math
+import os
 import re
+import shlex
+import subprocess
 import sys
 import wave
 from dataclasses import asdict, dataclass, field, fields
@@ -849,7 +852,8 @@ FETCH_QUALITY = (f"Freesound {freesound.PREVIEW}: the high-quality mp3 preview, 
                  "original upload needs OAuth and is not fetched")
 #: The fields `--fetch` writes into a cue, and clears before trying again.
 FETCHED_FIELDS = ("file", "licence", "credit", "source_url", "duration",
-                  "freesound_id", "query_used", "synth")
+                  "freesound_id", "query_used", "synth", "gain_db",
+                  "source_peak_dbfs")
 #: Function words that carry no sound: dropped when a cue's name is shortened
 #: into a last-resort query. Nothing about any subject lives here.
 _STOP = frozenset("a an and the of on in at to for with from by or into onto "
@@ -899,8 +903,216 @@ def _index_path(root: Path) -> Path:
     return Path(root) / SOUND_DIR / "index.json"
 
 
+#: Beds are heard as a level over time, so they are lifted to their design
+#: level by integrated loudness; every other kind is a short event, heard at
+#: its peak, so it is lifted by true peak.
+LOUDNESS_KINDS = ("music", "ambience")
+#: A lifted source's noise floor must sit at least this far under the
+#: narration (the sheet's own level, else the programme target). Speech with
+#: a masker 12 dB down is still work to follow; this is the one judgement in
+#: the stage, kept in one place.
+NOISE_BELOW_NARRATION_DB = 12.0
+#: Candidates tried for one cue (its first hit included) before it is left unfilled.
+FETCH_TRIES = 3
+#: The measurement definitions. ebur128 reports a momentary loudness (M) over
+#: a 400 ms window every 100 ms; a window is complete once 400 ms have been
+#: heard, and the floor is the level the quietest tenth of them reaches.
+WINDOW_S, FLOOR_FRACTION = 0.4, 0.10
+#: BS.1770's absolute gate: loudness at or under it is silence to ebur128.
+GATE_LUFS = -70.0
+#: Seconds allowed the remote measurement, plus this much per file.
+MEASURE_SECONDS, MEASURE_SECONDS_PER_FILE = 120, 30
+
+
+class MeasureError(RuntimeError):
+    """The files could not be measured at all; the reason is the message."""
+
+
+@dataclass
+class Levels:
+    """What one file measures: integrated loudness (LUFS), true peak (dBFS),
+    the noise floor (dBFS, momentary loudness of its quietest tenth), and the
+    host that measured it."""
+    lufs: float
+    true_peak: float
+    floor: float
+    host: str = ""
+
+
+def reference_of(kind: str) -> str:
+    """What a cue of this kind is levelled by: "loudness" or "peak"."""
+    return "loudness" if kind in LOUDNESS_KINDS else "peak"
+
+
+def gain_reach() -> float:
+    """The most gain one cue can be given: the schema's cap on a track. The
+    bus gain is shared by every cue on the bus, so it cannot be spent per cue."""
+    from . import build
+    return build.facets_of("audioTrack", "gain")[1]
+
+
+_NUM = r"(-?inf|-?\d+(?:\.\d+)?)"
+_FRAME = re.compile(r"\bt:\s*(\d+(?:\.\d+)?)\s.*?\bM:\s*" + _NUM)
+_SUM_LUFS = re.compile(r"Integrated loudness:\s*I:\s*" + _NUM + r"\s*LUFS")
+_SUM_PEAK = re.compile(r"True peak:\s*Peak:\s*" + _NUM + r"\s*dBFS")
+
+
+def parse_ebur128(text: str) -> Levels | None:
+    """Levels from ffmpeg's `ebur128=peak=true:framelog=verbose` output; None
+    when it has no summary (the file was not read). A file shorter than one
+    window has no complete window: its loudness stands for the floor."""
+    frames, _, summary = text.partition("Summary:")
+    lufs, peak = _SUM_LUFS.search(summary), _SUM_PEAK.search(summary)
+    if not (lufs and peak):
+        return None
+    windows = sorted(float(m) for t, m in _FRAME.findall(frames)
+                     if float(t) >= WINDOW_S - 1e-6)
+    loudness = float(lufs.group(1))
+    floor = (windows[max(0, math.ceil(FLOOR_FRACTION * len(windows)) - 1)]
+             if windows else loudness)
+    return Levels(lufs=loudness, true_peak=float(peak.group(1)), floor=floor)
+
+
+def measure_script(remote: str, names: list[str], ffmpeg: str = "") -> str:
+    """The one remote shell for a batch: unpack the files into `remote`, run
+    ebur128 on each between @@FILE/@@END marks, and remove the directory."""
+    q = shlex.quote
+    runs = "".join(
+        f'echo "@@FILE {n}"; "$F" -hide_banner -nostats -loglevel verbose -i {q(name)} -vn '
+        f'-af ebur128=peak=true:framelog=verbose -f null - 2>&1; '
+        f'echo "@@END {n} $?"; ' for n, name in enumerate(names))
+    return (f"mkdir -p {q(remote)} && cd {q(remote)} && tar -xf - && "
+            f'{{ F=$(command -v ffmpeg 2>/dev/null); [ -n "$F" ] || F={q(ffmpeg)}; '
+            f'if [ -x "$F" ]; then {runs}true; else echo __NO_FFMPEG__; false; fi; }}; '
+            f"code=$?; cd /; rm -rf {q(remote)}; exit $code")
+
+
+def measure_remote(paths) -> list[Levels | None]:
+    """Measure every file on a render host, in one ssh: the files travel as a
+    tar on stdin (as a still's bundle does), ffmpeg runs there, and the
+    answers come back on stdout. ffmpeg is not run on this workstation. A
+    file the host could not read is None; no host, no ffmpeg, or a dead link
+    is a MeasureError."""
+    from . import render
+    paths = [Path(p) for p in paths]
+    if not paths:
+        return []
+    if os.environ.get(render.NO_REMOTE_ENV):
+        raise MeasureError(f"{render.NO_REMOTE_ENV} is set: nothing is run on a "
+                           "render host")
+    host = render.remote_host(None, "audio")
+    if not host:
+        raise MeasureError("no render host configured (RS_RENDER_HOSTS or "
+                           "RS_RENDER_HOST); ffmpeg is not run on this workstation")
+    known = render._HOSTS.get(host) or render.probe(host)
+    beside = f"{Path(known.ffprobe).parent}/ffmpeg" if known.ffprobe else ""
+    names = [f"{n}{re.sub(r'[^.A-Za-z0-9]', '', p.suffix)}" for n, p in enumerate(paths)]
+    script = measure_script(f"{render.REMOTE_ROOT}/sound-{render.job_tag()}", names, beside)
+    seconds = MEASURE_SECONDS + MEASURE_SECONDS_PER_FILE * len(paths)
+    try:
+        render.refuse_remote()
+        done = subprocess.run(
+            render.probe_argv(host, script, 8),
+            input=render._tar({name: p.read_bytes() for name, p in zip(names, paths)}),
+            capture_output=True, timeout=seconds)
+    except (render.RemoteRefused, subprocess.TimeoutExpired, OSError) as exc:
+        raise MeasureError(f"render host {host} unreachable: {exc}") from exc
+    out = done.stdout.decode("utf-8", "replace")
+    if "__NO_FFMPEG__" in out:
+        raise MeasureError(f"no ffmpeg on render host {host} (not on PATH, not "
+                           "beside its ffprobe)")
+    blocks = {int(n): (int(code), body) for n, body, code in re.findall(
+        r"@@FILE (\d+)\n(.*?)\n?@@END \1 (\d+)", out, re.S)}
+    if not blocks:
+        raise MeasureError(f"measuring on {host} failed (exit {done.returncode}): "
+                           f"{done.stderr.decode('utf-8', 'replace').strip()[:200]}")
+    found: list[Levels | None] = []
+    for n in range(len(paths)):
+        code, body = blocks.get(n, (1, ""))
+        got = parse_ebur128(body) if code == 0 else None
+        if got is not None:
+            got.host = host
+        found.append(got)
+    return found
+
+
+def narration_level(data: dict) -> tuple[float, str]:
+    """(dB, where it came from): the narration level the sheet's mix states,
+    else the programme target."""
+    from . import build
+    said = ((data.get("palette") or {}).get("mix") or {}).get("narration")
+    level = build.level_db(str(said or ""))
+    return (level, "the sheet's narration level") if level is not None \
+        else (TARGET_LUFS, "programme target")
+
+
+def noise_ceiling(narration: float) -> float:
+    """The loudest a lifted source's noise floor may sit."""
+    return narration - NOISE_BELOW_NARRATION_DB
+
+
+def _finite(value: float) -> float | None:
+    return round(value, 2) if math.isfinite(value) else None
+
+
+def level_to_design(cue: dict, got: Levels, narration: float
+                    ) -> tuple[dict | None, str]:
+    """(fields for the cue, refusal) for a measured file. The build asks
+    `level + gain_db` of the file, taken as a 0 dBFS reference, so
+    `gain_db` is minus the file's reference (loudness for a bed, true peak
+    for an event) and the lift actually applied is the design level less
+    that reference. That net lift must fit the track's gain range, and the file's noise floor
+    after it must still sit under the narration (a bed, being its own floor,
+    is held to its design level instead: the sheet owns where it sits)."""
+    from . import build
+    kind = reference_of(cue.get("kind") or "")
+    ref, unit = (got.lufs, "LUFS") if kind == "loudness" else (got.true_peak, "dBTP")
+    if ref <= (GATE_LUFS if kind == "loudness" else -120.0):
+        return None, f"silent source (measured {ref:.1f} {unit})"
+    design = build.level_db(str(cue.get("level") or "")) or 0.0
+    lift, reach = design - ref, gain_reach()
+    cut = build.facets_of("audioTrack", "gain")[0]
+    # The build applies the cue's level plus its gain_db, so the gain the track
+    # needs is the net one, design less reference: that is what must sit in
+    # the track's range, in both directions.
+    if lift > reach or lift < cut:
+        return None, (f"source measures {ref:.1f} {unit}; reaching the cue's "
+                      f"{design:+.1f} dB design level needs {lift:+.1f} dB, "
+                      f"beyond the track's {reach if lift > reach else cut:+.0f} dB")
+    ceiling = noise_ceiling(narration)
+    if kind == "loudness":
+        ceiling = max(ceiling, design)
+    after = got.floor + lift
+    if after > ceiling:
+        return None, (f"noise: the source's floor is {got.floor:.1f} dBFS; "
+                      f"lifted by {lift:+.1f} dB it sits at {after:.1f}, above "
+                      f"the {ceiling:.1f} ceiling ({NOISE_BELOW_NARRATION_DB:g} dB "
+                      f"under the narration at {narration:.1f})")
+    return {"gain_db": round(-ref, 2), "lift_by": kind,
+            "source_lufs": _finite(got.lufs),
+            "source_true_peak_dbfs": _finite(got.true_peak),
+            "source_noise_floor_dbfs": _finite(got.floor)}, ""
+
+
+@dataclass
+class _Job:
+    """One cue being filled: where it is, what it may still try."""
+    cue: dict
+    cid: str
+    n: int
+    miss: dict
+    used: str = ""
+    old_id: object = None           # the Freesound id of a kept file
+    hits: list | None = None        # hits still to try (kept files: searched on refusal)
+    rel: str | None = None          # the file now under test
+    hit: object = None              # its Freesound hit (None for a kept file)
+    refusals: list = field(default_factory=list)
+    tries: int = 0
+    done: bool = False
+
+
 def fetch(root: str | Path, data: dict, *, token: str | None = None,
-          say=None) -> dict:
+          say=None, measure=None) -> dict:
     """Fill the cue sheet in `data` with files under `<root>/sound/`.
 
     Mutates `data`: each filled cue gains the contract fields (`file`,
@@ -909,15 +1121,30 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
     already carrying a file that exists is kept; a Freesound id already on
     disk is reused; so re-running costs searches, never downloads. `yt run`
     can call this directly once the sheet is written.
+
+    Each file is measured (`measure(paths) -> [Levels | None]`, default
+    `measure_remote`: one ssh to a render host per batch) and the cue gains
+    the `gain_db` that brings it to its design level, by loudness for a bed
+    and by peak for an event (`level_to_design`). A source the track's gain
+    cannot reach, or whose noise floor the lift would raise too near the
+    narration, is refused with the measured figures, and the next-ranked hit
+    of the same search is tried (`FETCH_TRIES` in all) before the cue is
+    left unfilled. A batch that could not be measured keeps its files
+    unlevelled and says so in the summary (`measure_error`, `unmeasured`).
     """
     root = Path(root)
+    measure = measure or measure_remote
     say = say or (lambda msg: print(msg, file=sys.stderr))
     token = freesound.token() if token is None else token
     index = read_json(_index_path(root), warn=False) or {}
+    narration, narration_from = narration_level(data)
     summary: dict = {"source": "freesound", "quality": FETCH_QUALITY,
                      "dir": SOUND_DIR, "filled": 0, "cached": 0, "bytes": 0,
-                     "unfilled": 0, "skipped": []}
+                     "unfilled": 0, "skipped": [], "levelled": 0,
+                     "refused": [], "narration_db": narration,
+                     "narration_from": narration_from}
     unfilled: list[dict] = []
+    jobs: list[_Job] = []
     if not token:
         # The name of the variable, never a value.
         summary["error"] = (f"no Freesound token: set {freesound.TOKEN_VARS[0]} "
@@ -929,26 +1156,34 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
         if cue.get("kind") not in FETCH_KINDS:
             summary["skipped"].append(cid)
             continue
-        existing = cue.get("file")
-        if existing and (cue.get("freesound_id") or cue.get("synth")) \
-                and (root / existing).is_file():
-            summary["filled"] += 1
-            summary["cached"] += 1
-            summary["bytes"] += (root / existing).stat().st_size
-            say(f"  {cid} kept {existing}")
-            continue
-        for key in FETCHED_FIELDS:
-            cue.pop(key, None)
         queries = cue_queries(cue)
         miss = {"cue_id": cid, "name": cue.get("name", ""),
                 "kind": cue.get("kind", ""), "queries": queries}
+        existing = cue.get("file")
+        if existing and (cue.get("freesound_id") or cue.get("synth")) \
+                and (root / existing).is_file():
+            if cue.get("synth") or cue.get("source_true_peak_dbfs") is not None:
+                # Original sound is made at its level; a levelled file is done.
+                summary["filled"] += 1
+                summary["cached"] += 1
+                summary["bytes"] += (root / existing).stat().st_size
+                say(f"  {cid} kept {existing}")
+            else:
+                # A fetched file nobody measured (an older run, or no host
+                # then): measured now, in the same batch as the new ones.
+                jobs.append(_Job(cue, cid, n, miss, rel=existing, tries=1,
+                                 used=cue.get("query_used") or "",
+                                 old_id=cue.get("freesound_id")))
+            continue
+        for key in FETCHED_FIELDS:
+            cue.pop(key, None)
         if not token:
             unfilled.append(miss | {"reason": f"no token ({freesound.TOKEN_VARS[0]} "
                                               "not set)"})
             continue
         want = max(1, int(cue.get("seconds") or 1))
-        hit, used = freesound.best(queries, want_seconds=want, token=token)
-        if hit is None:
+        hits, used = freesound.ranked(queries, want_seconds=want, token=token)
+        if not hits:
             reason = "no CC0 or CC-BY hit on Freesound for any query"
             if cue.get("kind") == "music":
                 reason += ("; a composition brief with no library stand-in "
@@ -956,29 +1191,126 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
             unfilled.append(miss | {"reason": reason})
             say(f"  {cid} unfilled: tried {', '.join(repr(q) for q in queries)}")
             continue
-        rel = index.get(str(hit.id))
-        if rel and (root / rel).is_file():
-            size = (root / rel).stat().st_size
-            summary["cached"] += 1
+        jobs.append(_Job(cue, cid, n, miss, used=used, hits=hits[:FETCH_TRIES]))
+
+    levels: dict[str, Levels | None] = {}
+    taken: set[str] = set()          # files a cue now uses
+
+    def give_up(job: _Job) -> None:
+        job.done = True
+        why = (" | ".join(f"{label}: {reason}" for label, reason in job.refusals)
+               if job.refusals else "no CC0 or CC-BY hit on Freesound for any query")
+        if len(job.refusals) > 1:
+            why = f"{len(job.refusals)} sources refused, {why}"
+        unfilled.append(job.miss | {"reason": why})
+        say(f"  {job.cid} unfilled: {why}")
+
+    def advance(job: _Job) -> None:
+        """Give the job its next file to test, or end it."""
+        while job.rel is None and not job.done:
+            if job.tries >= FETCH_TRIES or not job.hits:
+                give_up(job)
+                return
+            hit = job.hits.pop(0)
+            rel = index.get(str(hit.id))
+            if rel and (root / rel).is_file():
+                summary["cached"] += 1
+            else:
+                rel = (f"{SOUND_DIR}/{job.n:02d}-"
+                       f"{slugify(job.cue.get('name') or job.cue.get('kind', 'cue'), 40)}"
+                       f".{hit.ext}")
+                try:
+                    freesound.download(hit, root / rel)
+                except freesound.FreesoundError as exc:
+                    job.refusals.append((f"hit {hit.id}", str(exc)))
+                    job.tries += 1
+                    continue
+                index[str(hit.id)] = rel
+                write_json(_index_path(root), index)
+            job.rel, job.hit = rel, hit
+
+    def refuse(job: _Job, why: str) -> None:
+        label = f"hit {job.hit.id}" if job.hit else f"kept {job.rel}"
+        job.refusals.append((label, why))
+        summary["refused"].append({"cue_id": job.cid, "file": job.rel, "reason": why,
+                                   "freesound_id": job.hit.id if job.hit else job.old_id})
+        say(f"  {job.cid} refused {job.rel}: {why}")
+        job.tries += 1
+        if job.hit is None:
+            # A kept file refused: forget it, and look for others to try.
+            for key in FETCHED_FIELDS:
+                job.cue.pop(key, None)
+            if token:
+                want = max(1, int(job.cue.get("seconds") or 1))
+                found, job.used = freesound.ranked(
+                    job.miss["queries"], want_seconds=want, token=token)
+                job.hits = [h for h in found if h.id != job.old_id][:FETCH_TRIES]
+        job.rel = job.hit = None
+
+    def accept(job: _Job, fields: dict | None) -> None:
+        cue, rel, hit = job.cue, job.rel, job.hit
+        if hit is not None:
+            cue.update(file=rel, licence=hit.licence, credit=hit.credit,
+                       source_url=hit.url, duration=round(hit.duration, 3),
+                       freesound_id=hit.id, query_used=job.used)
         else:
-            rel = (f"{SOUND_DIR}/{n:02d}-"
-                   f"{slugify(cue.get('name') or cue.get('kind', 'cue'), 40)}"
-                   f".{hit.ext}")
-            try:
-                size = freesound.download(hit, root / rel)
-            except freesound.FreesoundError as exc:
-                unfilled.append(miss | {"reason": str(exc)})
-                say(f"  {cid} unfilled: {exc}")
-                continue
-            index[str(hit.id)] = rel
-            write_json(_index_path(root), index)
-        cue.update(file=rel, licence=hit.licence, credit=hit.credit,
-                   source_url=hit.url, duration=round(hit.duration, 3),
-                   freesound_id=hit.id, query_used=used)
+            summary["cached"] += 1
+        if fields:
+            cue.update(fields)
+            summary["levelled"] += 1
+        else:
+            summary.setdefault("unmeasured", []).append(job.cid)
+        job.done = True
+        taken.add(rel)
         summary["filled"] += 1
-        summary["bytes"] += size
-        say(f"  {cid} {rel} <- {hit.licence} {hit.duration:.1f}s "
-            f"(query {used!r})")
+        summary["bytes"] += (root / rel).stat().st_size
+        how = (f"<- {hit.licence} {hit.duration:.1f}s (query {job.used!r})"
+               if hit is not None else "kept")
+        gain = f", gain {fields['gain_db']:+.1f} dB" if fields else ""
+        say(f"  {job.cid} {rel} {how}{gain}")
+
+    while True:
+        active = [j for j in jobs if not j.done]
+        for job in active:
+            advance(job)
+        testing = [j for j in active if not j.done]
+        if not testing:
+            break
+        wanted = sorted({j.rel for j in testing} - set(levels))
+        if wanted and "measure_error" not in summary:
+            try:
+                got = measure([root / rel for rel in wanted])
+                levels.update(zip(wanted, got))
+            except MeasureError as exc:
+                summary["measure_error"] = str(exc)
+        discard: set[str] = set()
+        for job in testing:
+            got = levels.get(job.rel)
+            if got is None:
+                accept(job, None)
+                continue
+            fields, why = level_to_design(job.cue, got, narration)
+            if why:
+                discard.add(job.rel)
+                refuse(job, why)
+            else:
+                accept(job, fields)
+        for rel in discard - taken - {j.rel for j in jobs if not j.done}:
+            (root / rel).unlink(missing_ok=True)
+            levels.pop(rel, None)
+            for key in [k for k, v in index.items() if v == rel]:
+                index.pop(key)
+        if discard:
+            write_json(_index_path(root), index)
+
+    if summary.get("unmeasured") or "measure_error" in summary:
+        host = next((v.host for v in levels.values() if v), "")
+        summary["warning"] = (
+            f"{len(summary.get('unmeasured', []))} file(s) NOT LEVELLED: "
+            + (summary.get("measure_error")
+               or f"the host {host} could not read them")
+            + "; the cues keep their sheet level and no noise check was made")
+        say("  WARNING: " + summary["warning"])
 
     data["unfilled"] = unfilled
     summary["unfilled"] = len(unfilled)
@@ -1172,7 +1504,7 @@ def synth_author(*, model: str | None = None, budget_usd: float = 2.0,
 
 
 def realise(root: str | Path, data: dict, *, author=None, model: str | None = None,
-            budget_usd: float = 2.0, say=None) -> dict:
+            budget_usd: float = 2.0, say=None, measure=None) -> dict:
     """Fill every cue still without a file with original procedural sound.
 
     Mutates `data` like `fetch`: a realised cue gains `file`, `licence`,
@@ -1237,6 +1569,40 @@ def realise(root: str | Path, data: dict, *, author=None, model: str | None = No
         unfilled.pop(t["cue_id"], None)
         summary["realised"] += 1
         say(f"  {t['cue_id']} {t['file']} <- synthesised {seconds:.2f}s")
+
+    # A synthesised file is a file in the mix: measured and levelled like a
+    # fetched one, in one batch, and refused when its level cannot be reached.
+    made = [t for t in targets if t["cue_id"] not in unfilled]
+    if made:
+        narration, _ = narration_level(data)
+        try:
+            got = (measure or measure_remote)([root / t["file"] for t in made])
+        except MeasureError as exc:
+            summary["measure_error"] = str(exc)
+            summary["unmeasured"] = [t["cue_id"] for t in made]
+            say(f"  WARNING: {len(made)} synthesised file(s) NOT LEVELLED: {exc}")
+            got = [None] * len(made)
+        summary["levelled"] = 0
+        for t, levels in zip(made, got):
+            cue = by_id[t["cue_id"]]
+            if levels is None:
+                if "measure_error" not in summary:
+                    summary.setdefault("unmeasured", []).append(t["cue_id"])
+                continue
+            fields, why = level_to_design(cue, levels, narration)
+            if why:
+                for key in FETCHED_FIELDS:
+                    cue.pop(key, None)
+                summary["realised"] -= 1
+                summary["failed"] += 1
+                unfilled[t["cue_id"]] = {
+                    "cue_id": t["cue_id"], "name": cue.get("name", ""),
+                    "kind": cue.get("kind", ""), "queries": [],
+                    "reason": "synthesis: " + why}
+                say(f"  {t['cue_id']} synthesised file refused: {why}")
+            else:
+                cue.update(fields)
+                summary["levelled"] += 1
     data["unfilled"] = list(unfilled.values())
     return summary
 
@@ -1613,8 +1979,14 @@ def _finish(args, idea: Idea, project, data: dict) -> int:
               f"({done['cached']} already on disk) · {done['bytes']} bytes "
               f"-> {project.root / SOUND_DIR} · {done['unfilled']} unfilled",
               file=sys.stderr)
+        print(f"levelled {done.get('levelled', 0)} · "
+              f"{len(done.get('refused', []))} source(s) refused for level or "
+              f"noise (narration {done.get('narration_db', 0):+.1f} dB, "
+              f"{done.get('narration_from', '')})", file=sys.stderr)
         if done.get("error"):
             print(f"warning: {done['error']}", file=sys.stderr)
+        if done.get("warning"):
+            print(f"WARNING: {done['warning']}", file=sys.stderr)
     if data.get("synth"):
         done = data["synth"]
         print(f"synthesised {done['realised']} of {done['targets']} cue(s) · "

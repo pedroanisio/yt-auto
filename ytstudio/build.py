@@ -340,12 +340,23 @@ def facets_of(element: str, attribute: str,
 #: A level the cue sheet states in absolute terms ("-30 dBFS peak", "-34
 #: LUFS"), and failing that the first signed decibel figure ("-20 dB"); a
 #: figure glued to another ("6-9 dB below") is a relative note, not a level.
-_ABSOLUTE_DB = re.compile(r"(?<![\d.\-])(-?\d+(?:\.\d+)?)\s*(?:dBFS|LUFS)\b")
-_SIGNED_DB = re.compile(r"(?<![\d.\-])(-\d+(?:\.\d+)?)\s*dB\b")
+#: The sheets write the minus as U+2212, and sometimes an en dash (U+2013) in
+#: front of a figure; all three are a sign.
+_MINUS = "-−–"
+_ABSOLUTE_DB = re.compile(
+    r"(?<![\d.\-−])([" + _MINUS + r"]?\d+(?:\.\d+)?)\s*(?:dBFS|LUFS)\b")
+_SIGNED_DB = re.compile(
+    r"(?<![\d.\-−])([" + _MINUS + r"]\d+(?:\.\d+)?)\s*dB\b")
 #: A range or list before the unit ("-36 to -30 dBFS", "-18, -22, -26 dBFS"):
 #: the first figure is where the cue sits.
 _SERIES_BEFORE = re.compile(
-    r"(-?\d+(?:\.\d+)?)(?:\s*(?:to|,|–)\s*-?\d+(?:\.\d+)?)*\s*(?:to|,|–)\s*$")
+    r"([" + _MINUS + r"]?\d+(?:\.\d+)?)"
+    r"(?:\s*(?:to|,|–)\s*[" + _MINUS + r"]?\d+(?:\.\d+)?)*\s*(?:to|,|–)\s*$")
+
+
+def _signed(figure: str) -> float:
+    """A figure as written, whichever dash is its minus."""
+    return float(re.sub("[−–]", "-", figure))
 
 
 def level_db(text: str) -> float | None:
@@ -355,9 +366,9 @@ def level_db(text: str) -> float | None:
     found = _ABSOLUTE_DB.search(text)
     if found:
         series = _SERIES_BEFORE.search(text[:found.start()])
-        return float(series.group(1) if series else found.group(1))
+        return _signed(series.group(1) if series else found.group(1))
     found = _SIGNED_DB.search(text)
-    return float(found.group(1)) if found else None
+    return _signed(found.group(1)) if found else None
 
 
 def audio_seconds(path: Path) -> float | None:
