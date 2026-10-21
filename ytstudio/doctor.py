@@ -18,6 +18,7 @@ The exit code is 1 when anything fails, so it works as a gate in a script.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import shutil
 import subprocess
@@ -239,6 +240,15 @@ def _mtime(path: Path) -> float:
         return 0.0
 
 
+def scene_digest(path: Path) -> str:
+    """The sha256 of a scene document's bytes; empty when it cannot be read.
+    `yt qa` records the same digest for the scene it judged (qa.scene_digest)."""
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
 def _cmd(stage: str, project: workspace.Project, *extra: str) -> str:
     return " ".join(["yt", stage, "--project", str(project.root), *extra])
 
@@ -316,6 +326,15 @@ def delivery_evidence(project: workspace.Project, build: dict | None
 
     video = project.path("video")
     rendered_at = _mtime(video) if video.exists() else 0.0
+    # A gate or a QA pass judges the video, but QA renders its frames from
+    # scene.xml: both are stale against the newer of the two (improve's rule).
+    scene = project.path("scene")
+    scene_at = _mtime(scene) if scene.exists() else 0.0
+    judged_after = max(rendered_at, scene_at)
+    if rendered_at and scene_at > rendered_at:
+        missing.append(("video.mp4 predates scene.xml: the scene was rebuilt after the "
+                        "render, so the video shows an older cut",
+                        _cmd("render", project, "--quality", "final", "--strict")))
     gate_file = project.root / "gate.json"
     gate = read_json(gate_file, warn=False) if gate_file.exists() else None
     if not gate:
@@ -323,7 +342,7 @@ def delivery_evidence(project: workspace.Project, build: dict | None
     elif gate.get("mode") == "frames":
         missing.append(("the last gate checked decoded frames only; delivery needs "
                         "the technical gate", _cmd("gate", project)))
-    elif _mtime(gate_file) < rendered_at:
+    elif _mtime(gate_file) < judged_after:
         missing.append(("the gate predates the render it should judge", _cmd("gate", project)))
     elif gate.get("exit") != 0 or (gate.get("triage") or {}).get("verdict") != "deliverable":
         blocking = len((gate.get("triage") or {}).get("blocking") or [])
@@ -334,7 +353,10 @@ def delivery_evidence(project: workspace.Project, build: dict | None
     qa = read_json(qa_file, warn=False) if qa_file.exists() else None
     if not qa:
         missing.append(("no QA pass has scored this render", _cmd("qa", project)))
-    elif _mtime(qa_file) < rendered_at:
+    elif qa.get("scene_sha256") and scene_at and qa["scene_sha256"] != scene_digest(scene):
+        missing.append((f"QA {qa.get('pass', '')} judged a different scene.xml than the "
+                        "one now built", _cmd("qa", project)))
+    elif _mtime(qa_file) < (rendered_at if qa.get("scene_sha256") else judged_after):
         missing.append((f"QA {qa.get('pass', '')} predates the render it should judge",
                         _cmd("qa", project)))
     elif qa.get("verdict") != READY_TO_PUBLISH:
