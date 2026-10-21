@@ -118,7 +118,7 @@ Or all of it at once, for one idea:
 | `yt research` | claims with sources, a vetted source list, licence-checked footage, gaps, an outline | **$0.78** for a cut-down run; more at the defaults |
 | `yt styles` | visual treatments ranked against the video's message, with shots, palette, type, motion | $0.06–0.10 |
 | `yt script` | the full AV screenplay: picture, narration verbatim, supers, assets, citations | **$0.51** for 3 minutes with polish and fact-check |
-| `yt props` | CC0 glTF models, HDRIs and texture maps from Poly Haven under `props/`, listed in `props.json` for the vfx brief | no model calls, no key |
+| `yt props` | CC0 glTF models, HDRIs and texture maps from Poly Haven under `props/`, listed in `props.json` for the vfx brief | two cached model decisions when no phrase is given, else none; no key |
 | `yt keyframe` | the look-lock from the film itself: `yt vfx`'s plan for every section and the lead section authored once, judged by the mechanical gate, its frames awaiting the operator's approval; `yt vfx` then carries it and authors the rest against it (`--sheet`: the older separate style frame) | the vfx plan and one author session; no vision review |
 | `yt voice` | one WAV per shot, measured drift against the script, captions | no model calls; ElevenLabs bills per character, local engines are free |
 | `yt vfx` | every effect specified and costed, then one world `<symbol>` per section, written by the author as a Python program with the sr-core SDK that the stage builds itself (determinism and provenance checked), with a single camera, its shots as phases, proof frames checked (frame, camera and geometry: a hero that penetrates a set solid, or that reads merged into one on screen with no shadow, is an error with time, object and depth) and reviewed, versioned under `vfx/vNN/` | scales with `--per-section`, `--budget-usd` per section, `--rounds` |
@@ -232,8 +232,11 @@ schema, cwd=…)` lets an agent read files — frames, a PDF, a report — befor
 answers, with read-only tools. Both write the answer under
 `decisions/<stage>/<name>.json` with a digest of everything the model saw, so
 a stage re-run with the same inputs costs nothing and a changed input is asked
-again; `--fresh` asks regardless. Each manifest carries `"engine"`: the model,
-the standards digest, the cost, and which decisions were cached.
+again; `--fresh` asks regardless. Each stage's record (`research.json`,
+`styles.json`, `script.json`, `vfx.json`, `keyframe.json`, `props.json`,
+`assess.json`) carries its spend once, under `usage`: `{cost_usd, model,
+calls}`. `engine` is not that key: it names the TTS engine in `voice.json`
+and the binary in `render.json`.
 
 There is no flag to skip the model. A decision the harness could not get is an
 error the stage reports, never a quiet default, because a default is a decision
@@ -295,7 +298,7 @@ audits its own gaps, and writes a script outline. Every stage is cached, so a
 re-run resumes instead of paying twice; `--fresh` forces the work again.
 
 `--depth` questions · `--shots` / `--per-shot` · `--asset-sources` ·
-`--allow-sa` · `--agentic-assets` · `--download` · `--budget USD` · `--fresh`
+`--allow-sa` · `--agentic-assets` · `--download` · `--budget-usd` · `--fresh`
 
 The plan depends on the genre. A narrated explainer gets the full scope; a
 wordless piece -- a genre or premise that says cinematic, music video,
@@ -465,9 +468,13 @@ the files listed under it (`_tmp/do_not_delete.env`, `.env`,
 `~/.config/pals-notes/.env`); only the names are ever printed.
 
 Takes are cached on the hash of their text, engine, voice and settings, so
-editing one line re-records one shot. `--redo LABELS` forces specific shots. A
-rate limit is waited out, not fatal: finished takes come from cache, so nothing
-is paid twice.
+editing one line re-records one shot. `--redo LABELS` forces only the named
+shots; every other take stays cached. After a run the director names the
+takes to record again and, per take, may ask for a `speed` (clamped to
+0.85-1.15) and ElevenLabs settings (`stability`, `similarity_boost`, `style`);
+the next run applies them to those takes alone, each in its own call, and
+they are part of that take's cache key. A rate limit is waited out, not
+fatal: finished takes come from cache, so nothing is paid twice.
 
 Writes `voice/` (one file per shot), `voice.json`, `narration.vtt` and
 `narration.srt`, plus `voice.wav` with `--stitch`. `--layout sequential` (the
@@ -555,17 +562,24 @@ Coverage is computed, not asked for — merged music intervals, share of runtime
 scored, longest unbroken run, unscored stretches — and `--review` hands those
 numbers back for a listen-back pass that flags wall-to-wall music, cues that
 fight the narration, effects with no sync point and sourcing that will not
-survive a claim.
+survive a claim. Unless `--report-only` is given the review then revises: each
+important or blocking flag gets one revise call that may edit only the cue's
+design fields (never `file`, `licence`, `credit`, `gain_db`, fades or `loop`),
+only the revised cues are checked again, for at most two rounds, a flag that
+cannot be fixed is kept with its reason, and coverage is recomputed when cues
+changed. `--report-only` reports the findings and changes nothing.
 
-`--free-only` (CC0, public domain, CC-BY or self-recorded only) · `--library
+`--review` · `--report-only` · `--free-only` (CC0, public domain, CC-BY or self-recorded only) · `--library
 "epidemic sound"` · `--no-music` · `--mood` · `--inspo` · `--minutes` when there
 is no screenplay yet (floored at 10 seconds)
 
 Every cue except silence also carries a `query`: the few plain words a
 library search would want, naming the sound rather than its purpose.
 `--fetch` turns the sheet into files: each cue is searched on Freesound
-(`ytstudio/freesound.py`) -- the model's query first, then its search terms,
-then its name -- under CC0 and CC-BY only, every hit judged again by the
+(`ytstudio/freesound.py`) -- `sound.cue_queries` tries the cue's
+`search_description` first (whole when short, then shortened), then its
+`query`, its search terms and the layers it is built from, and never the
+name, which labels the cue sheet and not a sound -- under CC0 and CC-BY only, every hit judged again by the
 pipeline's one licence policy; the best fit by duration and rating is
 downloaded as the high-quality mp3 preview into `sound/` and written back
 into the cue as `file`, `licence`, `credit`, `source_url` and `duration`,
@@ -688,9 +702,19 @@ blocks the build; the explicit alias table (Helvetica, Arial, `serif`,
 `monospace`…) and nearest-weight choices are listed under `fonts.notes` in
 `build.json`. A node naming no family gets DejaVu Sans.
 
+Captions are a sidecar track by default (the platform takes it and the viewer
+turns it on; `yt gate` checks `narration.vtt` either way), because burned in
+they share the lower band with the authored type; `--burn-captions` burns them
+into the picture. The master is normalised to integrated loudness;
+`--normalize dynamic` is honoured only with `--normalize-reason` (or
+`normalize.reason` in `sound.json`), else it falls back to integrated with a
+finding, and `none` leaves the master unnormalised. Every bus but the
+narration ducks under it.
+
 `--width` · `--height` · `--fps` · `--codec` (checked against the schema's own
 list) · `--bitrate` and friends (never `crf`) · `--loudness` · `--true-peak`
-· `--no-limiter` · `--no-captions` · `--no-audio` · `--fresh` · `--force`
+· `--normalize` · `--normalize-reason` · `--no-limiter` · `--burn-captions` ·
+`--no-captions` · `--no-audio` · `--fresh` · `--force`
 
 ### `yt render`
 
@@ -732,6 +756,17 @@ overwritten. A report written on the host has its paths rewritten to the
 project here before it is kept. `render.run_job(cmd, project_root, host,
 job=...)` is the public hook other stages use to run one engine command the
 same way.
+
+A still is cached on a fingerprint of the scene bytes, every file shipped with
+it, the document path, the time, the quality, the options and the engine's
+identity, under `$YT_STILL_CACHE` or the project's `.cache/stills`; a hit is
+served locally before any host is chosen, only rendered PNGs are stored, and
+an unknown engine identity caches nothing. Every render outcome leaves a job
+report in the engine's `scene-render-cli/1` envelope with a `status`:
+`rendered`, `failed`, `timeout` or `blocked-inputs` (the files the scene names
+that are missing are listed), with its seconds and the engine's version and
+sha256; a detached job that never reported is marked `outcome_unknown`. `yt
+doctor` lists the jobs that did not render.
 
 `--audio-only` encodes just the mix to WAV. It is the cheapest way to find out
 whether the audio graph fits in memory, because the mix is built whole and
@@ -890,7 +925,7 @@ score an earlier pass's frames again, measuring them again without rendering ·
 
 The improvement loop of `docs/production.md` §8, so a QA finding no longer
 needs a human to carry it to the stage that owns it. From the latest QA pass
-(scored again first if it is older than the video), plus the gate's blocking
+(scored again first if it is older than the newer of `video.mp4` and `scene.xml`), plus the gate's blocking
 rows and doctor's fails, every finding is routed to one stage: the measured
 mechanical kinds by their stated owner, the rest by one harness decision that
 also merges duplicates and writes each stage a revision brief. Findings that
@@ -927,9 +962,11 @@ and listed in `improve.md` as contradicted.
 
 ### `yt doctor`
 
-Reads what the stages wrote and says what to do next. No model calls, no
-network: it reports the toolchain (engine, ffmpeg, the scene SDK, the delivery
-gate, which voice engines are usable, which keys are set) and then every video,
+Reads what the stages wrote and says what to do next. No model calls, but it
+does reach the render hosts: one short ssh per host asks for the engine, the
+memory and the GPU. It reports the toolchain (engine, ffmpeg, the scene SDK,
+the delivery gate, the third-party packages the stages import, which voice
+engines are usable, which keys are set) and then every video,
 with fail, warn and note lines and the command that fixes each. Exit 1 on any
 fail, so it works in a script.
 
@@ -965,8 +1002,10 @@ to load. The catalogue listing is cached for a day under
 
 Writes `props/<kind>/<id>/` (the files exactly as served, never opened or
 parsed here) and `props.json` with `id`, `kind`, `file`, `files`, `licence`,
-`credit`, `about` and `source_url` per item. No model calls; the stage takes
-only `--project`, `--title` and its own flags.
+`credit`, `about` and `source_url` per item. With phrases on the command line
+the stage asks nothing; otherwise its two decisions are cached like any other
+(`--fresh` asks again) and it takes the model flags beside `--project`,
+`--title` and its own.
 
 ### `yt probe`
 
@@ -1022,8 +1061,8 @@ fact-check, listen-back) for a cheaper first draft and renders at draft
 quality. `cli.run_extras` is the flags each stage gets (`--rich` and
 `--deliberate critique` for styles, `--polish --verify` for script,
 `--fetch` and `--review` for sound), and `cli.stage_argv` builds each
-stage's argv; `yt props` gets only `--project` and `--quiet`, because it
-decides nothing.
+stage's argv; `yt props` gets no extras, only the flags every model stage
+gets (only `yt render` goes without the model flags).
 
 ### `yt ls`
 
