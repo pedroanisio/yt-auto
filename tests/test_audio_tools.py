@@ -493,14 +493,16 @@ class Shipping(unittest.TestCase):
         for argv in plan.syncs:
             self.assertNotIn("--delete", argv)
 
-    def test_local_command_points_at_the_bundle_but_takes_tail_check_from_the_tools_dir(self):
+    def test_local_command_points_at_the_bundle_for_the_tail_check_too(self):
         d = self.tools_dir(("tail_check.py",))
         found = {"scene": "/s.xml", "video": "/v.mp4", "encode report": "/r.json",
                  "captions": "/c.vtt", "engine": "/e", "gate": "/g.py", "tools dir": str(d),
                  "voice end": 1.0, "project": Path("/p"), "audio tools": str(gate.bundled_tools())}
         cmd = gate.local_command(found, [], frames=False, loudness_target=-14.0, max_illegal=None)
         self.assertEqual(cmd[cmd.index("--tools-dir") + 1], str(gate.bundled_tools()))
-        self.assertEqual(cmd[cmd.index("--tail-check") + 1], str(d / "tail_check.py"))
+        # the pnkit one needs numpy, which the hosts lack: the bundled port is used
+        self.assertEqual(cmd[cmd.index("--tail-check") + 1],
+                         str(gate.bundled_tools() / "tail_check.py"))
 
     def test_preflight_inputs_name_each_missing_tool(self):
         with mock.patch.object(gate, "bundled_tools", return_value=Path("/nonexistent")):

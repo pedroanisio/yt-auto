@@ -1,4 +1,4 @@
-"""Shared code of the gate's three audio tools: sr-margin, sr-audiocheck, sr-sibilance.
+"""Shared code of the gate's audio tools: sr-margin, sr-audiocheck, sr-sibilance, tail_check.
 
 Standard library and ffmpeg only: the render hosts' python3 may have no numpy.
 The tools measure; they decide nothing creative. Every threshold is named below
@@ -11,15 +11,20 @@ engine or ffmpeg, an unreadable scene). The gate records stdout and stderr.
 from __future__ import annotations
 
 import argparse
+import cmath
 import contextlib
+import heapq
+import json
 import math
 import os
 import re
+import statistics
 import subprocess
 import sys
 import tempfile
 import wave
 import xml.etree.ElementTree as ET
+from array import array
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -74,6 +79,30 @@ SIBILANCE_MIN_WINDOWS = 2
 #: are commonly set to act where the sibilant band exceeds the voice's average).
 SIBILANCE_LIMIT_DB = 0.0
 SIBILANCE_RATE = 32000
+
+#: tail_check, ported from pnkit's tools/tail_check.py with its constants (calibrated
+#: 2026-10-01 on endings heard as laser beams: those held one partial 1.0-1.2 s at a
+#: 41-63 % mean share; the redesigned endings measure at most 0.21 s and 7-18 %).
+TAIL_RATE = 24000
+TAIL_HELD_MAX, TAIL_SHARE_MAX, TAIL_DECAY_DB = 0.4, 0.3, 15.0
+TAIL_NPERSEG, TAIL_NOVERLAP = 4096, 3072
+#: The ending starts this long before the last word ends (pnkit.audio.TAIL_LEAD).
+TAIL_LEAD_S = 0.5
+#: NO STANDARD. Rule 1, by measurement: a soft struck effect reaches its peak within
+#: this long of starting, and ends this far under it (or fades out). A sweep, a swell
+#: or a held tone does neither.
+STRUCK_ATTACK_MAX_S = 0.15
+STRUCK_DECAY_DB = 15.0
+#: the peak is reached at the first frame within this many dB of the loudest
+STRUCK_PEAK_TOL_DB = 3.0
+#: the sound begins at the first frame this far above the file's own noise floor (the
+#: quietest tenth of its frames), or above peak - STRUCK_ONSET_RANGE_DB if that is lower
+STRUCK_ONSET_MARGIN_DB = 12.0
+STRUCK_ONSET_RANGE_DB = 40.0
+STRUCK_FADE_OUT_S = 0.2
+STRUCK_FRAME_S = 0.01
+STRUCK_END_S = 0.1
+EFFECT_ROLES = ("effects", "effect", "sfx")
 
 
 class ToolError(RuntimeError):
@@ -520,6 +549,267 @@ def project_takes(project: Path) -> list[Path]:
 
 
 # --------------------------------------------------------------------------- #
+# the ending: tail_check
+# --------------------------------------------------------------------------- #
+
+def decode_pcm(path, rate: int = TAIL_RATE) -> list[float]:
+    """The file's audio, mono, at `rate`, as floats (what ffmpeg decodes)."""
+    cmd = [ffmpeg_bin(), "-nostdin", "-v", "error", "-i", str(path), "-vn", "-ac", "1",
+           "-ar", str(rate), "-f", "f32le", "-"]
+    try:
+        proc = subprocess.run(cmd, capture_output=True)
+    except OSError as exc:
+        raise ToolError(f"cannot run {cmd[0]}: {exc}") from exc
+    if proc.returncode != 0:
+        raise ToolError(f"{cmd[0]} failed ({proc.returncode}) on {path}: "
+                        f"{proc.stderr.decode(errors='replace').strip()[-300:]}")
+    samples = array("f")
+    samples.frombytes(proc.stdout[:len(proc.stdout) // 4 * 4])
+    if sys.byteorder == "big":
+        samples.byteswap()
+    return samples.tolist()
+
+
+_PLANS: dict[int, tuple[list[int], list[complex]]] = {}
+
+
+def fft(x: list[complex]) -> list[complex]:
+    """Discrete Fourier transform of a power-of-two length (iterative radix 2)."""
+    n = len(x)
+    if n & (n - 1):
+        raise ValueError(f"fft length {n} is not a power of two")
+    if n not in _PLANS:
+        bits = n.bit_length() - 1
+        order = [int(format(i, f"0{bits}b")[::-1], 2) if bits else 0 for i in range(n)]
+        _PLANS[n] = (order, [cmath.exp(-2j * math.pi * k / n) for k in range(n // 2)])
+    order, twiddle = _PLANS[n]
+    a = [x[i] for i in order]
+    size = 2
+    while size <= n:
+        half, step = size // 2, n // size
+        for start in range(0, n, size):
+            for k in range(half):
+                u = a[start + k]
+                v = a[start + k + half] * twiddle[k * step]
+                a[start + k] = u + v
+                a[start + k + half] = u - v
+        size *= 2
+    return a
+
+
+def frame_powers(frames: list[list[float]], window: list[float], scale: float) -> list[list[float]]:
+    """|FFT|^2 of each real frame (windowed, scaled), bins 0..n/2. Two frames share one
+    complex transform: one rides the real part, the other the imaginary."""
+    n = len(window)
+    out = []
+    for i in range(0, len(frames), 2):
+        a = frames[i]
+        b = frames[i + 1] if i + 1 < len(frames) else [0.0] * n
+        z = fft([complex(a[j] * window[j], b[j] * window[j]) for j in range(n)])
+        pa, pb = [], []
+        for k in range(n // 2 + 1):
+            zk, zn = z[k], z[-k % n].conjugate()
+            xa = (zk + zn) / 2 * scale
+            xb = (zk - zn) / 2j * scale
+            pa.append(xa.real ** 2 + xa.imag ** 2)
+            pb.append(xb.real ** 2 + xb.imag ** 2)
+        out.append(pa)
+        if i + 1 < len(frames):
+            out.append(pb)
+    return out
+
+
+def stft_power(seg: list[float]) -> list[list[float]]:
+    """Power columns as scipy.signal.stft(seg, fs, nperseg=4096, noverlap=3072) gives them:
+    periodic Hann window, zeros padded half a segment at both ends and to a whole
+    number of segments, spectrum scaling (1 / sum of the window)."""
+    n, hop = TAIL_NPERSEG, TAIL_NPERSEG - TAIL_NOVERLAP
+    window = [0.5 - 0.5 * math.cos(2 * math.pi * i / n) for i in range(n)]
+    padded = [0.0] * (n // 2) + list(seg) + [0.0] * (n // 2)
+    padded += [0.0] * ((-(len(padded) - n) % hop) % n)
+    count = (len(padded) - n) // hop + 1
+    frames = [padded[i * hop:i * hop + n] for i in range(count)]
+    return frame_powers(frames, window, 1.0 / sum(window))
+
+
+def _db10(power: float) -> float:
+    return 10 * math.log10(power)
+
+
+def _rank(values) -> list[float]:
+    order = sorted(range(len(values)), key=lambda i: (values[i], i))
+    ranks = [0.0] * len(values)
+    for r, i in enumerate(order):
+        ranks[i] = float(r)
+    return ranks
+
+
+def _pearson(a: list[float], b: list[float]) -> float:
+    n = len(a)
+    ma, mb = sum(a) / n, sum(b) / n
+    cov = sum((x - ma) * (y - mb) for x, y in zip(a, b))
+    va = sum((x - ma) ** 2 for x in a)
+    vb = sum((y - mb) ** 2 for y in b)
+    return cov / math.sqrt(va * vb) if va and vb else 0.0
+
+
+def _rms_db(a) -> float:
+    if not len(a):
+        return math.nan
+    return 20 * math.log10(math.sqrt(sum(v * v for v in a) / len(a)) + 1e-9)
+
+
+def tail_measure(x: list[float], voice_end: float) -> dict:
+    """The ending's figures, as pnkit's tail_check measures them: tail seconds, longest held
+    pure partial (s), its mean share, energy above 1.5 kHz, glide, the last 0.1 s and the
+    level 2 s earlier (dBFS)."""
+    sr = TAIL_RATE
+    seg = x[int(voice_end * sr):]
+    if not len(seg):
+        raise ToolError(f"the last word ends at {voice_end:g} s, past the end of the audio "
+                        f"({len(x) / sr:.2f} s)")
+    cols = stft_power(seg)
+    nbins = TAIL_NPERSEG // 2 + 1
+    freq = [k * sr / TAIL_NPERSEG for k in range(nbins)]
+    lo_pure = next(k for k, f in enumerate(freq) if f > 380)
+    lo_total = next(k for k, f in enumerate(freq) if f > 120)
+    lo_band = next(k for k, f in enumerate(freq) if f > 500)
+    lo_high = next((k for k, f in enumerate(freq) if f > 1500), nbins)
+
+    tot = [sum(c) for c in cols]
+    active = [t > max(tot) * 0.01 for t in tot]
+    fr, pu, lv = [], [], []
+    for col in cols:
+        total = sum(col[lo_total:]) + 1e-12
+        i = max(range(lo_pure, nbins), key=col.__getitem__)
+        if col[i] <= 0:
+            i = 0
+        fr.append(freq[i])
+        pu.append(sum(col[max(0, i - 2):i + 3]) / total)
+        lv.append(_db10(total))
+    loud = [v > max(lv) - 20 for v in lv]
+    best = run = 0
+    f0 = None
+    for a_, p_, l_ in zip(fr, pu, loud):
+        if l_ and p_ > 0.35 and (f0 is None or abs(a_ - f0) < 0.03 * f0):
+            run += 1
+            f0 = a_ if f0 is None else f0
+        else:
+            run, f0 = (1, a_) if (l_ and p_ > 0.35) else (0, None)
+        best = max(best, run)
+    hop = TAIL_NPERSEG - TAIL_NOVERLAP
+    held = best * hop / sr
+    share = sum(p for p, l_ in zip(pu, loud) if l_) / sum(loud)
+
+    dom, ton = [], []
+    for col, on in zip(cols, active):
+        if not on:
+            continue
+        band = col[lo_band:]
+        dom.append(freq[lo_band + max(range(len(band)), key=band.__getitem__)])
+        ton.append(sum(heapq.nlargest(3, band)) / (sum(band) + 1e-12))
+    glide = False
+    if len(dom) > 12:                                     # any 1.5 s stretch with a steady tonal slide
+        w = int(1.5 * sr / hop)
+        for i in range(0, len(dom) - w, max(1, w // 3)):
+            d = dom[i:i + w]
+            if (max(d) > min(d) and statistics.median(ton[i:i + w]) > 0.5
+                    and max(d) / max(50.0, min(d)) >= 1.5):
+                steps = [b - a for a, b in zip(d, d[1:])]
+                smooth = sum(abs(s) < 0.12 * a for s, a in zip(steps, d)) / len(steps)
+                moving = sum(s != 0 for s in steps) / len(steps)
+                if abs(_pearson(_rank(d), list(range(len(d))))) > 0.8 and smooth > 0.9 and moving > 0.5:
+                    glide = True
+    everything = sum(tot)
+    return {"tail": len(seg) / sr, "held": held, "share": share,
+            "high": sum(sum(c[lo_high:]) for c in cols) / max(1e-12, everything), "glide": glide,
+            "last": _rms_db(x[-int(0.1 * sr):]), "before": _rms_db(x[-int(2.1 * sr):-int(1.9 * sr)])}
+
+
+def tail_report(m: dict, late, bad, label: str) -> tuple[bool, str]:
+    """(passes, the one line). `late` is [(start, name)] or None when no scene was given;
+    `bad` is [(start, name, why)]: the late effects that are not soft struck."""
+    ok = (not bad and m["held"] <= TAIL_HELD_MAX and m["share"] <= TAIL_SHARE_MAX and not m["glide"]
+          and m["last"] < m["before"] - TAIL_DECAY_DB)
+    cues = ("not checked (no --scene)" if late is None
+            else ([f"{n}@{t:.1f}" for t, n in late] or "none"))
+    refused = ", ".join(f"{n}@{t:.1f} ({why})" for t, n, why in bad)
+    line = (f"{label} tail {m['tail']:.1f} s: cues after the last word {cues}"
+            f"{' NOT ALLOWED [' + refused + ']' if bad else ''}; longest held pure partial {m['held']:.2f} s, "
+            f"mean share {m['share'] * 100:.0f} %; energy above 1.5 kHz {m['high'] * 100:.1f} %; "
+            f"glide {'YES' if m['glide'] else 'no'}; "
+            f"last 0.1 s {m['last']:.0f} dBFS vs {m['before']:.0f} -> {'PASS' if ok else 'CHECK'}")
+    return ok, line
+
+
+def struck_onset(samples, rate: int, fade_in: float = 0.0, fade_out: float = 0.0) -> tuple[bool, str]:
+    """Is this effect a soft struck sound? By measurement: it reaches its peak within
+    STRUCK_ATTACK_MAX_S of its onset, not of the file's start (a fade-in counts) and ends STRUCK_DECAY_DB under it, or fades out
+    over STRUCK_FADE_OUT_S. (ok, why not)."""
+    size = max(1, round(rate * STRUCK_FRAME_S))
+    levels = [_rms_db(samples[i:i + size]) for i in range(0, len(samples), size)]
+    if not levels:
+        return False, "the sound is empty"
+    peak = max(range(len(levels)), key=levels.__getitem__)
+    first = next(i for i, v in enumerate(levels) if v >= levels[peak] - STRUCK_PEAK_TOL_DB)
+    floor = sorted(levels)[len(levels) // 10]
+    gate = min(floor + STRUCK_ONSET_MARGIN_DB, levels[peak] - STRUCK_ONSET_RANGE_DB)
+    onset = next(i for i, v in enumerate(levels) if v >= gate)
+    attack = (first - onset + 1) * STRUCK_FRAME_S + fade_in
+    if attack > STRUCK_ATTACK_MAX_S:
+        return False, f"attack {attack:.2f} s, over {STRUCK_ATTACK_MAX_S:g} s"
+    end = _rms_db(samples[-max(1, round(rate * STRUCK_END_S)):])
+    if fade_out < STRUCK_FADE_OUT_S and end > levels[peak] - STRUCK_DECAY_DB:
+        return False, (f"does not decay: ends {levels[peak] - end:.0f} dB under its peak, "
+                       f"needs {STRUCK_DECAY_DB:g}")
+    return True, ""
+
+
+def _is_effect(track) -> bool:
+    return (track.get("mute") != "true"
+            and (track.get("role") in EFFECT_ROLES or track.get("bus") in EFFECT_ROLES))
+
+
+def scene_tail_effects(xml_text: str, scene_dir: Path, voice_end: float,
+                       lead: float = TAIL_LEAD_S) -> tuple[list, list]:
+    """(late, bad): the scene's effect tracks that start after the last word minus `lead`,
+    [(start, id)], and those among them that are not soft struck, [(start, id, why)].
+    Each is judged by measuring its own audio over the span the track plays."""
+    root = _parse(xml_text)
+    assets = {n.get("id"): n for n in root.iter() if _local(n.tag) == "audio" and n.get("id")}
+    late, bad = [], []
+    for node in root.iter():
+        if _local(node.tag) != "audioTrack" or not _is_effect(node):
+            continue
+        start = _num(node, "start", 0.0)
+        if start <= voice_end - lead:
+            continue
+        name = node.get("id") or node.get("asset") or "?"
+        late.append((start, name))
+        asset = assets.get(node.get("asset"))
+        src = asset.get("src") if asset is not None else None
+        if int(_num(node, "loop", 0)) > 0:
+            bad.append((start, name, "loops, so it is held"))
+            continue
+        if not src or "://" in src:
+            bad.append((start, name, "no audio file to measure"))
+            continue
+        path = Path(src) if Path(src).is_absolute() else Path(scene_dir) / src
+        try:
+            samples = decode_pcm(path, TAIL_RATE)
+        except ToolError as exc:
+            bad.append((start, name, f"cannot be measured: {exc}"))
+            continue
+        a = int(_num(node, "clipIn", 0.0) * TAIL_RATE)
+        clip_out = _num(node, "clipOut", None)
+        samples = samples[a:int(clip_out * TAIL_RATE)] if clip_out is not None else samples[a:]
+        ok, why = struck_onset(samples, TAIL_RATE, _num(node, "fadeIn", 0.0), _num(node, "fadeOut", 0.0))
+        if not ok:
+            bad.append((start, name, why))
+    return late, bad
+
+
+# --------------------------------------------------------------------------- #
 # the tools
 # --------------------------------------------------------------------------- #
 
@@ -618,3 +908,39 @@ def sibilance_main(argv=None) -> int:
         return _finish("sr-sibilance", found, f"{len(takes)} take(s)")
 
     return _guard("sr-sibilance", body)
+
+
+def tail_check_main(argv=None) -> int:
+    p = argparse.ArgumentParser(prog="tail_check", description="A film's ending, as it sounds in the encoded file: no held tone, "
+                                "no glide, a decay, and only soft struck effects after the last word.")
+    p.add_argument("media", help="the encoded film (anything ffmpeg reads)")
+    p.add_argument("--voice-end", type=float, help="when the last word ends, film seconds")
+    p.add_argument("--timings", help="a narration timings JSON with a 'duration'; the last word ends at --lead plus it")
+    p.add_argument("--lead", type=float, default=0.6, help="where the narration starts in the film (with --timings; default 0.6)")
+    p.add_argument("--scene", help="the scene document, to check the effects that start in the ending")
+    p.add_argument("--out", help="write the line here too")
+    p.add_argument("--label", help="what to call the film in the line (default: the media file's name)")
+    args = p.parse_args(argv)
+    if args.voice_end is None and not args.timings:
+        p.error("give --voice-end or --timings")
+
+    def body():
+        if args.voice_end is not None:
+            voice_end = args.voice_end
+        else:
+            with open(args.timings, encoding="utf-8") as fh:
+                voice_end = args.lead + float(json.load(fh)["duration"])
+        late = bad = None
+        if args.scene:
+            scene = Path(args.scene)
+            late, bad = scene_tail_effects(scene.read_text(encoding="utf-8"), scene.parent, voice_end)
+        ok, line = tail_report(tail_measure(decode_pcm(args.media), voice_end), late, bad or [],
+                               args.label or os.path.basename(args.media))
+        if args.out:
+            os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+            with open(args.out, "w", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+        print(line)
+        return 0 if ok else 1
+
+    return _guard("tail_check", body)
