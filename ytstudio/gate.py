@@ -297,13 +297,14 @@ def run_remote(plan: RemotePlan, report: dict, project_root: Path, *, verbose: b
         for argv in plan.syncs:
             subprocess.run(argv, check=True, capture_output=True, text=True)
         envelope = json.dumps(remote_envelope(report, plan), indent=2, ensure_ascii=False) + "\n"
-        subprocess.run(["ssh", "-o", "BatchMode=yes", plan.host,
-                        f"mkdir -p {shlex.quote(plan.root + '/inputs')} && cat > {shlex.quote(plan.envelope)}"],
+        subprocess.run(render_stage.ssh_argv(
+                        plan.host,
+                        f"mkdir -p {shlex.quote(plan.root + '/inputs')} && cat > {shlex.quote(plan.envelope)}"),
                        input=envelope, check=True, capture_output=True, text=True)
         script = remote_script(plan)
         if verbose:
             print(f"  ssh {plan.host} {script}", file=sys.stderr)
-        proc = subprocess.run(["ssh", "-o", "BatchMode=yes", plan.host, script],
+        proc = subprocess.run(render_stage.ssh_argv(plan.host, script),
                               capture_output=True, text=True)
         # The gate writes qa/TECHNICAL.json into the project copy on a pass;
         # bring it home with its paths localised, like a render report.

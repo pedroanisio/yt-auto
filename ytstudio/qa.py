@@ -58,7 +58,7 @@ import sys
 from pathlib import Path
 
 from . import geometry as geo
-from . import house, reach, workspace
+from . import framecheck, house, reach, workspace
 from . import render as render_stage
 from .build import EVEN_SHOTS, shots_from_scene  # noqa: F401  (standalone sampling)
 from .core import read_json, timecode, write_json
@@ -313,20 +313,14 @@ def _thumb(path):
 
 
 def frame_stats(path) -> dict:
-    """Mean luma, spread, the share at the dominant level and the share
-    clipped at the top of the range, from one still's histogram."""
-    im = _thumb(path)
-    if im is None:
+    """framecheck.frame_stats of one still under this module's key names
+    (`spread`, `clipped_share`); empty when the file cannot be read."""
+    try:
+        st = framecheck.frame_stats(path)
+    except (OSError, ValueError):
         return {}
-    hist = im.histogram()
-    n = sum(hist) or 1
-    mean = sum(i * c for i, c in enumerate(hist)) / n
-    var = sum(c * (i - mean) ** 2 for i, c in enumerate(hist)) / n
-    peak = max(range(256), key=hist.__getitem__)
-    near = sum(hist[max(0, peak - 4):peak + 5]) / n
-    clipped = sum(hist[CLIPPED_LEVEL:]) / n
-    return {"mean": round(mean, 1), "spread": round(var ** 0.5, 2),
-            "dominant_share": round(near, 3), "clipped_share": round(clipped, 3)}
+    return {"mean": st["mean"], "spread": st["std"],
+            "dominant_share": st["dominant_share"], "clipped_share": st["clipped"]}
 
 
 def judge_still(stats: dict) -> list[str]:

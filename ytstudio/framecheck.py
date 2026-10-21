@@ -20,6 +20,7 @@ mostly out of view across the frames is a camera pointing at nothing.
 from __future__ import annotations
 
 import io
+import os
 import re
 
 FLAT_STD = 3.0        # luma standard deviation below which a frame is flat
@@ -40,11 +41,12 @@ OFF_CAMERA = re.compile(r"object3D\s+(\S+)\s[^\n]*?is never inside the camera's 
 # pixels
 # --------------------------------------------------------------------------- #
 
-def frame_stats(png: bytes) -> dict:
+def frame_stats(png: bytes | str | os.PathLike) -> dict:
     """Mean luma, spread, the share of pixels at the dominant level, and the
-    shares clipped (>= CLIP_LUMA) and near black, from a thumbnail of the PNG."""
+    shares clipped (>= CLIP_LUMA) and near black, from a thumbnail of the PNG
+    (given as bytes or as a path)."""
     from PIL import Image
-    im = Image.open(io.BytesIO(png)).convert("L")
+    im = Image.open(io.BytesIO(png) if isinstance(png, (bytes, bytearray)) else png).convert("L")
     im.thumbnail((320, 320))
     px = list(im.tobytes())
     n = len(px) or 1
