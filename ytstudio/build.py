@@ -498,6 +498,21 @@ def cleaned_include(src: Path, dest: Path,
         for child in root.findall(tag):
             root.remove(child)
             out["removed"].append(tag)
+    # An include does not merge <markers> either (E12, which --strict refuses).
+    # The copy drops them when nothing else in it names one -- an author's note
+    # for the sound, say; one that is referenced stays, and the author moves it.
+    for markers in root.findall("markers"):
+        ids = {m.get("id") for m in markers.iter("marker") if m.get("id")}
+        root.remove(markers)
+        rest = ElementTree.tostring(root, encoding="unicode")
+        named = sorted(i for i in ids if f'"{i}"' in rest or f"'{i}'" in rest)
+        if named:
+            root.append(markers)
+            out["findings"].append(
+                f"warning: {src.name}: its <markers> ({', '.join(named)}) are referenced inside "
+                "it, and an include does not merge them (E12); move the reference to a time")
+        else:
+            out["removed"].append("markers")
     unresolved: set[str] = set()
     for element in root.iter():
         for key, value in element.attrib.items():

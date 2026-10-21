@@ -112,6 +112,23 @@ class CleanedInclude(unittest.TestCase):
                          {"vfx/open.include.scene.xml": "vfx/open.scene.xml"})
         self.assertFalse([f for f in manifest["findings"] if f.startswith("error")])
 
+    def test_markers_no_one_names_are_dropped_from_the_copy(self):
+        # measured on the Euler film: a section's own <markers> (a note for the
+        # sound) raised E12 on every include of it, and --strict refuses warnings
+        self.authored.write_text(AUTHORED.replace(
+            "<composition/>", '<composition/>\n  <markers><marker id="beat-drop" time="1"/></markers>'))
+        data, manifest = self.build()
+        self.assertIsNone(ElementTree.parse(self.copy).getroot().find("markers"))
+        self.assertFalse([f for f in manifest["findings"] if "E12" in f])
+
+    def test_a_marker_the_content_names_stays_and_is_reported(self):
+        self.authored.write_text(AUTHORED.replace(
+            "<composition/>", '<composition/>\n  <markers><marker id="beat-drop" time="1"/></markers>')
+            .replace('<shape id="s1"', '<shape id="s1" name="beat-drop"'))
+        data, manifest = self.build()
+        self.assertIsNotNone(ElementTree.parse(self.copy).getroot().find("markers"))
+        self.assertTrue([f for f in manifest["findings"] if "E12" in f and "beat-drop" in f])
+
     def test_a_symbol_the_document_lacks_is_an_error(self):
         _, manifest = self.build({"1.1": {"file": "vfx/open.scene.xml",
                                           "symbol": "fx-nope"}})
