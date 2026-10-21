@@ -1195,8 +1195,7 @@ def remote_frames(root: Path, doc: str, times, host: str, *, scratch: bool = Fal
     subprocess.run(render.sync_up_args(root, host, mirror), check=True,
                    capture_output=True, text=True)
     try:
-        proc = subprocess.run(["ssh", "-o", "BatchMode=yes", host,
-                               eval_script(mirror, job, _binary(host), doc, times)],
+        proc = subprocess.run(render.ssh_argv(host, eval_script(mirror, job, _binary(host), doc, times)),
                               capture_output=True, text=True)
     finally:
         render.remove_remote(host, job)

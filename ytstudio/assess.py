@@ -167,7 +167,7 @@ def engine_facts(host: str) -> dict:
               "echo '=====MEM'; free -g | sed -n 2p; nproc; echo '=====DISK'; df -h /tmp | tail -1")
     render.refuse_remote()
     try:
-        proc = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host, script],
+        proc = subprocess.run(render.ssh_argv(host, script, "-o", "ConnectTimeout=8"),
                               capture_output=True, text=True, timeout=60)
         caps, _, rest = proc.stdout.partition("=====GPUS")
         gpus, _, rest = rest.partition("=====MEM")
