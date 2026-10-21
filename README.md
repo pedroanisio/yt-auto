@@ -879,7 +879,10 @@ improves, no category drops more than 0.5 and no new blocking mechanical
 finding appears. Otherwise the snapshot in `improve/pass-NN/snapshot/` is
 restored. It stops at READY TO PUBLISH, at the pass or budget limit, or when
 a defect survives three briefed passes, and writes `improve.json` and an
-`improve.md` in the shape of the §11 report.
+`improve.md` in the shape of the §11 report. The estimate is per stage, read from
+each stage's own report (else a like project's) and marked measured, like or
+assumed, and a routed vfx pass re-authors only the sections its findings fall in
+(`--sections`), the whole film (`--fresh`) when a finding cannot be placed.
 
 ```bash
 yt improve --title X --dry-run                      # the routing, the briefs, the estimate

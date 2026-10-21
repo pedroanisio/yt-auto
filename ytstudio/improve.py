@@ -572,13 +572,18 @@ def plan(routed: Iterable[str], root: Path) -> list[str]:
 
 
 def stage_argvs(stages: list[str], routed: Iterable[str], base: list[str], *,
-                quality: str, root: Path) -> list[list[str]]:
+                quality: str, root: Path,
+                sections: Iterable[int] | None = None) -> list[list[str]]:
+    """Each stage's argv. A routed vfx pass names `sections` (the ones the
+    findings fall in) instead of re-authoring the whole film with --fresh."""
     from .cli import stage_argv
     routed = set(routed)
     sound_data = read_json(Path(root) / "sound.json", warn=False) or {}
     out = []
     for stage in stages:
         flags = list((FORCE if stage in routed else REUSE).get(stage, []))
+        if stage == "vfx" and stage in routed and sections:
+            flags = ["--sections", ",".join(str(n) for n in sorted(set(sections)))]
         if stage == "script":
             seconds = (read_json(Path(root) / "script.json", warn=False) or {}).get(
                 "target_seconds")
@@ -590,6 +595,142 @@ def stage_argvs(stages: list[str], routed: Iterable[str], base: list[str], *,
             flags += ["--quality", quality]
         out.append(stage_argv(stage, base, {stage: flags}))
     return out
+
+
+def _replay(argv: list[str]) -> list[str]:
+    """The argv of a stage run again from its own cache: no --fresh, and no
+    --sections with its value."""
+    out, skip = [], False
+    for x in argv:
+        if skip:
+            skip = False
+        elif x == "--sections":
+            skip = True
+        elif x != "--fresh":
+            out.append(x)
+    return out
+
+
+def _section_costs(root: Path) -> dict[int, float]:
+    """What each authored section cost, from the active vfx.json: its own
+    spend, else the spend it was carried forward with."""
+    out = {}
+    for rec in (read_json(Path(root) / "vfx.json", warn=False) or {}).get("authored") or []:
+        if isinstance(rec, dict) and isinstance(rec.get("n"), int):
+            cost = rec.get("cost_usd") or rec.get("carried_cost_usd")
+            if isinstance(cost, (int, float)) and cost > 0:
+                out[rec["n"]] = float(cost)
+    return out
+
+
+def routed_sections(root: Path, findings: Iterable[dict]) -> list[int] | None:
+    """The vfx sections the findings fall in, by shot label then by timestamp
+    against each section's worlds, or None when the whole film is to be
+    authored again: a finding no section holds (a film-wide one), no
+    authoring record, or every section hit."""
+    authored = [r for r in (read_json(Path(root) / "vfx.json", warn=False) or {}).get(
+        "authored") or [] if isinstance(r, dict) and isinstance(r.get("n"), int)]
+    findings = list(findings)
+    if not authored or not findings:
+        return None
+    hit: set[int] = set()
+    for f in findings:
+        found = None
+        shot, t = f.get("shot"), f.get("timestamp")
+        for rec in authored:
+            if shot and any(str(shot) in [str(x) for x in w.get("shots") or []]
+                            for w in rec.get("worlds") or []):
+                found = rec["n"]
+                break
+        if found is None and isinstance(t, (int, float)):
+            for rec in authored:
+                if any(float(w.get("start", 0)) <= t
+                       < float(w.get("start", 0)) + float(w.get("seconds", 0))
+                       for w in rec.get("worlds") or []):
+                    found = rec["n"]
+                    break
+        if found is None:
+            return None
+        hit.add(found)
+    return None if hit >= {r["n"] for r in authored} else sorted(hit)
+
+
+def _qa_cost(root: Path) -> float | None:
+    qa_json = read_json(Path(root) / "qa.json", warn=False) or {}
+    card = read_json(Path(root) / qa.QA_DIR / str(qa_json.get("pass", "")) / "scorecard.json",
+                     warn=False) or qa_json
+    cost = (card.get("engine") or {}).get("cost_usd")
+    return float(cost) if isinstance(cost, (int, float)) else None
+
+
+def _reported(root: Path, stage: str, sections: list[int] | None) -> float | None:
+    """What one project's own report says a run of the stage costs, or None.
+    A zero on a stage that is never free is a cache replay, not a measurement."""
+    root = Path(root)
+    if stage == "qa":
+        cost = _qa_cost(root)
+    elif stage == "vfx":
+        per = _section_costs(root)
+        if sections:
+            cost = sum(per[n] for n in sections) if all(n in per for n in sections) else None
+        else:
+            cost = sum(per.values()) if per else _cost_in(read_json(root / "vfx.json",
+                                                                      warn=False))
+    else:
+        rel = MANIFEST.get(stage)
+        cost = _cost_in(read_json(root / rel, warn=False)) if rel else None
+    if cost is None or (cost <= 0 and DEFAULT_USD.get(stage, 0.5) >= 1.0):
+        return None
+    return round(float(cost), 2)
+
+
+def _like(root: Path, stage: str) -> tuple[float, str] | None:
+    """The median of what the stage cost in the other projects beside this one."""
+    root = Path(root)
+    found = []
+    for other in sorted(root.parent.iterdir()) if root.parent.is_dir() else []:
+        if other.is_dir() and other != root:
+            cost = _reported(other, stage, None)
+            if cost is not None:
+                found.append((cost, other.name))
+    if not found:
+        return None
+    found.sort()
+    return found[len(found) // 2][0], ", ".join(n for _, n in found)
+
+
+def stage_estimates(root: Path, stages: list[str],
+                    sections: list[int] | None = None) -> list[dict]:
+    """One row per stage of a pass, gate and QA included: its cost from its
+    own report (`measured`), else from like projects' (`like`), else the
+    default (`assumed`). An assumed vfx pass is guessed whole, its downstream
+    included, so the stages after it add nothing then."""
+    rows = []
+    folded = False
+    for stage in list(stages) + [s for s in ("gate", "qa") if s not in stages]:
+        wanted = sections if stage == "vfx" else None
+        have = _reported(root, stage, wanted)
+        like = _like(root, stage) if have is None and not wanted else None
+        if have is not None:
+            row = {"stage": stage, "usd": have, "basis": "measured",
+                   "source": (MANIFEST.get(stage) or "qa.json")
+                   + (f" sections {','.join(map(str, wanted))}" if wanted else "")}
+        elif like is not None:
+            row = {"stage": stage, "usd": like[0], "basis": "like", "source": like[1]}
+        elif folded:
+            row = {"stage": stage, "usd": 0.0, "basis": "assumed",
+                   "source": "included in the vfx default"}
+        else:
+            usd = VFX_PASS_USD if stage == "vfx" else DEFAULT_USD.get(stage, 0.5)
+            row = {"stage": stage, "usd": usd, "basis": "assumed",
+                   "source": "default, nothing reported"}
+        folded = folded or (stage == "vfx" and row["basis"] == "assumed")
+        rows.append(row)
+    return rows
+
+
+def total(rows: Iterable[dict]) -> float:
+    return round(sum(r["usd"] for r in rows), 2)
 
 
 def estimate(stages: list[str], last_cost: float | None) -> float:
@@ -1031,18 +1172,21 @@ class Improver:
         name = last["name"]
         pdir = self.root / IMPROVE_DIR / name
         argvs = stage_argvs(stages, set(last.get("routed") or {}), self.base,
-                            quality=self.quality, root=self.root)
+                            quality=self.quality, root=self.root,
+                            sections=last.get("sections"))
         start = stages.index(failed_at)
         attempt = pdir / "attempt"
         if (attempt / "snapshot.json").is_file():
             restore(self.root, attempt)
             steps = list(zip(stages, argvs))[start:]
         else:
-            steps = [(st, [x for x in argv if x != "--fresh"]
-                      if n < start and st in REPLAYS else argv)
+            steps = [(st, _replay(argv) if n < start and st in REPLAYS else argv)
                      for n, (st, argv) in enumerate(zip(stages, argvs))]
-        paid = [st for st, argv in steps if not (st in REPLAYS and "--fresh" not in argv)]
+        paid = [st for st, argv in steps if not (
+            st in REPLAYS and "--fresh" not in argv and "--sections" not in argv)]
         guess = estimate(paid, None)
+        if paid:
+            guess = total(stage_estimates(self.root, paid, last.get("sections")))
         remaining = self.budget - self.spent
         if guess > remaining:
             self.say(f"error: resuming {name} is estimated at ${guess:.2f} and "
@@ -1208,9 +1352,16 @@ class Improver:
             record["contradicted"] += [c for c in routing["contradicted"]
                                        if c["problem"] not in seen]
             stages = plan(routing["stages"], self.root)
+            by_id = {f["id"]: f for f in findings}
+            sections = routed_sections(self.root, [
+                by_id[fid] for fid in (routing["stages"].get("vfx") or {}).get("findings", [])
+                if fid in by_id]) if "vfx" in routing["stages"] else None
             argvs = stage_argvs(stages, routing["stages"], self.base, quality=self.quality,
-                                root=self.root)
-            guess = estimate(stages, last_cost)
+                                root=self.root, sections=sections)
+            rows = stage_estimates(self.root, stages, sections)
+            guess = total(rows)
+            if last_cost and not any(r["basis"] != "assumed" for r in rows):
+                guess = estimate(stages, last_cost)
             name = self._next_name()
             assigned = self.assigned.get(evidence["pass"], {})
             survived = {fid: self.defects[did]["survived"] for fid, did in assigned.items()
@@ -1227,8 +1378,9 @@ class Improver:
                 record["plan"] = {"from_pass": evidence["pass"],
                                   "routed": self._routed(routing, findings),
                                   "routes": routing["routes"], "stages": stages,
+                                  "sections": sections,
                                   "argv": argvs + [["gate", *self.base], ["qa", *self.base]],
-                                  "estimate_usd": guess}
+                                  "estimates": rows, "estimate_usd": guess}
                 record["stop"] = {"reason": "dry-run", "detail": "routed and briefed; "
                                   "nothing run"}
                 self._print_plan(record, findings)
@@ -1249,7 +1401,8 @@ class Improver:
             before = _stamps(self.root)
             entry = {"name": name, "from_pass": evidence["pass"],
                      "routed": self._routed(routing, findings), "routes": routing["routes"],
-                     "stages": stages, "argv": [], "exit": {}, "estimate_usd": guess,
+                     "stages": stages, "sections": sections, "argv": [], "exit": {},
+                     "estimate_usd": guess, "estimates": rows,
                      "overall_before": best.get("overall"), "scores_before": best.get("scores"),
                      "best_before": best.get("pass")}
             record["passes"].append(entry)
@@ -1413,6 +1566,10 @@ class Improver:
         self.say(f"\n  would run: {' -> '.join(p['stages'] + ['gate', 'qa'])}")
         for argv in p["argv"]:
             self.say(f"    yt {' '.join(argv)}")
+        self.say("\n  estimate per stage (from the project's own reports where it has them):")
+        for r in p.get("estimates") or []:
+            self.say(f"    {r['stage']:<10} {'$' + format(r['usd'], '.2f'):>8}  "
+                     f"{r['basis']:<9} {r['source']}")
         self.say(f"  estimated cost: ${p['estimate_usd']:.2f} (routing so far "
                  f"${self.spent:.2f})")
 
