@@ -29,7 +29,8 @@ The mix is the sound design's: every cue of sound.json that has a file becomes
 an audio asset and a track on the bus of its role -- music, effects, ambience
 -- at the cue's time, with its fades, its level staged across bus and track;
 the narration keeps its own bus, and music and ambience duck under it. A
-silence cue is a window on the master's volume. A cue with no file yet is
+silence cue is a window on the music and effects buses' volume; the
+narration and the room carry on through it. A cue with no file yet is
 listed in build.json as missing, not invented.
 """
 
@@ -269,6 +270,10 @@ CUE_BUS = {"music": "music", "sfx": "effects", "stinger": "effects",
 NARRATION_BUS = "narration"
 #: Buses that sit under the voice while it speaks.
 DUCKED_BUSES = ("music", "ambience")
+#: What a designed silence takes out: the score and the effects. The voice
+#: and the room stay -- the cue sheet's silences read "no music", "narration
+#: only, with the room", "voice over room tone only".
+SILENCED_BUSES = ("music", "effects")
 
 
 # --------------------------------------------------------------------------- #
@@ -1005,10 +1010,12 @@ class SceneBuilder:
         by_bus: dict[str, list[tuple[object, float]]] = {}
         for bus, track, total, *_ in routed:
             by_bus.setdefault(bus, []).append((track, total))
+        bus_nodes: dict[str, object] = {}
         for bus_id, rows in by_bus.items():
             bus_gain, trims = stage_gain([t for _, t in rows],
                                          max(lo, bus_lo), min(hi, bus_hi))
             node = mixer().add_bus(id=bus_id)
+            bus_nodes[bus_id] = node
             if bus_gain:
                 node.gain = bus_gain
             if (bus_id in DUCKED_BUSES and NARRATION_BUS in by_bus
@@ -1050,8 +1057,10 @@ class SceneBuilder:
         # effects. Hence a flag: with it off, the shortfall is visible.
         master.limiter = self.limiter
         if windows:
-            # Designed silence is a held 1 -> 0 -> 1 on the master, not a
-            # mute remembered on every track. `key/@value` is xs:string.
+            # Designed silence is a held 1 -> 0 -> 1 on the score and the
+            # effects buses, never the master: a master window mutes the
+            # narration with them (measured on the Euler draft: whole lines
+            # of voice gone, 30 s of digital silence). `key/@value` is xs:string.
             keys: dict[float, str] = {}
             windows.sort()
             if windows[0][0] > 0:
@@ -1059,10 +1068,13 @@ class SceneBuilder:
             for start, end in windows:
                 keys[start] = "0"
                 keys.setdefault(end, "1")
-            gate = master.add_animate(property="volume",
-                                      defaultInterpolation="hold")
-            for time in sorted(keys):
-                gate.add_key(time=time, value=keys[time])
+            for bus_id in SILENCED_BUSES:
+                if bus_id not in bus_nodes:
+                    continue
+                gate = bus_nodes[bus_id].add_animate(property="volume",
+                                                     defaultInterpolation="hold")
+                for time in sorted(keys):
+                    gate.add_key(time=time, value=keys[time])
             report["silence"] = len(windows)
         return report
 

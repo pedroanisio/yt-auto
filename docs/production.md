@@ -135,7 +135,8 @@ One scene-render document, `scene.xml`, built with the `sr_core.scene` SDK:
   transitions of 2 s or less) first brought down as a group so the loudest
   sits the master's headroom above the loudest bed, then gain staged across
   bus and track within the schema's facets, music and ambience ducked under
-  the narration; a `silence` cue as a window on the master's volume; and a
+  the narration; a `silence` cue as a window on the music and effects buses'
+  volume (the voice and the room carry on); and a
   `<master>` with `normalize`, `loudness`, `truePeak`, `limiter`
 - `<captions>` — cues split on real word boundaries, at most two lines
 - `<output>` — explicit `bitrate`, `maxBitrate`, `bufferSize`, `preset`; never `crf`

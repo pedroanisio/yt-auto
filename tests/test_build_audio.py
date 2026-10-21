@@ -227,13 +227,22 @@ class AudioFromSound(_Project):
         self.assertEqual(track.get("loop"), "2")
         self.assertIsNone(track.get("clipOut"))
 
-    def test_silence_is_a_window_on_the_master_not_a_track(self):
+    def test_silence_is_a_window_on_the_score_and_effects_never_the_master(self):
+        # measured on the Euler draft: a master window muted the narration
+        # with the music, 30 s of digital silence over spoken lines
         data, manifest = self.builder(sound=_sound(self.cues())).build()
         root = _checked(data)
         mix = root.find("audioMix")
         self.assertIsNone(mix.find("audioTrack[@id='cue-Q1']"))
-        animate = mix.find("master/animate[@property='volume']")
-        self.assertIsNotNone(animate)
+        self.assertIsNone(mix.find("master/animate[@property='volume']"))
+        gated = {b.get("id") for b in mix.findall("bus") if b.find("animate[@property='volume']") is not None}
+        self.assertEqual(gated, {b.get("id") for b in mix.findall("bus")} & {"music", "effects"})
+        self.assertTrue(gated)
+        for bus in ("narration", "ambience"):
+            node = mix.find(f"bus[@id='{bus}']")
+            if node is not None:
+                self.assertIsNone(node.find("animate[@property='volume']"), bus)
+        animate = mix.find(f"bus[@id='{sorted(gated)[0]}']/animate[@property='volume']")
         keys = [(float(k.get("time")), k.get("value")) for k in animate.findall("key")]
         self.assertEqual(keys[0][1], "1")
         self.assertIn((5.0, "0"), keys)

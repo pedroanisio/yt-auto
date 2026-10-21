@@ -634,8 +634,9 @@ fill its window; the narration takes keep their own `narration` bus, and
 music and ambience duck under it when there is one. The level is staged
 across bus and track inside the schema's own facets, because gain saturates
 at +24 dB per stage; a cue that still cannot reach its level is a warning
-that says where it sits. A `silence` cue is a window on the master's volume,
-a held 1→0→1, not a muted track. The master carries the loudness target,
+that says where it sits. A `silence` cue is a window on the music and effects
+buses' volume, a held 1→0→1, not a muted track and never the master: the voice
+and the room carry on through it. The master carries the loudness target,
 true peak and limiter. A cue with no file is listed under `audio_missing`
 in `build.json`, not invented, and a sound design of which nothing could be
 placed sets `publishable: false` — a project with no sound design at all is
