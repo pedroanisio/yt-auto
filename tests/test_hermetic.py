@@ -56,8 +56,11 @@ class Hermetic(unittest.TestCase):
                                                        keep_remote=False),
         }
         refused = {}
+        # engine_validate runs a local binary when this machine has one, which is
+        # a process but not ssh: hide it so the launcher under test is the remote one.
         with mock.patch.dict(os.environ, HOSTS), mock.patch.object(subprocess, "run", _boom), \
-                mock.patch.object(subprocess, "Popen", _boom):
+                mock.patch.object(subprocess, "Popen", _boom), \
+                mock.patch.object(render, "engine", return_value=None):
             for name, call in calls.items():
                 try:
                     call()

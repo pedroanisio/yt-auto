@@ -737,8 +737,13 @@ list) · `--bitrate` and friends (never `crf`) · `--loudness` · `--true-peak`
 
 ### `yt render`
 
-Finds the engine through `RS_RENDER_BIN`, on PATH, or in a checkout beside this
-one, then runs it and keeps the report. `--quality draft|preview|final`,
+Finds the engine through `RS_RENDER_BIN` (the binary, or a directory holding
+it), on PATH, in a checkout beside this one (`cargo build --release`), or in a
+release archive from GitHub Releases unpacked beside this one
+(`scene-render-vX-linux-x86_64/scene-render`, the newest of several), then
+runs it and keeps the report. The engine renders on a software adapter
+(Mesa's llvmpipe or lavapipe) where there is no GPU, many times slower but
+with the same output. `--quality draft|preview|final`,
 `--start`/`--end` for a range, `--still TIME` or `--frames A..B` for pictures,
 `--output ID` for one declared output, `--validate` for the engine's own
 validation, and `--strict` to fail on any finding.
