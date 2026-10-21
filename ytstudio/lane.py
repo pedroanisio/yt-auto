@@ -16,8 +16,10 @@ repo importable itself, as the `yt` launcher does.
 `process()` is generated from `workspace.STAGES`, so the govern process and
 the pipeline cannot drift; tests/test_lane.py fails, naming the command
 above, when the file on disk is not what it generates. A stage's check
-passes when its artifact exists and `yt doctor` reports no fail in its area;
-`keyframe` also needs the operator's approval of the look, and `deliver`
+passes when its artifact exists and `yt doctor` reports no fail owned by it
+(`FINDING_STAGE` names the areas filed under another name); `render` also needs
+every render job report to have rendered and `vfx` every section reviewed
+without an error; warnings never block. `keyframe` also needs the operator's approval of the look, and `deliver`
 passes only on doctor's delivery evidence (a clean final render, the gate
 deliverable, QA at READY TO PUBLISH).
 
@@ -37,7 +39,8 @@ if __name__ == "__main__" and not __package__:
     sys.path[:] = [p for p in sys.path if p not in (_here, "")]
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from ytstudio import doctor, keyframe, workspace  # noqa: E402
+from ytstudio import doctor, keyframe, render, workspace  # noqa: E402
+from ytstudio.core import read_json  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 PROCESS_NAME = "yt-video"
@@ -49,6 +52,9 @@ EXTRA_EXIT = {
     "keyframe": "the operator approved the look (yt keyframe --approve)",
     "retime": "the screenplay carries the measured narration timings",
 }
+
+#: Doctor areas that are not a stage's name, to the stage that owns them.
+FINDING_STAGE = {"render-jobs": "render", "captions": "voice", "art": "build"}
 
 
 def stages() -> list[str]:
@@ -95,6 +101,52 @@ def project_for(lane_dir: str | Path, *, work: str | Path | None = None) -> work
     return workspace.Project(base / slug)
 
 
+def _render_blocks(project: workspace.Project) -> list[str]:
+    """Why the render stage is open: a job report in the project root that did
+    not render (the statuses doctor lists under render-jobs), or a video no encode report backs."""
+    root = project.root
+    encode = root / "render.json"
+    encoded_at = encode.stat().st_mtime if encode.is_file() else 0.0
+    lines = []
+    # The film's own jobs only; the authors' stills in .cache/reports belong to vfx.
+    for path in sorted(root.glob("render*.json")):
+        rep = read_json(path, warn=False)
+        status = rep.get("status") if isinstance(rep, dict) else None
+        if status not in render.STATUSES or status == "rendered":
+            continue
+        if path.parent == root and path != encode and path.stat().st_mtime < encoded_at:
+            continue  # superseded by a later encode
+        note = str(rep.get("message") or "")[:100]
+        lines.append(f"fail: {rep.get('job') or path.stem} {status}"
+                     + (f" -- {note}" if note else "")
+                     + f" [{path.relative_to(root).as_posix()}] -> read the report, "
+                       "then re-run the job")
+    if project.has("video") and not encode.is_file():
+        lines.append("fail: video.mp4 has no render.json to say how it was encoded")
+    return lines
+
+
+def _vfx_blocks(project: workspace.Project) -> list[str]:
+    """Why the vfx stage is open: a section whose record carries an error, or
+    that no review scored."""
+    vfx = read_json(project.path("vfx"), warn=False) if project.has("vfx") else None
+    lines = []
+    for record in (vfx or {}).get("authored") or []:
+        if not isinstance(record, dict):
+            continue
+        n = record.get("n", "?")
+        errors = [f for f in record.get("findings") or [] if str(f).startswith("error")]
+        if errors:
+            lines.append(f"fail: section {n}: {errors[0][:200]} -> yt vfx --sections {n}")
+        elif not record.get("review"):
+            lines.append(f"fail: section {n} has no review -> yt vfx --sections {n}")
+    return lines
+
+
+#: Stages whose evidence doctor only warns about, read from the artifacts.
+STAGE_BLOCKS = {"render": _render_blocks, "vfx": _vfx_blocks}
+
+
 def check(lane_dir: str | Path, stage: str, *, work: str | Path | None = None
           ) -> tuple[bool, list[str]]:
     """(done, why) for one stage of the lane's video."""
@@ -114,8 +166,11 @@ def check(lane_dir: str | Path, stage: str, *, work: str | Path | None = None
     lines: list[str] = []
     if not project.has(artifact):
         lines.append(f"{workspace.ARTIFACTS[artifact]} is not written yet")
-    fails = [f for f in report.findings if f.level == "fail" and f.area == stage]
+    fails = [f for f in report.findings if f.level == "fail"
+             and FINDING_STAGE.get(f.area, f.area) == stage]
     lines += [f"fail: {f.message}" + (f" -> {f.fix}" if f.fix else "") for f in fails]
+    if stage in STAGE_BLOCKS:
+        lines += STAGE_BLOCKS[stage](project)
     if stage == "keyframe" and project.has(artifact):
         state = keyframe.approval_state(project.root)["state"]
         if state != "approved":

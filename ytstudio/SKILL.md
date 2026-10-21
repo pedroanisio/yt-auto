@@ -558,7 +558,7 @@ file is generated from `workspace.STAGES` by `python3 ytstudio/lane.py
 process --write`, and `tests/test_lane.py` fails until it is regenerated
 when the stages change. Every stage's check is `ytstudio/lane.py check`,
 which answers from the same files `yt doctor` reads: the stage's artifact
-and no fail in its area; `keyframe` also needs the approved look; `deliver`
+and no fail it owns (`render` also needs every render job report to have rendered, `vfx` every section reviewed without an error; warnings never block); `keyframe` also needs the approved look; `deliver`
 needs doctor's delivery verdict. A lane's folder is
 `.govern/projects/<slug>`, and its video is `work/<slug>`:
 
