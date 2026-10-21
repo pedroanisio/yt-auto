@@ -6,3 +6,4 @@ work/*
 .claude/settings.local.json
 __pycache__/
 .vscode/settings.json
+.govern/
