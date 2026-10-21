@@ -631,7 +631,8 @@ The mix is the sound design's. Every cue of `sound.json` that has a file
 bus of its role — `music`, `effects` (sfx, stingers, transitions),
 `ambience` — at the cue's time with its fades, a looping cue repeated to
 fill its window; the narration takes keep their own `narration` bus, and
-music and ambience duck under it when there is one. The level is staged
+music, effects and ambience all duck under it when there is one, and the master
+is normalised once (`integrated`); `dynamic` only with a stated reason. The level is staged
 across bus and track inside the schema's own facets, because gain saturates
 at +24 dB per stage; a cue that still cannot reach its level is a warning
 that says where it sits. A `silence` cue is a window on the music and effects

@@ -181,9 +181,9 @@ class AudioFromSound(_Project):
         self.assertEqual(tracks["cue-X1"].get("bus"), "effects")
         self.assertEqual(tracks["cue-X1"].get("role"), "effects")
         self.assertEqual(tracks["vo-track-1.1"].get("bus"), "narration")
-        # music ducks under the narration; effects do not
+        # music and effects both duck under the narration
         self.assertEqual(buses["music"].get("duckUnder"), "narration")
-        self.assertIsNone(buses["effects"].get("duckUnder"))
+        self.assertEqual(buses["effects"].get("duckUnder"), "narration")
         # the asset carries its provenance, like an image does
         asset = root.find("assets/audio[@id='cue-asset-M1']")
         self.assertEqual(asset.get("src"), "sound/001-pad.wav")

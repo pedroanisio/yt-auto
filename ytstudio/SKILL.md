@@ -512,7 +512,9 @@ hand-authored world showed the cost.
   to be asked for in the plan; it splits the section into two worlds.
 - **The sound is Freesound previews, not masters.** `yt sound --fetch`
   fills each cue with the best CC0/CC-BY hit's high-quality mp3 preview and
-  `yt build` places it on a bus per role, ducked under the narration; a cue
+  `yt build` places it on a bus per role, every non-narration bus ducked under the narration and the
+  master normalised once (`integrated`; `dynamic` only with `--normalize-reason`
+  or a reason in sound.json's `normalize`); a cue
   nothing matched stays `unfilled`, shows under `audio_missing` in
   `build.json`, and a design of which nothing could be placed makes the
   build unpublishable. `yt sound --synth` realises every cue still without
