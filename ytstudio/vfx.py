@@ -115,6 +115,114 @@ AUTHOR_TOOLS = sdkkit.AUTHOR_TOOLS
 #: that answers a review needs more than the harness's default 900 s.
 AUTHOR_TIMEOUT = 3600.0
 
+#: What a section may spend in all: its author sessions and its reviews. A session
+#: is capped at AUTHOR_SESSION_USD (docs/throughput.md: authors spent up to $4) and
+#: a review costs about REVIEW_USD ($1.35-2.65 measured); the first is held back from
+#: a session's cap for the review that follows it, replaced by the section's own
+#: measured review cost once it has one. A revision needs MIN_SESSION_USD to be worth
+#: starting.
+SECTION_BUDGET_USD = 15.0
+AUTHOR_SESSION_USD = 4.0
+REVIEW_USD = 2.0
+MIN_SESSION_USD = 1.0
+
+
+def estimate_spend(sections: int, revisions: int, section_usd: float,
+                   stage_usd: float) -> dict:
+    """What authoring `sections` sections is expected to cost at the most: every round
+    (the first and each revision) is a session and a review."""
+    rounds = 1 + max(0, revisions)
+    per = rounds * (AUTHOR_SESSION_USD + REVIEW_USD)
+    return {"sections": sections, "rounds": rounds, "per_section_usd": per,
+            "stage_usd": sections * per, "section_budget_usd": section_usd,
+            "stage_budget_usd": stage_usd}
+
+
+def estimate_line(e: dict) -> str:
+    """The estimate, in one line, for printing before the first agent starts."""
+    line = (f"estimate: {e['sections']} section(s) x {e['rounds']} round(s) x (author session "
+            f"up to ${AUTHOR_SESSION_USD:g} + review ~${REVIEW_USD:g}) = up to "
+            f"${e['per_section_usd']:.2f} a section, ${e['stage_usd']:.2f} for the stage; "
+            f"budgets: ${e['section_budget_usd']:g} a section, ${e['stage_budget_usd']:g} "
+            "for the stage")
+    if e["per_section_usd"] > e["section_budget_usd"] or e["stage_usd"] > e["stage_budget_usd"]:
+        line += ("; a section that would pass its budget stops, and ends on its best "
+                 "reviewed round")
+    return line
+
+
+class SpendBudget:
+    """One account for a run: a section's spend is its author sessions plus its
+    reviews, the stage's is its sections'. Money is read live from the engines'
+    `Usage.cost_usd`, which already holds a cut-off call's spend
+    (`timed_out_cost_usd`). A session is `grant`ed its cap, and the grant is held
+    against the budgets until it is `release`d, so sections running side by side
+    cannot together pass the stage."""
+
+    def __init__(self, section_usd: float, stage_usd: float) -> None:
+        self.section_usd = float(section_usd)
+        self.stage_usd = float(stage_usd)
+        self._usages: dict[int, dict[str, Usage]] = {}
+        self._held: dict[int, float] = {}       # section -> its spend ceiling while a session runs
+        self.stopped: dict[int, str] = {}
+        self._lock = threading.Lock()
+
+    def track(self, n: int, *, author: Usage, review: Usage) -> None:
+        self._usages[n] = {"author": author, "review": review}
+
+    def _part(self, n: int, which: str) -> float:
+        usage = self._usages.get(n, {}).get(which)
+        return usage.cost_usd if usage is not None else 0.0
+
+    def spent(self, n: int) -> float:
+        return self._part(n, "author") + self._part(n, "review")
+
+    def stage_spent(self) -> float:
+        return sum(self.spent(n) for n in self._usages)
+
+    def section_left(self, n: int) -> float:
+        return max(0.0, self.section_usd - self.spent(n))
+
+    def stage_left(self) -> float:
+        return max(0.0, self.stage_usd - self.stage_spent())
+
+    def _free(self, n: int) -> float:
+        """What the budgets leave section `n`: its own, and the stage's less what
+        the other sections have spent or hold for a running session."""
+        others = sum(max(self.spent(m), self._held.get(m, 0.0)) for m in self._usages if m != n)
+        return min(self.section_usd - self.spent(n), self.stage_usd - others - self.spent(n))
+
+    def available(self, n: int) -> float:
+        with self._lock:
+            return max(0.0, self._free(n))
+
+    def grant(self, n: int, want: float, reserve: float = 0.0) -> float:
+        """The cap of a session of section `n`: at most `want`, and what the budgets
+        leave once `reserve` (the review that follows) is kept back. 0 when none."""
+        with self._lock:
+            cap = max(0.0, min(want, self._free(n) - reserve))
+            if cap > 0:
+                self._held[n] = self.spent(n) + cap + reserve
+            else:
+                self._held.pop(n, None)
+            return cap
+
+    def release(self, n: int) -> None:
+        with self._lock:
+            self._held.pop(n, None)
+
+    def row(self, n: int) -> dict:
+        timed_out = sum(u.timed_out_cost_usd for u in self._usages.get(n, {}).values())
+        return {"budget_usd": self.section_usd, "spent_usd": round(self.spent(n), 4),
+                "author_usd": round(self._part(n, "author"), 4),
+                "review_usd": round(self._part(n, "review"), 4),
+                "timed_out_usd": round(timed_out, 4), "stopped": self.stopped.get(n)}
+
+    def report(self) -> dict:
+        return {"stage": {"budget_usd": self.stage_usd, "spent_usd": round(self.stage_spent(), 4)},
+                "sections": {n: self.row(n) for n in sorted(self._usages)}}
+
+
 FRAME = (1920, 1080)
 HEX = re.compile(r"^#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?$")
 
@@ -1983,7 +2091,9 @@ class VfxPlanner:
     def __init__(self, bundle: dict, dossier: Dossier, workspace_dir: Workspace, *,
                  model: str = "sonnet", inspo: list[str] | None = None,
                  house: str = "", house_digest: dict | None = None,
-                 per_section: int = 3, jobs: int = 2, budget_usd: float = 3.0,
+                 per_section: int = 3, jobs: int = 2,
+                 budget_usd: float = SECTION_BUDGET_USD,
+                 stage_budget_usd: float | None = None,
                  budget_hours: float | None = None, sections: list[dict] | None = None,
                  words: dict[str, dict] | None = None, frame: tuple[int, int] = FRAME,
                  direction: dict | None = None, revisions: int = 2,
@@ -1999,7 +2109,11 @@ class VfxPlanner:
         self.house_digest = house_digest or {}
         self.per_section = per_section
         self.jobs = max(1, jobs)
+        #: One section's budget, author sessions and reviews together; the stage's
+        #: covers every section (by default, each section's budget over the sections).
         self.budget_usd = budget_usd
+        self.stage_budget_usd = stage_budget_usd
+        self.spend = SpendBudget(budget_usd, stage_budget_usd or budget_usd)
         self.budget_hours = budget_hours
         self.words = words or {}
         # Once a take exists, the picture is planned on the narration's
@@ -2229,18 +2343,21 @@ class VfxPlanner:
         return world_symbols(section, group.get("effects", []), cuts=cuts)
 
     def _stream(self, engine, n: int, prompt: str, *, resume: bool = False,
-                finish: str | None = None) -> tuple[int, bool]:
+                finish: str | None = None, budget: float | None = None) -> tuple[int, bool]:
         """Run the authoring agent once: (tool calls, whether it timed out).
         A revision resumes the agent's own session, so the brief, the program
         and its earlier choices stay in view. A round cut off at 80% of its
-        budget is asked for its still (`finish`) by the shared round."""
+        time or of its dollar cap `budget` is asked for its still (`finish`) by
+        the shared round, and is told that cap the way it is told its time."""
         tools_used = 0
         timed_out = False
         try:
             system = harness.with_feedback(AUTHOR_SYSTEM, self.ws.root, "vfx")
             use = bool(resume and getattr(engine, "session_id", None))
+            if budget:
+                prompt = f"{prompt}\n\n{sdkkit.budget_line(budget)}"
             for event in sdkkit.stream_round(engine, prompt, system=system, resume=use,
-                                             finish=finish):
+                                             finish=finish, budget_usd=budget):
                 if event.subtype == "tool_use" and event.tool_input:
                     tools_used += 1
                     what = event.tool_input.get("command") or event.tool_input.get("file_path") or ""
@@ -2368,11 +2485,29 @@ class VfxPlanner:
         program = self.ws.program_name(name)
         engine = harness.ENGINE(EngineConfig(
             **sdkkit.author_config(self.ws.dir, project_root=self.ws.root, programs=[program]),
-            model=self.model, max_turns_budget_usd=self.budget_usd, timeout=AUTHOR_TIMEOUT))
+            model=self.model, timeout=AUTHOR_TIMEOUT))     # each session's cap is granted below
         finish = sdkkit.finish_prompt(program, name, f"python3 sr.py frame {name}")
         reviewer = harness.Harness(self.ws.root, "vfx", model=self.model, role=REVIEW_ROLE,
                                    house=self.house, house_digest=self.house_digest,
                                    fresh=self.fresh, verbose=self.verbose, timeout=1800.0)
+        self.spend.track(n, author=engine.usage, review=reviewer.usage)
+        review_costs: list[float] = []
+
+        def reserve() -> float:
+            """What the review after a session will cost: this section's own
+            measured one once it has one, else the estimate."""
+            measured = [c for c in review_costs if c > 0]
+            return max(measured) if measured else REVIEW_USD
+
+        def grant() -> float:
+            """The cap of the next session, with the review that follows it kept
+            back from the section's and the stage's budgets; 0 when there is none
+            worth starting."""
+            cap = self.spend.grant(n, AUTHOR_SESSION_USD, reserve())
+            if cap < MIN_SESSION_USD:
+                self.spend.release(n)
+                return 0.0
+            return cap
         ids = ", ".join(w["id"] for w in worlds)
         prompt = (f"Read {brief.name}, then kit/SDK-GUIDE.md and kit/examples/, and write "
                   f"{program}: the program that builds {name} as the brief says, the world "
@@ -2381,7 +2516,16 @@ class VfxPlanner:
                   f"frame {name}` and Read every frame it writes until each shows its shot. "
                   "When the build reports 0 error(s) and the frames show the shots, reply "
                   "with one line: the program, the document it saves and the symbol ids.")
-        tools_used, _ = self._stream(engine, n, prompt, finish=finish)
+        cap = grant()
+        if not cap:
+            raise RuntimeError(
+                f"no budget for an author session: section ${self.spend.section_left(n):.2f} "
+                f"of ${self.spend.section_usd:g}, stage ${self.spend.stage_left():.2f} of "
+                f"${self.spend.stage_usd:g}, with ${reserve():.2f} kept for its review")
+        try:
+            tools_used, _ = self._stream(engine, n, prompt, finish=finish, budget=cap)
+        finally:
+            self.spend.release(n)
         rounds: list[dict] = []
 
         def gate(round_no: int) -> tuple[list[str], list[str], dict | None]:
@@ -2399,7 +2543,10 @@ class VfxPlanner:
                 symbols, findings = self.ws.validate(name, shots=shots, props=True)
                 findings = built + findings
             errors = [f for f in findings if f.startswith("error")]
+            paid = reviewer.usage.cost_usd
             review = None if errors else self._review(reviewer, n, name, section, worlds, round_no)
+            if not errors:
+                review_costs.append(reviewer.usage.cost_usd - paid)
             score = float(review["score"]) if review and review.get("score") is not None else None
             rounds.append({"round": round_no, "symbols": symbols, "errors": len(errors),
                            "score": score, "fidelity": (review or {}).get("fidelity"),
@@ -2419,6 +2566,17 @@ class VfxPlanner:
             score = rounds[-1]["score"]
             short = score is not None and score < self.author_bar
             if not errors and not short:
+                break
+            # The section's and the stage's budgets decide whether another session
+            # (and the review after it) can be paid; if not, the section ends here,
+            # on its best reviewed round.
+            cap = grant()
+            if not cap:
+                self.spend.stopped[n] = "budget"
+                self._say(f"    [{n}] budget reached (${self.spend.spent(n):.2f} of "
+                          f"${self.spend.section_usd:g}; stage ${self.spend.stage_spent():.2f} of "
+                          f"${self.spend.stage_usd:g}): no revision {revisions + 1}; "
+                          "the best reviewed round is kept")
                 break
             # The gate or the reviewer found what the author did not look at;
             # send it back with the findings, once per allowed round.
@@ -2440,7 +2598,11 @@ class VfxPlanner:
             prov_path = doc_path.with_suffix("").with_suffix(".provenance.json")
             before = {p: (p.read_bytes() if p.is_file() else None)
                       for p in (doc_path, prog_path, prov_path)}
-            used, timed_out = self._stream(engine, n, prompt, resume=True, finish=finish)
+            try:
+                used, timed_out = self._stream(engine, n, prompt, resume=True, finish=finish,
+                                               budget=cap)
+            finally:
+                self.spend.release(n)
             tools_used += used
             if timed_out:
                 # The agent was cut off mid-edit: keep the program and the
@@ -2491,6 +2653,7 @@ class VfxPlanner:
                 "review": (best["review"] if promoted is not None
                            else rounds[-1]["review"] if rounds else None),
                 "cost_usd": round(engine.usage.cost_usd + reviewer.usage.cost_usd, 4),
+                "budget": self.spend.row(n),
                 "timed_out_usage": timed_out_usage(engine.usage),
                 "engine": reviewer.report()}
 
@@ -2528,8 +2691,14 @@ class VfxPlanner:
                         jobs.remove((n, s, group))
                 self._say(f"  carrying section(s) {', '.join(str(r['n']) for r in carried) or 'none'} "
                           f"forward from {', '.join(sorted({str(r.get('carried_from')) for r in carried})) or '-'}")
+            stage_usd = (self.stage_budget_usd if self.stage_budget_usd is not None
+                         else self.budget_usd * len(jobs))
+            self.spend = SpendBudget(self.budget_usd, stage_usd)
+            self._say("  " + estimate_line(estimate_spend(
+                len(jobs), self.revisions, self.budget_usd, stage_usd)))
             self._say(f"  authoring {len(jobs)} section(s) into {self.ws.rel}/ ({version}), "
-                      f"{self.jobs} at a time, up to ${self.budget_usd:g} each, "
+                      f"{self.jobs} at a time, up to ${self.budget_usd:g} each "
+                      f"(sessions and reviews), ${stage_usd:g} for the stage, "
                       f"bar {self.author_bar:g}/10, {self.revisions} revision(s)")
             with ThreadPoolExecutor(max_workers=self.jobs) as pool:
                 futures = [(job, pool.submit(self._author_one, job[0], job[1], job[2], style,
@@ -2541,6 +2710,14 @@ class VfxPlanner:
                     except Exception as exc:     # one section's failure is that section's record
                         self._say(f"    [{n}] the section's authoring failed: {exc}")
                         authored.append(self._failed_record(n, s, group, exc))
+            for n, row in self.spend.report()["sections"].items():
+                self._say(f"  spent: section {n} ${row['spent_usd']:.2f} of ${row['budget_usd']:g} "
+                          f"(author ${row['author_usd']:.2f}, reviews ${row['review_usd']:.2f}"
+                          + (f", ${row['timed_out_usd']:.2f} of it in cut-off calls"
+                             if row["timed_out_usd"] else "") + ")"
+                          + (f"; stopped: {row['stopped']}" if row["stopped"] else ""))
+            stage = self.spend.report()["stage"]
+            self._say(f"  spent: stage ${stage['spent_usd']:.2f} of ${stage['budget_usd']:g}")
             # A section re-authored on request competes with the version it
             # replaces: the new one is kept only if it is at least as good.
             for i, record in enumerate(authored):
@@ -3005,8 +3182,12 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                    help="effects per section (default 3)")
     p.add_argument("--jobs", type=int, default=2,
                    help="sections planned and authored in parallel (default 2)")
-    p.add_argument("--budget-usd", type=float, default=3.0, dest="budget_usd",
-                   help="spend cap for authoring one section (default 3)")
+    p.add_argument("--budget-usd", type=float, default=SECTION_BUDGET_USD, dest="budget_usd",
+                   help="budget for one section: its author sessions and its reviews "
+                        f"together (default {SECTION_BUDGET_USD:g})")
+    p.add_argument("--stage-budget-usd", type=float, default=None, dest="stage_budget_usd",
+                   help="budget for the whole stage, every section together "
+                        "(default: --budget-usd times the sections authored)")
     p.add_argument("--budget-hours", type=float,
                    help="refinement hours available; shapes what to cut")
     p.add_argument("--width", type=int, default=FRAME[0], help="frame width (1920)")
@@ -3078,7 +3259,7 @@ def run(args) -> int:
         house_digest=digest,
         inspo=[s.strip() for s in args.inspo.split(",") if s.strip()],
         per_section=args.per_section, jobs=args.jobs, budget_usd=args.budget_usd,
-        budget_hours=args.budget_hours, sections=sections, words=words,
+        stage_budget_usd=args.stage_budget_usd, budget_hours=args.budget_hours, sections=sections, words=words,
         frame=(args.width, args.height), direction=direction,
         revisions=args.revisions, author_bar=args.author_bar, fresh=args.fresh,
         sections_only=sections_only,
