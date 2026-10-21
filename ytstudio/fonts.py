@@ -47,7 +47,13 @@ LICENCES = {
                        "DejaVu-copyright.txt"),
     "DejaVuSerif": ("Bitstream-Vera", "Bitstream, Inc.; DejaVu changes public domain",
                     "DejaVu-copyright.txt"),
+    "SourceSans3": ("OFL-1.1", "Adobe", "SourceSans3-OFL.md"),
+    "STIXTwoText": ("OFL-1.1", "The STIX Fonts Project Authors", "STIXTwo-OFL.txt"),
 }
+
+#: A directory whose family name cannot be read from its capitals: the
+#: family's real name, as the font files and the treatments spell it.
+FAMILY_NAMES = {"SourceSans3": "Source Sans 3", "STIXTwoText": "STIX Two Text"}
 
 #: Requested family (case, spaces and hyphens ignored) -> shipped family.
 #: Only the metric-compatible and the generic names; a brand face the repo
@@ -88,6 +94,8 @@ def _key(name: str) -> str:
 
 
 def _family_of(directory: str) -> str:
+    if directory in FAMILY_NAMES:
+        return FAMILY_NAMES[directory]
     spaced = directory.replace("DejaVu", "Deja\0Vu")
     spaced = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", spaced)
     return spaced.replace("\0", "")

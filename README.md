@@ -661,8 +661,8 @@ missed. Nothing changes the loudness target itself.
 
 **Fonts.** Every text node (`text`, `span`, `textStyle`, and `object3D`
 text) is pinned to a licensed file the repo ships under `ytstudio/fonts`
-(Inter, Inter Display, Lora, Liberation Sans/Serif/Mono, DejaVu
-Sans/Serif/Sans Mono; licences in `ytstudio/fonts/LICENSES`). The build
+(Inter, Inter Display, Lora, Source Sans 3, STIX Two Text, Liberation
+Sans/Serif/Mono, DejaVu Sans/Serif/Sans Mono; licences in `ytstudio/fonts/LICENSES`). The build
 resolves family, weight and style (`fonts.py`), copies the file to the
 project's `fonts/` so the render sync ships it, adds the `<font>` asset
 (with its sha256 and licence) and points the node at it; the cleaned include

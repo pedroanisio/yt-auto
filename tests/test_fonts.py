@@ -78,6 +78,23 @@ class Catalogue(unittest.TestCase):
             fonts.resolve("JetBrains Mono", "400", "normal")
         self.assertIn("JetBrains Mono", str(raised.exception))
 
+    def test_a_family_name_with_a_number_or_capitals_keeps_its_real_name(self):
+        face, notes = fonts.resolve("Source Sans 3", "600", "normal")
+        self.assertEqual((face.family, face.weight, face.path.name),
+                         ("Source Sans 3", 600, "SourceSans3-SemiBold.ttf"))
+        self.assertEqual(notes, [])
+        face, _ = fonts.resolve("STIX Two Text", "400", "normal")
+        self.assertEqual((face.family, face.path.name),
+                         ("STIX Two Text", "STIXTwoText-Regular.ttf"))
+        self.assertIn("Source Sans 3", fonts.families())
+        self.assertIn("STIX Two Text", fonts.families())
+
+    def test_every_shipped_family_has_a_licence_file(self):
+        for face in fonts.faces():
+            self.assertTrue(face.licence_file, face.path)
+            self.assertTrue((fonts.FONT_DIR.parent.parent / face.licence_file).is_file(),
+                            face.licence_file)
+
     def test_an_explicit_alias_resolves_and_is_noted(self):
         face, notes = fonts.resolve("Helvetica", "400", "normal")
         self.assertEqual(face.family, "Liberation Sans")
