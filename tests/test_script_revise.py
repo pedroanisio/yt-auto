@@ -385,6 +385,50 @@ class Rules(unittest.TestCase):
         self.assertEqual(data["rules"]["revisions"][0]["n"], 1)
         self.assertEqual(data["rules"]["flags"], [])
 
+    def test_a_fix_that_still_breaks_the_rule_goes_round_again(self):
+        w, calls = self.make(self.GREETING, [
+            {"fixes": [{"n": 1, "action": "fix",
+                        "narration": "Welcome. The bridge you cross fell at dawn.",
+                        "why": "shorter greeting"}]},
+            {"fixes": [{"n": 1, "action": "fix",
+                        "narration": "The bridge you cross fell at dawn.",
+                        "why": "the greeting went"}]}])
+        data = w.run()
+        self.assertEqual([c["name"] for c in calls], ["revise-rules", "revise-rules-2"])
+        self.assertIn("Welcome. The bridge", calls[1]["prompt"])   # it reads the fix
+        self.assertEqual(data["rules"]["revisions"][-1]["after"],
+                         "The bridge you cross fell at dawn.")
+        self.assertEqual(data["sections"][0]["shots"][0]["narration"],
+                         "The bridge you cross fell at dawn.")
+        self.assertFalse([f for f in data["findings"] if "rule:filler" in f])
+
+    def test_a_narration_fix_that_sends_no_supers_keeps_them(self):
+        # on_screen_text is optional; an empty list beside a narration-only
+        # fix is not an instruction to clear the screen
+        w, _ = self.make([("The bridge you cross fell at dawn and "
+                           + " ".join(["slowly"] * 22) + ".", "hook"),
+                          ("One bolt held up four lanes.", "payoff")],
+                         [{"fixes": [{"n": 1, "action": "fix",
+                                      "narration": "The bridge you cross fell at dawn.",
+                                      "on_screen_text": [], "why": "split"}]}],
+                         supers={1: ["Dawn"]})
+        data = w.run()
+        self.assertEqual(data["sections"][0]["shots"][0]["narration"],
+                         "The bridge you cross fell at dawn.")
+        self.assertEqual(data["sections"][0]["shots"][0]["on_screen_text"], ["Dawn"])
+
+    def test_a_figure_taken_off_the_screen_clears_it(self):
+        # where the rule measured the screen, an empty list is the fix the
+        # flag itself suggests: take the figure off
+        w, _ = self.make([("The bridge you cross fell at dawn.", "hook"),
+                          ("One bolt held up four lanes.", "payoff")],
+                         [{"fixes": [{"n": 1, "action": "fix",
+                                      "narration": "The bridge you cross fell at dawn.",
+                                      "on_screen_text": [], "why": "off the screen"}]}],
+                         supers={1: ["97 tonnes"]})
+        data = w.run()
+        self.assertEqual(data["sections"][0]["shots"][0]["on_screen_text"], [])
+
     def test_a_kept_error_stands_as_an_error_with_its_reason(self):
         w, _ = self.make(self.GREETING, [{"fixes": [
             {"n": 1, "action": "keep", "narration": "", "why": "the show opens so"}]}])
@@ -460,7 +504,7 @@ class RulesOnTheCommandLine(unittest.TestCase):
         (self.film / "idea.json").write_text(
             '{"title": "Why the bridge fell", "genre": "g", "description": "d"}')
 
-    def run_stage(self, *flags):
+    def run_stage(self, *flags, lines=None):
         import json
         from unittest import mock
         from ytstudio import cli
@@ -476,7 +520,7 @@ class RulesOnTheCommandLine(unittest.TestCase):
             elif "shots" in schema["properties"]:
                 out["shots"] = [{"visual": "v", "narration": line, "seconds": 5,
                                  "asset": "", "style": "", "function": fn, "shows": "s"}
-                                for line, fn in Rules.GREETING]
+                                for line, fn in (lines or Rules.GREETING)]
             elif "fixes" in schema["properties"]:
                 out["fixes"] = [{"n": 1, "action": "keep", "narration": "",
                                  "why": "the show opens so"}]
@@ -502,6 +546,20 @@ class RulesOnTheCommandLine(unittest.TestCase):
         # the old keys stay beside the findings for one release
         self.assertIn("legibility", record)
         self.assertIn("unspoken_numbers", record)
+
+    def test_a_clean_portuguese_film_writes_its_narration(self):
+        # the case the language declarations exist for: no English lexicon
+        # read over Portuguese, so no false `error:` costs narration.txt
+        (self.film / "idea.json").write_text(
+            '{"title": "Por que a ponte caiu", "genre": "g", "description": "d"}')
+        code, record, _ = self.run_stage("--lang", "pt-BR", lines=[
+            ("A ponte que você cruza caiu de madrugada.", "hook"),
+            ("Um parafuso segurou quatro pistas.", "payoff")])
+        self.assertFalse([f for f in record["findings"] if f.startswith("error:")],
+                         record["findings"])
+        self.assertIn("not_evidenced: rule:passive (pt-BR)", record["findings"])
+        self.assertEqual(code, 0)
+        self.assertTrue((self.film / "narration.txt").exists())
 
     def test_report_only_writes_the_narration_and_records_the_error(self):
         code, record, _ = self.run_stage("--report-only")

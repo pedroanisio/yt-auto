@@ -298,8 +298,11 @@ RULE_REVISE_SCHEMA = {
                     **REVISE_SCHEMA["properties"]["fixes"]["items"]["properties"],
                     "on_screen_text": {"type": "array", "items": {"type": "string"},
                                        "description": (
-                                           "the shot's on-screen strings after the fix; "
-                                           "omit to leave them as they are")},
+                                           "the shot's on-screen strings after the fix, "
+                                           "read only for a rule that measured the "
+                                           "screen (rule:legibility, "
+                                           "rule:unspoken-number); omit to leave them "
+                                           "as they are")},
                 },
                 "required": ["n", "action", "narration", "why"],
             },
@@ -1276,8 +1279,12 @@ class Screenwriter:
             if line and line != shot.narration:
                 row |= {"before": shot.narration, "after": line}
                 shot.narration, shot.revised = line, why
+            # The screen is changed only where a rule measured it: an
+            # optional `[]` beside a narration fix is the field left empty,
+            # not an order to clear the shot's supers.
             given = fix.get("on_screen_text")
-            if rules and isinstance(given, list):
+            if rules and isinstance(given, list) \
+                    and any(f.get("rule") in SCREEN_RULES for f in todo[n]):
                 text = [" ".join(str(t).split()) for t in given if str(t).strip()]
                 if text != list(shot.on_screen_text or []):
                     row |= {"on_screen_before": list(shot.on_screen_text or []),
@@ -1718,6 +1725,10 @@ RULES: tuple[Rule, ...] = (
     Rule("rule:last-line", "minor", (), "last_line"),
 )
 _RULE = {r.id: r for r in RULES}
+
+#: The rules that measure what the shot shows rather than what it says: only
+#: a flag of one of these lets `revise` change the shot's on_screen_text.
+SCREEN_RULES = ("rule:legibility", "rule:unspoken-number")
 
 #: The words a lexical rule looks for, by language. Lower case; a phrase
 #: matches on word boundaries.
