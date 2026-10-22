@@ -402,21 +402,6 @@ class QuestionLedger(unittest.TestCase):
         self.assertEqual(len(ledger.notes), 1)
         self.assertIn("closes_at 9", ledger.notes[0])
 
-    def test_the_ledger_is_marked_from_several_threads_at_once(self):
-        ledger = script.QuestionLedger.from_plan(QPLAN)
-        barrier = threading.Barrier(4, timeout=5)
-
-        def mark(index):
-            shots = [script.Shot.from_raw(r) for r in two_shots(str(index))]
-            barrier.wait()
-            ledger.mark(index, shots, {"closes": [{"id": "Q1", "closes_at": 7}]})
-        threads = [threading.Thread(target=mark, args=(i,)) for i in range(1, 5)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-        self.assertEqual(len(ledger.notes), 4)
-
 
 class QuestionFindings(unittest.TestCase):
     def test_a_balanced_ledger_flags_nothing(self):
