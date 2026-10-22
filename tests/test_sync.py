@@ -257,6 +257,39 @@ class RetimeSettles(unittest.TestCase):
             self.assertEqual(cli.settle_retime(0, project, lambda s, e: 1, say=lambda m: None), 0)
 
 
+class RetimePrintsTheCommand(unittest.TestCase):
+    """retime's own rewrite hint is the command that sends the lines back
+    (AUTO-95): `yt script --revise retime`, not a direction to go and revise."""
+
+    def test_a_rewrite_verdict_prints_yt_script_revise_retime(self):
+        import contextlib
+        import io
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            film = work / "the-cube"
+            film.mkdir()
+            write_json(film / "idea.json", {"title": "The cube", "genre": "g",
+                                            "description": "d"})
+            write_json(film / "script.json", {"sections": [
+                {"heading": "Open", "seconds": 10, "beats": [], "shots": [
+                    {"label": "1.3", "at": 0, "seconds": 5, "visual": "a cube",
+                     "narration": "One cube.", "on_screen": "", "asset": ""}]}]})
+            write_json(film / "voice.json", {"takes": [
+                {"label": "1.3", "at": 0.0, "seconds": 9.4, "file": "a.wav",
+                 "text": "One cube."}]})
+            verdict = {"decisions": [{"label": "1.3", "action": "rewrite",
+                                      "note": "twice its shot"}], "notes": ""}
+            args = cli.build_parser().parse_args(
+                ["retime", "--project", str(film), "--work", str(work), "--quiet",
+                 "--dry-run"])
+            with mock.patch.object(retime.Harness, "decide", lambda *a, **k: verdict), \
+                    contextlib.redirect_stdout(io.StringIO()) as out, \
+                    contextlib.redirect_stderr(io.StringIO()):
+                retime.run(args)
+        self.assertIn("rewrite: yt script --revise retime (1.3)", out.getvalue())
+
+
 class RedoVfxIsFresh(unittest.TestCase):
     def test_redoing_vfx_authors_again_instead_of_replaying_the_cache(self):
         args = argparse.Namespace(quick=True, minutes=1.0)
