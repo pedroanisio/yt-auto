@@ -1291,7 +1291,8 @@ def run(args) -> int:
         "scene_sha256": seen, "blocking": len(all_blocking), "findings": len(card.get("findings", [])),
         "mechanical": len(mechanical), "capped": capped,
         "regressions": diff["regressions"], "reasons": reasons,
-        "scorecard": str(pass_dir / "scorecard.json"), "usage": card["usage"]})
+        "scorecard": str(pass_dir / "scorecard.json"), "house": digest,
+        "usage": card["usage"]})
 
     print(f"\n{idea.title} — QA {pass_dir.name}: {verdict}  (overall {card.get('overall')})")
     for key in CATEGORIES:
