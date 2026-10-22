@@ -208,6 +208,19 @@ class Findings(unittest.TestCase):
         self.assertIn("structure 40", said)
         self.assertEqual(retention.BOUNDS["outro_ratio"]["value"], 2.0)
 
+    def test_a_flat_stretch_then_a_slight_fall_is_no_outro_reading(self):
+        # Structure 40 compares the tail with the slope before it; a stretch
+        # that held flat has no slope, and a rounding-level fall after it is
+        # no cliff, so it is noted rather than filed.
+        data = retention.ingest([EXPORT])
+        data["curve"] = [p for p in data["curve"] if p["timestamp"] < 90] + [
+            {"timestamp": 90, "retention": 35.0}, {"timestamp": 114, "retention": 35.0},
+            {"timestamp": 120, "retention": 34.9}]
+        got = read(data)
+        self.assertEqual(by_tag(got["findings"], "outro"), [])
+        self.assertTrue(any("75-95%" in n and "structure 40" in n for n in got["notes"]),
+                        got["notes"])
+
     def test_an_even_tail_is_no_outro_reading(self):
         data = retention.ingest([EXPORT])
         data["curve"][-1]["retention"] = 30.0     # the last 5% falls as the 20% before
@@ -230,13 +243,24 @@ class Findings(unittest.TestCase):
         data["traffic"] = {"search": 70.0, "external": 10.0, "suggested": 15.0, "browse": 5.0}
         self.assertEqual(by_tag(read(data)["findings"], "intro"), [])
 
-    def test_no_intro_finding_without_a_channel_baseline_or_traffic(self):
+    def test_no_intro_finding_without_a_channel_baseline(self):
         got = read(base={"films": 0, "intro_median": None})
         self.assertEqual(by_tag(got["findings"], "intro"), [])
         self.assertTrue(any("baseline" in n for n in got["notes"]))
-        data = retention.ingest([EXPORT])
-        del data["traffic"]
-        self.assertEqual(by_tag(read(data)["findings"], "intro"), [])
+
+    def test_readings_without_the_traffic_pane_load_and_the_intro_is_recorded_not_judged(self):
+        # An operator who cannot read the traffic pane still records the
+        # curve; structure 38 cannot read a low Intro without the shares.
+        whole = fixture("studio-export.json")
+        del whole["traffic"]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "no-traffic.json"
+            write_json(path, whole)
+            data = retention.ingest([path])
+        got = read(data)
+        self.assertEqual(by_tag(got["findings"], "intro"), [])
+        self.assertTrue(by_tag(got["findings"], "dip-skipped"))
+        self.assertTrue(any("no traffic shares" in n for n in got["notes"]))
 
     def test_a_dip_read_from_the_relative_curve_is_no_timestamp_finding(self):
         # judging 2: only the standard curve's timestamps reach the script
@@ -324,9 +348,48 @@ class Baseline(unittest.TestCase):
         self.assertEqual(got["films"], 10)
         self.assertEqual(got["intro_median"], 65.0)     # films 2..11
 
+    def test_a_film_of_unknown_length_is_left_out_of_a_like_length_baseline(self):
+        self.film("a", 40.0)
+        self.film("b", 50.0)
+        root = self.work / "unknown"
+        root.mkdir()
+        write_json(root / "retention.json", {"ingest": {"intro_retention_30s": 5.0,
+                                                        "published": "2026-01-01"}})
+        got = retention.channel_baseline(self.work, duration=120)
+        self.assertEqual((got["films"], got["intro_median"]), (2, 45.0))
+        self.assertTrue(any("unknown" in s and "length" in s for s in got["skipped"]))
+        # without a length to compare, every measured film counts (doctor's count)
+        self.assertEqual(retention.channel_baseline(self.work)["films"], 3)
+
+    def test_a_film_published_after_the_measured_one_is_not_its_baseline(self):
+        self.film("before", 40.0, published="2026-01-01")
+        self.film("same-day", 50.0, published="2026-02-01")
+        self.film("after", 90.0, published="2026-03-01")
+        got = retention.channel_baseline(self.work, duration=120, published="2026-02-01")
+        self.assertEqual(got["slugs"], ["before", "same-day"])
+        self.assertEqual(got["intro_median"], 45.0)
+        self.assertTrue(any("after" in s and "published" in s for s in got["skipped"]))
+
+    def test_the_stage_passes_the_films_own_publish_date(self):
+        self.film("after", 90.0, published="2026-09-01")
+        me = self.work / "me"
+        me.mkdir()
+        write_json(me / "idea.json", {"title": "me"})
+        write_json(me / "script.json", fixture("script.json"))
+        write_json(me / "build.json", fixture("build.json"))
+        export = dict(fixture("studio-export.json"), published="2026-05-01")
+        write_json(me / "export.json", export)
+        args = cli.build_parser().parse_args(
+            ["retention", "--project", str(me), "--work", str(self.work), "--quiet",
+             "--export", str(me / "export.json")])
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(args.run(args), 0)
+        self.assertEqual(read_json(me / "retention.json")["baseline"]["films"], 0)
+
     def test_an_empty_channel_has_no_median(self):
         self.assertEqual(retention.channel_baseline(self.work, duration=120),
-                         {"films": 0, "intro_median": None, "slugs": []})
+                         {"films": 0, "intro_median": None, "slugs": [], "skipped": []})
 
     def test_doctor_notes_the_baseline_size_and_what_it_means(self):
         self.film("a", 40.0)

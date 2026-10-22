@@ -1359,8 +1359,9 @@ pass `--export FILE`. The contract is `retention.INGEST_SCHEMA`:
 `intro_retention_30s`, `above_typical_intro`, `top_moments`, `spikes`,
 `dips` (each a `timestamp` in seconds, a dip with `kind` skipped, abandoned
 or unknown), the standard `curve` and the `typical_curve` (points of
-`timestamp` and `retention` percent), and the `traffic` shares (search,
-external, suggested, browse). `tests/fixtures/retention/` pins it with a
+`timestamp` and `retention` percent), and, when Studio shows them, the
+`traffic` shares (search, external, suggested, browse); without them the
+Intro is recorded, not judged. `tests/fixtures/retention/` pins it with a
 hand-built file until a real export, anonymised, replaces it.
 
 Each timestamp lands on its shot and section from `build.json`'s timings,
@@ -1373,9 +1374,12 @@ labelled guess from a fixed table, not a cause:
   `dip-abandoned` or `dip-unknown` (judging 3);
 - a top moment in the second half: `move_earlier` (judging 3);
 - the Intro: a hook finding only when it is under the median of the
-  channel's last 10 measured films of similar length and under half the
-  views came from search and external traffic (structure 38);
-- a last 5% falling at least twice as steeply as 75-95%: `outro`, and a
+  channel's last 10 measured films of similar length published before it
+  (a film of unknown length, or a later one, is left out and noted) and
+  under half the views came from search and external traffic (structure
+  38);
+- a last 5% falling at least twice as steeply as a falling 75-95%: `outro`
+  (a 75-95% stretch that held has no slope to compare, and is noted), and a
   spike after the payoff shot: `unforeshadowed-payoff` (structure 40).
 
 A moment read from the relative curve is noted and filed nowhere (judging

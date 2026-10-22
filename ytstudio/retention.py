@@ -27,10 +27,14 @@ What becomes a finding, and the rule it applies:
   3); a dip inside the Intro is the Intro's to speak for;
 - **a late top moment**, `move_earlier` (judging 3);
 - **the Intro**, a hook finding only when it is under the median of the
-  channel's like-length films and little of the traffic came from search or
-  outside YouTube (structure 38);
-- **a steep last 5%**, an `outro` reading, and **a spike after the payoff
-  shot**, an `unforeshadowed-payoff` one (structure 40, house readings).
+  channel's like-length films published before it and little of the
+  traffic came from search or outside YouTube (structure 38); without the
+  traffic shares, which the contract does not require, it is recorded,
+  not judged;
+- **a last 5% steeper than the 75-95% stretch**, an `outro` reading (a
+  stretch that held flat has no slope to compare, and is noted), and **a
+  spike after the payoff shot**, an `unforeshadowed-payoff` one (structure
+  40, house readings).
 
 Only the standard curve's timestamps reach the script (judging 2): a moment
 marked as read from the relative curve is noted and filed nowhere. Each
@@ -110,10 +114,12 @@ INGEST_SCHEMA = {
         "traffic": {"type": "object", "properties": {
             name: {"type": "number", "description": "percent of views"}
             for name in ("search", "external", "suggested", "browse")},
-            "required": ["search", "external", "suggested", "browse"]},
+            "required": ["search", "external", "suggested", "browse"],
+            "description": "optional: without it the Intro is recorded, not judged "
+                           "(structure 38)"},
     },
     "required": ["intro_retention_30s", "above_typical_intro", "top_moments", "spikes",
-                 "dips", "curve", "typical_curve", "traffic"],
+                 "dips", "curve", "typical_curve"],
 }
 
 #: Every number this stage judges by that YouTube does not define. Each is a
@@ -439,10 +445,12 @@ def reading(ingest: dict, mapped: dict, channel_baseline: dict) -> dict:
         notes.append("no shot in build.json is marked payoff, so no spike is read as "
                      "an unforeshadowed payoff (structure 40)")
 
-    outro = _outro(ingest, shots, duration, thin)
+    outro = _outro(ingest, shots, duration, thin, notes)
     if outro:
         rows.append(outro)
 
+    for left_out in channel_baseline.get("skipped") or []:
+        notes.append(f"left out of the channel baseline: {left_out}")
     intro = _intro(ingest, shots, channel_baseline, thin, notes)
     if intro:
         rows.append(intro)
@@ -455,9 +463,12 @@ def findings(ingest: dict, mapped: dict, channel_baseline: dict) -> list[dict]:
     return reading(ingest, mapped, channel_baseline)["findings"]
 
 
-def _outro(ingest: dict, shots: list[dict], duration: float, thin: list[str]) -> dict | None:
+def _outro(ingest: dict, shots: list[dict], duration: float, thin: list[str],
+           notes: list[str]) -> dict | None:
     """Structure 40's tail: the standard curve's fall over the last 5% against
-    its fall over 75-95%, as a rate."""
+    its fall over 75-95%, as a rate. A 75-95% stretch that held or rose has
+    no slope to be steeper than, and any fall at all would clear twice
+    nothing, so the tail is noted, not filed."""
     curve = ingest.get("curve") or []
     if len(curve) < 2 or duration <= 0:
         return None
@@ -465,12 +476,18 @@ def _outro(ingest: dict, shots: list[dict], duration: float, thin: list[str]) ->
     mid = (r75 - r95) / (0.20 * duration)
     end = (r95 - r100) / (0.05 * duration)
     ratio = BOUNDS["outro_ratio"]["value"]
-    if end <= 0 or end < ratio * max(mid, 0.0):
+    if end <= 0:
+        return None
+    if mid <= 0:
+        notes.append(f"the last 5% fell {r95 - r100:.1f} points after the 75-95% stretch "
+                     "held or rose: no slope to compare it with, so no outro reading "
+                     "(structure 40)")
+        return None
+    if end < ratio * mid:
         return None
     t = round(duration * 0.95, 3)
     shot, _ = place(shots, t)
-    measured = (f"the last 5% fell {end / mid:.1f} times as steeply as the 75-95% stretch"
-                if mid > 0 else "the last 5% fell while the 75-95% stretch held")
+    measured = f"the last 5% fell {end / mid:.1f} times as steeply as the 75-95% stretch"
     return _finding("outro", timestamp=t, shot=shot, section=shot["section"],
                     heading=shot["heading"], measured=measured, delta=_delta(ingest, t),
                     bounds=[_bound("outro_ratio"), _HOUSE_READING["outro"]] + thin)
@@ -514,13 +531,16 @@ def _intro(ingest: dict, shots: list[dict], base: dict, thin: list[str],
 # --------------------------------------------------------------------------- #
 
 def channel_baseline(work: Path | str, *, exclude: Path | str | None = None,
-                     duration: float | None = None) -> dict:
+                     duration: float | None = None, published: str | None = None) -> dict:
     """The channel's own baseline: the median Intro of its last
     BASELINE_FILMS measured films of similar length (`retention.json` in
     each project, newest by `published`, else by the file's time), the film
-    itself left out."""
+    itself left out. Given a `duration`, a film of unknown length is left
+    out, since it cannot be said to be similar; given the film's
+    `published` date, so is a film published after it, which was not among
+    its last ten. Each film left out is named under `skipped`."""
     skip = Path(exclude).resolve() if exclude else None
-    films = []
+    films, skipped = [], []
     try:
         found = workspace.projects(Path(work))
     except OSError:
@@ -541,16 +561,24 @@ def channel_baseline(work: Path | str, *, exclude: Path | str | None = None,
         intro = data.get("intro_retention_30s")
         if not isinstance(intro, (int, float)) or isinstance(intro, bool):
             continue
+        slug = project.root.name
         seconds = data.get("duration_seconds") or (record or {}).get("duration")
-        if duration and isinstance(seconds, (int, float)) and seconds > 0:
+        if duration:
+            if not isinstance(seconds, (int, float)) or isinstance(seconds, bool) \
+                    or seconds <= 0:
+                skipped.append(f"{slug}: unknown length, so not of a similar length")
+                continue
             if max(seconds, duration) / min(seconds, duration) > BOUNDS["similar_length"]["value"]:
                 continue
-        films.append((str(data.get("published") or ""), stamp,
-                      project.root.name, float(intro)))
+        when = str(data.get("published") or "")
+        if published and when and when > str(published):
+            skipped.append(f"{slug}: published {when}, after this film")
+            continue
+        films.append((when, stamp, slug, float(intro)))
     films = sorted(films)[-BASELINE_FILMS:]
     return {"films": len(films),
             "intro_median": statistics.median(f[3] for f in films) if films else None,
-            "slugs": [f[2] for f in films]}
+            "slugs": [f[2] for f in films], "skipped": skipped}
 
 
 def film(root: Path | str) -> dict:
@@ -613,7 +641,7 @@ def run(args) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     base = channel_baseline(workspace.work_dir(args), exclude=root,
-                            duration=mapped["duration"])
+                            duration=mapped["duration"], published=data.get("published"))
     got = reading(data, mapped, base)
     write_json(project.path("retention"), {
         "ingest": data, "sources": shown, "duration": mapped["duration"], "film": film(root),
