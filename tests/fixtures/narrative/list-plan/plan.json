@@ -1,0 +1,119 @@
+{
+  "logline": "A comet's tail leads it away from the Sun because sunlight and a wind from the Sun push it, not because it trails behind.",
+  "promise": "Why a comet leaving the Sun flies tail first.",
+  "payoff": "The tail is pushed outward by sunlight and by the solar wind, so it always points away from the Sun, whichever way the comet moves.",
+  "train": "In 1951 Ludwig Biermann had to explain why comet tails point away from the Sun faster than the push of sunlight allows: what else is blowing?",
+  "stakes": "Without the answer, the stream that knocks out power grids on Earth stays invisible until it arrives.",
+  "viewer_stake": "The wind that bends this tail reaches you too: in March 1989 a storm in it put Quebec's grid out for nine hours.",
+  "misconception": "[M1] A comet's tail is a wake left behind as it moves.",
+  "misconception_why": "",
+  "audience": "lay",
+  "reveal": {
+    "section": 3,
+    "constraint_section": 1
+  },
+  "questions": [
+    {
+      "id": "Q1",
+      "text": "Why does a comet leaving the Sun fly tail first?",
+      "opened_in": 1,
+      "closed_in": 3,
+      "left_open_why": ""
+    }
+  ],
+  "ending": {
+    "payoff_line": "That comet is not flying backwards. It is showing you the wind.",
+    "callback": "the opening comet, leaving the Sun tail first, seen again",
+    "next_film": "How the solar wind shaped the planets' atmospheres"
+  },
+  "sections": [
+    {
+      "heading": "Comet facts",
+      "purpose": "facts about comets",
+      "seconds": 30,
+      "beats": [
+        "comets are ice and dust",
+        "they orbit the Sun"
+      ],
+      "claims": [
+        "Comets are made of ice and dust."
+      ],
+      "visuals": [
+        "a comet nucleus"
+      ],
+      "opens": [
+        "Q1"
+      ],
+      "closes": [],
+      "connective": "open",
+      "rehook": "",
+      "escalation": "",
+      "anchor_visual": "a comet nucleus turning"
+    },
+    {
+      "heading": "Famous comets",
+      "purpose": "a list of famous comets",
+      "seconds": 40,
+      "beats": [
+        "Halley",
+        "Hale-Bopp",
+        "NEOWISE"
+      ],
+      "claims": [
+        "Halley returns about every 76 years."
+      ],
+      "visuals": [
+        "three comets"
+      ],
+      "opens": [],
+      "closes": [],
+      "connective": "and",
+      "rehook": "",
+      "escalation": "",
+      "anchor_visual": "three comets side by side"
+    },
+    {
+      "heading": "Tail types",
+      "purpose": "the two kinds of tail",
+      "seconds": 40,
+      "beats": [
+        "dust tails curve",
+        "gas tails are straight"
+      ],
+      "claims": [
+        "Comets have dust and gas tails."
+      ],
+      "visuals": [
+        "two tails"
+      ],
+      "opens": [],
+      "closes": [
+        "Q1"
+      ],
+      "connective": "and",
+      "rehook": "",
+      "escalation": "",
+      "anchor_visual": "a curved and a straight tail"
+    },
+    {
+      "heading": "Future missions",
+      "purpose": "what comes next",
+      "seconds": 20,
+      "beats": [
+        "Comet Interceptor"
+      ],
+      "claims": [
+        "ESA plans a mission called Comet Interceptor."
+      ],
+      "visuals": [
+        "a probe"
+      ],
+      "opens": [],
+      "closes": [],
+      "connective": "and",
+      "rehook": "",
+      "escalation": "",
+      "anchor_visual": "a probe waiting in space"
+    }
+  ]
+}

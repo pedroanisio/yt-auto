@@ -1,0 +1,37 @@
+{
+  "criterion": "reveal_setup",
+  "verdict": "consider",
+  "why": "Section 1 names the solar wind before section 2 shows why sunlight is not enough, so the reveal lands unearned (structure 22).",
+  "evidence": {
+    "in": "script.sections.0.shots.2.narration",
+    "says": "solar wind"
+  },
+  "review": {
+    "logline": "A comet's tail leads it away from the Sun because sunlight and a wind from the Sun push it, not because it trails behind.",
+    "synopsis": "A comet leaves the Sun tail first; sunlight is too weak to explain the gas tail; Biermann proposes a wind from the Sun and Mariner 2 measures it; the opening comet is seen again.",
+    "grades": {
+      "train": "Excellent",
+      "hook": "Excellent",
+      "stakes": "Excellent",
+      "open_loops": "Fair",
+      "reveal_setup": "Poor",
+      "ending": "Excellent",
+      "honesty": "Excellent"
+    },
+    "verdict": "consider",
+    "flags": [
+      {
+        "n": 3,
+        "section": 1,
+        "criterion": "reveal_setup",
+        "problem": "The answer is given in the first section, before the viewer knows sunlight falls short.",
+        "severity": "important",
+        "fix": "Keep shot 3 as the question; let the solar wind arrive in section 3."
+      }
+    ],
+    "first_minute": {
+      "promise_match": "The comet and its tail are on screen and named at once.",
+      "question_and_stakes": "Why the tail leads; the same wind reached Quebec in 1989."
+    }
+  }
+}

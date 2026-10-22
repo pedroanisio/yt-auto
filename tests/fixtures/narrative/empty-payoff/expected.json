@@ -1,0 +1,52 @@
+{
+  "criterion": "ending",
+  "verdict": "reject",
+  "why": "The payoff is empty and the last line pays nothing the promise asked (structure 6, 7).",
+  "evidence": {
+    "in": "plan.payoff",
+    "says": ""
+  },
+  "review": {
+    "logline": "A comet's tail leads it away from the Sun because sunlight and a wind from the Sun push it, not because it trails behind.",
+    "synopsis": "A comet leaves the Sun tail first; sunlight is too weak to explain the gas tail; Biermann proposes a wind from the Sun and Mariner 2 measures it; the opening comet is seen again.",
+    "grades": {
+      "train": "Excellent",
+      "hook": "Excellent",
+      "stakes": "Excellent",
+      "open_loops": "Excellent",
+      "reveal_setup": "Excellent",
+      "ending": "Poor",
+      "honesty": "Excellent"
+    },
+    "verdict": "reject",
+    "flags": [
+      {
+        "n": 0,
+        "section": 4,
+        "criterion": "ending",
+        "problem": "Nothing pays the promise: the payoff is empty and the last line is a sign-off.",
+        "severity": "blocker",
+        "fix": "Write the payoff as the answer to why the comet flies tail first, and end on it."
+      }
+    ],
+    "first_minute": {
+      "promise_match": "The comet and its tail are on screen and named at once.",
+      "question_and_stakes": "Why the tail leads; the same wind reached Quebec in 1989."
+    }
+  },
+  "plan_review": {
+    "verdict": "revise",
+    "train_ok": true,
+    "reorder_survives": false,
+    "sections_advancing_none": [],
+    "payoff_concrete": false,
+    "questions_unanswered": [],
+    "problems": [
+      {
+        "section": 4,
+        "problem": "The payoff is empty.",
+        "fix": "State the answer the promise asks for, in a line the viewer can picture."
+      }
+    ]
+  }
+}

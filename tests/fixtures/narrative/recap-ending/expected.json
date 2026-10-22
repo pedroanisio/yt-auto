@@ -1,0 +1,37 @@
+{
+  "criterion": "ending",
+  "verdict": "consider",
+  "why": "The last line summarises and signs off instead of paying the promise in one short line (structure 27, 33).",
+  "evidence": {
+    "in": "script.sections.3.shots.1.narration",
+    "says": "to recap"
+  },
+  "review": {
+    "logline": "A comet's tail leads it away from the Sun because sunlight and a wind from the Sun push it, not because it trails behind.",
+    "synopsis": "A comet leaves the Sun tail first; sunlight is too weak to explain the gas tail; Biermann proposes a wind from the Sun and Mariner 2 measures it; the opening comet is seen again.",
+    "grades": {
+      "train": "Excellent",
+      "hook": "Excellent",
+      "stakes": "Excellent",
+      "open_loops": "Excellent",
+      "reveal_setup": "Excellent",
+      "ending": "Fair",
+      "honesty": "Excellent"
+    },
+    "verdict": "consider",
+    "flags": [
+      {
+        "n": 10,
+        "section": 4,
+        "criterion": "ending",
+        "problem": "The film ends on a recap and a sign-off.",
+        "severity": "important",
+        "fix": "End on the payoff line: it is not flying backwards, it is showing you the wind."
+      }
+    ],
+    "first_minute": {
+      "promise_match": "The comet and its tail are on screen and named at once.",
+      "question_and_stakes": "Why the tail leads; the same wind reached Quebec in 1989."
+    }
+  }
+}
