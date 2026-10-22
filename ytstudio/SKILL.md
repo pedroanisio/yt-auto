@@ -338,15 +338,17 @@ model takes `--model`, `--effort` and `--fallback-model` (default sonnet);
 The house standards ship: `ytstudio/house/default.md` is `docs/narrative/`
 distilled by hand into `## all`, `## script`, `## styles`, `## vfx`,
 `## sound`, `## voice` and `## format` (the script stage reads the format
-before its own section), each with a comment naming the corpus rules it
-states, which never reaches a prompt. The channel's `work/house.md`, then
+before its own section; the keyframe reads `## vfx` until a house writes
+`## keyframe`), each with a comment naming the corpus rules it states, which
+never reaches a prompt. The channel's `work/house.md`, then
 `work/<slug>/house.md`, then `--house FILE` replace its sections by name;
 `--no-house` drops all of it. The digest names the default as
-`ytstudio/house/default.md`. Every decision's cache digest carries the
-house digest, so a changed default is a changed question: an edit to it, or
-to any house file, re-asks every cached decision in every project on the
-next run, and `yt doctor` warns for each manifest `decided under a
-different house digest`.
+`ytstudio/house/default.md`. A decision's cache key holds its stage's block
+(`## all` and its own section), so a changed section is a changed question:
+an edit to `## all` re-asks every cached decision in every project on the
+next run, an edit to `## voice` only the read's, and an edit to a comment
+nothing. `yt doctor` reads `house.md` from `--work` and warns for each
+manifest whose stage's block was `decided under a different house digest`.
 
 ## Rendering
 

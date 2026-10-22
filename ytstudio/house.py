@@ -21,18 +21,22 @@ Sections are Markdown headings, matched by stage name, and each stage is given
     ## vfx          the animation plan
     ## sound        effects, score and mix
     ## voice        the read
-    ## format       the channel's recurring narrator, opening, ending and
-                    hand-off, which the screenplay follows
+    ## format       the channel's recurring narrator, opening, ending,
+                    hand-off and series, which the screenplay follows
+    ## keyframe     the locked lead section; with none, `## vfx` applies
 
 Anything before the first heading counts as `## all`, and an HTML comment is
 the maintainer's, never the model's: the default's comments name the corpus
 rules each section came from. A later file's section replaces the earlier
 file's section of the same name; sections it does not mention still apply.
 
-Every decision's cache digest carries the house digest, so a changed default
-is a changed question: editing default.md re-asks every cached decision in
-every project on its next run, and `yt doctor` warns about a manifest decided
-under a different house digest.
+A stage's block (`## all` and the sections it reads) is part of every
+decision's cache key, so a changed section is a changed question: an edit to
+`## all` re-asks every cached decision in every project on its next run, and
+an edit to `## voice` re-asks only the read's. A comment, or a section a later
+file replaces, changes no block and re-asks nothing. The digest records the
+stage and its block's digest, and `yt doctor` warns for a manifest decided
+under a different house digest by that block.
 
 The order a stage sees is deliberate: its SYSTEM prompt says what it is, these
 standards say how this channel works, the dossier and the direction say what is

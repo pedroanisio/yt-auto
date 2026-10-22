@@ -288,13 +288,17 @@ goes into every manifest, so an artifact says which standards produced it.
 Under all of them sits the shipped default, `ytstudio/house/default.md`: the
 craft corpus in `docs/narrative/` distilled by hand into `## all`, `## script`,
 `## styles`, `## vfx`, `## sound`, `## voice` and `## format` (the narrator,
-opening, ending and hand-off the channel repeats, which the script stage reads
+opening, ending, hand-off and series the channel repeats, which the script stage reads
 before its own section). Each section opens with a comment naming the corpus
 rules it states; comments never reach a prompt, and a test holds the ids to the
 corpus. The channel's file replaces a section by writing one of the same name.
-Because every cached decision is keyed on the house digest, an edit to the
-default re-asks every decision in every project on its next run; `yt doctor`
-warns for each manifest decided under a different house digest.
+The keyframe, which has no section of its own, reads `## vfx` until a house
+writes `## keyframe`. A cached decision is keyed on its stage's block (`## all`
+and the sections that stage reads), so an edit to `## all` re-asks every
+decision in every project on its next run, an edit to one section re-asks
+only the stages that read it, and an edit to a comment re-asks nothing;
+`yt doctor` warns for each manifest whose block was decided under a different
+house digest.
 
 The order each stage sees is deliberate: its own system prompt says what it is,
 `house.md` says how this channel works, the dossier and the direction say what

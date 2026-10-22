@@ -35,13 +35,19 @@ judging 13; Zeigarnik → attention Contested.
    reviewer rubric is changed: the rule says what to enforce, the evidence
    says how hard to enforce it, the Contested and Folklore sections say what
    not to promise.
-2. **Distilled into `work/house.md`.** Each pipeline stage gets a section of
-   `house.md` holding only the rule statements and `Check:` lines whose
-   `applies_to` names that stage, at the strength stated here, with no
-   citations and no numbers that the corpus marks snippet-sourced or
-   unverified. `house.py` injects the stage's section into that stage's
-   prompt. The corpus is the source of truth; `house.md` is its compiled
-   form and is regenerated, not hand-edited, when a rule changes.
+2. **Distilled into `ytstudio/house/default.md`.** By hand, one section per
+   reader (`## all`, `## script`, `## styles`, `## vfx`, `## sound`,
+   `## voice`, `## format`), holding only the rule statements and `Check:`
+   lines whose `Stages:` tag names that reader, at the strength stated
+   here, with no citations and no numbers that the corpus marks
+   snippet-sourced or unverified. Each section opens with a
+   `<!-- rules: ... -->` comment naming the rules it states;
+   `tests/test_house_default.py` holds those ids to this corpus (each
+   exists, and once a file is tagged, its `Stages:` tag names the reader).
+   `house.py` hands each stage `## all` and its own section. The channel's
+   `work/house.md` and a project's `house.md` replace sections by name.
+   There is no generator: when a rule changes, the section that cites it is
+   edited, and the test catches a citation that drifts.
 3. **The narrative rubric.** `yt script --review` scores a plan and script
    against criteria drawn from the `Check:` lines, in the shape set by
    `judging-narrative.md` rules 7–13: absolute per-criterion labels of five
