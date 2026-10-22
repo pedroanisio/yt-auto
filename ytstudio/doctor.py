@@ -735,6 +735,23 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
         if unsourced:
             report.add("warn", "script", f"{len(unsourced)} shot(s) are marked "
                        "UNSOURCED", "cut the line or source it")
+        # The narration rules' findings (AUTO-94), in sdkkit's prefixes: an
+        # `error:` stopped the stage (or was recorded with --report-only), a
+        # `warning:` did not, and a rule the film's language has no evidence
+        # for is a note. The stage's own `note:` lines were printed when it ran.
+        for finding in script.get("findings") or []:
+            finding = str(finding)
+            level, _, text = finding.partition(": ")
+            if level == "error":
+                report.add("fail", "script", _clip(text),
+                           _cmd("script", project, "--notes",
+                                '"<how to clear the rule>"')
+                           + " (or --report-only to record it and go on)")
+            elif level == "warning":
+                report.add("warn", "script", _clip(text),
+                           "read the Findings section of script.md")
+            elif level == "not_evidenced":
+                report.add("note", "script", f"not checked: {text}")
         if dossier and not flags and not check:
             report.add("note", "script", "written without --verify; no fact-check "
                        "against the research", _cmd("script", project, "--verify"))
@@ -942,8 +959,12 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
                    f"{total} shots · {layers.get('effect', 0)} effects, "
                    f"{layers.get('image', 0)} from files, "
                    f"{placeholders} placeholder cards")
+        # The screenplay's own errors ride in build.json for qa (`error:
+        # script: ...`); the script area already fails them with the command
+        # that clears them, and rebuilding would only carry them over again.
         for error in errors:
-            report.add("fail", "build", str(error)[:140], _cmd("build", project))
+            if not str(error).startswith("error: script: "):
+                report.add("fail", "build", str(error)[:140], _cmd("build", project))
         if total and placeholders > total / 2:
             report.add("warn", "art", f"{placeholders} of {total} shots have no art "
                        "yet; the render is placeholder cards",

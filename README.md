@@ -430,6 +430,46 @@ Each section joins the one before with but, therefore or because, and
 every shot names its function (hook, setup, reveal, rehook, payoff ...) and
 what its picture shows of its line; `script.md` prints the question ledger.
 
+After the polish the narration is measured against `script.RULES`, each a
+bound in `script.BOUNDS` with the corpus rule it comes from
+(`docs/narrative/`) and that rule's strength. The rules count; they do not
+judge. Four tiers:
+
+- **error**: `rule:filler` (welcome, subscribe, my name is ... before the
+  first sentence about the subject; English and Portuguese; a greeting that
+  says a word of the title, "Welcome to Chernobyl, where ...", is that first
+  sentence and passes) and
+  `rule:sentence` (a sentence over 25 words).
+- **important**: `rule:unspoken-number` and `rule:legibility` (the two
+  older checks, still recorded under their old script.json keys
+  `unspoken_numbers` and `legibility` too), `rule:numbers` (two or more
+  numerals in one sentence), `rule:hook-subject` (no content word of the
+  title said or shown in the first 30 seconds; the title's verb counts, since
+  telling the key noun from it needs a parser), `rule:hook-answer` (the payoff said in
+  those 30 seconds) and `rule:payoff-last` (the payoff line not in the last
+  section).
+- **house**, the house's own prior, recorded and never revised:
+  `rule:clause`, `rule:passive` (English only), `rule:person`, `rule:pace`
+  (the words do not fit the shots at `--wpm`: consistency with the planned
+  read, not the corpus's 170-190 wpm band), `rule:density`, `rule:hook-promise`, `rule:hook-stakes`, `rule:end-signal`
+  and `rule:recap`.
+- **minor**: `rule:last-line` (a last sentence over 20 words).
+
+The error and important flags go to one revision (`revise-rules`, a second
+round for a line still breaking its rule): the smallest change to the
+narration or, for `rule:legibility` and `rule:unspoken-number`, to the
+shot's on-screen text, or a reason to keep it. The rules
+are read again on the final text, after `--verify`. What stands is written
+to script.json's `findings` and script.md's Findings section: an error-tier
+rule as `error: rule:x: ...`, the rest as `warning: rule:x: ...` (`warning:
+house:rule:x: ...` for the house tier), and a rule with no evidence in the
+film's language as `not_evidenced: rule:x (pt-BR)`. A standing `error:`
+exits 1 and leaves `narration.txt` unwritten (an older one is removed);
+`--report-only` records it, revises nothing and writes it. `yt doctor` fails
+on it under script (once: the copy in build.json is not failed again under
+build) and `yt build` carries it into build.json, where qa lifts it as a
+blocker. A `warning:` blocks nothing.
+
 `--minutes` · `--wpm` · `--sections` · `--outline` to use the dossier's own beat
 sheet · `--inspo` for voice · `--notes` which outrank everything else ·
 `--jobs` · `--report-only`

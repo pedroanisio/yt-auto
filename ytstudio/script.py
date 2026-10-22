@@ -285,6 +285,32 @@ REVISE_SCHEMA = {
     "required": ["fixes"],
 }
 
+#: `revise` over the narration rules: a rule can measure the on-screen text
+#: (legibility, an unspoken figure), so the fix may change it too.
+RULE_REVISE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "fixes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    **REVISE_SCHEMA["properties"]["fixes"]["items"]["properties"],
+                    "on_screen_text": {"type": "array", "items": {"type": "string"},
+                                       "description": (
+                                           "the shot's on-screen strings after the fix, "
+                                           "read only for a rule that measured the "
+                                           "screen (rule:legibility, "
+                                           "rule:unspoken-number); omit to leave them "
+                                           "as they are")},
+                },
+                "required": ["n", "action", "narration", "why"],
+            },
+        }
+    },
+    "required": ["fixes"],
+}
+
 CHECK_SCHEMA = {
     "type": "object",
     "properties": {
@@ -413,17 +439,20 @@ def spoken(line: str) -> str:
     return text
 
 
-def shot_listing(shots: list[Shot], *, cite: bool = False) -> str:
+def shot_listing(shots: list[Shot], *, cite: bool = False, supers: bool = False) -> str:
     """Every shot numbered for the review stages.
 
     Silent shots are listed too, marked: dropping them leaves gaps in the
-    numbering, and a reviewer reads a gap as a missing shot.
+    numbering, and a reviewer reads a gap as a missing shot. `supers` adds
+    what each shot puts on screen, for a check that measures it.
     """
     lines = []
     for shot in shots:
         body = shot.narration or SILENT
         if cite and shot.source:
             body += f"  [cited: {shot.source}]"
+        if supers and shot.on_screen_text:
+            body += "  [on screen: " + " | ".join(shot.on_screen_text) + "]"
         lines.append(f"{shot.n}. [{shot.label} {timecode(shot.at)} "
                      f"{shot.seconds}s] {body}")
     return "\n".join(lines)
@@ -1211,11 +1240,13 @@ class Screenwriter:
     # -- stage five: fix what the check found ------------------------------
 
     def revise(self, shots: list[Shot], flags: list[dict], *,
-               name: str = "revise") -> dict:
+               name: str = "revise", rules: bool = False) -> dict:
         """The smallest fix for each flagged line, or a reason to keep it.
 
         Returns the `applied` rewrites and the lines `kept`; a failed call
-        changes nothing.
+        changes nothing. `rules` says the flags are the narration rules'
+        (rule_findings), not the fact-check's: the prompt says so, shows
+        what each shot puts on screen, and the fix may change that text.
         """
         by_n = {s.n: s for s in shots}
         todo: dict[int, list[dict]] = {}
@@ -1231,18 +1262,34 @@ class Screenwriter:
             f"{n}. " + " / ".join(f"{f['severity']}: {f.get('problem', '')} "
                                   f"(suggested: {f.get('fix', '')})" for f in fs)
             for n, fs in sorted(todo.items()))
-        parts = [self._brief(), *([self.research] if self.research else []),
-                 "The script as written:\n\n" + shot_listing(shots, cite=True),
-                 "These lines were flagged by the fact-check:\n\n" + problems,
-                 "For each flagged line make the smallest change to its "
-                 "narration that removes the problem: cut or soften the claim, "
-                 "or state only what the research supports. Keep its length "
-                 "within a couple of words, its voice, and every fact the "
-                 "research does support. Never add a fact. When the line is "
-                 "already defensible, answer keep and say why in one clause. "
-                 "Answer for every flagged number and no other."]
+        if rules:
+            parts = [self._brief(), *([self.research] if self.research else []),
+                     "The script as written:\n\n"
+                     + shot_listing(shots, cite=True, supers=True),
+                     "These lines break the narration rules, measured from the "
+                     "text against the house's bounds:\n\n" + problems,
+                     "For each flagged line make the smallest change that clears "
+                     "the rule: to its narration, or to its on-screen text "
+                     "(on_screen_text, every string it should show) when the rule "
+                     "measured that. Keep every fact, the voice and the line's job "
+                     "in the story. Never add a fact. A rule is a measured prior, "
+                     "not a law: when the line is right as written, answer keep "
+                     "and say why in one clause. Answer for every flagged number "
+                     "and no other."]
+        else:
+            parts = [self._brief(), *([self.research] if self.research else []),
+                     "The script as written:\n\n" + shot_listing(shots, cite=True),
+                     "These lines were flagged by the fact-check:\n\n" + problems,
+                     "For each flagged line make the smallest change to its "
+                     "narration that removes the problem: cut or soften the claim, "
+                     "or state only what the research supports. Keep its length "
+                     "within a couple of words, its voice, and every fact the "
+                     "research does support. Never add a fact. When the line is "
+                     "already defensible, answer keep and say why in one clause. "
+                     "Answer for every flagged number and no other."]
         try:
-            data = self._ask(name, "\n\n".join(parts), REVISE_SCHEMA)
+            data = self._ask(name, "\n\n".join(parts),
+                             RULE_REVISE_SCHEMA if rules else REVISE_SCHEMA)
         except ClaudeError as exc:
             self._say(f"[revise] failed ({exc}); keeping the lines as written")
             return result
@@ -1256,11 +1303,24 @@ class Screenwriter:
             line = spoken(fix.get("narration", ""))
             if fix.get("action") == "keep":
                 result["kept"].append({"n": n, "label": shot.label, "why": why})
-            elif line and line != shot.narration:
-                result["applied"].append({"n": n, "label": shot.label,
-                                          "before": shot.narration, "after": line,
-                                          "why": why})
+                continue
+            row = {"n": n, "label": shot.label, "why": why}
+            if line and line != shot.narration:
+                row |= {"before": shot.narration, "after": line}
                 shot.narration, shot.revised = line, why
+            # The screen is changed only where a rule measured it: an
+            # optional `[]` beside a narration fix is the field left empty,
+            # not an order to clear the shot's supers.
+            given = fix.get("on_screen_text")
+            if rules and isinstance(given, list) \
+                    and any(f.get("rule") in SCREEN_RULES for f in todo[n]):
+                text = [" ".join(str(t).split()) for t in given if str(t).strip()]
+                if text != list(shot.on_screen_text or []):
+                    row |= {"on_screen_before": list(shot.on_screen_text or []),
+                            "on_screen_after": text}
+                    shot.on_screen_text = text
+            if len(row) > 3:
+                result["applied"].append(row)
         self._say(f"[revise] rewrote {len(result['applied'])}, "
                   f"kept {len(result['kept'])}")
         return result
@@ -1315,6 +1375,34 @@ class Screenwriter:
                   "fix": "refer back without the figure, or cut it"} for r in rows]
         self._say(f"[ledger] {len(rows)} repeated figure(s)")
         return len(self.revise(shots, flags, name="revise-ledger")["applied"])
+
+    def revise_rules(self, sections: list[Section], shots: list[Shot], plan: dict,
+                     *, rounds: int = 2) -> dict:
+        """Measure the narration against RULES and send the error and
+        important flags to revise (`revise-rules`, then `revise-rules-2`):
+        fix the line or keep it with a reason. The rules are read again
+        after every change; a line revised and still breaking its rule goes
+        round once more. Returns the `revisions` and what was `kept`, keyed
+        by (rule, shot number). The house and minor tiers are not sent."""
+        context = {**plan, "idea": asdict(self.idea)}
+        revisions: list[dict] = []
+        kept: dict[tuple, str] = {}
+        for round_no in range(1, max(0, rounds) + 1):
+            flags = rule_findings(context, sections, self.wpm, self.lang)
+            todo = [f for f in flags if f["severity"] in REVISABLE
+                    and (f["rule"], f["n"]) not in kept]
+            if not todo:
+                break
+            self._say(f"[rules] {len(todo)} rule flag(s) to revise")
+            result = self.revise(shots, todo, rules=True, name="revise-rules"
+                                 + (f"-{round_no}" if round_no > 1 else ""))
+            for k in result["kept"]:
+                kept.update({(f["rule"], f["n"]): k["why"] for f in todo
+                             if f["n"] == k["n"]})
+            revisions += result["applied"]
+            if not result["applied"]:
+                break
+        return {"revisions": revisions, "kept": kept}
 
     # -- run ---------------------------------------------------------------
 
@@ -1388,8 +1476,17 @@ class Screenwriter:
         if written:
             self._drop_repeats(sections, written)
         polished = self.polish(written) if do_polish and written else 0
+        # The narration rules after the polish and before the fact-check, so
+        # the check reads the lines the rules changed (AUTO-94).
+        ruled = (self.revise_rules(sections, written, plan)
+                 if fix and written else {"revisions": [], "kept": {}})
         check = (self.verify_and_revise(written, fix=fix)
                  if do_verify and written else {})
+        # Read once more on the final text: the fact-check's rewrites count.
+        flags = (rule_findings({**plan, "idea": asdict(self.idea)}, sections,
+                               self.wpm, self.lang) if written else [])
+        kept = ruled["kept"]
+        self.findings += rule_lines(flags, kept, self.lang, revised=fix)
 
         return {
             "idea": asdict(self.idea),
@@ -1408,6 +1505,11 @@ class Screenwriter:
             "lang": self.lang,
             "house": self.house_digest,
             "check": check,
+            # The rules' flags still standing on the final text, what their
+            # revision changed and what it kept, with the reason.
+            "rules": {"flags": flags, "revisions": ruled["revisions"],
+                      "kept": [{"rule": r, "n": n, "why": why}
+                               for (r, n), why in kept.items()]},
             "usage": spend.from_usage(self.usage, self.model),
             "engine": self.harness.report(),
         }
@@ -1505,8 +1607,570 @@ def unspoken_numbers(sections: list[Section]) -> list[dict]:
     return out
 
 
+# --------------------------------------------------------------------------- #
+# the narration rules (AUTO-94)
+# --------------------------------------------------------------------------- #
+#
+# What docs/narrative lets a lint measure in the text, measured before voice
+# is paid for. A rule finds; it never rewrites: the error and important tiers
+# go to `revise` (decision `revise-rules`), which fixes the line or keeps it
+# with a reason, and what still stands is recorded in script.json's
+# `findings` with sdkkit's prefixes. Judgements the corpus asks for that a
+# word list cannot make (an abstract opener, a first line that is concrete,
+# a callback, a return to scale, a concrete title) are not here: they belong
+# to a reviewer's rubric, not a lint.
+
+#: How hard a rule binds. `error`: revised, and a finding still standing
+#: blocks the stage. `important`: revised, and one still standing is a
+#: warning. `house`: recorded as a warning only, never sent to revise.
+#: `minor`: a warning, not revised.
+TIERS = ("error", "important", "house", "minor")
+
+#: A tier as a CHECK_SCHEMA severity, so `revise` reads a rule flag as it
+#: reads the fact-check's: only blocker and important are REVISABLE.
+_SEVERITY = {"error": "blocker", "important": "important", "house": "minor",
+             "minor": "minor"}
+
+#: Every threshold, with the corpus rule it comes from and the strength the
+#: corpus README's table gives that rule, or `house` where the number is this
+#: pipeline's own (a house number inside a stronger rule is still house).
+#: They are priors until the evidence loop (`yt improve` fed by the channel's
+#: retention) replaces them. No number the corpus calls folklore is here:
+#: not the seven-word anecdote, not 160 wpm, not the 3/5/8/15 s hook windows
+#: the vendors quote; the hook window is YouTube's own 30 s Intro.
+BOUNDS: dict[str, dict] = {
+    "filler": {
+        "value": "before the first content sentence", "corpus": ("structure 11",),
+        "strength": "platform",
+        "note": "welcome, subscribe, my name is, in this video I; the channel's "
+                "name is not known to the stage, so it is not in the list. A "
+                "sentence that also says a word of the title is the first "
+                "content sentence (an in-character greeting that sets up the "
+                "show), not filler"},
+    "sentence": {
+        "value": 25, "unit": "words in one sentence", "corpus": ("direction 16",),
+        "strength": "practitioner",
+        "note": "the 25-word ceiling is a training manual's; the 15-20 target "
+                "is from an uncredited guide and is not enforced"},
+    "unspoken_number": {
+        "value": "a figure on screen the narration never says, in digits or "
+                 "common number words", "corpus": ("direction 1", "direction 2"),
+        "strength": "house",
+        "note": "a heuristic: a figure may be said in words the list lacks"},
+    "legibility": {
+        "value": READING_CPS, "unit": "characters a second of on-screen text",
+        "corpus": ("direction 3",), "strength": "platform"},
+    "numbers": {
+        "value": 2, "unit": "numerals in one sentence", "corpus": ("direction 21",),
+        "strength": "practitioner"},
+    "hook_window": {
+        "value": 30, "unit": "seconds from the top: the title's subject is "
+                            "said or shown", "corpus": ("structure 9", "structure 10",
+                                                        "structure 13"),
+        "strength": "platform",
+        "note": "YouTube's Intro measure; no vendor window is used. Any "
+                "content word of the title counts, its verb included: telling "
+                "the key noun from the verb needs a parser the stage does not "
+                "have, so a hook that says only 'it fell' passes and is left "
+                "to the judged rubric"},
+    "hook_answer": {
+        "value": 4, "unit": "words, the shortest payoff sentence matched "
+                            "verbatim in the 30 s window", "corpus": ("structure 13",),
+        "strength": "house"},
+    "payoff_last": {
+        "value": 0.5, "unit": "share of the payoff line's content words in the "
+                              "last section", "corpus": ("structure 7", "structure 33"),
+        "strength": "house"},
+    "clause": {
+        "value": 2, "unit": "clauses in one sentence (relative which/that/who, "
+                            "or a comma before and/but/so)", "corpus": ("direction 17",),
+        "strength": "house",
+        "note": "subject-verb distance needs a parser and is not measured"},
+    "passive": {
+        "value": 0.10, "unit": "share of sentences in the passive",
+        "corpus": ("direction 19",), "strength": "house",
+        "note": "be plus a past participle; English only"},
+    "person": {
+        "value": 0, "unit": "second-person or first-plural words in a section",
+        "corpus": ("attention 25",), "strength": "house",
+        "note": "the corpus gives no threshold; a section that never addresses "
+                "the viewer is the floor"},
+    "pace": {
+        "value": 1.10, "unit": "the section's words read at --wpm, over its "
+                               "narrated shots' planned seconds",
+        "corpus": ("direction 25",), "strength": "house",
+        "note": "consistency with --wpm, the pace the film is planned at: do "
+                "the words fit the shots at that read? It is not direction "
+                "25's band (170-190 wpm recalled best, warn outside 150-190); "
+                "voice and retime measure the read"},
+    "density": {
+        "value": 8, "unit": "numerals and new proper nouns per 100 words of a "
+                            "section", "corpus": ("direction 26",), "strength": "house"},
+    "hook_promise": {
+        "value": 1 / 3, "unit": "share of the promise's content words in the 30 s "
+                                "window", "corpus": ("structure 10",), "strength": "house"},
+    "hook_stakes": {
+        "value": 90, "unit": "seconds from the top: a line addressed to the viewer",
+        "corpus": ("attention 10",), "strength": "house"},
+    "end_signal": {
+        "value": 0.20, "unit": "the last share of the runtime searched for end "
+                               "signals", "corpus": ("structure 28",),
+        "strength": "practitioner",
+        "note": "'finally' and 'before we go' are house; 'finally' in an "
+                "enumeration is exempt"},
+    "recap": {
+        "value": 25, "unit": "words of narration after the payoff shot",
+        "corpus": ("structure 27",), "strength": "practitioner"},
+    "last_line": {
+        "value": 20, "unit": "words in the film's last narrated sentence",
+        "corpus": ("structure 33",), "strength": "practitioner"},
+}
+
+
+@dataclass(frozen=True)
+class Rule:
+    """One measurable rule: its id, tier, the languages its lexicon or syntax
+    covers (empty: it measures every language) and its key in BOUNDS."""
+    id: str
+    tier: str
+    langs: tuple[str, ...]
+    bound: str
+
+    @property
+    def corpus(self) -> tuple[str, ...]:
+        return BOUNDS[self.bound]["corpus"]
+
+
+_LEXICAL = ("en", "pt")
+
+RULES: tuple[Rule, ...] = (
+    Rule("rule:filler", "error", _LEXICAL, "filler"),
+    Rule("rule:sentence", "error", (), "sentence"),
+    Rule("rule:unspoken-number", "important", _LEXICAL, "unspoken_number"),
+    Rule("rule:legibility", "important", (), "legibility"),
+    Rule("rule:numbers", "important", (), "numbers"),
+    Rule("rule:hook-subject", "important", _LEXICAL, "hook_window"),
+    Rule("rule:hook-answer", "important", (), "hook_answer"),
+    Rule("rule:payoff-last", "important", _LEXICAL, "payoff_last"),
+    Rule("rule:clause", "house", _LEXICAL, "clause"),
+    Rule("rule:passive", "house", ("en",), "passive"),
+    Rule("rule:person", "house", _LEXICAL, "person"),
+    Rule("rule:pace", "house", (), "pace"),
+    Rule("rule:density", "house", _LEXICAL, "density"),
+    Rule("rule:hook-promise", "house", _LEXICAL, "hook_promise"),
+    Rule("rule:hook-stakes", "house", _LEXICAL, "hook_stakes"),
+    Rule("rule:end-signal", "house", _LEXICAL, "end_signal"),
+    Rule("rule:recap", "house", _LEXICAL, "recap"),
+    Rule("rule:last-line", "minor", (), "last_line"),
+)
+_RULE = {r.id: r for r in RULES}
+
+#: The rules that measure what the shot shows rather than what it says: only
+#: a flag of one of these lets `revise` change the shot's on_screen_text.
+SCREEN_RULES = ("rule:legibility", "rule:unspoken-number")
+
+#: The words a lexical rule looks for, by language. Lower case; a phrase
+#: matches on word boundaries.
+LEXICON = {
+    "en": {
+        "filler": ("welcome", "subscribe", "my name is", "in this video i"),
+        "stop": ("a", "an", "the", "and", "or", "but", "of", "in", "on", "at", "to",
+                 "for", "from", "by", "with", "about", "into", "over", "up", "down",
+                 "out", "off", "how", "why", "what", "when", "where", "who", "which",
+                 "that", "this", "these", "those", "is", "are", "was", "were", "be",
+                 "been", "it", "its", "you", "your", "we", "our", "they", "their",
+                 "he", "she", "his", "her", "will", "can", "did", "does", "not",
+                 "one", "nobody", "all", "just", "very"),
+        "relative": ("which", "that", "who", "whom", "whose"),
+        "joins": ("and", "but", "so"),
+        "viewer": ("you", "your", "yours", "yourself", "yourselves"),
+        "person": ("you", "your", "yours", "yourself", "we", "us", "our", "ours",
+                   "let's"),
+        "end": ("in summary", "to sum up", "in conclusion", "that's about it",
+                "that's all", "wrap things up", "to wrap up", "before we go", "finally"),
+        "finally": ("finally",),
+        "first": ("first",),
+        "sign_off": ("thanks for watching", "thank you for watching",
+                     "that's it for today", "in this video we saw",
+                     "see you next time"),
+    },
+    "pt": {
+        "filler": ("bem-vindo", "bem-vinda", "bem-vindos", "bem-vindas", "inscreva",
+                   "inscrevam", "meu nome é", "neste vídeo eu", "nesse vídeo eu"),
+        "stop": ("o", "a", "os", "as", "um", "uma", "uns", "umas", "de", "do", "da",
+                 "dos", "das", "em", "no", "na", "nos", "nas", "por", "pelo", "pela",
+                 "para", "pra", "com", "sem", "como", "que", "qual", "quem", "porque",
+                 "quando", "onde", "e", "ou", "mas", "é", "são", "foi", "era", "ser",
+                 "se", "seu", "sua", "você", "vocês", "nós", "eles", "elas", "ele",
+                 "ela", "isso", "isto", "esse", "essa", "este", "esta", "não", "ninguém"),
+        "relative": ("que", "qual", "quais", "quem", "cujo", "cuja", "cujos", "cujas"),
+        "joins": ("e", "mas"),
+        "viewer": ("você", "vocês", "te", "ti", "contigo", "teu", "tua"),
+        "person": ("você", "vocês", "nós", "nosso", "nossa", "nossos", "nossas",
+                   "vamos", "a gente"),
+        "end": ("em resumo", "resumindo", "em conclusão", "para encerrar",
+                "pra encerrar", "para finalizar", "pra finalizar", "antes de irmos",
+                "finalmente", "por fim"),
+        "finally": ("finalmente", "por fim"),
+        "first": ("primeiro", "primeira"),
+        "sign_off": ("obrigado por assistir", "obrigada por assistir",
+                     "por hoje é só", "neste vídeo vimos", "nesse vídeo vimos",
+                     "até a próxima"),
+    },
+}
+
+#: be plus a past participle (a regular -ed, or a common irregular one).
+_PASSIVE = re.compile(
+    r"\b(?:am|is|are|was|were|be|been|being)\s+(?:\w+ly\s+)?"
+    r"(\w{2,}ed|built|made|done|known|seen|found|held|kept|left|lost|paid|sold|"
+    r"told|brought|caught|taught|bought|sent|shown|given|taken|written|driven|"
+    r"broken|chosen|frozen|spoken|stolen|hidden|beaten|eaten|forgotten|born)\b", re.I)
+_NUMERAL = re.compile(r"\d+(?:[.,]\d+)*")
+_SENTENCE_END = re.compile(r"(?<=[.!?…])\s+")
+_CAPITALISED = re.compile(r"^[A-ZÀ-ÖØ-Þ][\w'’-]*$")
+
+
+def rule_lang(lang: str) -> str:
+    """The language a rule is read in: the primary subtag, English when the
+    film names none (the stage writes English unless --lang says otherwise)."""
+    return (str(lang or "").strip().lower().replace("_", "-").split("-")[0]) or "en"
+
+
+def _applies(rule: Rule, lang: str) -> bool:
+    return not rule.langs or rule_lang(lang) in rule.langs
+
+
+def not_evidenced(lang: str) -> list[str]:
+    """One line for each rule the film's language takes out of reach: the
+    rule is not run, and the record says so rather than staying silent."""
+    shown = str(lang or "").strip() or "en"
+    return [f"not_evidenced: {r.id} ({shown})" for r in RULES if not _applies(r, lang)]
+
+
+def sentences(text: str) -> list[str]:
+    """A narration line split at sentence ends (. ! ? …) followed by a space."""
+    return [s for s in _SENTENCE_END.split(" ".join(str(text or "").split())) if s]
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"[\w'’-]+", str(text or "").lower())
+
+
+def _has(text: str, phrases) -> list[str]:
+    """The phrases of `phrases` found in `text`, on word boundaries."""
+    low = " ".join(str(text or "").lower().replace("’", "'").split())
+    return [p for p in phrases
+            if re.search(r"(?<![\w-])" + re.escape(p) + r"(?![\w])", low)]
+
+
+def _content(text: str, lex: dict) -> list[str]:
+    """The words that carry the meaning: not a stop word, three letters or
+    more, or any token with a digit. In order, once each."""
+    out: list[str] = []
+    for w in _words(text):
+        w = w.strip("'’-")
+        if w and w not in lex["stop"] and (len(w) >= 3 or any(c.isdigit() for c in w)) \
+                and w not in out:
+            out.append(w)
+    return out
+
+
+def _stem(word: str) -> str:
+    """Enough of a word to match its plural or tense: bridge / bridges."""
+    return word[:5] if len(word) > 5 else word
+
+
+def _found(words: list[str], text: str) -> list[str]:
+    stems = {_stem(w) for w in _words(text)}
+    return [w for w in words if _stem(w) in stems]
+
+
+def _clock(sections: list[Section]) -> list[tuple[Section, Shot, float]]:
+    """Every shot with its start, from the shots' own lengths, in order."""
+    out, at = [], 0.0
+    for section in sections:
+        for shot in section.shots:
+            out.append((section, shot, at))
+            at += float(shot.seconds or 0)
+    return out
+
+
+def _flag(rule: str, shot: Shot | None, problem: str, fix: str) -> dict:
+    tier = _RULE[rule].tier
+    where = f"shot {shot.label}: " if shot is not None and shot.label else ""
+    return {"n": shot.n if shot is not None else 0, "rule": rule, "tier": tier,
+            "severity": _SEVERITY[tier], "problem": f"{rule}: {where}{problem}",
+            "fix": fix}
+
+
+def rule_findings(plan: dict, sections: list[Section], wpm: int = DEFAULT_WPM,
+                  lang: str = "") -> list[dict]:
+    """The narration measured against RULES, as flags in CHECK_SCHEMA's
+    shape: `n`, `severity`, `problem` (opening with the rule), `fix`, plus
+    `rule` and `tier`. `plan` is the plan or script.json (its title under
+    `idea`, its `promise`, `payoff` and `ending`); a field it lacks takes its
+    rule out quietly, as an older screenplay has none. A rule whose
+    languages exclude `lang` is not run here; `not_evidenced` names it."""
+    plan = plan or {}
+    on = {r.id: _applies(r, lang) for r in RULES}
+    lex = LEXICON.get(rule_lang(lang), LEXICON["en"])
+    timed = _clock(sections)
+    runtime = sum(float(shot.seconds or 0) for _, shot, _ in timed)
+    voiced = [(sec, shot, at) for sec, shot, at in timed if spoken(shot.narration)]
+    out: list[dict] = []
+
+    title = str(plan.get("title") or (plan.get("idea") or {}).get("title") or "")
+    subject = _content(title, lex)
+
+    # -- line by line: filler, sentence, numbers, clause --------------------
+    # A greeting that names the title's subject sets the show up (structure
+    # 11 does not count it against the opening): it is the first content
+    # sentence, not filler before it.
+    content_started = False
+    for _, shot, _ in voiced:
+        for sentence in sentences(spoken(shot.narration)):
+            words = sentence.split()
+            if not content_started and on["rule:filler"]:
+                hits = _has(sentence, lex["filler"])
+                if hits and not (subject and _found(subject, sentence)):
+                    out.append(_flag("rule:filler", shot,
+                                     f"\"{sentence[:60]}\" ({', '.join(hits)}) comes before "
+                                     "the first sentence about the subject",
+                                     "open on the subject; cut the greeting, the "
+                                     "introduction or the call to subscribe"))
+                else:
+                    content_started = True
+            if len(words) > BOUNDS["sentence"]["value"]:
+                out.append(_flag("rule:sentence", shot,
+                                 f"a sentence of {len(words)} words, over "
+                                 f"{BOUNDS['sentence']['value']}: \"{sentence[:60]}...\"",
+                                 "split it where a breath falls; one idea a sentence"))
+            figures = _NUMERAL.findall(sentence)
+            if len(figures) >= BOUNDS["numbers"]["value"]:
+                out.append(_flag("rule:numbers", shot,
+                                 f"{len(figures)} numerals in one sentence "
+                                 f"({', '.join(figures)})",
+                                 "one figure a sentence; round the other or give it "
+                                 "its own sentence"))
+            if on["rule:clause"]:
+                low = " " + " ".join(sentence.lower().split()) + " "
+                marks = sum(low.count(f" {w} ") for w in lex["relative"])
+                marks += sum(low.count(f", {w} ") for w in lex["joins"]) + low.count(";")
+                if 1 + marks > BOUNDS["clause"]["value"]:
+                    out.append(_flag("rule:clause", shot,
+                                     f"{1 + marks} clauses in one sentence: "
+                                     f"\"{sentence[:60]}\"",
+                                     "end the sentence before the which, that or who "
+                                     "and start a new one"))
+
+    # -- what is on screen: legibility, unspoken figures --------------------
+    by_label = {shot.label: shot for _, shot, _ in timed}
+    for row in legibility(sections):
+        out.append(_flag("rule:legibility", by_label.get(row["label"]),
+                         f"\"{row['text']}\" is {row['chars']} characters in "
+                         f"{row['seconds']} s ({row['cps']} a second, over "
+                         f"{READING_CPS:.0f}); it needs {row['needs_seconds']} s",
+                         "shorten the on-screen text"))
+    if on["rule:unspoken-number"]:
+        for row in unspoken_numbers(sections):
+            out.append(_flag("rule:unspoken-number", by_label.get(row["label"]),
+                             f"the screen shows {row['number']}, which the narration "
+                             "never says",
+                             "say the figure in the line, or take it off the screen"))
+
+    # -- the opening --------------------------------------------------------
+    window = BOUNDS["hook_window"]["value"]
+    hook = [(sec, shot, at) for sec, shot, at in timed if at < window]
+    hook_text = " ".join(spoken(s.narration) + " " + " ".join(s.on_screen_text or [])
+                         for _, s, _ in hook)
+    first = next((shot for _, shot, at in voiced if at < window), None)
+    if on["rule:hook-subject"] and subject and first is not None \
+            and not _found(subject, hook_text):
+        out.append(_flag("rule:hook-subject", first,
+                         f"none of the title's words ({', '.join(subject)}) is said "
+                         f"or shown in the first {window} s",
+                         "name the subject the title promised in the opening lines"))
+    ending = plan.get("ending") if isinstance(plan.get("ending"), dict) else {}
+    payoff_line = str(ending.get("payoff_line") or "").strip()
+    norm = lambda text: " ".join(_words(text))  # noqa: E731
+    answers = [norm(s) for text in (payoff_line, str(plan.get("payoff") or ""))
+               for s in sentences(text)
+               if len(_words(s)) >= BOUNDS["hook_answer"]["value"]]
+    for _, shot, at in hook:
+        if not answers or shot.function == "payoff" or not spoken(shot.narration):
+            continue
+        said = [norm(s) for s in sentences(spoken(shot.narration))]
+        if any(a in s for a in answers for s in said):
+            out.append(_flag("rule:hook-answer", shot,
+                             "the opening says the film's payoff verbatim",
+                             "withhold the answer; tease it, and say it where it is "
+                             "paid"))
+    promise = _content(str(plan.get("promise") or ""), lex)
+    if on["rule:hook-promise"] and promise and first is not None:
+        share = len(_found(promise, hook_text)) / len(promise)
+        if share < BOUNDS["hook_promise"]["value"]:
+            out.append(_flag("rule:hook-promise", None,
+                             f"the first {window} s carry {share:.0%} of the promise's "
+                             f"words ({', '.join(promise)})",
+                             "let the opening say what the film promises"))
+    stakes_window = BOUNDS["hook_stakes"]["value"]
+    early = " ".join(spoken(s.narration) for _, s, at in voiced if at < stakes_window)
+    if on["rule:hook-stakes"] and early and not _has(early, lex["viewer"]):
+        out.append(_flag("rule:hook-stakes", None,
+                         f"no line in the first {stakes_window} s is addressed to the "
+                         "viewer",
+                         "say what it costs the viewer, to them"))
+
+    # -- section by section: person, pace, density ---------------------------
+    seen_names: set[str] = set()
+    for section in sections:
+        lines = [s for s in section.shots if spoken(s.narration)]
+        if not lines:
+            continue
+        text = " ".join(spoken(s.narration) for s in lines)
+        words = len(text.split())
+        if on["rule:person"] and not _has(text, lex["person"]):
+            out.append(_flag("rule:person", lines[0],
+                             f"section \"{section.heading}\" never addresses the viewer",
+                             "speak to the viewer: you, or we"))
+        seconds = sum(float(s.seconds or 0) for s in lines)
+        if seconds > 0 and wpm > 0:
+            needs = words * 60 / wpm
+            if needs > seconds * BOUNDS["pace"]["value"]:
+                out.append(_flag("rule:pace", lines[0],
+                                 f"section \"{section.heading}\": {words} words take "
+                                 f"{needs:.0f} s at {wpm} wpm (--wpm), over the "
+                                 f"{seconds:.0f} s "
+                                 f"its narrated shots are planned for (a planned pace "
+                                 f"of {words * 60 / seconds:.0f} wpm); voice and retime "
+                                 "measure the read",
+                                 "cut words, or give the shots more time"))
+        if on["rule:density"] and words:
+            names = 0
+            for sentence in sentences(text):
+                for token in sentence.split()[1:]:
+                    token = token.strip(".,;:!?\"'()“”‘’")
+                    if token and token != "I" and _CAPITALISED.match(token) \
+                            and token.lower() not in seen_names:
+                        seen_names.add(token.lower())
+                        names += 1
+            dense = (len(_NUMERAL.findall(text)) + names) * 100 / words
+            if dense > BOUNDS["density"]["value"]:
+                out.append(_flag("rule:density", lines[0],
+                                 f"section \"{section.heading}\" carries {dense:.0f} "
+                                 "numerals and new names per 100 words",
+                                 "thin the facts, or give them more time"))
+
+    # -- the film as a whole: passive ---------------------------------------
+    if on["rule:passive"]:
+        said = [(shot, s) for _, shot, _ in voiced for s in sentences(spoken(shot.narration))]
+        passive = [(shot, s) for shot, s in said if _PASSIVE.search(s)]
+        if said and len(passive) / len(said) > BOUNDS["passive"]["value"]:
+            out.append(_flag("rule:passive", None,
+                             f"{len(passive)} of {len(said)} sentences are passive "
+                             f"(shots {', '.join(dict.fromkeys(s.label for s, _ in passive))})",
+                             "say who does it: subject, verb, object"))
+        for shot, s in passive:
+            if shot.function == "payoff":
+                out.append(_flag("rule:passive", shot,
+                                 f"the payoff is passive: \"{s[:60]}\"",
+                                 "say who does it"))
+
+    # -- the ending ----------------------------------------------------------
+    last = next((sec for sec in reversed(sections)
+                 if any(spoken(s.narration) for s in sec.shots)), None)
+    if last is not None:
+        tail_shot = [s for s in last.shots if spoken(s.narration)][-1]
+        payoff_words = _content(payoff_line, lex)
+        if on["rule:payoff-last"] and payoff_words:
+            text = " ".join(spoken(s.narration) for s in last.shots)
+            share = len(_found(payoff_words, text)) / len(payoff_words)
+            if share < BOUNDS["payoff_last"]["value"]:
+                out.append(_flag("rule:payoff-last", tail_shot,
+                                 f"the last section carries {share:.0%} of the payoff "
+                                 f"line's words ({', '.join(payoff_words)})",
+                                 "end on the payoff line, the title's promise paid"))
+        closing = sentences(spoken(tail_shot.narration))[-1]
+        if len(closing.split()) > BOUNDS["last_line"]["value"]:
+            out.append(_flag("rule:last-line", tail_shot,
+                             f"the film's last sentence is {len(closing.split())} words",
+                             "close on one short line"))
+    order = [shot for _, shot, _ in timed]
+    paid = [i for i, s in enumerate(order) if s.function == "payoff"]
+    if on["rule:end-signal"] and runtime:
+        start = runtime * (1 - BOUNDS["end_signal"]["value"])
+        for i, (sec, shot, at) in enumerate(timed):
+            if at + float(shot.seconds or 0) <= start or not spoken(shot.narration):
+                continue
+            hits = _has(shot.narration, lex["end"])
+            if set(hits) <= set(lex["finally"]) and hits:
+                before = " ".join(spoken(s.narration) for s in sec.shots)
+                cut = before.lower().find(hits[0])
+                if _has(before[:cut], lex["first"]):
+                    hits = []           # "first ... then ... finally": an enumeration
+            if hits and not any(p >= i for p in paid):
+                out.append(_flag("rule:end-signal", shot,
+                                 f"\"{hits[0]}\" signals the end with no payoff after it",
+                                 "cut the signal, or let it lead into the payoff"))
+    if on["rule:recap"] and paid:
+        after = [s for s in order[paid[-1] + 1:] if spoken(s.narration)]
+        words = sum(len(spoken(s.narration).split()) for s in after)
+        signed = [(s, h) for s in after for h in _has(s.narration, lex["sign_off"])]
+        if words > BOUNDS["recap"]["value"]:
+            out.append(_flag("rule:recap", after[0],
+                             f"{words} words of narration after the payoff shot",
+                             "end within a line of the payoff"))
+        elif signed:
+            out.append(_flag("rule:recap", signed[0][0],
+                             f"\"{signed[0][1]}\" after the payoff",
+                             "end on the payoff; no sign-off"))
+    return out
+
+
+def rule_lines(flags: list[dict], kept: dict | None = None, lang: str = "",
+               *, revised: bool = True) -> list[str]:
+    """script.json's `findings` for the rules, in sdkkit's prefixes: an
+    error-tier flag still standing is `error: rule:x`, the important and
+    minor ones `warning: rule:x`, a house one `warning: house:rule:x`; a
+    flag the revision kept carries its reason. Then a `not_evidenced:` line
+    for each rule the language takes out."""
+    kept = kept or {}
+    out = []
+    for f in flags:
+        tier = f.get("tier") or _RULE[f["rule"]].tier
+        line = f["problem"]
+        why = kept.get((f["rule"], f.get("n", 0)))
+        if why:
+            line += f"; kept: {why}"
+        elif tier in ("error", "important"):
+            line += ("; still standing after the revision" if revised
+                     else "; not revised (--report-only)")
+        if tier == "error":
+            out.append(f"error: {line}")
+        elif tier == "house":
+            out.append(f"warning: house:{line}")
+        else:
+            out.append(f"warning: {line}")
+    return out + not_evidenced(lang)
+
+
+#: The order findings are printed in: what blocks, what warns, the rest.
+_PREFIX_ORDER = ("error", "warning")
+
+
 def print_hints(hints: dict) -> None:
-    """What the house standards can be checked for, rather than asked for."""
+    """What the house standards can be checked for, rather than asked for:
+    script.json's `findings` (the narration rules' and the stage's notes),
+    errors first. A screenplay written before the rules has only the
+    legibility and unspoken-figure tables, which are printed as they were."""
+    findings = [str(f) for f in hints.get("findings") or []]
+    if findings:
+        rank = lambda f: next((i for i, p in enumerate(_PREFIX_ORDER)  # noqa: E731
+                               if f.startswith(p + ":")), len(_PREFIX_ORDER))
+        print(f"\n\n{'=' * 78}\nFINDINGS")
+        for finding in sorted(findings, key=rank):
+            print(wrap(f"· {finding}", "  "))
+        return
     if hints.get("legibility"):
         print(f"\n  supers above {READING_CPS:.0f} characters a second "
               "(nobody finishes reading them):")
@@ -1574,11 +2238,9 @@ def print_script(idea: Idea, data: dict, sections: list[Section]) -> None:
         print(wrap(f"verdict: {check['verdict']}", "  "))
 
     # What the stage recorded instead of deciding (a value off a schema
-    # list), so the operator sees it without opening script.json.
-    if data.get("findings"):
-        print(f"\n\n{'=' * 78}\nFINDINGS")
-        for finding in data["findings"]:
-            print(wrap(f"· {finding}", "  "))
+    # list) and what the narration rules found, so the operator sees it
+    # without opening script.json.
+    print_hints(data)
 
 
 def question_ledger(questions) -> list[str]:
@@ -1677,6 +2339,15 @@ def write_md(path: str, idea: Idea, data: dict, sections: list[Section]) -> None
                    f"{flag.get('problem', '')}",
                    f"  - fix: {flag.get('fix', '')}"]
         md.append("")
+
+    if data.get("findings"):
+        md += ["## Findings", "",
+               "The narration rules' findings (`error:` blocks the stage, "
+               "`warning:` does not, `house:` is the house's own prior) and the "
+               "stage's notes.", ""]
+        md += [f"- `{f.split(': ', 1)[0]}` {f.split(': ', 1)[-1]}"
+               for f in data["findings"]]
+        md.append("")
     Path(path).write_text("\n".join(md), encoding="utf-8")
 
 
@@ -1745,7 +2416,9 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                    help="fact-check the script against the dossier, fix the "
                         "important and blocking lines, and re-check them")
     p.add_argument("--report-only", action="store_true",
-                   help="with --verify: report the findings without fixing them")
+                   help="report the findings without fixing them: the fact-check's "
+                        "(with --verify) and the narration rules'; a standing "
+                        "`error:` rule finding then does not stop the stage")
     p.add_argument("--jobs", type=int, default=4,
                    help="sections drafted at the same time (default 4; 1 writes "
                         "them in order, each reading the one before)")
@@ -1806,22 +2479,36 @@ def run(args) -> int:
         print("error: no shots were written", file=sys.stderr)
         return 1
 
+    # The two checks before the rules, kept under their old keys for one
+    # release beside `findings`, where they are rule:legibility and
+    # rule:unspoken-number now.
     hints = {"legibility": legibility(sections),
              "unspoken_numbers": unspoken_numbers(sections)}
     data |= hints
 
     print_script(idea, data, sections)
-    print_hints(hints)
 
+    # A narration rule of the error tier still standing after its revision
+    # blocks the stage: the prompter a narrator reads from is not written
+    # (an older one is removed, so it cannot be read by mistake), and the
+    # exit is 1. --report-only records it and goes on.
+    errors = [f for f in data.get("findings", []) if str(f).startswith("error:")]
+    blocked = bool(errors) and not args.report_only
+    narration = project.out("narration", args.vo_out)
     for path, writer_fn in (
             (project.out("script_md", args.md_out),
              lambda p: write_md(p, idea, data, sections)),
-            (project.out("narration", args.vo_out),
-             lambda p: write_prompter(p, idea, sections, wpm=args.wpm)),
+            (narration, lambda p: write_prompter(p, idea, sections, wpm=args.wpm)),
             (project.out("shotlist", args.csv_out),
              lambda p: write_csv(p, sections)),
             (project.out("script", args.json_out),
              lambda p: write_json(p, data))):
+        if blocked and path == narration:
+            if Path(path).exists():
+                Path(path).unlink()
+                print(f"removed {path}: it no longer matches the screenplay",
+                      file=sys.stderr)
+            continue
         writer_fn(path)
         print(f"wrote {path}", file=sys.stderr)
 
@@ -1835,4 +2522,10 @@ def run(args) -> int:
         print(f"warning: {data['failed_sections']} section(s) failed and are "
               "empty", file=sys.stderr)
     print(f"{writer.usage}", file=sys.stderr)
+    if blocked:
+        print(f"error: {len(errors)} narration rule finding(s) of the error tier "
+              "stand; narration.txt was not written. Run `yt script` again with "
+              "--notes saying how to clear them, or --report-only to record them "
+              "and go on.", file=sys.stderr)
+        return 1
     return 1 if data["failed_sections"] else 0

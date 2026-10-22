@@ -974,11 +974,15 @@ class SceneBuilder:
                  max_bitrate: int = 24_000_000, buffer_size: int = 48_000_000,
                  preset: str = "slow", edit: dict | None = None,
                  look: dict | None = None, story: dict | None = None,
+                 script_findings: list[str] | None = None,
                  verbose: bool = True) -> None:
         self.idea = idea
         self.edit = edit or {}
         #: The promise and the shot that pays it (`story_of`), for the editor.
         self.story = story or {}
+        #: The screenplay's standing `error:` rule findings (`script_errors`),
+        #: carried into the manifest for qa to lift.
+        self.script_findings = list(script_findings or [])
         self.look = look
         self.sections = sections
         self.root = root
@@ -2037,6 +2041,7 @@ class SceneBuilder:
         reparse += (edit["findings"] + include_findings + lifted + sound["findings"]
                     + pinner.errors)
         reparse += [f"warning: blocking (editorial): {x}" for x in edit["blocking"]]
+        reparse += self.script_findings
         manifest = {
             "idea": asdict(self.idea),
             "scene": {"version": version,
@@ -2180,6 +2185,18 @@ def look_prompt(data: dict) -> str:
         "`reason` in terms of the treatment and the palette.",
         brief("Film", {k: data.get(k) for k in ("title", "treatment", "design")}),
     ])
+
+
+def script_errors(script: dict | None) -> list[str]:
+    """The screenplay's `error:` findings still standing (a narration rule
+    of the error tier the revision did not clear, recorded with `yt script
+    --report-only`), as build findings: `error: script: rule:x: ...`. The
+    build carries them so qa.mechanical_blockers lifts them; it does not
+    fix them, and it does not refuse the scene for them, since the scene is
+    not where they are fixed. Warnings stay in script.json."""
+    findings = script.get("findings") if isinstance(script, dict) else None
+    return [f"error: script: {str(f)[len('error: '):]}" for f in findings or []
+            if str(f).startswith("error: ")]
 
 
 def story_of(script: dict, sections: list[Section]) -> dict:
@@ -2453,7 +2470,8 @@ def run(args) -> int:
         bitrate=args.bitrate,
         max_bitrate=args.max_bitrate,
         buffer_size=args.buffer_size, preset=args.preset,
-        story=story_of(script, sections), verbose=not args.quiet)
+        story=story_of(script, sections), script_findings=script_errors(script),
+        verbose=not args.quiet)
 
     # The edit is the model's: what covers each gap, where captions stay out,
     # how long the film holds. The builder only applies it.
@@ -2481,7 +2499,10 @@ def run(args) -> int:
     manifest["engine"] = engine.report()
 
     print_build(manifest)
-    errors = [f for f in manifest["findings"] if f.startswith("error")]
+    # The screenplay's own errors ride along for qa; they are fixed in `yt
+    # script`, so they do not stop the scene being written.
+    errors = [f for f in manifest["findings"] if f.startswith("error")
+              and not f.startswith("error: script: ")]
     if errors and not args.force:
         print(f"\nerror: {len(errors)} check error(s); the scene was not "
               "written. Fix them, or pass --force to write it anyway.",
