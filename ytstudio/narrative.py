@@ -699,12 +699,14 @@ PICTURE_SCHEMA = {
 # observable. tests/fixtures/narrative/ is that floor: one case per seeded
 # fault, each `expected.json` naming the criterion the fault is graded on
 # and the best verdict a correct reviewer may give, and one good plan and
-# script with a padded copy for the length audit. Two faults are not the
-# story review's: a premise the narration never voices and terms a lay
-# viewer is never given have no rubric criterion, judging 14 puts them in
-# the cold read, and the stage files the cold read's mismatch without
-# touching the verdict. Their cases say `"story": false` and are judged on
-# the cold read alone. The fixtures are not the
+# script. The good script and the recap ending each have a padded copy for
+# the length audit: the good pair may be read at the ceiling, where the
+# longer copy cannot win, and the consider-level one leaves it room. Two
+# faults are not the story review's: a premise the narration never voices
+# and terms a lay viewer is never given have no rubric criterion, judging
+# 14 puts them in the cold read, and the stage files the cold read's
+# mismatch without touching the verdict. Their cases say `"story": false`
+# and are judged on the cold read alone. The fixtures are not the
 # channel's scripts: the twenty a person labels in work/review-log.jsonl
 # are the set, these are what any reviewer must clear first.
 #
@@ -885,16 +887,32 @@ def pair_winner(shorter: Mapping, longer: Mapping) -> str:
     return "longer" if up > down else "shorter" if down > up else "tie"
 
 
+def at_ceiling(shorter: Mapping, longer: Mapping) -> bool:
+    """Whether both readings of a pair are already at the top: recommend,
+    every criterion Excellent. The longer copy has nothing left to win
+    there, so such a tie says nothing about length bias."""
+    def top(reading: Mapping) -> bool:
+        grades = reading.get("grades") or {}
+        return (reading.get("verdict") == VERDICTS[-1]
+                and all(grades.get(k) == LEVELS[0] for k in KEYS))
+    return top(shorter) and top(longer)
+
+
 def length_audit(pairs: Iterable[tuple[Mapping, Mapping]]) -> dict:
     """judging 9's audit: each pair is one sample of a script read at its
     own length and the same sample of it padded. It fails when the padded
-    one wins more than LENGTH_BIAS_LIMIT of the pairs; with no pair it has
-    not run, which is not a pass."""
+    one wins more than LENGTH_BIAS_LIMIT of the pairs. With no pair it has
+    not run, and with every pair at the ceiling (at_ceiling) it could not
+    have seen a bias; neither is a pass. The calibration set pads a
+    consider-level case beside the good one so the longer copy has room
+    to win."""
+    pairs = list(pairs)
     winners = [pair_winner(short, long) for short, long in pairs]
     n, longer = len(winners), winners.count("longer")
+    ceiling = sum(1 for short, long in pairs if at_ceiling(short, long))
     return {"pairs": n, "longer": longer, "shorter": winners.count("shorter"),
-            "ties": winners.count("tie"),
-            "passed": bool(n) and longer / n <= LENGTH_BIAS_LIMIT}
+            "ties": winners.count("tie"), "ceiling": ceiling,
+            "passed": bool(n) and ceiling < n and longer / n <= LENGTH_BIAS_LIMIT}
 
 
 def calibration_cases(directory: Any) -> list[dict]:
@@ -1047,13 +1065,19 @@ def calibration_lines(report: Mapping) -> list[str]:
         out += [f"    - {line}" for line in r.get("failures") or []]
     audit = report.get("audit") or {}
     limit = f"{LENGTH_BIAS_LIMIT:.0%}"
-    if audit.get("pairs"):
+    ceiling = int(audit.get("ceiling") or 0)
+    if audit.get("pairs") and ceiling >= audit["pairs"]:
+        out.append(f"length audit: fail: all {audit['pairs']} pairs were read at the ceiling "
+                   "(recommend, every grade Excellent), where the padded script has nothing "
+                   "to win, so the audit could not see a bias")
+    elif audit.get("pairs"):
         out.append(f"length audit: {'pass' if audit.get('passed') else 'fail'}: the padded "
                    f"script won {audit['longer']} of {audit['pairs']} pairs, "
-                   f"{audit.get('ties', 0)} tied (it fails above {limit})")
+                   f"{audit.get('ties', 0)} tied, {ceiling} at the ceiling where it could "
+                   f"not win (it fails above {limit})")
     else:
         out.append(f"length audit: fail: no pair was read (it fails above {limit}; a "
-                   "padded.json beside a good script is needed)")
+                   "padded.json beside a case's script is needed)")
     good = [r for r in rows if r.get("story", True) and not r.get("criterion")]
     seeded = [r for r in rows if r not in good]
     out.append(f"seeded-bad caught: {sum(1 for r in seeded if r.get('passed'))} of "

@@ -206,21 +206,35 @@ class TheSet(unittest.TestCase):
         self.assertEqual(load(FIXTURES / "good" / "expected.json")["cold_read"],
                          {"match": "match"})
 
-    def test_the_padded_script_is_the_good_one_longer_with_the_same_content(self):
-        good = load(FIXTURES / "good" / "script.json")
-        padded = load(FIXTURES / "good" / "padded.json")
-        self.assertEqual(padded["idea"], good["idea"])
-        self.assertEqual([s["heading"] for s in padded["sections"]],
-                         [s["heading"] for s in good["sections"]])
-        short = [s for sec in good["sections"] for s in sec["shots"]]
-        long = [s for sec in padded["sections"] for s in sec["shots"]]
-        self.assertEqual([s["n"] for s in long], [s["n"] for s in short])
-        for a, b in zip(short, long):
-            # the same figures said, and the same picture
-            self.assertEqual(script.figures_in(b["narration"]), script.figures_in(a["narration"]))
-            self.assertEqual(b["visual"], a["visual"])
-        words = lambda shots: sum(len(s["narration"].split()) for s in shots)  # noqa: E731
-        self.assertGreaterEqual(words(long), 1.5 * words(short))
+    def test_each_padded_script_is_its_case_longer_with_the_same_content(self):
+        padded_cases = [n for n, p in cases().items() if (p / "padded.json").is_file()]
+        self.assertIn("good", padded_cases)
+        # A pair read at the top verdict with every grade Excellent cannot be
+        # won by the longer copy, so a padded case below recommend is what
+        # gives the audit room to see a bias.
+        self.assertTrue([n for n in padded_cases
+                         if load(FIXTURES / n / "expected.json").get("verdict") == "consider"],
+                        padded_cases)
+        for name in padded_cases:
+            with self.subTest(case=name):
+                shorter = load(FIXTURES / name / "script.json")
+                padded = load(FIXTURES / name / "padded.json")
+                self.assertEqual(padded["idea"], shorter["idea"])
+                self.assertEqual([s["heading"] for s in padded["sections"]],
+                                 [s["heading"] for s in shorter["sections"]])
+                short = [s for sec in shorter["sections"] for s in sec["shots"]]
+                long = [s for sec in padded["sections"] for s in sec["shots"]]
+                self.assertEqual([s["n"] for s in long], [s["n"] for s in short])
+                for a, b in zip(short, long):
+                    # the same figures said, and the same picture
+                    self.assertEqual(script.figures_in(b["narration"]),
+                                     script.figures_in(a["narration"]))
+                    self.assertEqual(b["visual"], a["visual"])
+                words = lambda shots: sum(len(s["narration"].split()) for s in shots)  # noqa: E731
+                self.assertGreaterEqual(words(long), 1.5 * words(short))
+        # the recap is still a recap at its longer length: the fault is kept
+        last = load(FIXTURES / "recap-ending" / "padded.json")["sections"][-1]["shots"][-1]
+        self.assertIn("recap", last["narration"].lower())
 
 
 # --------------------------------------------------------------------------- #
@@ -364,6 +378,26 @@ class LengthAudit(unittest.TestCase):
         self.assertFalse(audit["passed"])
         self.assertEqual(audit["pairs"], 0)
 
+    def test_a_pair_at_the_ceiling_is_counted_and_an_audit_all_at_it_sees_nothing(self):
+        top = rated("recommend", **{k: "Excellent" for k in narrative.KEYS})
+        self.assertTrue(narrative.at_ceiling(top, top))
+        self.assertFalse(narrative.at_ceiling(top, rated("recommend")))
+        self.assertFalse(narrative.at_ceiling(rated("consider"), rated("consider")))
+        tie = (rated("consider"), rated("consider"))
+        audit = narrative.length_audit([(top, top), (top, top), tie])
+        self.assertEqual(audit["ceiling"], 2)
+        self.assertTrue(audit["passed"])
+        blind = narrative.length_audit([(top, top), (top, top), (top, top)])
+        self.assertEqual(blind["ceiling"], 3)
+        self.assertFalse(blind["passed"])
+        lines = narrative.calibration_lines({"cases": [], "audit": blind})
+        line = next(line for line in lines if line.startswith("length audit:"))
+        self.assertIn("fail", line)
+        self.assertIn("ceiling", line)
+        lines = narrative.calibration_lines({"cases": [], "audit": audit})
+        line = next(line for line in lines if line.startswith("length audit:"))
+        self.assertIn("2 at the ceiling", line)
+
 
 # --------------------------------------------------------------------------- #
 # the calibrate entry point, over the fake
@@ -449,18 +483,26 @@ class Calibrate(Hermetic):
 
     def test_a_reviewer_won_by_length_fails_the_audit(self):
         def longer_wins(case, kind):
-            if kind == "review" and case == "good":
-                said = copy.deepcopy(load(FIXTURES / "good" / "expected.json")["review"])
+            if kind == "review" and case in ("good", "recap-ending"):
+                said = copy.deepcopy(load(FIXTURES / case / "expected.json")["review"])
                 said["grades"]["open_loops"] = "Fair"
                 said["verdict"] = "consider"
-                said["flags"] = [{"n": 0, "section": 2, "criterion": "open_loops",
-                                  "problem": "p", "severity": "important", "fix": "f"}]
+                said["flags"].append({"n": 0, "section": 2, "criterion": "open_loops",
+                                      "problem": "p", "severity": "important", "fix": "f"})
                 return said
             return None
         report, _ = self.calibrate(longer_wins)
         self.assertFalse(report["audit"]["passed"])
         self.assertEqual(report["audit"]["longer"], report["audit"]["pairs"])
         self.assertFalse(report["passed"])
+
+    def test_the_consider_level_case_is_padded_and_paired_too(self):
+        report, asked = self.calibrate()
+        self.assertIn("recap-ending-padded", {case for case, _ in asked})
+        rows = {r["name"]: r for r in report["cases"]}
+        self.assertEqual(rows["recap-ending"]["padded"], "consider")
+        self.assertEqual(report["audit"]["pairs"], 6)
+        self.assertEqual(report["audit"]["ceiling"], 0)
 
     def test_the_fixtures_are_never_logged_as_channel_scripts(self):
         self.calibrate()
