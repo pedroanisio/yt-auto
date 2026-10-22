@@ -108,6 +108,29 @@ class ProofCheck(_Project):
         # the film's frame is kept beside the manifest for a reviewer
         self.assertTrue((self.root / build.PROOF_DIR / row["frame"]).is_file())
 
+    def test_print_build_names_the_mismatched_worlds(self):
+        self.proof(x=50)
+        self.film_x = 400
+        data, manifest = self.built()
+        manifest["proof_check"] = self.check(data, manifest)
+        with mock.patch("sys.stdout", new=io.StringIO()) as out:
+            build.print_build(manifest)
+        self.assertIn("proof frames: 1 world(s) mismatch, mismatched: fx-1-1", out.getvalue())
+
+    def test_the_folder_holds_this_builds_frames_and_no_others(self):
+        # a world removed or renamed between builds leaves no stale frame
+        # beside the current ones, so a reviewer reads the folder as one build
+        self.proof(x=50)
+        folder = self.root / build.PROOF_DIR
+        folder.mkdir(parents=True)
+        stale = folder / "proof-open__fx-gone__3s.png"
+        stale.write_bytes(_frame(50))
+        data, manifest = self.built()
+        record = self.check(data, manifest)
+        self.assertFalse(stale.exists())
+        self.assertEqual(sorted(p.name for p in folder.iterdir()),
+                         [record["worlds"][0]["frame"]])
+
     def test_a_match_files_nothing_and_leaves_publishable_alone(self):
         self.proof(x=50)
         self.film_x = 50

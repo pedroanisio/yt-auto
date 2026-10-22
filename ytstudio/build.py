@@ -317,10 +317,14 @@ def proof_check(data: bytes, manifest: dict, vfx: dict | None, root: Path, *,
     mismatch is an `error:` finding naming the world, the time and the
     difference, and the build is not publishable: this is what a world split
     into includes, moved, or composed differently from the proof render
-    looks like. The film's frame is kept under PROOF_DIR. With no host
-    reachable nothing is compared, and the manifest says so.
+    looks like. The film's frame is kept under PROOF_DIR, which holds this
+    build's frames and no other's. With no host reachable nothing is
+    compared, and the manifest says so.
     """
     from . import render
+    frames = Path(root) / PROOF_DIR
+    for stale in frames.glob("*.png") if frames.is_dir() else []:
+        stale.unlink()
     plan = proof_plan(vfx, root, manifest.get("shots", []))
     if not plan:
         return {"status": "no proof frames", "worlds": []}
@@ -339,7 +343,6 @@ def proof_check(data: bytes, manifest: dict, vfx: dict | None, root: Path, *,
     # compared with it (AUTO-72): the look is not a mismatch.
     document = ungraded(data)
     files = shipped_with(document.decode("utf-8", "replace"), root)
-    frames = Path(root) / PROOF_DIR
     rows: list[dict] = []
     mismatched: list[str] = []
     unread = 0
