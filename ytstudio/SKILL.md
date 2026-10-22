@@ -181,7 +181,10 @@ assumed) and the total, and runs nothing. `yt run --budget-usd N` caps the
 whole run: a stage whose estimate plus what the run's stages have reported
 does not fit is not started, the refusal names the estimate and the run exits
 `retime.UNSETTLED` (3); sound counts at its estimate while it runs beside;
-`yt vfx` is handed what is left as `--stage-budget-usd`.
+`yt vfx` is handed what is left as `--stage-budget-usd`. The plan and the
+cap price the stages in the one order the walk reaches them
+(`cli.walk_order`, sound before the keyframe), since an assumed vfx pass
+folds in what follows it.
 
 **The look-lock.** `yt keyframe` takes the look from the film itself, so
 nothing made for it is thrown away. It builds `yt vfx`'s own planner

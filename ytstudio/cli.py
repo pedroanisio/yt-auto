@@ -314,6 +314,16 @@ def stage_state(stage: str, project: workspace.Project, skip: set, redo: set, *,
     return "run"
 
 
+def walk_order(skip: set = frozenset()) -> list[str]:
+    """The stages in the order `yt run` reaches them: PIPELINE with sound
+    moved to where it starts, beside the keyframe, less the ones skipped.
+    The plan and the cap both price this order, since an assumed vfx folds
+    in what follows it: sound priced after vfx would count at nothing."""
+    order = [s for s in PIPELINE if s != "sound"]
+    order.insert(order.index("keyframe"), "sound")
+    return [s for s in order if s not in skip]
+
+
 def run_plan(project: workspace.Project, skip: set, redo: set, *,
              say=lambda msg: print(msg, file=sys.stderr)) -> tuple[list[str], str]:
     """The stages `yt run` would walk now, in order, sound where it starts
@@ -321,11 +331,7 @@ def run_plan(project: workspace.Project, skip: set, redo: set, *,
     keyframe that runs leaves a look awaiting approval, so the plan ends
     there as the walk does."""
     plan: list[str] = []
-    for stage in PIPELINE:
-        if stage == "keyframe" and stage_state("sound", project, skip, redo, say=say) == "run":
-            plan.append("sound")
-        if stage == "sound":
-            continue
+    for stage in walk_order():
         state = stage_state(stage, project, skip, redo, say=say)
         if state == "stop":
             return plan, f"stops before {stage}: the look awaits the operator"
@@ -385,12 +391,12 @@ def _run_pipeline(args) -> int:
 
     # The cap: a stage is started only when its estimate fits beside what the
     # stages that ran have reported. Sound counts at its estimate while it
-    # runs beside, at its report once joined.
+    # runs beside, at its report once joined. Priced in walk order, as the
+    # plan is, so a stage is folded into the vfx default only when it follows it.
     budget = args.budget_usd
     priced: dict[str, dict] = {}
     if budget is not None:
-        priced = {r["stage"]: r for r in spend.stage_estimates(
-            project.root, [s for s in PIPELINE if s not in skip])}
+        priced = {r["stage"]: r for r in spend.stage_estimates(project.root, walk_order(skip))}
     ran: set[str] = set()
     committed = 0.0
 

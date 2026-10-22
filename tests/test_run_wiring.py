@@ -166,6 +166,47 @@ class Budget(Priced):
         self.assertIn("sound", self.err)
 
 
+class WalkOrder(RunCase):
+    """The plan and the cap price the stages in the order the walk reaches
+    them, sound before the keyframe, with the real estimator: an assumed vfx
+    folds in what follows it, so a stage priced after vfx when it runs before
+    it would count at $0.00."""
+
+    def test_the_walk_order_is_the_pipeline_with_sound_at_the_keyframe_less_the_skipped(self):
+        order = cli.walk_order()
+        self.assertEqual(sorted(order), sorted(cli.PIPELINE))
+        self.assertEqual(order.index("sound") + 1, order.index("keyframe"))
+        self.assertEqual([s for s in order if s != "sound"],
+                         [s for s in cli.PIPELINE if s != "sound"])
+        self.assertEqual(cli.walk_order({"keyframe", "render"}),
+                         [s for s in order if s not in ("keyframe", "render")])
+
+    def test_the_dry_run_and_the_cap_price_sound_alike_on_a_fresh_project(self):
+        # Nothing measured, no like project: every stage is at its default,
+        # and sound is $0.50 in the plan as in the cap.
+        self.assertEqual(self.run_yt("--dry-run"), 0)
+        rows = {}
+        for line in self.out.splitlines():
+            words = line.split()
+            if len(words) >= 2 and words[1].startswith("$"):
+                rows[words[0]] = float(words[1][1:])
+        self.assertEqual(rows["sound"], 0.5, self.out)
+        up_to_sound = sum(rows[s] for s in ("research", "styles", "script", "props", "voice",
+                                            "retime", "sound"))
+        self.assertEqual(up_to_sound, 13.0)
+        self.assertEqual(rows["total"], up_to_sound + rows["keyframe"])
+        # Each stage reports what it was assumed to cost, so after retime the
+        # run has spent $12.50 and sound's $0.50 is the first that does not fit.
+        self.costs.update({s: spend.DEFAULT_USD[s] for s in cli.PIPELINE})
+        self.order.clear()
+        self.assertEqual(self.run_yt("--budget-usd", f"{up_to_sound - 0.1:.2f}"),
+                         retime.UNSETTLED)
+        self.assertIn("== sound: estimated at $0.50", self.err)
+        self.assertIn("$12.50", self.err)
+        self.assertNotIn("sound:start", self.order)
+        self.assertNotIn("keyframe:start", self.order)
+
+
 class EnvHints(unittest.TestCase):
     def test_the_freesound_keys_are_named(self):
         self.assertIn("FREESOUND_CLIENT_ID", env.KNOWN)
