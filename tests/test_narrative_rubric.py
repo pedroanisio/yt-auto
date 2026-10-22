@@ -113,6 +113,38 @@ class Rubric(unittest.TestCase):
         self.assertIn("the first beat", narrative.rubric_text("writer", keys=["hook"],
                                                               window="the first beat"))
 
+    def test_stakes_allows_a_film_that_withholds_the_danger_as_its_twist(self):
+        # attention 8: state the risk first "whenever possible"; withhold it
+        # only when a twist is the point, and the Check exempts a declared
+        # twist. The grades below Good must not catch that film.
+        stakes = narrative.criterion("stakes")
+        for text in (stakes.question, stakes.levels["Fair"], stakes.levels["Poor"]):
+            with self.subTest(text=text[:40]):
+                self.assertIn("twist", text)
+
+    def test_the_hook_levels_are_no_stronger_than_structure_10_and_6(self):
+        # structure 10: the key noun is spoken *or* on screen; structure 6
+        # restates the promise early, so a paraphrase of it is not Poor.
+        hook = narrative.criterion("hook")
+        self.assertIn("on screen or in words", hook.levels["Excellent"])
+        self.assertIn("only restates the title", hook.levels["Poor"])
+        self.assertIn("no question beyond it", hook.levels["Poor"])
+
+    def test_a_section_that_only_sets_up_the_next_is_below_good(self):
+        # structure 20: a section that only sets up a later one is cut or merged.
+        reveal = narrative.criterion("reveal_setup")
+        self.assertNotIn("only sets up", reveal.levels["Excellent"] + reveal.levels["Good"])
+        self.assertIn("only sets up", reveal.levels["Fair"])
+
+    def test_the_ending_grades_the_return_to_the_viewer_s_scale(self):
+        # structure 34, cited by the question: a large subject comes back to
+        # the viewer's scale; the writer's "Aim for" is the Excellent line.
+        ending = narrative.criterion("ending")
+        self.assertIn("viewer's scale", ending.levels["Excellent"])
+        self.assertTrue(any("viewer's scale" in ending.levels[level]
+                            for level in ("Good", "Fair", "Poor")))
+        self.assertIn("viewer's scale", narrative.rubric_text("writer", keys=["ending"]))
+
     def test_an_unknown_criterion_is_refused_by_name(self):
         with self.assertRaises(KeyError):
             narrative.criterion("pacing")
@@ -158,6 +190,16 @@ class Text(unittest.TestCase):
         for verdict in narrative.VERDICTS:
             self.assertIn(verdict, role)
         self.assertIsNone(re.search(r"\bPass\b", role))
+
+    def test_the_role_grades_absolutely_and_explains_the_revision_round(self):
+        # The grades are absolute (judging 7); the one comparison a delta
+        # schema asks for is `previous`, and the role says how to fill it.
+        role = narrative.reviewer_role()
+        self.assertNotIn("Judge each criterion on its own, absolutely, never against another draft",
+                         role)
+        self.assertIn("`previous`", role)
+        for word in ("better", "same", "worse", "resolved", "persists", "regressed"):
+            self.assertIn(word, role)
 
 
 class Schema(unittest.TestCase):
@@ -216,6 +258,19 @@ class Schema(unittest.TestCase):
                          ["train"]["enum"], list(narrative.LEVELS))
         self.assertIn("previous", narrative.review_schema(delta=True, seed=2)["required"])
 
+    def test_the_house_window_reaches_the_schema_as_it_reaches_the_role(self):
+        # One sample's role and schema use the same words for the hook's window.
+        said = narrative.review_schema(delta=False, window="the first beat")
+        hook = said["properties"]["grades"]["properties"]["hook"]["description"]
+        self.assertIn("the first beat", hook)
+        self.assertIn("the first beat", narrative.reviewer_role(window="the first beat"))
+        seeded = narrative.review_schema(delta=True, seed=2, window="the first beat")
+        self.assertIn("the first beat",
+                      seeded["properties"]["grades"]["properties"]["hook"]["description"])
+        self.assertIn(narrative.OPENING_WINDOW,
+                      narrative.REVIEW_SCHEMA["properties"]["grades"]["properties"]["hook"]
+                      ["description"])
+
     def test_a_blank_answer_validates_against_every_schema(self):
         for name, schema in (("review", narrative.REVIEW_SCHEMA),
                              ("review delta", narrative.review_schema(delta=True)),
@@ -264,6 +319,17 @@ class CheckReview(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertIn("consider", found[0])
         self.assertIn("flag", found[0])
+
+    def test_a_recommend_carrying_a_blocker_is_refused_by_name(self):
+        # The verdict's own description: recommend means no Poor and no blocker.
+        found = narrative.check_review(review("recommend",
+                                              flags=[flag("hook", severity="blocker")]))
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("recommend", found[0])
+        self.assertIn("blocker", found[0])
+        self.assertIn("hook", found[0])
+        self.assertEqual(narrative.check_review(review("recommend",
+                                                       flags=[flag(severity="minor")])), [])
 
     def test_a_flag_on_no_criterion_is_refused_by_name(self):
         found = narrative.check_review(review("consider", flags=[flag("pacing")]))
@@ -338,6 +404,8 @@ class Fixtures(unittest.TestCase):
                         self.assertEqual(missing_fields({"shots": section["shots"]}, schema), [])
 
     def test_the_fault_is_where_the_case_says(self):
+        good = {"plan": load(FIXTURES / "good" / "plan.json"),
+                "script": load(FIXTURES / "good" / "script.json")}
         for name, path in cases().items():
             expected = load(path / "expected.json")
             if name == "good":
@@ -349,10 +417,68 @@ class Fixtures(unittest.TestCase):
             evidence = expected["evidence"]
             with self.subTest(case=name, where=evidence["in"]):
                 value = at(docs, evidence["in"])
-                if evidence["says"]:
+                if evidence["in"].endswith(".connective"):
+                    # A connective is one word: "and" must not match "band".
+                    self.assertEqual(value, evidence["says"])
+                elif evidence["says"]:
                     self.assertIn(evidence["says"].lower(), str(value).lower())
                 else:
                     self.assertEqual(str(value).strip(), "")
+                # The seeded change is the fault: the good pair differs there.
+                self.assertNotEqual(at(good, evidence["in"]), value)
+                if evidence["says"]:
+                    self.assertNotIn(evidence["says"].lower(),
+                                     str(at(good, evidence["in"])).lower())
+
+    def test_the_example_review_flags_the_fault_where_it_sits(self):
+        # A script path names a section and a shot; a plan section names its
+        # section; a field of the whole plan is section 0.
+        for name, criterion in SEEDED.items():
+            path = FIXTURES / name
+            expected = load(path / "expected.json")
+            where = expected["evidence"]["in"].split(".")
+            if where[0] == "script":
+                section = int(where[2]) + 1
+                n = load(path / "script.json")["sections"][int(where[2])]["shots"][int(where[4])]["n"]
+            elif where[1] == "sections":
+                section, n = int(where[2]) + 1, 0
+            else:
+                section, n = 0, 0
+            on = [(f["section"], f["n"]) for f in expected["review"]["flags"]
+                  if f["criterion"] == criterion]
+            with self.subTest(case=name):
+                self.assertIn((section, n), on)
+
+    def test_a_case_held_below_reject_says_why_judging_10_is_not_its_bar(self):
+        # judging 10 asks the calibration run for reject on every seeded case.
+        # A case whose one fault is a Fair, or a Poor on a criterion that does
+        # not decide a film, is a consider by judging 11 and 12; it records
+        # that, and what the calibration fails the reviewer on instead.
+        for name in SEEDED:
+            expected = load(FIXTURES / name / "expected.json")
+            with self.subTest(case=name):
+                if expected["verdict"] == "reject":
+                    self.assertNotIn("judging_10", expected)
+                    continue
+                note = expected.get("judging_10", "")
+                self.assertIn("judging 10", note)
+                self.assertIn("recommend", note)
+
+    def test_a_plan_only_case_is_reviewed_from_its_own_plan(self):
+        # No script ships with these cases, so the review reads the plan: its
+        # first minute says so, and nothing in it is the good film's script.
+        for name in ("list-plan", "topic-train", "empty-payoff"):
+            path = FIXTURES / name
+            self.assertFalse((path / "script.json").is_file())
+            said = load(path / "expected.json")["review"]
+            with self.subTest(case=name):
+                for text in said["first_minute"].values():
+                    self.assertIn("plan", text)
+        said = load(FIXTURES / "list-plan" / "expected.json")["review"]
+        self.assertNotIn("Quebec", json.dumps(said))
+        for key in ("hook", "stakes"):
+            self.assertIn(said["grades"][key], ("Fair", "Poor"))
+            self.assertIn(key, [f["criterion"] for f in said["flags"]])
 
     def test_a_topic_train_has_no_question_and_a_good_one_has(self):
         def asks(train):
@@ -408,6 +534,28 @@ class Docs(unittest.TestCase):
         skill = (ROOT / "ytstudio" / "SKILL.md").read_text(encoding="utf-8")
         row = next(line for line in skill.splitlines() if line.startswith("| `yt script` |"))
         self.assertIn("narrative.py", row)
+
+    def test_the_docs_say_judging_10_is_not_the_bar_for_every_case(self):
+        readme = (CORPUS / "README.md").read_text(encoding="utf-8")
+        item = readme[readme.index("3. **The narrative rubric.**"):readme.index("4. **The evidence loop.**")]
+        self.assertIn("judging 10", item)
+        self.assertIn("consider", item)
+
+    def test_no_doc_says_the_stage_judges_the_story_before_it_does(self):
+        # The stage table is the operator's contract: until script.py renders
+        # the rubric and runs the review, no doc says it does.
+        source = (ROOT / "ytstudio" / "script.py").read_text(encoding="utf-8")
+        if re.search(r"^\s*(from \.|from ytstudio)[^\n]*\bnarrative\b", source, re.M):
+            self.skipTest("script.py uses the rubric; the docs may say so")
+        skill = (ROOT / "ytstudio" / "SKILL.md").read_text(encoding="utf-8")
+        row = next(line for line in skill.splitlines() if line.startswith("| `yt script` |"))
+        self.assertNotIn("is judged", row)
+        self.assertNotIn("feeds", row)
+        self.assertIn("not yet", row)
+        readme = (CORPUS / "README.md").read_text(encoding="utf-8")
+        item = readme[readme.index("3. **The narrative rubric.**"):readme.index("4. **The evidence loop.**")]
+        self.assertNotIn("One tuple is rendered", item)
+        self.assertIn("not yet", item)
 
 
 if __name__ == "__main__":
