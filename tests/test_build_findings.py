@@ -123,12 +123,12 @@ class PlaceholderCard(_Project):
         self.assertIsNone(re.search(r"#[0-9A-Fa-f]{6}", card))
 
 
-def _beat_sections():
-    """The fixture film with the screenplay's functions (AUTO-90): the payoff
-    is 1.2, not the last shot."""
+def _beat_sections(functions=("hook", "payoff", "handoff")):
+    """The fixture film with the screenplay's functions (AUTO-90): by default
+    the payoff is 1.2, followed by the hand-off, so not the last shot."""
     sections = _sections()
     for shot, function in zip([s for sec in sections for s in sec.shots],
-                              ("hook", "payoff", "handoff")):
+                              functions):
         shot.function = function
     return sections
 
@@ -153,7 +153,10 @@ class Story(_Project):
         story = build.story_of(SCRIPT, _beat_sections())
         self.assertEqual(story, {"promise": "You will see why it turns.",
                                  "payoff_line": "It turns because it must.",
-                                 "payoff_shot": "1.2", "payoff_from": "function"})
+                                 "payoff_shot": "1.2", "payoff_from": "function",
+                                 "payoff_is_last": False})
+        last = build.story_of(SCRIPT, _beat_sections(("hook", "context", "payoff")))
+        self.assertTrue(last["payoff_is_last"])
 
     def test_without_functions_the_last_shot_stands_for_the_payoff(self):
         story = build.story_of({"promise": "p"}, _sections())
@@ -161,15 +164,43 @@ class Story(_Project):
         self.assertEqual(story["payoff_from"], "position")
         self.assertEqual(build.story_of({}, _sections()), {})
 
-    def test_the_editor_sees_the_payoff_shot_and_the_promise(self):
-        builder = build.SceneBuilder(_idea(), _beat_sections(), self.root, vfx=self.vfx,
+    def prompt(self, functions=("hook", "payoff", "handoff")):
+        sections = _beat_sections(functions)
+        builder = build.SceneBuilder(_idea(), sections, self.root, vfx=self.vfx,
                                      verbose=False, audio=False,
-                                     story=build.story_of(SCRIPT, _beat_sections()))
-        prompt = build.edit_prompt(builder.brief())
+                                     story=build.story_of(SCRIPT, sections))
+        return build.edit_prompt(builder.brief())
+
+    def test_the_editor_sees_the_payoff_shot_and_the_promise(self):
+        prompt = self.prompt()
         for text in ("You will see why it turns.", "It turns because it must.",
-                     '"payoff_shot": "1.2"', "0.5", "1.5", "blocking", "end screen"):
+                     '"payoff_shot": "1.2"', "blocking"):
             self.assertIn(text, prompt)
         self.assertIn('"function": "payoff"', prompt)
+
+    def test_a_payoff_before_the_hand_off_is_not_given_the_tail(self):
+        # tail_seconds holds after the film's last shot (2.1, the hand-off);
+        # calling it the payoff's hold would put the payoff's beat after
+        # the hand-off, and nothing would hold after the payoff line.
+        prompt = self.prompt()
+        self.assertIn("`tail_seconds` holds after the film's last shot", prompt)
+        self.assertIn("is not the last shot", prompt)
+        self.assertNotIn("0.5 to 1.5", prompt)
+        # tail_seconds is clamped to 0..5: it cannot make a 5-20 s end screen
+        self.assertNotIn("20 seconds", prompt)
+        self.assertNotIn("end screen", prompt)
+        _, manifest = build.SceneBuilder(
+            _idea(), _beat_sections(), self.root, vfx=self.vfx, verbose=False,
+            audio=False, edit=_edit(tail_seconds=1.0),
+            story=build.story_of(SCRIPT, _beat_sections())).build()
+        self.assertEqual(manifest["scene"]["duration"], 11.0)   # after 2.1
+
+    def test_a_payoff_that_ends_the_film_is_given_the_tail_as_its_landing(self):
+        prompt = self.prompt(("hook", "context", "payoff"))
+        self.assertIn("`tail_seconds` holds after the film's last shot", prompt)
+        self.assertIn("which is the payoff shot", prompt)
+        self.assertIn("0.5 to 1.5", prompt)
+        self.assertNotIn("is not the last shot", prompt)
 
     def test_an_older_film_asks_the_editor_the_same_question(self):
         builder = build.SceneBuilder(_idea(), _sections(), self.root, vfx=self.vfx,

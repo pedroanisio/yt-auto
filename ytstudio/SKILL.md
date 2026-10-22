@@ -328,7 +328,9 @@ picture must demonstrate of its line. An audience, connective or function
 outside its list is kept as written and recorded in script.json's
 `findings`; an older script.json without these fields still loads.
 Downstream: build.json's shot rows carry `function` and the editor is handed
-the promise, the payoff line and the shot that pays it; `yt pilot` takes a
+the promise, the payoff line and the shot that pays it (its `tail_seconds`
+holds after the film's last shot, so it is the payoff's landing only when
+the payoff ends the film, and the prompt says which); `yt pilot` takes a
 beat's hook, rehook and payoff traits from the function (the last shot
 stands for the payoff only when none is marked, with a note); `yt qa`
 samples every rehook and payoff shot beside the hook and the ending; each vfx

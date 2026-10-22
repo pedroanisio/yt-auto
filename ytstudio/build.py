@@ -2187,8 +2187,11 @@ def story_of(script: dict, sections: list[Section]) -> dict:
     pays it and the shot that carries that line. The shot is the screenplay's
     `payoff` (the last one marked so); a screenplay that marks none, or was
     written before shots had a function, is ended by its last shot, and
-    `payoff_from` says which. {} when the screenplay has neither a promise
-    nor a payoff line: the editor's question is then the one it always was."""
+    `payoff_from` says which. `payoff_is_last` says whether the payoff shot
+    ends the film: only then is the editor's `tail_seconds`, which holds
+    after the last shot, the payoff's landing. {} when the screenplay has
+    neither a promise nor a payoff line: the editor's question is then the
+    one it always was."""
     script = script or {}
     ending = script.get("ending") if isinstance(script.get("ending"), dict) else {}
     promise = str(script.get("promise") or "").strip()
@@ -2197,22 +2200,36 @@ def story_of(script: dict, sections: list[Section]) -> dict:
         return {}
     shots = [s for sec in sections for s in sec.shots]
     marked = [s.label for s in shots if getattr(s, "function", "") == "payoff"]
-    return {"promise": promise, "payoff_line": line,
-            "payoff_shot": marked[-1] if marked else (shots[-1].label if shots else ""),
-            "payoff_from": "function" if marked else "position"}
+    last = shots[-1].label if shots else ""
+    payoff = marked[-1] if marked else last
+    return {"promise": promise, "payoff_line": line, "payoff_shot": payoff,
+            "payoff_from": "function" if marked else "position",
+            "payoff_is_last": payoff == last}
 
 
 def edit_prompt(data: dict) -> str:
     """The question the editor answers, over the builder's brief."""
     story = []
     if data.get("story"):
+        # `tail_seconds` is applied after the film's last shot (SceneBuilder,
+        # clamped to 0..5), so it is the payoff's landing only when the
+        # payoff ends the film. Before a hand-off, the beat after the payoff
+        # line is the shots that follow it, timed by the narration; this
+        # stage has no lever for it, and the prompt says so.
+        if data["story"].get("payoff_is_last", True):
+            hold = ("`tail_seconds` holds after the film's last shot, which is "
+                    "the payoff shot: it is the beat the payoff is left to land, "
+                    "the house default 0.5 to 1.5 s after the last word, longer "
+                    "only when the picture needs it.")
+        else:
+            hold = ("`tail_seconds` holds after the film's last shot, and the "
+                    "payoff shot is not the last shot: the shots after it (the "
+                    "hand-off) follow it as the narration times them, and no "
+                    "field here holds after the payoff line. Set `tail_seconds` "
+                    "for the film's last shot.")
         story = [
             "The film's ending (from the screenplay): `payoff_shot` carries the "
-            "line that pays the promise. The hold after that line is yours: "
-            "`tail_seconds` is the beat the payoff is left to land, the house "
-            "default 0.5 to 1.5 s after the last word, longer only when the "
-            "picture needs it. The YouTube end screen needs the last 5 to 20 "
-            "seconds of a film quiet and uncluttered: when the payoff shot is "
+            "line that pays the promise. " + hold + " When the payoff shot is "
             "uncovered and no neighbour or image genuinely carries it, the "
             "ending has no picture to land on and that belongs in `blocking`.",
             brief("Story", data["story"])]
