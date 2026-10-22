@@ -726,6 +726,26 @@ scene.add_composition()
 save(scene, "02-two.scene.xml")
 '''
 
+#: A look that wraps `save` in a helper it ends with, as the brief lets it.
+LOOK_HELPER = LOOK.replace('save(scene, "01-open.scene.xml")', '''
+
+def finish(scene, name):
+    """What every section ends with."""
+    return save(scene, name)
+
+
+finish(scene, "01-open.scene.xml")''')
+
+#: A section that saves through the look's helper, redefining nothing.
+SECTION_HELPER = '''from srkit import S
+from look import project, finish
+
+scene = S.Scene(version="auto")
+project(scene)
+scene.add_composition()
+finish(scene, "02-two.scene.xml")
+'''
+
 
 class LookModule(KitCase):
     """The approved look is an importable module in the workspace, and the
@@ -763,6 +783,19 @@ class LookModule(KitCase):
                          hashlib.sha256(LOOK.encode("utf-8")).hexdigest())
         self.assertIn("srkit.py", record["imports"])        # every workspace module it loaded
         self.assertNotIn("02-two.py", record["imports"])    # the program is `program_sha256`
+
+    def test_a_section_saving_through_a_look_helper_writes_its_document(self):
+        # the guard is the import, not the caller: a save reached through a
+        # function the look defines writes when the program is what runs
+        self.approved.write_text(LOOK_HELPER, encoding="utf-8")
+        sdkkit.install(self.dir, look=self.approved)
+        result = sdkkit.build(self.program(SECTION_HELPER, "02-two.py"), validate=False)
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertEqual([d["path"] for d in result["documents"]], ["02-two.scene.xml"])
+        self.assertFalse((self.dir / "01-open.scene.xml").exists())  # the look's own finish, at import
+        record = sdkkit.provenance_of(self.dir / "02-two.scene.xml")
+        self.assertEqual(record["imports"][sdkkit.LOOK_MODULE],
+                         hashlib.sha256(LOOK_HELPER.encode("utf-8")).hexdigest())
 
     def test_a_changed_look_lapses_the_provenance(self):
         sdkkit.install(self.dir, look=self.approved)

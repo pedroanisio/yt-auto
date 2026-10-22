@@ -103,10 +103,11 @@ you the rest). `save` checks the whole document, writes it and records it for
 `python3 kit.py build`, which runs the program twice and refuses a document
 that changes between runs: seed every random choice.
 
-`save` writes only when the program itself calls it (`__main__`). A module the
-program imports, `look.py` among them, may end with its own build and save:
-importing it writes nothing. The build records the hash of every module loaded
-from this directory beside the document, in its provenance.
+`save` writes nothing while a module is being imported. A module the program
+imports, `look.py` among them, may end with its own build and save: importing
+it writes nothing, and a helper of its that saves writes when the program
+(`__main__`) calls it. The build records the hash of every module loaded from
+this directory beside the document, in its provenance.
 """
 import hashlib, json, os, sys
 sys.path.insert(0, {sr_root!r})
@@ -164,11 +165,23 @@ def _imports():
     return dict(sorted(out.items()))
 
 
+def _importing():
+    """Whether a module is being imported somewhere up the stack: its top-level
+    code is a `<module>` frame that is not `__main__`. A helper the look defines
+    and the program calls has no such frame, so its save writes."""
+    frame = sys._getframe(1)
+    while frame is not None:
+        if frame.f_code.co_name == "<module>" and frame.f_globals.get("__name__") != "__main__":
+            return True
+        frame = frame.f_back
+    return False
+
+
 def save(scene, path):
     """Check the document, write it as pretty XML, record it for the build.
-    Called from an imported module rather than the program, write nothing."""
+    Called while a module is being imported, write nothing."""
     path = os.path.abspath(path)
-    if sys._getframe(1).f_globals.get("__name__") != "__main__":
+    if _importing():
         return path
     findings = [str(f) for f in S.check(scene)]
     data = scene.to_bytes(layout="pretty")
@@ -508,8 +521,9 @@ LOOK_BRIEF = (
     "provides -- `from look import ...` its palette and type constants, the helper "
     "functions that build its labels, formulas, cards, materials, lights and recurring "
     "objects, and its camera language -- and redefine nothing it provides; change only "
-    "what your shots require. Importing it writes nothing: its own `save` runs only when "
-    f"it is the program. Never edit `{LOOK_MODULE}`: the build records its hash in your "
+    "what your shots require. Importing it writes nothing (`save` writes nothing during an "
+    "import), and a helper of its that saves writes when your program calls it. Never edit "
+    f"`{LOOK_MODULE}`: the build records its hash in your "
     "document's provenance, and a changed look lapses it.")
 
 

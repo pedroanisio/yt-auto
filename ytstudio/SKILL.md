@@ -195,8 +195,9 @@ language -- with `fidelity` scored against it. The approved bytes,
 `keyframe/look.py`, are copied into every section workspace as `look.py`
 beside `srkit.py` (`sdkkit.install(look=)`, again on every new version and
 `--relook`); the brief says `from look import ...` and redefine nothing it
-provides, importing it writes no document (srkit's `save` writes only for the
-program), and the build records its hash in the document's provenance. An
+provides, importing it writes no document (srkit's `save` writes nothing during
+an import; a helper of the look's that saves writes when the program calls it),
+and the build records its hash in the document's provenance. An
 author reads `keyframe/` and its own directory, never another version's. The look's section
 enters the film in two places only: the first animation after the approval,
 and `yt vfx --relook`, which carries it into an existing animation and
