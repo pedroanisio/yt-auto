@@ -30,6 +30,9 @@ Like `framecheck.CHECKLIST`, one tuple is meant to be rendered twice: into
 the writer's prompt (`rubric_text("writer")`, the top level of each
 criterion) and into the reviewer's role (`reviewer_role()`, every level with
 its strength), so a round is never spent finding out what will be looked at.
+`yt qa`'s role renders the writer's lines for the rows a finished film can
+be judged on (`qa.STORY_RUBRIC`), and `yt improve`'s router reads them to
+name the key a story finding bears on (AUTO-99).
 `yt script --review` wires the plan's role (`reviewer_role(plan=True)`),
 PLAN_REVIEW_SCHEMA and `check_plan_review` into the plan review (AUTO-92),
 and `picture_role()` and PICTURE_SCHEMA into the picture-check that reads

@@ -1213,6 +1213,28 @@ quality, the root cause, the owning stage and the fix. What stills cannot
 evidence (the voice as heard, the mix, the music) it scores from the
 measurements and lists under `not_evidenced`.
 
+The story is read from the film as well. The reviewer's role carries the
+narrative rubric's rows for the hook, stakes, open loops, reveal setup and
+ending, rendered from `ytstudio/narrative.py`, for scoring
+`narrative_clarity` and `editing_pacing`. The prompt carries the
+screenplay's story (train, promise, stakes, payoff line, each question with
+the time its section opens and the time the section that answers it does,
+the re-hook shots) as what the writer declared. The pass holds the whole
+narration as `narration.txt` beside the frames (the voiced takes' words
+once `voice.json` has them, the screenplay's lines before that, and the
+file's first line says which), so the inspection's evidence digest covers
+it. Can the film be followed by ear alone, and by eye alone? It should need
+both: frames that print the narration, or narration the pictures add
+nothing to, count against `narrative_clarity`. The scorecard's `story`
+block restates the premise as the film made it, says what the viewer has at
+the end of each section (one non-blank line per screenplay section; an
+answer that skips or blanks one is asked again once, and what is still
+missing is named under `not_evidenced`), and predicts a viewer's
+satisfaction. That prediction scores nothing and is listed under
+`not_evidenced` until the work directory holds the channel's
+`retention.json`. A pass written before this has no `story` and still
+compares, since the comparison reads the scores only.
+
 The bar is applied mechanically on top: READY TO PUBLISH needs an overall of
 9.0, no category under 8.5 and nothing blocking, where blocking includes what
 the manifests already prove (a placeholder, a build error, a failed gate, a
@@ -1220,8 +1242,8 @@ blocking mechanical finding). While a blocking mechanical finding stands,
 `visual_quality` and `animation_vfx` are capped at 6, whatever the reviewer
 wrote. When `build.json` has no audio track, `sound_design` and
 `music_score` are 2.0 by rule and named as not evidenced, never a neutral 5.
-Each pass lives under `qa/pass-NN/` with its frames, the contact sheet,
-`scorecard.json` and `findings.md` (the mechanical section and the window's
+Each pass lives under `qa/pass-NN/` with its frames, `narration.txt`, the
+contact sheet, `scorecard.json` and `findings.md` (the mechanical section and the window's
 numbers included), the next pass is compared with it, and a category that
 drops by 0.5 is a regression. `qa.json` at the project root carries the
 latest verdict. The exit code is 0 only when the film is ready.
@@ -1240,7 +1262,14 @@ rows and doctor's fails, every finding is routed to one stage: the measured
 mechanical kinds by their stated owner, the rest by one harness decision that
 also merges duplicates and writes each stage a revision brief. Findings that
 are a wrong fact (`upstream-fact`) or a policy outside the repo (`external`)
-go to a human and are not looped on.
+go to a human and are not looped on. A finding on the story (hook, stakes,
+re-hooks, open questions, payoff) goes to `script` even though rewriting the
+screenplay is expensive, and its brief names the narrative rubric key the
+finding bears on (`[rubric: ending]`), which the Screenwriter's prompt then
+carries. A finding that says the film lacks what the plan declares (no
+payoff while `ending.payoff_line` exists) is annotated "the plan declared
+..." and routed all the same: the reviewer watched the film, and the plan is
+the writer's own report.
 
 The brief lands in `feedback/<stage>.md`, and the harness puts it into the
 system prompt of every decision and inspection that stage makes, as notes

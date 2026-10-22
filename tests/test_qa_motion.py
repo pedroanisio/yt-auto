@@ -449,6 +449,9 @@ SCORECARD = {
     "scores": {k: 9.2 for k in qa.CATEGORIES}, "overall": 9.2,
     "verdict": "READY TO PUBLISH", "findings": [], "blocking": [],
     "not_evidenced": [], "rationale": "looked fine",
+    "story": {"premise_restated": "one take", "sections": [],
+              "satisfaction": "3 neither satisfied nor dissatisfied",
+              "satisfaction_why": "nothing to hold"},
 }
 
 

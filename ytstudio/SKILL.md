@@ -412,7 +412,7 @@ Beside the chain:
 | `yt pilot` | cuts nested short approval reels at full fidelity; the model picks the cuts | `pilot.json`, `pilot.scene.xml` |
 | `yt gate` | the delivery gate (loudness, true peak, scopes, black and frozen frames, captions), run on a render host that has ffprobe and the engine, triaged by the model; `stopped_by` names the requirement that stopped it and the owning stage | `gate.json` |
 | `yt review` | the PDF review sheet, read by the model | `review.pdf`, `review.json` |
-| `yt qa` | the publication scorecard per pass: one frame window per sampled midpoint (one `--frames A..B` job each, the still its middle frame), a contact sheet, the mechanical findings (flat, clipped, frozen, jump, off-camera), then the model's review | `qa/pass-NN/` (`frames/`, `frames/burst/`, `samples.json`, `contact-sheet.png`, `scorecard.json`, `findings.md`), `qa.json` |
+| `yt qa` | the publication scorecard per pass: one frame window per sampled midpoint (one `--frames A..B` job each, the still its middle frame), a contact sheet, the mechanical findings (flat, clipped, frozen, jump, off-camera), then the model's review, which reads the screenplay's story (`qa.story_brief`: train, promise, stakes, payoff line, the question ledger on the timeline, the re-hook shots) as the writer's declaration and the pass's `narration.txt` (the voiced takes, else the screenplay's lines, said in its first line) beside the frames as evidence that the explanation needs both ear and eye (attention 23), under a role whose narrative_clarity and editing_pacing sentences are rendered from `narrative.rubric_text`; the scorecard's `story` (premise restated, what the viewer has at each section's end, one non-blank line per screenplay section or asked again once and the gap named `not_evidenced`, a predicted satisfaction that scores nothing and is `not_evidenced` until the work directory's `retention.json` exists) is required of a new pass, and `compare` reads scores only, so an older pass still compares (AUTO-99) | `qa/pass-NN/` (`frames/`, `frames/burst/`, `samples.json`, `narration.txt`, `contact-sheet.png`, `scorecard.json`, `findings.md`), `qa.json` |
 | `yt improve` | the improvement loop of `docs/production.md` §8 as code: routes each QA finding to the stage that owns it, writes that stage a revision brief the harness puts in front of every decision it makes, re-runs the earliest routed stage and everything downstream, scores a new pass, keeps it or restores the snapshot; the dry run estimates per stage from measured reports (marked measured, like or assumed), a vfx pass names only the routed `--sections` and a script pass whose findings all name a shot revises only those lines (`--revise feedback`); a `--model` of the reviewer's family (`opus`) is refused with exit 2 before any stage runs | `feedback/<stage>.md` (+ `.json`), `improve/pass-NN/`, `improve.json`, `improve.md` |
 | `yt doctor` | the toolchain and every video: what is missing, stale or failing, and the command that fixes it. No model. | `--json FILE` |
 | `yt assess` | can a described video be produced at all; proves it with a frame | `work/.assess/<slug>/` |
@@ -613,8 +613,20 @@ a pass older than `video.mp4` or `scene.xml` is scored again first), with
   audio, no narration, a placeholder) and that the manifest contradicts is
   routed nowhere and listed in `improve.md` as "contradicted by
   build.json: <field>", so no stage is briefed to fix what is not broken.
+  A story finding (hook, stakes, re-hooks, open questions, payoff: what
+  `qa.DUTIES["script"]` names) goes to `script` even though it is
+  expensive, and the brief names the narrative rubric key each bears on
+  (`rules`, one of `narrative.KEYS`, attached only to a finding routed to
+  that brief's stage; a word outside the rubric that survives the harness's
+  one retry is kept as `rule_outside`). A finding that says the film lacks what `script.json`'s
+  plan declares (a payoff line, stakes, questions, re-hooks, a promise:
+  `improve.PLAN_CLAIMS`) is not routed away: it is annotated "the plan
+  declared ..." after the routing, since the reviewer watched the film and
+  the plan is the writer's own report (AUTO-99).
 - **Feedback.** `feedback/<stage>.md` (and `.json`) holds the brief with
-  the findings verbatim, timestamps and the pass they came from. Every
+  the findings verbatim, timestamps and the pass they came from, a story
+  finding's `[rubric: <key>]` and its plan annotation (which `yt script
+  --revise feedback` adds to the line's reason). Every
   `Harness` of that stage puts it in its system prompt as revision notes
   that outrank the house standards, and the prompts a stage builds itself
   (the vfx planner and authors, the keyframe author, sound, script and

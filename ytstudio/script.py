@@ -4161,6 +4161,12 @@ def sent_back(spec: str, root: Path, why: str = "") -> tuple[str, list[dict], li
             problem = str(f.get("problem") or "").strip()
             if f.get("why"):
                 problem += f" (why: {str(f['why']).strip()})"
+            # The rubric key a story finding bears on, and what the plan
+            # declared against it (AUTO-99), as the brief's prose says them.
+            if f.get("rule"):
+                problem += f" [rubric: {str(f['rule']).strip()}]"
+            if f.get("plan_declared"):
+                problem += f"; {str(f['plan_declared']).strip()}, and QA still found this"
             # A finding with no fix of its own is not handed the brief's
             # whole must-change list: that names changes to other shots.
             rows.append({"label": label, "problem": problem,
