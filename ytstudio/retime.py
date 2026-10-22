@@ -244,10 +244,14 @@ def run(args) -> int:
         print(f"    {row['label']:<6} {d['action']:<13} {d.get('note', '')[:70]}")
     if verdict.get("notes"):
         print(f"\n  notes: {verdict['notes'][:300]}")
-    for action, hint in (("rerecord", "yt voice --redo"), ("rewrite", "yt script (revise)")):
+    # The commands that do it: voice records the named takes again, and the
+    # screenplay takes every `rewrite` label from the retime.json written below.
+    for action in ("rerecord", "rewrite"):
         labels = [l for l, d in decided.items() if d["action"] == action]
         if labels:
-            print(f"  {action}: {hint} {','.join(labels)}")
+            hint = (f"yt voice --redo {','.join(labels)}" if action == "rerecord"
+                    else f"yt script --revise retime ({','.join(labels)})")
+            print(f"  {action}: {hint}")
     report = {"idea": {"title": idea.title}, "changes": changes, "totals": totals,
               "decisions": list(decided.values()), "accepted": sorted(accepted),
               "notes": verdict.get("notes", ""), "stale": stale,

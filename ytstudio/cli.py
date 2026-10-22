@@ -232,7 +232,10 @@ def settle_retime(code: int, project: workspace.Project, run_stage, *,
         return code
     back = retime.unsettled(read_json(project.path("retime"), warn=False) or {})
     if back.get("rewrite") or not back.get("rerecord"):
-        say("the editor sent a line back to the screenplay; fix it and run again")
+        labels = ",".join(back.get("rewrite") or [])
+        say(f"the editor sent {labels or 'a line'} back to the screenplay: run `yt script "
+            f"--revise retime --project {project.root}`, then `yt run --redo voice,retime` "
+            "(a take is cached by its text, so voice records only the changed lines)")
         return code
     labels = ",".join(back["rerecord"])
     say(f"\n== voice: recording {labels} again, as the editor asked")
@@ -243,7 +246,7 @@ def settle_retime(code: int, project: workspace.Project, run_stage, *,
     code = run_stage("retime", [])
     if code == retime.UNSETTLED:
         say("the read was sent back twice; settle it by hand (yt voice --redo, "
-            "yt script) and run again")
+            "yt script --revise retime) and run again")
     return code
 
 

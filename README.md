@@ -470,9 +470,25 @@ on it under script (once: the copy in build.json is not failed again under
 build) and `yt build` carries it into build.json, where qa lifts it as a
 blocker. A `warning:` blocks nothing.
 
+A line can go back without the screenplay. `--revise 1.3,2.1` (with `--why`
+the reason), `--revise retime` (every shot `retime.json` sent back as
+`rewrite`, with the read it measured and the editor's note) or `--revise
+feedback` (the shots `feedback/script.json` names, the `.json` twin `yt
+improve` writes beside the brief) asks one `revise-labels` decision over
+those shots only, the whole screenplay shown around them: fix the line,
+change its supers when the reason is about the screen, or keep it with a
+reason. Nothing is planned or drafted again and every other shot is written
+back byte for byte. The rules then read the changed shots only, and with
+research the changed lines are fact-checked again (`verify-labels`), a
+flagged one revised and checked once more as in the stage's own loop
+(`revise-labels-facts-1`, `verify-labels-1`); the four files are rewritten with
+`script.json.bak` kept, script.json records the round under `revised`, and
+the run prints `yt voice --redo <labels>` for the takes the change made
+stale.
+
 `--minutes` · `--wpm` · `--sections` · `--outline` to use the dossier's own beat
 sheet · `--inspo` for voice · `--notes` which outrank everything else ·
-`--jobs` · `--report-only`
+`--jobs` · `--report-only` · `--revise` · `--why`
 
 The runtime floor is 10 seconds (`yt sound` keeps the same floor), so a short
 film keeps its own length instead of being padded to half a minute.
@@ -984,7 +1000,8 @@ knows the truth — but only where the editor says so. Every shot whose read
 drifted goes to the model with its words, its super and its visual, and the
 answer per shot is `accept` (the screenplay takes the measured length),
 `rerecord` (the read is wrong for the house pacing; `yt voice --redo`),
-`rewrite` (the line is wrong for the shot; back to `yt script`) or
+`rewrite` (the line is wrong for the shot; `yt script --revise retime` sends
+exactly those lines back, with the read each measured) or
 `keep_planned`. `retime.json` keeps the decisions; `--dry-run` shows them and
 writes nothing; applying keeps `script.json.bak`.
 
@@ -1149,7 +1166,13 @@ a defect survives three briefed passes, and writes `improve.json` and an
 `improve.md` in the shape of the §11 report. The estimate is per stage, read from
 each stage's own report (else a like project's) and marked measured, like or
 assumed, and a routed vfx pass re-authors only the sections its findings fall in
-(`--sections`), the whole film (`--fresh`) when a finding cannot be placed.
+(`--sections`), the whole film (`--fresh`) when a finding cannot be placed. A
+routed script pass whose findings all name a shot sends only those lines back
+(`yt script --revise feedback`, read from the brief's `.json` twin); one
+finding that names none, or one briefed before and still there, runs the
+whole screenplay again (`--polish --verify`). A finding that needs more than
+its own line (a hook that does not state its promise, a section with no
+payoff) has to be routed without a shot to get that full run.
 
 ```bash
 yt improve --title X --dry-run                      # the routing, the briefs, the estimate
