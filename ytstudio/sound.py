@@ -1253,6 +1253,7 @@ class _Job:
     rejected: list = field(default_factory=list)    # candidates the judge turned down
     tries: int = 0
     done: bool = False
+    lines: list = field(default_factory=list)       # progress not yet said
 
 
 def fetch(root: str | Path, data: dict, *, token: str | None = None,
@@ -1344,19 +1345,30 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
     levels: dict[str, Levels | None] = {}
     taken: set[str] = set()          # files a cue now uses
 
+    def tell(job: _Job, line: str) -> None:
+        """A progress line for the job, said by `said` in cue order: the jobs
+        run side by side, and the operator reads one cue at a time."""
+        job.lines.append(line)
+
+    def said(batch: list[_Job]) -> None:
+        for job in batch:
+            for line in job.lines:
+                say(line)
+            job.lines.clear()
+
     def give_up(job: _Job) -> None:
         job.done = True
         if job.refusals:
             why = " | ".join(f"{label}: {reason}" for label, reason in job.refusals)
             if len(job.refusals) > 1:
                 why = f"{len(job.refusals)} sources refused, {why}"
-            say(f"  {job.cid} unfilled: {why}")
+            tell(job, f"  {job.cid} unfilled: {why}")
         else:
             why = "no CC0 or CC-BY hit on Freesound for any query"
             if job.cue.get("kind") == "music":
                 why += "; a composition brief with no library stand-in stays unfilled"
-            say(f"  {job.cid} unfilled: tried "
-                f"{', '.join(repr(q) for q in job.miss['queries'])}")
+            tell(job, f"  {job.cid} unfilled: tried "
+                      f"{', '.join(repr(q) for q in job.miss['queries'])}")
         with book:
             unfilled.append(job.miss | {"reason": why}
                             | ({"rejected": job.rejected} if job.rejected else {}))
@@ -1405,7 +1417,7 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
         job.refusals.append((label, why))
         summary["refused"].append({"cue_id": job.cid, "file": job.rel, "reason": why,
                                    "freesound_id": job.hit.id if job.hit else job.old_id})
-        say(f"  {job.cid} refused {job.rel}: {why}")
+        tell(job, f"  {job.cid} refused {job.rel}: {why}")
         job.tries += 1
         if job.hit is None:
             # A kept file refused: forget it, and look for others to try
@@ -1442,7 +1454,7 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
         except (harness.HarnessError, ClaudeError, KeyError, TypeError, ValueError) as exc:
             record = {"verdict": "unjudged", "reason": f"the judge failed: {exc}",
                       "confidence": None}
-            say(f"  {job.cid} {job.rel}: {record['reason']}")
+            tell(job, f"  {job.cid} {job.rel}: {record['reason']}")
         return record | {"evidence": evidence}
 
     def accept(job: _Job, fields: dict | None, verdict: dict | None = None) -> None:
@@ -1467,12 +1479,13 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
         how = (f"<- {hit.licence} {hit.duration:.1f}s (query {job.used!r})"
                if hit is not None else "kept")
         gain = f", gain {fields['gain_db']:+.1f} dB" if fields else ""
-        say(f"  {job.cid} {rel} {how}{gain}")
+        tell(job, f"  {job.cid} {rel} {how}{gain}")
 
     with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
         while True:
             active = [j for j in work if not j.done]
             list(pool.map(advance, active))
+            said(active)
             testing = [j for j in active if not j.done]
             if not testing:
                 break
@@ -1515,6 +1528,7 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
                     refuse(job, why)
                 else:
                     accept(job, fields, verdict)
+            said(testing)
             for rel in discard - taken - {j.rel for j in work if not j.done}:
                 (root / rel).unlink(missing_ok=True)
                 levels.pop(rel, None)

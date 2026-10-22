@@ -14,7 +14,7 @@ import json
 import threading
 import unittest
 
-from ytstudio import cli, flags, freesound, sound
+from ytstudio import cli, flags, freesound, harness, sound
 
 from tests.test_sound_fetch import FetchCase, cue, row
 
@@ -56,7 +56,8 @@ class Overlap(FetchCase):
 
     def fetch(self, **kw) -> dict:
         data = self.data(*self.cues)
-        sound.fetch(self.root, data, token="t", say=self.hush, jobs=2, **kw)
+        kw.setdefault("say", self.hush)
+        sound.fetch(self.root, data, token="t", jobs=2, **kw)
         return data
 
     def test_a_rounds_searches_overlap(self):
@@ -96,6 +97,21 @@ class Overlap(FetchCase):
         self.assertEqual([c["judgement"]["verdict"] for c in data["cues"]],
                          ["accept", "accept"])
         self.assertEqual(data["fetch"]["judged"], 2)
+
+    def test_the_progress_lines_come_one_cue_at_a_time_in_cue_order(self):
+        # A judge that fails says so from its thread, then the cue is accepted
+        # unjudged: two lines a cue, which the threads would interleave.
+        wait, lines = self.meeting("judge"), []
+
+        def judge(c, evidence):
+            wait()
+            raise harness.HarnessError("the model is down")
+        self.fetch(say=lines.append, measure=lambda paths: [levels() for _ in paths],
+                   judge=judge)
+        self.assertEqual(self.alone, [])
+        self.assertEqual([line.split()[0] for line in lines], ["A1", "A1", "S1", "S1"])
+        self.assertIn("the judge failed", lines[0])
+        self.assertIn("sound/01-room-tone.mp3 <-", lines[1])
 
 
 if __name__ == "__main__":
