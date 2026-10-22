@@ -30,10 +30,12 @@ Like `framecheck.CHECKLIST`, one tuple is meant to be rendered twice: into
 the writer's prompt (`rubric_text("writer")`, the top level of each
 criterion) and into the reviewer's role (`reviewer_role()`, every level with
 its strength), so a round is never spent finding out what will be looked at.
-`yt script --review` wires the reviewer's role and PLAN_REVIEW_SCHEMA into
-the plan review (AUTO-92); the story review is not wired yet (AUTO-93). Nothing here decides a verdict: it
-is schema and prompt text, and `check_review` only names what the caller
-asks the model again about (invariant 3).
+`yt script --review` wires the plan's role (`reviewer_role(plan=True)`),
+PLAN_REVIEW_SCHEMA and `check_plan_review` into the plan review (AUTO-92);
+the story review is not wired yet (AUTO-93). Nothing here decides a
+verdict: it is schema and prompt text, and `check_review` and
+`check_plan_review` only name what the caller asks the model again about
+(invariant 3).
 
 A known gap: a criterion's strength is the README's word for its lead rule,
 and today none comes out `house`: six lead with a practitioner rule and the
@@ -478,6 +480,40 @@ PLAN_REVIEW_SCHEMA = {
     "required": ["verdict", "train_ok", "reorder_survives", "sections_advancing_none",
                  "payoff_concrete", "questions_unanswered", "problems"],
 }
+
+
+def check_plan_review(review: Any) -> list[str]:
+    """What a plan review says that contradicts its own verdict, one line
+    per problem: a revise or a reject that names no problem (a second plan
+    would be told to fix nothing), and an accept whose own fields find the
+    train failing, the order a list, the payoff not concrete or a section
+    that moves nothing. The schema cannot refuse these. As with
+    `check_review`, the caller asks once more (`<name>-again`) with these
+    lines and records what still stands; the verdict stays the model's."""
+    if not isinstance(review, dict):
+        return []
+    found: list[str] = []
+    verdict = review.get("verdict")
+    problems = review.get("problems") if isinstance(review.get("problems"), list) else []
+    if verdict in ("revise", "reject") and not problems:
+        found.append(f"a {verdict} names the problems that send the plan back, and this "
+                     "one carries none: name each with its section and fix, or accept")
+    if verdict == "accept":
+        if review.get("train_ok") is False:
+            found.append("an accept holds the train, and this one says train_ok is false: "
+                         "change the verdict or the field")
+        if review.get("reorder_survives") is True:
+            found.append("an accept holds the order, and this one says reorder_survives "
+                         "is true (the sections are a list): change the verdict or the field")
+        if review.get("payoff_concrete") is False:
+            found.append("an accept holds the payoff, and this one says payoff_concrete is "
+                         "false: change the verdict or the field")
+        idle = [str(n) for n in review.get("sections_advancing_none") or []]
+        if idle:
+            found.append(f"an accept has every section move the train, and this one names "
+                         f"section {', '.join(idle)} under sections_advancing_none: change "
+                         "the verdict or the list")
+    return found
 
 
 def check_review(review: Any) -> list[str]:

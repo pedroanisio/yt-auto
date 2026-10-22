@@ -165,7 +165,7 @@ class Gate(unittest.TestCase):
         self.assertTrue(any(n.startswith("write-") for n in names(calls)))
 
         w = writer()
-        calls = faked(w, [verdict("reject")])
+        calls = faked(w, [verdict("reject", [(0, "the train names a topic", "name it")])])
         with self.assertRaises(ClaudeError):
             w.run(review=True, fix=False)
         self.assertFalse([n for n in names(calls) if n.startswith("write-")])
@@ -183,6 +183,91 @@ class Gate(unittest.TestCase):
         self.assertEqual(order[:4], ["plan-fields", "plan-review", "plan-fields-2",
                                      "plan-review-2"])
         self.assertIn("sections 2 and 3 could swap without loss", calls[2]["prompt"])
+
+
+    def test_a_second_plans_drift_notes_replace_the_firsts(self):
+        # The first plan's off-list audience is a note about a plan that was
+        # sent back; script.json carries the notes of the plan it drafted.
+        first = copy.deepcopy(PLAN)
+        first["audience"] = "kids"
+        w = writer()
+        calls = faked(w, [verdict("revise", [SWAPPABLE]), verdict("accept")])
+        plans = [first, PLAN]
+        ask = w._ask
+
+        def two_plans(name, prompt, schema):
+            if kind(schema) == "plan":
+                calls.append({"name": name, "prompt": prompt, "kind": "plan"})
+                return copy.deepcopy(plans.pop(0))
+            return ask(name, prompt, schema)
+        w._ask = two_plans
+        data = w.run(review=True)
+        self.assertEqual(names(calls)[:2], ["plan", "plan-review"])
+        self.assertFalse([f for f in data["findings"] if "audience" in f], data["findings"])
+
+
+class SelfContradiction(unittest.TestCase):
+    """A plan review whose fields contradict its verdict is asked once more
+    under `<name>-again` with what contradicts; the verdict stays the
+    model's (narrative.check_plan_review)."""
+
+    def test_check_plan_review_names_each_contradiction(self):
+        check = narrative.check_plan_review
+        self.assertEqual(check(verdict("accept")), [])
+        self.assertEqual(check(verdict("revise", [SWAPPABLE])), [])
+        self.assertEqual(len(check(verdict("revise"))), 1)
+        self.assertEqual(len(check(verdict("reject"))), 1)
+        bad = dict(verdict("accept"), train_ok=False, reorder_survives=True,
+                   payoff_concrete=False, sections_advancing_none=[2])
+        lines = check(bad)
+        self.assertEqual(len(lines), 4, lines)
+        for needle in ("train_ok", "reorder_survives", "payoff_concrete", "section 2"):
+            self.assertTrue(any(needle in line for line in lines), needle)
+        self.assertEqual(check(None), [])
+
+    def test_an_accept_that_says_the_order_is_a_list_is_asked_again(self):
+        w = writer()
+        listed = dict(verdict("accept"), reorder_survives=True)
+        calls = faked(w, [listed, verdict("revise", [SWAPPABLE]), verdict("accept")])
+        data = w.run(review=True)
+        order = names(calls)
+        self.assertEqual(order[:4], ["plan", "plan-review", "plan-review-again", "plan-2"])
+        again = calls[2]["prompt"]
+        self.assertIn("reorder_survives", again)
+        self.assertTrue(data["plan_review"]["retried"])
+        self.assertTrue(data["plan_review"]["rounds"][0]["again"])
+
+    def test_a_revise_with_no_problem_is_asked_again_and_a_second_is_recorded(self):
+        w = writer()
+        calls = faked(w, [verdict("revise"), verdict("revise"), verdict("accept")])
+        data = w.run(review=True)
+        order = names(calls)
+        self.assertEqual(order[:4], ["plan", "plan-review", "plan-review-again", "plan-2"])
+        self.assertIn("the reviewer named no problem", calls[3]["prompt"])
+        first = data["plan_review"]["rounds"][0]
+        self.assertTrue(first["unsettled"])
+        self.assertEqual(first["verdict"], "revise")
+        md = "\n".join(script.plan_review_lines(
+            dict(data["plan_review"], unsettled=first["unsettled"])))
+        self.assertIn("- unsettled: a revise names the problems", md)
+
+    def test_an_off_list_verdict_fails_the_stage_and_is_not_kept(self):
+        # The harness asks once more and then lets an enum value through
+        # (invariant 3); no verdict was given, so the stage stops.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        engine = harness.ENGINE
+        harness.ENGINE = OffList
+        self.addCleanup(setattr, harness, "ENGINE", engine)
+        ByModel.seen, ByModel.fail_review = [], False
+        w = script.Screenwriter(idea(), root=root, verbose=False, minutes=1, jobs=1,
+                                model="sonnet", reviewer_model="opus")
+        with self.assertRaises(ClaudeError) as caught:
+            w.run(review=True)
+        self.assertIn("'maybe'", str(caught.exception))
+        self.assertFalse((root / "decisions" / "script" / "plan-review.json").exists())
+        self.assertFalse([c for c in ByModel.seen if c["kind"] == "shots"])
 
 
 # --------------------------------------------------------------------------- #
@@ -285,6 +370,15 @@ class ByModel(FakeEngine):
         if which == "shots":
             return shots_for(1, ("context", "payoff"))
         return blank(schema)
+
+
+class OffList(ByModel):
+    """A reviewer whose verdict is never on the list, even when asked again."""
+
+    def ask_json(self, prompt, schema, system=None):
+        if kind(schema) == "plan-review":
+            return dict(verdict("accept"), verdict="maybe")
+        return super().ask_json(prompt, schema, system)
 
 
 class Reviewer(unittest.TestCase):
@@ -456,6 +550,35 @@ class Command(unittest.TestCase):
             self.assertFalse([n for n in asked if n.startswith("write-")], extra)
             self.assertFalse((self.film / "script.json").exists())
             self.assertFalse((self.film / "narration.txt").exists())
+            # The stop leaves its reading and its spend where `yt run` does
+            # not take the stage as done.
+            stopped = json.loads((self.film / script.PLAN_REVIEW_FILE).read_text())
+            self.assertEqual(stopped["plan_review"]["verdict"], "reject", extra)
+            self.assertEqual(stopped["plan_review"]["problems"][0]["problem"],
+                             "the train names a topic")
+            # (the `_ask` fake books nothing; Reviewer pins the rows)
+            self.assertIn("decisions", stopped["engine"])
+            self.assertIn("cost_usd", stopped["usage"])
+
+    def test_a_passed_review_clears_the_record_of_an_earlier_stop(self):
+        self.run_stage("--review", "--model", "sonnet",
+                       verdicts=[verdict("reject", [(0, "the train names a topic", "x")])])
+        self.assertTrue((self.film / script.PLAN_REVIEW_FILE).exists())
+        code, _, said = self.run_stage("--review", "--model", "sonnet",
+                                       verdicts=[verdict("accept")])
+        self.assertEqual(code, 0, said)
+        self.assertFalse((self.film / script.PLAN_REVIEW_FILE).exists())
+        self.assertIn("plan review: accept", said)
+
+    def test_rounds_reach_the_screenwriter(self):
+        seen = {}
+
+        def run(self_, **kw):
+            seen["rounds"] = self_.rounds
+            raise ClaudeError("stop here")
+        with mock.patch.object(script.Screenwriter, "run", run):
+            self.run_stage("--verify", "--rounds", "3")
+        self.assertEqual(seen["rounds"], 3)
 
 
 if __name__ == "__main__":
