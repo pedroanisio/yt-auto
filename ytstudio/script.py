@@ -759,13 +759,16 @@ STORY_BRIEF = (
 
 #: Told to the plan when the idea carries a promise (`yt ideas --rich`): the
 #: packaging is fixed before the hook is written, and the hook answers to it
-#: (docs/narrative: structure 5, 6). The plan's own promise is still the
-#: model's to write; nothing copies the idea's over it.
+#: (docs/narrative: structure 5, 6). The plan's own promise keeps the one
+#: meaning STORY_BRIEF gives it, what the first fifteen seconds promise; it
+#: must keep to the packaging's, and is still the model's to write: nothing
+#: copies the idea's over it.
 FROZEN_PROMISE = (
     "The promise above is frozen: the title and thumbnail were fixed before "
-    "this plan. Write the plan's promise as that promise, write the hook to "
-    "it, restate its question in the first 30 seconds and pay it off in the "
-    "last section; do not change what the title promises to suit the plan.")
+    "this plan. The plan's promise, what the first fifteen seconds promise, "
+    "must keep to it: the hook delivers what the title and thumbnail promise. "
+    "Restate its question in the first 30 seconds and pay it off in the last "
+    "section; do not change what the title promises to suit the plan.")
 
 #: What the writer of every section is told about the audience.
 AUDIENCE_BRIEF = {

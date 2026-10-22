@@ -256,6 +256,14 @@ class ScriptBrief(unittest.TestCase):
         self.assertIn(script.FROZEN_PROMISE, prompts[0])
         self.assertNotIn(script.FROZEN_PROMISE, prompts[1])
 
+    def test_the_frozen_promise_gives_plan_promise_one_meaning(self):
+        # STORY_BRIEF defines the plan's promise as what the first fifteen
+        # seconds promise; the frozen note must not redefine it as the
+        # packaging sentence, only bind it to what the packaging promises
+        self.assertNotIn("as that promise", script.FROZEN_PROMISE)
+        self.assertIn("first fifteen seconds", script.FROZEN_PROMISE)
+        self.assertIn("keep", script.FROZEN_PROMISE)
+
     def test_the_outline_path_is_told_too(self):
         prompts = []
 
