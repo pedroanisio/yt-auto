@@ -1189,7 +1189,7 @@ the last failed pass again from the stage that failed, once its cause is fixed) 
 clean evidence, then keep or revert by the same rule). A prose finding that
 `build.json` contradicts (no audio, no narration, a placeholder) is routed nowhere
 and listed in `improve.md` as contradicted. The stages it reruns review with
-`opus` (script's plan with `--review`, keyframe, vfx), so a `--model` of that
+`opus` (the script's plan review, keyframe, vfx), so a `--model` of that
 family is refused with exit 2 before any stage runs, as `yt run` refuses it.
 
 ### `yt doctor`
