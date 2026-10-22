@@ -17,7 +17,10 @@ every per-key attribute, and under an authored linear default the gate keys
 became a fade the author never wrote, leaking into the neighbouring sections.
 The author's <animate> is now carried verbatim, re-timed, and the gate
 segments are explicit holds: 0 held until the first carried key, the last
-carried key held until the include's end, 0 from there.
+carried key held until the include's end, 0 from there. Each intensity track
+gets its own gate, so a replacing ramp with an additive flicker on top stacks
+as the engine stacks it; a marker the document defines places its key; and
+an extrapolation the gate's holds replace is named.
 """
 
 import json
@@ -162,6 +165,20 @@ def _at(animate, t, base=0.0):
     return own + float(keys[-1].get("value"))
 
 
+def _light_at(data, t):
+    """The light's intensity at t with every track stacked as the engine
+    stacks them: in document order, an additive track adding to the value
+    so far and a replacing track discarding it."""
+    light = ElementTree.fromstring(data).find(".//light")
+    value = float(light.get("intensity", 1))
+    for animate in light.iter("animate"):
+        if animate.get("property") != "intensity":
+            continue
+        own = _at(animate, t)
+        value = value + own if animate.get("additive") == "true" else own
+    return value
+
+
 class HoistedLightCurve(Fixture):
     """The include starts at 4; the authored keys sit at 0 and 1.5."""
 
@@ -219,6 +236,9 @@ class HoistedLightCurve(Fixture):
         self.assertEqual(_at(animate, 4), 6)
         self.assertEqual(_at(animate, 4.5), 6)
         self.assertEqual(_at(animate, 4 - 0.001), 0)
+        # the lead-in is a gate key like the others: an explicit hold
+        key = {float(k.get("time")): k for k in animate.iter("key")}
+        self.assertEqual(key[4.0].get("interpolation"), "hold")
 
 
 class HoistedLightEdges(Fixture):
@@ -248,7 +268,93 @@ class HoistedLightEdges(Fixture):
         self.assertEqual(len(self.light_findings(manifest)), 1, manifest["findings"])
         self.assertIn("additive", self.light_findings(manifest)[0])
 
-    def test_a_key_snapped_to_a_marker_is_placed_by_its_offset_and_named(self):
+    def test_a_second_additive_track_stacks_on_the_first_as_the_author_wrote_it(self):
+        # A replacing ramp 2 -> 6 over 1.5 s plus an additive flicker that
+        # rises 0 -> 3 between 0.5 s and 1 s: the engine stacks them in
+        # document order, so the film shows the ramp with the flicker on top.
+        self.write_authored(AUTHORED.replace(
+            '      </animate>\n',
+            '      </animate>\n'
+            '      <animate property="intensity" additive="true">\n'
+            '        <key time="0.5" value="0"/>\n'
+            '        <key time="1" value="3"/>\n'
+            '      </animate>\n'))
+        data, manifest = self.build()
+        start, end = _span(data)
+        light = ElementTree.fromstring(data).find(".//light")
+        tracks = [a for a in light.iter("animate") if a.get("property") == "intensity"]
+        self.assertEqual([a.get("additive") for a in tracks], [None, "true"])
+        self.assertAlmostEqual(_light_at(data, start + 0.5), 2 + 4 * 0.5 / 1.5)
+        self.assertAlmostEqual(_light_at(data, start + 1), 2 + 4 * 1 / 1.5 + 3)
+        self.assertEqual(_light_at(data, start - 0.001), 0)
+        self.assertEqual(_light_at(data, end + 0.001), 0)
+        self.assertEqual(self.light_findings(manifest), [])
+
+    def test_with_no_replacing_track_only_the_first_additive_one_is_folded(self):
+        # Both tracks add to a light of intensity 2: the first is folded so
+        # the gate can hold the light at 0, the second still stacks on it.
+        self.write_authored(AUTHORED.replace(
+            '<animate property="intensity">', '<animate property="intensity" additive="true">'
+        ).replace('<key time="0" value="2"/>', '<key time="0" value="0"/>'
+        ).replace('<key time="1.5" value="6"/>', '<key time="1.5" value="4"/>'
+        ).replace(
+            '      </animate>\n',
+            '      </animate>\n'
+            '      <animate property="intensity" additive="true">\n'
+            '        <key time="0.5" value="0"/>\n'
+            '        <key time="1" value="3"/>\n'
+            '      </animate>\n'))
+        data, manifest = self.build()
+        start, end = _span(data)
+        light = ElementTree.fromstring(data).find(".//light")
+        tracks = [a for a in light.iter("animate") if a.get("property") == "intensity"]
+        self.assertEqual([a.get("additive") for a in tracks], [None, "true"])
+        self.assertAlmostEqual(_light_at(data, start + 1), 2 + 4 * 1 / 1.5 + 3)
+        self.assertEqual(_light_at(data, start - 0.001), 0)
+        self.assertEqual(_light_at(data, end + 0.001), 0)
+        self.assertEqual(len(self.light_findings(manifest)), 1, manifest["findings"])
+        self.assertIn("additive", self.light_findings(manifest)[0])
+
+    def test_an_extrapolation_other_than_hold_is_replaced_by_the_gates_hold_and_named(self):
+        # The author loops the ramp for the rest of the section; the gate
+        # holds the last key instead, and says so.
+        self.write_authored(AUTHORED.replace(
+            '<animate property="intensity">',
+            '<animate property="intensity" extrapolateAfter="loop">'))
+        data, manifest = self.build()
+        animate = _intensity_animate(data)
+        start, end = _span(data)
+        self.assertIsNone(animate.get("extrapolateAfter"))
+        self.assertEqual(_at(animate, end - 0.1), 6)
+        self.assertEqual(len(self.light_findings(manifest)), 1, manifest["findings"])
+        self.assertIn("extrapolateAfter=loop", self.light_findings(manifest)[0])
+
+    def test_an_explicit_hold_extrapolation_is_the_gates_own_and_not_named(self):
+        self.write_authored(AUTHORED.replace(
+            '<animate property="intensity">',
+            '<animate property="intensity" extrapolateBefore="hold" extrapolateAfter="hold">'))
+        _, manifest = self.build()
+        self.assertEqual(self.light_findings(manifest), [])
+
+    def test_a_key_snapped_to_a_marker_the_document_defines_is_placed_at_its_time(self):
+        # The engine reads a keyed marker as marker time + the key's time;
+        # the document's own <markers> are read the same way, so the key
+        # lands where the author put it: at 1 + 0.5 = 1.5 s into the section.
+        self.write_authored(AUTHORED.replace(
+            '<key time="1.5" value="6"/>', '<key time="0.5" value="6" marker="cue"/>'
+        ).replace('  <composition/>\n',
+                  '  <markers><marker id="cue" time="1"/></markers>\n  <composition/>\n'))
+        data, manifest = self.build()
+        animate = _intensity_animate(data)
+        start, _ = _span(data)
+        self.assertEqual([k.get("marker") for k in animate.iter("key")
+                          if k.get("marker")], [])
+        self.assertEqual(_at(animate, start + 1.5), 6)
+        self.assertAlmostEqual(_at(animate, start + 0.75), 4)
+        self.assertEqual(self.light_findings(manifest), [])
+
+    def test_a_key_snapped_to_a_marker_the_document_lacks_is_placed_by_its_offset_and_named(self):
+        # A generated id (beat.N from a beatGrid) is not a <marker> to read.
         self.write_authored(AUTHORED.replace(
             '<key time="1.5" value="6"/>', '<key time="1.5" value="6" marker="cue"/>'))
         data, manifest = self.build()
@@ -301,6 +407,8 @@ class HoistedLightEdges(Fixture):
 
     def test_a_local_time_base_is_the_lights_composition_time(self):
         # A light has no start of its own, so local seconds are scene seconds.
+        # This pins what the hoist already did (it passes on the code before
+        # AUTO-71); it is here so the normalized case beside it has its edge.
         self.write_authored(AUTHORED.replace(
             '<animate property="intensity">',
             '<animate property="intensity" timeBase="local">'))
