@@ -448,11 +448,18 @@ pictures carry on their own and says whether that is the beat, then names
 the shots with a large number left bare, a mechanism the picture does not
 show, or a list nothing signposts. Each is a flag for one `revise-picture`
 decision, the only revision allowed to change a shot's picture (the
-fact-check's revise still rewrites only the narration). What stands goes to
-`script.json` `picture`, a `warning:` in the findings and `## Picture check`
-in `script.md`, and its important flags, with the story review's, reach the
-vfx planner, every section author and reviewer and the keyframe brief as
-`## Story constraints`, beside the fact-check's.
+fact-check's revise still rewrites only the narration). A flag the writer
+keeps, with its reason, binds nothing: the reviewer never heard the line,
+so a number compared aloud or a claim the line carries reads as a fault to
+it, and the writer, who sees both, has answered. It goes to `picture.kept`
+and a `note:`. A flag on a shot the revision changed in any way counts as
+answered; the pictures are not read again. What stands goes to
+`script.json` `picture.flags`, a `warning:` in the findings and `## Picture
+check` in `script.md`, and its important flags, with the story review's,
+reach the vfx planner, every section author and reviewer and the keyframe
+brief as `## Story constraints`, beside the fact-check's; a story flag on a
+section binds that section's shots. `yt script --revise` moves the flags of
+a shot it changes to `picture.stale`, where they bind nothing.
 
 Sections are drafted in parallel (`--jobs`, default 4; `--jobs 1` drafts in
 order, each reading the one before) against a ledger that reserves each

@@ -1924,12 +1924,20 @@ class Screenwriter:
                      fix: bool = True) -> dict:
         """The picture-check, its flags (`picture_flags`) and their one
         revision, `revise-picture`, the only decision that may change a
-        shot's picture. What stands afterwards (a flag kept with its
-        reason, one the answer left as it was, every one under
-        report-only) is the record's `flags`, which vfx.picture_constraints
-        hands the people who draw the film, and a `warning:` in the stage's
-        findings. A failed check is recorded, never silent, and changes
-        nothing."""
+        shot's picture. What stands afterwards (a flag the answer left
+        unanswered or unchanged, every one when the revision failed, every
+        one under report-only) is the record's `flags`, which
+        vfx.picture_constraints hands the people who draw the film, and a
+        `warning:` in the stage's findings.
+
+        A flag the writer kept, with its reason, is the record's `kept` and
+        a `note:`, and binds nothing: the reviewer read no narration, so a
+        bare number it reports may be compared aloud (attention 15 accepts
+        a comparison in the same or the next sentence) or a claim carried by
+        the line, and the writer, who sees both, has answered it. A flag on
+        a shot the revision changed in any way is answered; the pictures are
+        not read a second time. A failed check is recorded, never silent,
+        and changes nothing."""
         record: dict = {"model": self.picture_reviewer.model}
         try:
             review, unread, again = self.picture_check(sections)
@@ -1945,23 +1953,25 @@ class Screenwriter:
         flags = picture_flags(review, sections)
         result = (self.revise(shots, flags, name="revise-picture") if fix and flags
                   else {"applied": [], "kept": [], "failed": False})
-        kept = {k["n"]: k["why"] for k in result["kept"]}
+        why = {k["n"]: k["why"] for k in result["kept"]}
         changed = {r["n"] for r in result["applied"]}
-        standing = [({**f, "kept": kept[f["n"]]} if f["n"] in kept else f) for f in flags
-                    if f["n"] in kept or f["n"] not in changed]
+        kept = [{**f, "kept": why[f["n"]]} for f in flags if f["n"] in why]
+        standing = [f for f in flags if f["n"] not in why and f["n"] not in changed]
+        for f in kept:
+            self.findings.append(f"note: {f['problem']}; kept by the writer: {f['kept']}")
         for f in standing:
-            said = (f"; kept: {f['kept']}" if f.get("kept")
-                    else "; still standing after the revision" if fix
-                    else "; not revised (--report-only)")
+            said = ("; not revised (--report-only)" if not fix
+                    else "; revise-picture failed" if result["failed"]
+                    else "; still standing after the revision")
             self.findings.append(f"warning: {f['problem']}{said}")
         self._say(f"[picture] {len(flags)} flag(s), {len(changed)} shot(s) revised, "
-                  f"{len(standing)} standing")
+                  f"{len(kept)} kept, {len(standing)} standing")
         return {**record,
                 "sections": [{k: row.get(k) for k in ("section", "claim", "carries_beat",
                                                       "missing", "confused_at")}
                              for row in review.get("sections") or [] if isinstance(row, dict)],
                 "flags": standing, "revisions": result["applied"],
-                "kept": result["kept"], "again": again, "unread": unread}
+                "kept": kept, "again": again, "unread": unread}
 
     # -- run ---------------------------------------------------------------
 
@@ -2453,6 +2463,7 @@ def _words(text: str) -> list[str]:
     return re.findall(r"[\w'’-]+", str(text or "").lower())
 
 
+
 def _has(text: str, phrases) -> list[str]:
     """The phrases of `phrases` found in `text`, on word boundaries."""
     low = " ".join(str(text or "").lower().replace("’", "'").split())
@@ -2826,8 +2837,9 @@ def picture_flags(review: dict, sections: list[Section]) -> list[dict]:
 
 def picture_lines(record) -> list[str]:
     """script.json's `picture` as a Markdown section: who read the pictures,
-    each section's claim as read from them, what was revised and what still
-    stands."""
+    each section's claim as read from them, what was revised, what still
+    stands (in bold, as it binds the picture), what the writer kept and
+    why, and what a later `--revise` made stale."""
     if not isinstance(record, dict) or "model" not in record:
         return []
     md = ["## Picture check", "",
@@ -2840,8 +2852,11 @@ def picture_lines(record) -> list[str]:
     md += [f"- revised {r.get('label', r.get('n'))}: {r.get('why', '')}"
            for r in record.get("revisions") or []]
     md += [f"- **{f.get('severity', '?')}** {f.get('problem', '')}"
-           + (f" (kept: {f['kept']})" if f.get("kept") else "")
            for f in record.get("flags") or []]
+    md += [f"- {f.get('severity', '?')} {f.get('problem', '')} (kept: {f.get('kept', '')})"
+           for f in record.get("kept") or [] if isinstance(f, dict) and f.get("problem")]
+    md += [f"- stale after `--revise`: {f.get('problem', '')}"
+           for f in record.get("stale") or [] if isinstance(f, dict)]
     return md + [""]
 
 
@@ -3500,6 +3515,20 @@ def run_revise(args, idea: Idea, project) -> int:
     data["rules"] = {**ruled, "flags": [f for f in old if f.get("n") not in changed] + fresh,
                      "kept": [k for k in ruled.get("kept") or []
                               if isinstance(k, dict) and k.get("n") not in changed]}
+    # The picture-check's flags on a changed shot spoke of text that is
+    # gone, and no reviewer reads the new text here: they stop binding vfx
+    # and are kept under `stale`, with their findings lines removed.
+    pictured = data.get("picture") if isinstance(data.get("picture"), dict) else None
+    if pictured is not None:
+        flags_now = [f for f in pictured.get("flags") or [] if isinstance(f, dict)]
+        gone = [f for f in flags_now if _number(f.get("n")) in changed]
+        if gone:
+            drop = [str(f["problem"]) for f in gone if f.get("problem")]
+            data["findings"] = [line for line in data.get("findings") or []
+                                if not any(p in str(line) for p in drop)]
+            data["picture"] = {**pictured,
+                               "flags": [f for f in flags_now if f not in gone],
+                               "stale": list(pictured.get("stale") or []) + gone}
     if again:
         # The changed lines' flags, and the reasons an older line was kept,
         # are the new check's: they spoke of text that is gone.

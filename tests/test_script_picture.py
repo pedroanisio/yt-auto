@@ -335,12 +335,91 @@ class Flags(unittest.TestCase):
         self.assertEqual(row["visual_before"], "PICTURE 2.2")
         self.assertEqual(record["model"], "opus")
         self.assertEqual([s["section"] for s in record["sections"]], [1, 2, 3])
-        # the kept flag stands, with its reason; the fixed ones do not
-        standing = {f["n"]: f for f in record["flags"]}
-        self.assertEqual(set(standing), {1})
-        self.assertEqual(standing[1]["kept"], "the next shot compares it")
-        self.assertTrue(any(f.startswith("warning: picture:bare-number") and "kept:" in f
+        # The writer, who sees the line, answered the kept flag: the reviewer
+        # read no narration, so its bare number may be compared aloud
+        # (attention 15 accepts a spoken comparison). It is recorded with its
+        # reason and binds nothing; the fixed ones are gone.
+        self.assertEqual(record["flags"], [])
+        [kept] = record["kept"]
+        self.assertEqual((kept["n"], kept["kind"], kept["kept"]),
+                         (1, "picture:bare-number", "the next shot compares it"))
+        self.assertTrue(any(f.startswith("note: picture:bare-number")
+                            and "kept by the writer: the next shot compares it" in f
                             for f in data["findings"]), data["findings"])
+        self.assertFalse(any(f.startswith("warning: picture:") for f in data["findings"]),
+                         data["findings"])
+
+    def test_a_kept_flag_binds_nothing_downstream(self):
+        from ytstudio import vfx
+        w = writer()
+        faked(w, picture(reports=[{"n": 1, "bare_number": "12,000 bolts, bare"},
+                                  {"n": 3, "unshown_claim": "the line says it shears"}]),
+              fixes=[{"n": 1, "action": "keep", "narration": "SPOKEN LINE 1.1.",
+                      "why": "the line compares it to a city"},
+                     {"n": 3, "action": "keep", "narration": "SPOKEN LINE 2.1.",
+                      "why": "the line carries the claim, not the picture"}])
+        data = w.run(review=True)
+        rows = vfx.picture_constraints(data)
+        self.assertEqual([r for r in rows if r["source"] == "picture"], [])
+        self.assertNotIn("## Story constraints", "\n".join(vfx.constraint_lines(rows)))
+
+    def test_an_answer_that_changes_nothing_stands_and_binds(self):
+        from ytstudio import vfx
+        w = writer()
+        faked(w, picture(reports=[{"n": 1, "bare_number": "12,000 bolts, bare"}]),
+              fixes=[{"n": 1, "action": "fix", "narration": "SPOKEN LINE 1.1.",
+                      "why": "nothing to change"}])
+        data = w.run(review=True)
+        self.assertEqual([f["n"] for f in data["picture"]["flags"]], [1])
+        self.assertTrue(any(f.startswith("warning: picture:bare-number")
+                            and "still standing" in f for f in data["findings"]))
+        rows = [r for r in vfx.picture_constraints(data) if r["source"] == "picture"]
+        self.assertEqual([r["label"] for r in rows], ["1.1"])
+
+    def test_a_changed_shot_answers_its_flag_without_a_second_reading(self):
+        # The current rule, stated in the manual: any change revise-picture
+        # makes to a flagged shot answers that shot's flags, here a narration
+        # change to a section flag; the pictures are not read again.
+        w = writer()
+        calls = faked(w, picture(self.MISSED), fixes=[
+            {"n": 4, "action": "fix", "narration": "The paint hid the rust.",
+             "why": "the line now names what the picture shows"}])
+        data = w.run(review=True)
+        self.assertEqual(shot(data, "2.2")["narration"], "The paint hid the rust.")
+        self.assertEqual(shot(data, "2.2")["visual"], "PICTURE 2.2")
+        self.assertEqual(data["picture"]["flags"], [])
+        self.assertEqual(len(named(calls, "picture-check")), 1)
+        self.assertFalse(named(calls, "picture-check-again"))
+
+    def test_a_failed_revision_leaves_every_flag_standing(self):
+        w = writer()
+        faked(w, picture(self.MISSED), fixes=script.ClaudeError("the writer is down"))
+        data = w.run(review=True)
+        self.assertEqual([f["n"] for f in data["picture"]["flags"]], [4])
+        self.assertTrue(any(f.startswith("warning: picture:section")
+                            and "revise-picture failed" in f for f in data["findings"]),
+                        data["findings"])
+
+    def test_script_md_records_the_check(self):
+        import tempfile
+        w = writer()
+        faked(w, picture(self.MISSED, [{"n": 1, "bare_number": "12,000 bolts, bare"},
+                                       {"n": 6, "unsignposted_list": "three parts"}]),
+              fixes=[{"n": 1, "action": "keep", "narration": "SPOKEN LINE 1.1.",
+                      "why": "the next shot compares it"},
+                     {"n": 4, "action": "fix", "narration": "SPOKEN LINE 2.2.",
+                      "why": "show the paint", "visual": "the paint peeled back"}])
+        data = w.run(review=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "script.md"
+            script.write_md(str(path), idea(), data, script.sections_of(data))
+            text = path.read_text(encoding="utf-8")
+        md = text.split("## Picture check", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("section 2: misses its beat: a wall is painted", md)
+        self.assertIn("section 1: carries its beat", md)
+        self.assertIn("revised 2.2: show the paint", md)
+        self.assertIn("(kept: the next shot compares it)", md)
+        self.assertIn("**minor** picture:unsignposted-list: shot 3.2", md)
 
     def test_report_only_records_the_flags_and_revises_nothing(self):
         w = writer()
