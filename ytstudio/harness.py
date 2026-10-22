@@ -374,6 +374,12 @@ class Harness:
         with self.lock:
             self.decisions.append(decision)
 
+    def _failed(self, name: str, digest: str, cost: float, tool_calls: int = 0) -> None:
+        """A decision that raised still cost money: a `failed` row says so,
+        and `report()` bills it to the stage. Nothing is saved, so the
+        failure is never served as an answer."""
+        self._note(Decision(name, False, digest, cost, kind="failed", tool_calls=tool_calls))
+
     def _engine(self, **config: Any):
         return ENGINE(EngineConfig(model=self.model, effort=self.effort,
                                    fallback_model=self.fallback_model,
@@ -403,11 +409,14 @@ class Harness:
                 self._say(f"[{self.stage}] {name}: asking again ({'; '.join(problems[:3])})")
                 result = engine.ask_json(prompt + RETRY_INSTRUCTION % "; ".join(problems[:10]),
                                          schema, system=self.system)
-        except ClaudeError as exc:
-            raise HarnessError(f"[{self.stage}] {name}: {exc}") from exc
+            self._check(name, result, schema)
+        except (ClaudeError, HarnessError) as exc:
+            self._failed(name, digest, engine.usage.cost_usd)
+            if isinstance(exc, ClaudeError):
+                raise HarnessError(f"[{self.stage}] {name}: {exc}") from exc
+            raise
         finally:
             self._book(engine.usage)
-        self._check(name, result, schema)
         self._save(name, digest, result, kind="decide", cost=engine.usage.cost_usd)
         self._note(Decision(name, False, digest, engine.usage.cost_usd))
         return result
@@ -442,49 +451,54 @@ class Harness:
         engine = self._engine(tools=tuple(tools), cwd=cwd, permission_mode="dontAsk")
         texts: list[str] = []
         calls = 0
+        cost = 0.0
         try:
-            for event in engine.stream(prompt, system=self.system):
-                if event.subtype == "tool_use" and event.tool_input:
-                    calls += 1
-                    what = (event.tool_input.get("file_path")
-                            or event.tool_input.get("pattern") or "")
-                    if on_tool:
-                        on_tool(str(event.tool_name), str(what))
-                    elif self.verbose:
-                        print(f"    {event.tool_name}: {str(what)[:100]}",
-                              file=sys.stderr)
-                if event.type == "assistant" and event.text:
-                    texts.append(event.text)
-        except ClaudeError as exc:
-            raise HarnessError(f"[{self.stage}] {name}: {exc}") from exc
-        finally:
-            self._book(engine.usage)
-        cost = engine.usage.cost_usd
-
-        result = read_json(cwd / form, warn=False) if form else None
-        if result is None or missing_fields(result, schema) or enum_violations(result, schema):
-            # The agent that looked is the one to answer: its closing JSON
-            # block is the form. Only when it left none does a text-only
-            # pass fill it from its words -- and that pass saw no image.
-            result = fenced_json(texts)
-        if result is None or missing_fields(result, schema) or enum_violations(result, schema):
-            if not texts:
-                raise HarnessError(f"[{self.stage}] {name}: the inspection ended "
-                                   "with no words and no form")
-            self._say(f"[{self.stage}] {name}: filling the form from the inspection")
-            extractor = self._engine(tools=())
             try:
-                result = extractor.ask_json(
-                    "From this inspection, fill the form exactly as the schema "
-                    "asks, adding nothing that is not in the text. Where the text "
-                    "gives no support for a field, say so in it.\n\n"
-                    + "\n\n".join(texts)[-16000:], schema, system=self.system)
-            except ClaudeError as exc:
-                raise HarnessError(f"[{self.stage}] {name}: {exc}") from exc
+                for event in engine.stream(prompt, system=self.system):
+                    if event.subtype == "tool_use" and event.tool_input:
+                        calls += 1
+                        what = (event.tool_input.get("file_path")
+                                or event.tool_input.get("pattern") or "")
+                        if on_tool:
+                            on_tool(str(event.tool_name), str(what))
+                        elif self.verbose:
+                            print(f"    {event.tool_name}: {str(what)[:100]}",
+                                  file=sys.stderr)
+                    if event.type == "assistant" and event.text:
+                        texts.append(event.text)
             finally:
-                self._book(extractor.usage)
-            cost += extractor.usage.cost_usd
-        self._check(name, result, schema, enums=True)
+                self._book(engine.usage)
+                cost += engine.usage.cost_usd
+
+            result = read_json(cwd / form, warn=False) if form else None
+            if result is None or missing_fields(result, schema) \
+                    or enum_violations(result, schema):
+                # The agent that looked is the one to answer: its closing JSON
+                # block is the form. Only when it left none does a text-only
+                # pass fill it from its words -- and that pass saw no image.
+                result = fenced_json(texts)
+            if result is None or missing_fields(result, schema) \
+                    or enum_violations(result, schema):
+                if not texts:
+                    raise HarnessError(f"[{self.stage}] {name}: the inspection ended "
+                                       "with no words and no form")
+                self._say(f"[{self.stage}] {name}: filling the form from the inspection")
+                extractor = self._engine(tools=())
+                try:
+                    result = extractor.ask_json(
+                        "From this inspection, fill the form exactly as the schema "
+                        "asks, adding nothing that is not in the text. Where the text "
+                        "gives no support for a field, say so in it.\n\n"
+                        + "\n\n".join(texts)[-16000:], schema, system=self.system)
+                finally:
+                    self._book(extractor.usage)
+                    cost += extractor.usage.cost_usd
+            self._check(name, result, schema, enums=True)
+        except (ClaudeError, HarnessError) as exc:
+            self._failed(name, digest, cost, tool_calls=calls)
+            if isinstance(exc, ClaudeError):
+                raise HarnessError(f"[{self.stage}] {name}: {exc}") from exc
+            raise
         self._save(name, digest, result, kind="inspect", cost=cost, tool_calls=calls)
         self._note(Decision(name, False, digest, cost, kind="inspect", tool_calls=calls))
         return result

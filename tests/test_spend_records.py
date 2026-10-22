@@ -122,6 +122,59 @@ class Prices(unittest.TestCase):
         self.assertIsNone(spend.price_for(""))
 
 
+SCHEMA = {"type": "object", "properties": {"answer": {"type": "string"}},
+          "required": ["answer"]}
+
+
+class FailedDecision(unittest.TestCase):
+    """AUTO-73: a decision that raised still cost money. It is a `failed` row
+    in the stage's report, so the record bills it and `yt improve` sizes the
+    next pass from what was really spent."""
+
+    class Down:
+        """Spends, then the CLI fails."""
+
+        def __init__(self, config):
+            self.usage = Usage(cost_usd=0.3, calls=1)
+
+        def ask_json(self, prompt, schema, system=None):
+            raise harness.ClaudeError("the model is down")
+
+    class Wordless(Down):
+        """Spends twice, and never gives the required field."""
+
+        def ask_json(self, prompt, schema, system=None):
+            return {"nothing": True}
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self._engine = harness.ENGINE
+        self.addCleanup(setattr, harness, "ENGINE", self._engine)
+
+    def failing(self, engine):
+        harness.ENGINE = engine
+        h = harness.Harness(self.root, "build", model="sonnet", verbose=False)
+        with self.assertRaises(harness.HarnessError):
+            h.decide("edit", "p", SCHEMA)
+        return h.report()
+
+    def test_an_engine_error_is_a_failed_row_that_the_record_bills(self):
+        report = self.failing(self.Down)
+        self.assertEqual([(d["name"], d["kind"], d["cached"]) for d in report["decisions"]],
+                         [("edit", "failed", False)])
+        self.assertAlmostEqual(report["decisions"][0]["cost_usd"], 0.3)
+        self.assertAlmostEqual(report["cost_usd"], 0.3)
+        self.assertAlmostEqual(spend.from_report(report)["cost_usd"], 0.3)
+        self.assertFalse((self.root / "decisions").exists())      # a failure is never served
+
+    def test_an_answer_off_its_schema_twice_is_a_failed_row_too(self):
+        report = self.failing(self.Wordless)
+        self.assertEqual([d["kind"] for d in report["decisions"]], ["failed"])
+        self.assertAlmostEqual(report["cost_usd"], 0.3)
+
+
 class Writers(unittest.TestCase):
     def test_styles_show_their_spend(self):
         tmp = tempfile.TemporaryDirectory()
