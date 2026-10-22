@@ -179,12 +179,14 @@ PLAN_REVIEW_USD = 0.5
 #: rubric level, the house, the brief and the plan), how many tokens a word
 #: of narration takes in the listing (the picture, the supers and the label
 #: ride beside each line), and what a sample writes back (the synopsis, the
-#: grades, the flags). The cold read is sent the narration alone; the match
-#: two sentences. Assumed until records measure them.
+#: grades, the flags). The cold read is sent the narration alone, its
+#: answers reading the narration and the plan's questions; the match two
+#: sentences. Assumed until records measure them.
 REVIEW_OVERHEAD_TOKENS = 8000
 REVIEW_TOKENS_PER_WORD = 3.0
 REVIEW_OUTPUT_TOKENS = 2500
 COLD_READ_TOKENS = (1000, 1.5, 1500)          # overhead, per word, output
+ANSWERS_TOKENS = (1200, 1.5, 300)             # overhead, per word, output
 MATCH_TOKENS = (1200, 200)                    # input, output
 
 
@@ -207,28 +209,35 @@ def _script_words(root: Path | None) -> int | None:
 
 
 def story_review_usd(root: Path | None, argv: Iterable[str] = ()) -> float:
-    """What the story review adds to a script (AUTO-93): its samples (three a
-    round) times the rounds (`--rounds`, default 2: the reading and one
-    re-reading on average), each a reading of the whole script, plus the
-    cold read and its match, priced at the reviewer's model
-    (`--reviewer-model`, default opus). The script's words are the
-    project's own narration when script.json has it, else what `--minutes`
-    at `--wpm` would say. The writer's revisions are left to the base."""
+    """What the story review adds to a script (AUTO-93): its samples
+    (script.STORY_SAMPLES a round) times the rounds (`--rounds`, default 2:
+    the reading and one re-reading on average), each a reading of the whole
+    script, plus the cold read, its answers and its match, once on the
+    first draft and, with a second round, once on the draft that stands,
+    priced at the reviewer's model (`--reviewer-model`, default opus). The
+    script's words are the project's own narration when script.json has
+    it, else what `--minutes` at `--wpm` would say (script.words_for, at
+    the script stage's own defaults). The writer's revisions are left to
+    the base."""
+    # script imports this module, so its constants are read here, when the
+    # estimate is made, not at import.
+    from .script import DEFAULT_MINUTES, DEFAULT_WPM, STORY_SAMPLES, words_for
     try:
-        minutes = float(_argv_value(argv, "--minutes", 10.0))
-        wpm = int(_argv_value(argv, "--wpm", 150))
+        minutes = float(_argv_value(argv, "--minutes", DEFAULT_MINUTES))
+        wpm = int(_argv_value(argv, "--wpm", DEFAULT_WPM))
         rounds = max(1, int(_argv_value(argv, "--rounds", 2)))
     except (TypeError, ValueError):
-        minutes, wpm, rounds = 10.0, 150, 2
-    words = _script_words(root) or round(minutes * wpm)
+        minutes, wpm, rounds = DEFAULT_MINUTES, DEFAULT_WPM, 2
+    words = _script_words(root) or words_for(round(minutes * 60), wpm)
     row = price_for(_argv_value(argv, "--reviewer-model", "opus")) or price_for("opus") or {}
     per_in, per_out = row.get("input", 0.0) / 1e6, row.get("output", 0.0) / 1e6
-    sample = ((REVIEW_OVERHEAD_TOKENS + words * REVIEW_TOKENS_PER_WORD) * per_in
-              + REVIEW_OUTPUT_TOKENS * per_out)
-    over, per_word, out = COLD_READ_TOKENS
-    cold = (over + words * per_word) * per_in + out * per_out
-    match = MATCH_TOKENS[0] * per_in + MATCH_TOKENS[1] * per_out
-    return round(3 * rounds * sample + cold + match, 2)
+
+    def reading(overhead: float, per_word: float, out: float) -> float:
+        return (overhead + words * per_word) * per_in + out * per_out
+    sample = reading(REVIEW_OVERHEAD_TOKENS, REVIEW_TOKENS_PER_WORD, REVIEW_OUTPUT_TOKENS)
+    cold = (reading(*COLD_READ_TOKENS) + reading(*ANSWERS_TOKENS)
+            + MATCH_TOKENS[0] * per_in + MATCH_TOKENS[1] * per_out)
+    return round(STORY_SAMPLES * rounds * sample + min(rounds, 2) * cold, 2)
 
 
 #: A flag that adds to what its stage costs: stage -> flag -> its parts, each

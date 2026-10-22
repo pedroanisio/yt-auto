@@ -179,6 +179,16 @@ class ReviewIncrement(unittest.TestCase):
         fewer = review_usd(["--rounds", "1", "--review"])
         self.assertLess(fewer, review_usd(["--rounds", "3", "--review"]))
 
+    def test_the_story_review_estimate_reads_the_scripts_own_constants(self):
+        # the samples a round and the pace are the script stage's, so the
+        # estimate moves with them instead of going stale
+        from ytstudio import script
+        base = spend.story_review_usd(None, ["--review"])
+        with mock.patch.object(script, "STORY_SAMPLES", script.STORY_SAMPLES * 2):
+            self.assertGreater(spend.story_review_usd(None, ["--review"]), base)
+        with mock.patch.object(script, "DEFAULT_WPM", script.DEFAULT_WPM * 2):
+            self.assertGreater(spend.story_review_usd(None, ["--review"]), base)
+
     def test_like_projects_are_priced_by_whether_their_record_holds_it(self):
         self.write(self.work / "reviewed", 2.4, ["plan", "plan-review-2", "review-r1-s3"])
         asked = self.row({"script": ["--review"]})
@@ -348,7 +358,8 @@ class WalkOrder(_RunCase):
         # the script is priced with its plan review (AUTO-92)
         review = review_usd(RUN_SCRIPT_ARGV)
         self.assertAlmostEqual(up_to_sound, 13.0 + review)
-        self.assertEqual(rows["total"], up_to_sound + rows["keyframe"])
+        # the rows are printed to the cent, so their sum is compared to the cent
+        self.assertAlmostEqual(rows["total"], up_to_sound + rows["keyframe"], places=2)
         # Each stage reports what it was assumed to cost, so after retime the
         # run has spent $12.50 and the review, and sound's $0.50 is the first
         # that does not fit.

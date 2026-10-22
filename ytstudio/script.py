@@ -49,6 +49,8 @@ from . import flags, harness, house, narrative, spend, workspace
 
 #: Narration pace. 150 wpm is an unhurried documentary read; 180 is brisk.
 DEFAULT_WPM = 150
+#: The runtime asked when `--minutes` is not given.
+DEFAULT_MINUTES = 10.0
 
 SYSTEM = (
     "You are a screenwriter for factual YouTube: documentary, explainer and "
@@ -3505,8 +3507,8 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
     p = sub.add_parser(
         "script", parents=list(parents), help="write the full shooting script",
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--minutes", type=float, default=10.0,
-                   help="target runtime in minutes (default 10)")
+    p.add_argument("--minutes", type=float, default=DEFAULT_MINUTES,
+                   help=f"target runtime in minutes (default {DEFAULT_MINUTES:g})")
     p.add_argument("--wpm", type=int, default=DEFAULT_WPM,
                    help=f"narration pace (default {DEFAULT_WPM})")
     p.add_argument("--sections", type=int, default=0,
