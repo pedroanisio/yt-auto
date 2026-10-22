@@ -175,7 +175,12 @@ every stage on opus, started 2026-10-19 20:47 (-03).
     the author's waits counted against its session. *Proposed:* `yt render`
     probes a host's SSH before routing a still and falls back to the other
     host (the encode host takes stills fine), and `yt doctor` reports a host
-    that accepts TCP but not SSH.
+    that accepts TCP but not SSH. *Done (AUTO-69):* every ssh and rsync
+    gives up on a connection after 10 s; the pre-routing check reads the
+    host's load and GPU memory in use, and a saturated host (load over its
+    cores, under 1 GB of GPU free) loses the stills to the quiet one; a
+    failed sync sends the job to the other host once; doctor prints both
+    numbers beside the routing.
 19. **A stopped keyframe run leaves a mixed record.** The record
     (`keyframe.json`) is written only when a run finishes; stopping the
     second run after its review to save the remaining rounds left the first

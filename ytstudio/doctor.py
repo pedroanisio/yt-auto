@@ -135,9 +135,11 @@ def check_environment(work: Path) -> Report:
                    "point it at the binary, or at the unpacked release archive")
     if hosts:
         # The renderers are other machines; nothing is built here. One short
-        # ssh per host asks for the engine, the memory and the GPU, and the
-        # routing rule (docs/compute.md: memory, not GPU) says what each gets.
-        check_hosts(report, hosts)
+        # ssh per host asks for the engine, the memory and the GPU, a second
+        # for its load and GPU memory in use right now, and the routing rule
+        # (docs/compute.md: memory, not GPU, and not a saturated host) says
+        # what each gets.
+        check_hosts(report, hosts, {h.addr: render.host_health(h.addr) for h in hosts if h.usable})
     elif binary:
         report.add("ok", "engine", f"scene-render at {binary}")
     else:
@@ -232,13 +234,15 @@ def check_environment(work: Path) -> Report:
 # one video
 # --------------------------------------------------------------------------- #
 
-def check_hosts(report: Report, hosts: list) -> None:
-    """One finding per render host, and the routing each usable one gets. A host
+def check_hosts(report: Report, hosts: list, health: dict | None = None) -> None:
+    """One finding per render host, and the routing each usable one gets, from
+    the live reading (`health`: addr -> render.Health) when there is one. A host
     that takes a TCP connection on the ssh port but does not answer ssh is a
     hung or half-started sshd, not an unplugged machine: it is named as such."""
+    health = health or {}
     usable = [h for h in hosts if h.usable]
-    big = render.pick_host(usable, "encode")
-    small = render.pick_host(usable, "still")
+    big = render.pick_host(usable, "encode", health)
+    small = render.pick_host(usable, "still", health)
     for h in hosts:
         if h.usable:
             roles = []
@@ -247,8 +251,19 @@ def check_hosts(report: Report, hosts: list) -> None:
             if h is small:
                 roles.append("stills, frames, validate")
             disk = f", {h.disk_free_gb} GB free" if h.disk_free_gb else ""
+            now = health.get(h.addr)
+            live = ""
+            if now is not None:
+                live = f", load {now.load1:g}"
+                if h.gpu_mem_mb and now.gpu_used_mb:
+                    live += f", GPU {now.gpu_used_mb}/{h.gpu_mem_mb} MB used"
             report.add("ok", "engine", f"{h.version} on {h.addr} ({h.ram_gb} GB, "
-                       f"{h.cores} cores, {h.gpu or 'no gpu'}{disk}) -> {'; '.join(roles) or 'slices'}")
+                       f"{h.cores} cores, {h.gpu or 'no gpu'}{disk}{live}) -> {'; '.join(roles) or 'slices'}")
+            busy = render.saturated(h, now)
+            if busy:
+                report.add("warn", "engine", f"{h.addr} is saturated ({busy}); stills, frames and "
+                           f"validation go to {small.addr if small is not h else 'it anyway'}",
+                           "wait for the load there to drop, or take it out of RS_RENDER_HOSTS")
             if 0 < h.disk_free_gb < LOW_DISK_GB:
                 report.add("warn", "engine", f"{h.addr} has {h.disk_free_gb} GB free where its "
                            f"mirrors and jobs live (under {LOW_DISK_GB}); a long encode can fill it",

@@ -33,14 +33,14 @@ def exit_marker(code):
 class Routing(unittest.TestCase):
     def setUp(self):
         render._HOSTS.clear()
-        render._ALIVE.clear()
+        render._HEALTH.clear()
         render._HOSTS["a"] = render.Host("a", engine="/e", ram_gb=16, cores=8)
         render._HOSTS["b"] = render.Host("b", engine="/e", ram_gb=64, cores=16)
         self.env = mock.patch.dict("os.environ", {"RS_RENDER_HOSTS": "a,b"})
         self.env.start()
         self.addCleanup(self.env.stop)
         self.addCleanup(render._HOSTS.clear)
-        self.addCleanup(render._ALIVE.clear)
+        self.addCleanup(render._HEALTH.clear)
 
     def ssh_down(self, *dead):
         calls = []
@@ -66,11 +66,13 @@ class Routing(unittest.TestCase):
         self.assertLessEqual(kw["timeout"], 15)
 
     def test_a_healthy_check_is_cached_for_a_moment(self):
+        # AUTO-69: every candidate is read once (its load decides the routing),
+        # and the next moments' jobs reuse the readings.
         patch, calls = self.ssh_down()
         with patch:
             render.remote_host(None, "still")
             render.remote_host(None, "still")
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(sorted(argv[-2] for argv, _ in calls), ["a", "b"])
 
     def test_an_encode_skips_a_dead_host_too(self):
         patch, _ = self.ssh_down("b")                 # b is the big host
@@ -109,6 +111,33 @@ class Doctor(unittest.TestCase):
         found = self.report(host, False)
         self.assertFalse(any("TCP" in f.message and "not SSH" in f.message for f in found))
         self.assertTrue(found)
+
+    def test_load_and_gpu_used_are_printed_beside_the_routing(self):
+        small = render.Host("root@small", engine="/e", version="sr 0.6", ram_gb=8, cores=8,
+                            gpu="3070", gpu_mem_mb=8192)
+        big = render.Host("root@big", engine="/e", version="sr 0.6", ram_gb=125, cores=12, gpu="3050")
+        health = {"root@small": render.Health(alive=True, load1=29.4, gpu_used_mb=7812),
+                  "root@big": render.Health(alive=True, load1=1.2)}
+        rep = doctor.Report("t")
+        doctor.check_hosts(rep, [small, big], health)
+        lines = {f.message.split(" on ")[1].split(" ")[0]: f.message for f in rep.findings if f.level == "ok"}
+        self.assertIn("load 29.4", lines["root@small"])
+        self.assertIn("GPU 7812/8192 MB used", lines["root@small"])
+        self.assertIn("load 1.2", lines["root@big"])
+        # the saturated host does not get the stills; the big one takes everything
+        self.assertNotIn("stills", lines["root@small"])
+        self.assertIn("stills", lines["root@big"])
+        warn = [f for f in rep.findings if f.level == "warn" and "root@small" in f.message]
+        self.assertEqual(len(warn), 1, [f.message for f in rep.findings])
+        self.assertIn("saturated", warn[0].message)
+
+    def test_without_readings_the_line_is_as_before(self):
+        host = render.Host("root@h", engine="/e", version="sr 0.6", ram_gb=8, cores=8)
+        rep = doctor.Report("t")
+        doctor.check_hosts(rep, [host])
+        ok = [f.message for f in rep.findings if f.level == "ok"]
+        self.assertEqual(len(ok), 1)
+        self.assertNotIn("load", ok[0])
 
     def test_tcp_open_reads_the_host_out_of_user_at_host(self):
         with mock.patch("socket.create_connection") as conn:
