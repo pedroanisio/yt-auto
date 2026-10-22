@@ -458,5 +458,45 @@ class Pilot(unittest.TestCase):
         self.assertTrue(any("payoff" in n and "2.2" in n for n in notes), notes)
 
 
+# --------------------------------------------------------------------------- #
+# the author is told what the picture must demonstrate
+# --------------------------------------------------------------------------- #
+
+class VfxBrief(unittest.TestCase):
+    def test_script_sections_pass_shows_and_function_when_written(self):
+        from ytstudio import vfx
+        w = writer()
+        faked(w, functions=("hook", "payoff"))
+        data = w.run()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "script.json"
+            path.write_text(json.dumps(data))
+            rows = vfx.script_sections(str(path))
+        shot = rows[0]["shots"][1]
+        self.assertEqual(shot["shows"], "shows 1.2")
+        self.assertEqual(shot["function"], "payoff")
+
+    def test_an_older_script_adds_no_key(self):
+        from ytstudio import vfx
+        rows = vfx.script_sections(str(FIXTURES / "before-auto-90.json"))
+        self.assertNotIn("shows", rows[0]["shots"][0])
+        self.assertNotIn("function", rows[0]["shots"][0])
+
+    def test_the_author_brief_names_what_the_picture_demonstrates(self):
+        from ytstudio import vfx
+        from tests.test_vfx_world import EFFECTS, SECTION, STYLE
+        section = copy.deepcopy(SECTION)
+        section["shots"][0]["shows"] = "the strand snaps where the tension peaks"
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = vfx.Workspace(Path(tmp), version="v01")
+            path = ws.brief(1, idea=idea(), house_rules="", style=STYLE,
+                            tokens={"ink": "#FFFFFF"}, frame=(1920, 1080), section=section,
+                            effects=EFFECTS, words={}, assets=[],
+                            worlds=vfx.world_symbols(section, EFFECTS))
+            text = path.read_text(encoding="utf-8")
+        self.assertIn("What the picture must demonstrate of the line: the strand snaps "
+                      "where the tension peaks", text)
+
+
 if __name__ == "__main__":
     unittest.main()

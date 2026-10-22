@@ -550,7 +550,12 @@ def script_sections(path: str | None) -> list[dict]:
              "beats": s.beats,
              "shots": [{"label": sh.label, "at": sh.at, "seconds": sh.seconds,
                         "visual": sh.visual, "on_screen": sh.on_screen,
-                        "super": visible_text(sh), "narration": sh.narration, "asset": sh.asset}
+                        "super": visible_text(sh), "narration": sh.narration, "asset": sh.asset,
+                        # what the picture proves of the line (AUTO-90), only
+                        # when the screenplay says: an older one's rows, and
+                        # the plan's cache digests over them, stay the same
+                        **{k: getattr(sh, k) for k in ("function", "shows")
+                           if getattr(sh, k, "")}}
                        for sh in s.shots]}
             for s in sections]
 
@@ -1998,8 +2003,11 @@ class Workspace:
                          if s.get("timed_by") == "voice" and planned is not None
                          and float(planned) != float(s["seconds"]) else "")
                 lines += [f"#### {s['label']} · at {s['at']:g}s · {s['seconds']:g}s{clock}",
-                          f"Picture: {s.get('visual', '')}",
-                          f"Narration: {s.get('narration') or '(none)'}"]
+                          f"Picture: {s.get('visual', '')}"]
+                if s.get("shows"):
+                    lines.append("What the picture must demonstrate of the line: "
+                                 f"{s['shows']}")
+                lines += [f"Narration: {s.get('narration') or '(none)'}"]
                 lines += super_lines(s)
                 wd = words.get(s["label"])
                 if wd and wd.get("words"):
