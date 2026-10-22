@@ -946,8 +946,10 @@ def plan_prechecks(plan: dict, seconds: int, title: str = "") -> list[str]:
     The plan fields are crew-facing English (STORY_BRIEF), so the English
     stop words read them. "Names nothing the plan names" is the measurable
     half of structure 4's "generic": a payoff line sharing no content word
-    with the train, the promise, the payoff or the title is about nothing
-    the film set up ("we learned a lot")."""
+    with the train, the promise or the title is about nothing the film set
+    up ("we learned a lot"). The `payoff` field is left out on purpose: the
+    model writes the payoff line from it, so a shared word there shows
+    nothing."""
     lex = LEXICON["en"]
     out: list[str] = []
     for key in ("train", "stakes", "viewer_stake"):
@@ -955,13 +957,13 @@ def plan_prechecks(plan: dict, seconds: int, title: str = "") -> list[str]:
             out.append(f"rule: {key} is empty (judging 13; attention 8, 10)")
     ending = plan.get("ending") if isinstance(plan.get("ending"), dict) else {}
     line = " ".join(str(ending.get("payoff_line") or "").split())
-    named = " ".join(str(plan.get(k) or "") for k in ("train", "promise", "payoff")) + " " + title
+    named = " ".join(str(plan.get(k) or "") for k in ("train", "promise")) + " " + title
     if not line:
         out.append("rule: the payoff line is empty: the ending is locked before any "
                    "section is written (structure 4)")
     elif not _found(_content(line, lex), named):
-        out.append(f"rule: the payoff line names nothing the train, the promise, the payoff "
-                   f"or the title names, so it may be generic (\"{line}\"): it pays the "
+        out.append(f"rule: the payoff line names nothing the train, the promise or the "
+                   f"title names, so it may be generic (\"{line}\"): it pays the "
                    "promise with a concrete fact or image (structure 4)")
     sections = [s for s in plan.get("sections") or [] if isinstance(s, dict)]
     for n, spec in enumerate(sections, 1):

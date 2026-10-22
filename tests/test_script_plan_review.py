@@ -231,6 +231,16 @@ class Prompt(unittest.TestCase):
         prompt = self.review_prompt(plan)
         self.assertIn("- rule: the payoff line names nothing", prompt)
 
+    def test_a_payoff_line_that_only_echoes_the_payoff_field_is_a_rule_pre_check(self):
+        # The model writes the payoff line from the payoff field, so sharing
+        # a word with it shows nothing; the train, the promise and the title
+        # are what the line must name.
+        plan = copy.deepcopy(PLAN)
+        plan["payoff"] = "The rivet nobody inspected."
+        plan["ending"]["payoff_line"] = "The rivet nobody inspected."
+        prompt = self.review_prompt(plan)
+        self.assertIn("- rule: the payoff line names nothing", prompt)
+
     def test_house_pre_checks_for_a_long_film_without_a_rehook_and_a_train_without_a_question(self):
         plan = copy.deepcopy(PLAN)
         for section in plan["sections"]:
