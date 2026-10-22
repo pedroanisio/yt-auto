@@ -26,12 +26,22 @@ reveal setup and honesty are the other three a reader can judge and a lint
 cannot. What a lint can measure (hook timing, sentence length, concrete
 before abstract by position) belongs to the deterministic checks, not here.
 
-Like `framecheck.CHECKLIST`, one tuple is rendered twice: into the writer's
-prompt (`rubric_text("writer")`, the top level of each criterion) and into
-the reviewer's role (`reviewer_role()`, every level with its strength), so
-a round is never spent finding out what will be looked at. Nothing here
-decides a verdict: it is schema and prompt text, and `check_review` only
-names what the caller asks the model again about (invariant 3).
+Like `framecheck.CHECKLIST`, one tuple is meant to be rendered twice: into
+the writer's prompt (`rubric_text("writer")`, the top level of each
+criterion) and into the reviewer's role (`reviewer_role()`, every level with
+its strength), so a round is never spent finding out what will be looked at.
+Nothing calls either yet: the script stage wires them with the plan review
+and the story review (AUTO-92, AUTO-93). Nothing here decides a verdict: it
+is schema and prompt text, and `check_review` only names what the caller
+asks the model again about (invariant 3).
+
+A known gap: a criterion's strength is the README's word for its lead rule,
+and today none comes out `house`: six lead with a practitioner rule and the
+hook with structure 10 (platform), although the hook's window is the
+house's choice. So the role's sentence that a Poor on a house-strength
+criterion yields consider governs nothing yet; it stays because the
+calibration set (judging 10, AUTO-97) may show a criterion should be graded
+as a house prior.
 """
 
 from __future__ import annotations
@@ -112,13 +122,14 @@ RUBRIC: tuple[Criterion, ...] = (
         "Does the opening confirm the subject the title promised inside {window}, and "
         "open a question the title does not already answer, without listing the "
         "conclusions?",
-        {"Excellent": "The subject is on screen and in words inside {window}; the question "
+        {"Excellent": "The subject is on screen or in words inside {window}; the question "
                       "it opens is specific, and no answer is given away.",
          "Good": "The subject is confirmed inside {window}; the question is a fair one but "
                  "close to what the title says.",
          "Fair": "The subject arrives after {window}, or the question is a generic tease.",
-         "Poor": "The opening names a different subject, restates the title, or "
-                 "enumerates the conclusions the film will reach."},
+         "Poor": "The opening names a different subject, only restates the title and "
+                 "opens no question beyond it, or enumerates the conclusions the film "
+                 "will reach."},
         "Poor: \"In this video: tails point away because of light pressure and the solar "
         "wind.\" Excellent: \"This comet is leaving the Sun, and its tail is in front.\"",
         "platform",
@@ -127,14 +138,15 @@ RUBRIC: tuple[Criterion, ...] = (
     Criterion(
         "stakes",
         "Before the first mechanism, does the viewer hear a concrete consequence, "
-        "addressed to them or people like them?",
+        "addressed to them or people like them, unless the plan declares the danger is "
+        "withheld as the film's twist?",
         {"Excellent": "A concrete, sourced consequence the viewer can picture comes before "
                       "the first mechanism and is addressed to them.",
          "Good": "The consequence is concrete but reaches the viewer only by implication.",
-         "Fair": "The consequence comes after the mechanism, or is abstract (\"this "
-                 "matters\").",
-         "Poor": "Nothing is at risk for anyone; the film explains before it gives a "
-                 "reason to care."},
+         "Fair": "The consequence comes after the mechanism with no twist declared to "
+                 "withhold it, or is abstract (\"this matters\").",
+         "Poor": "Nothing is at risk for anyone, or the film explains before it gives a "
+                 "reason to care and no twist is declared to excuse it."},
         "Fair: \"Understanding comets matters for science.\" Excellent: \"The wind that "
         "bends this tail reaches you too: in 1989 a storm in it put Quebec's grid out "
         "for nine hours.\"",
@@ -163,9 +175,9 @@ RUBRIC: tuple[Criterion, ...] = (
         "and does each section leave the viewer with something?",
         {"Excellent": "The viewer knows why the reveal is hard before it lands, and every "
                       "section ends with a fact, reversal or image they lacked.",
-         "Good": "The constraint precedes the reveal; one section only sets up the next.",
+         "Good": "The constraint precedes the reveal; one section's own payoff is slight.",
          "Fair": "The constraint is stated in the same breath as the reveal, so the "
-                 "answer arrives unearned.",
+                 "answer arrives unearned, or a section only sets up the next.",
          "Poor": "The answer is given before the viewer knows it was hard, or no section "
                  "pays anything of its own."},
         "Poor: section 1 says the solar wind pushes the tail; section 2 then explains "
@@ -178,9 +190,10 @@ RUBRIC: tuple[Criterion, ...] = (
         "skip the recap and end on a short line, bringing a large subject back to the "
         "viewer's scale?",
         {"Excellent": "The promise is paid in resolved form, the opening returns changed, "
-                      "there is no recap, and the last line is short.",
+                      "a large subject comes back to the viewer's scale, there is no "
+                      "recap, and the last line is short.",
          "Good": "The promise is paid and the line is short; the callback is weak or "
-                 "missing.",
+                 "missing, or a large subject never comes back to the viewer's scale.",
          "Fair": "The promise is paid but buried under a recap, a sign-off or a long "
                  "closing line.",
          "Poor": "The promise is not paid, the payoff is empty or generic, or the film "
@@ -273,7 +286,7 @@ def reviewer_role(*, window: str = OPENING_WINDOW, seed: int = 0) -> str:
         "write it. First write the logline (one or two lines) and a short synopsis that "
         "proves you followed the story; then grade each criterion below with one of its "
         "four labels. Do not reason at length before grading: the synopsis is the only "
-        "writing that comes first. Judge each criterion on its own, absolutely, never "
+        "writing that comes first. Grade each criterion on its own and absolutely, never "
         "against another draft.",
         "The criteria, each tagged with the strength of the evidence behind it "
         "(peer-reviewed, platform, practitioner or house):\n"
@@ -288,6 +301,10 @@ def reviewer_role(*, window: str = OPENING_WINDOW, seed: int = 0) -> str:
         "Longer is not better: never grade a draft up for its length.",
         "Read the first minute twice, once for whether it confirms what the title "
         "promised and once for its question and stakes, and say what each pass found.",
+        "In a revision round you are also shown the previous review. Grade this draft "
+        "as above, then fill `previous`: whether this draft is better, the same or worse "
+        "than the one it revises, and for each earlier problem whether it is resolved, "
+        "persists or regressed. That is the only comparison you make.",
     ])
 
 
@@ -295,11 +312,11 @@ def reviewer_role(*, window: str = OPENING_WINDOW, seed: int = 0) -> str:
 # schemas
 # --------------------------------------------------------------------------- #
 
-def _grades(levels: Iterable[str]) -> dict:
+def _grades(levels: Iterable[str], window: str = OPENING_WINDOW) -> dict:
     order = list(levels)
     return {"type": "object",
             "properties": {c.key: {"type": "string", "enum": list(order),
-                                   "description": _filled(c.question, OPENING_WINDOW)}
+                                   "description": _filled(c.question, window)}
                            for c in RUBRIC},
             "required": list(KEYS)}
 
@@ -382,15 +399,18 @@ REVIEW_SCHEMA = {
 }
 
 
-def review_schema(*, delta: bool, seed: int = 0) -> dict:
+def review_schema(*, delta: bool, seed: int = 0, window: str = OPENING_WINDOW) -> dict:
     """The review's schema for one sample. A revision's must carry the verdict
     on the round it was shown; `seed` orders each grade's levels as
-    `grade_levels(seed)` does. REVIEW_SCHEMA itself is never changed."""
-    if not delta and not seed:
+    `grade_levels(seed)` does; `window` is the hook's window in the house's
+    words, the same the caller passes to `reviewer_role`, so one sample's
+    role and schema say the same thing. REVIEW_SCHEMA itself is never
+    changed."""
+    if not delta and not seed and window == OPENING_WINDOW:
         return REVIEW_SCHEMA
     out = copy.deepcopy(REVIEW_SCHEMA)
-    if seed:
-        out["properties"]["grades"] = _grades(grade_levels(seed))
+    if seed or window != OPENING_WINDOW:
+        out["properties"]["grades"] = _grades(grade_levels(seed), window)
     if delta:
         out["required"] = out["required"] + ["previous"]
     return out
@@ -436,8 +456,8 @@ def check_review(review: Any) -> list[str]:
 
     The harness checks the schema (fields, types, enums) and asks once
     more; these are the shapes a schema cannot refuse: a recommend that
-    carries a Poor, a consider with nothing to fix, and a flag on a
-    criterion the rubric does not have (the harness lets an enum value
+    carries a Poor or a blocker, a consider with nothing to fix, and a flag
+    on a criterion the rubric does not have (the harness lets an enum value
     through after its retry). The caller asks again once under its own
     name (`<name>-again`), with these lines in the prompt, and records a
     second failure; nothing here replaces the verdict."""
@@ -451,6 +471,11 @@ def check_review(review: Any) -> list[str]:
     if verdict == "recommend" and poor:
         found.append(f"a recommend carries no Poor, and this one grades "
                      f"{', '.join(poor)} Poor: lower the verdict or the grade")
+    blocking = sorted({str(f.get("criterion")) for f in flags
+                       if isinstance(f, dict) and f.get("severity") == "blocker"})
+    if verdict == "recommend" and blocking:
+        found.append(f"a recommend carries no blocker, and this one flags a blocker on "
+                     f"{', '.join(blocking)}: lower the verdict or the severity")
     if verdict == "consider" and not flags:
         found.append("a consider names problems to fix before voicing: it carries no flag")
     unknown = sorted({str(f.get("criterion")) for f in flags
