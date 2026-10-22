@@ -53,6 +53,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
+import traceback
 
 import claude_engine
 
@@ -173,7 +175,9 @@ def run_extras(args, *, redo: set) -> dict[str, list[str]]:
         # vfx caches its own stages by name, so a redo without --fresh would
         # replay the earlier authoring against the clock it was asked to fix.
         "vfx": ["--fresh"] if redo & {"vfx", "all"} else [],
-        "sound": ["--fetch"] + ([] if quick else ["--review"]),
+        # A cue Freesound cannot fill is synthesised, so the sheet never
+        # leaves the stage with holes the build would play as silence.
+        "sound": ["--fetch", "--synth"] + ([] if quick else ["--review"]),
         "build": [],
         "render": ["--quality", "draft"] if quick else [],
     }
@@ -258,6 +262,29 @@ def look_gate(stage: str, project: workspace.Project, skip: set, redo: set = fro
     return ""
 
 
+class Beside(threading.Thread):
+    """One stage run beside the walk, on its own thread. `code` is what it
+    exited once joined; a crash is printed and counts as a failure, so the
+    walk never waits on a stage that is gone."""
+
+    def __init__(self, stage: str, run) -> None:
+        super().__init__(name=f"yt {stage}")
+        self.stage, self._run, self.code = stage, run, 1
+
+    def run(self) -> None:
+        try:
+            self.code = int(self._run() or 0)
+        except Exception:  # noqa: BLE001 -- reported here, not lost with the thread
+            traceback.print_exc()
+            self.code = 1
+
+    def join_for(self, say) -> int:
+        if self.is_alive():
+            say(f"\n== {self.stage}: waiting for it to finish")
+        self.join()
+        return self.code
+
+
 def _run_pipeline(args) -> int:
     split = lambda s: [p.strip() for p in s.split(",") if p.strip()]  # noqa: E731
     skip, redo = set(split(args.skip)), set(split(args.redo))
@@ -278,19 +305,40 @@ def _run_pipeline(args) -> int:
 
     extra = run_extras(args, redo=redo)
     artifacts = dict(workspace.STAGES)
+    say = lambda msg: print(msg, file=sys.stderr)  # noqa: E731
 
-    print(f"{idea.title}\n  -> {project.root}", file=sys.stderr)
+    def done_already(stage: str, look: str = "") -> bool:
+        return (project.has(artifacts[stage]) and "all" not in redo
+                and stage not in redo and look not in ("again", "relook"))
+
+    def run_stage(stage: str, argv_extra: dict[str, list[str]]) -> int:
+        stage_args = parser.parse_args(stage_argv(stage, base, argv_extra))
+        return stage_args.run(stage_args)
+
+    # Only the build reads the cue sheet, so the sound stage runs beside the
+    # keyframe and vfx on its own thread (its own harness, its own files) and
+    # is joined before the build; a walk that stops early still waits for it.
+    beside: Beside | None = None
+    code = 0
+    say(f"{idea.title}\n  -> {project.root}")
     for stage in PIPELINE:
+        if stage == "keyframe" and "sound" not in skip and not done_already("sound"):
+            say("\n== sound: beside the keyframe and vfx")
+            beside = Beside("sound", lambda: run_stage("sound", extra))
+            beside.start()
+        if stage == "sound" and beside is not None:
+            code = beside.join_for(say)
+            if code:
+                break
+            continue
         if stage in skip:
-            print(f"\n== {stage}: skipped", file=sys.stderr)
+            say(f"\n== {stage}: skipped")
             continue
         look = look_gate(stage, project, skip, redo)
         if look == "stop":
-            return 0
-        if (project.has(artifacts[stage]) and "all" not in redo
-                and stage not in redo and look not in ("again", "relook")):
-            print(f"\n== {stage}: already done ({artifacts[stage]}); "
-                  "--redo to run it again", file=sys.stderr)
+            break
+        if done_already(stage, look):
+            say(f"\n== {stage}: already done ({artifacts[stage]}); --redo to run it again")
             continue
         argv_extra = dict(extra)
         if stage == "vfx" and "keyframe" not in skip and keyframe.approved_keyframe(
@@ -304,18 +352,22 @@ def _run_pipeline(args) -> int:
                 print("\n== vfx: the approved look goes into the animation: its section is "
                       "carried and the others are authored again against it", file=sys.stderr)
                 redo = redo | {"build", "render"}
-        print(f"\n== {stage}", file=sys.stderr)
-        stage_args = parser.parse_args(stage_argv(stage, base, argv_extra))
-        code = stage_args.run(stage_args)
+        say(f"\n== {stage}")
+        code = run_stage(stage, argv_extra)
         if stage == "retime":
-            def run_one(name: str, extra_argv: list[str]) -> int:
-                one = parser.parse_args(stage_argv(name, base, {name: extra_argv}))
-                return one.run(one)
-            code = settle_retime(code, project, run_one)
+            code = settle_retime(code, project,
+                                 lambda name, argv: run_stage(name, {name: argv}))
         if code:
-            print(f"\n{stage} exited {code}; stopping here", file=sys.stderr)
-            return code
-    return 0
+            break
+    if code:
+        say(f"\n{stage} exited {code}; stopping here")
+    if beside is not None and beside.is_alive():
+        # The walk stopped before the sound slot; what sound did still counts.
+        sound_code = beside.join_for(say)
+        if sound_code:
+            say(f"\nsound exited {sound_code}")
+            code = code or sound_code
+    return code
 
 
 # --------------------------------------------------------------------------- #

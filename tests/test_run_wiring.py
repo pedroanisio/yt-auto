@@ -25,11 +25,13 @@ class Pipeline(unittest.TestCase):
         argv = cli.stage_argv("sound", base, {"sound": ["--fetch"]})
         self.assertEqual(argv, ["sound", *base, "--fetch"])
 
-    def test_sound_fetches_its_cues_in_both_modes(self):
+    def test_sound_fetches_and_synthesises_its_cues_in_both_modes(self):
+        # A cue Freesound cannot fill is synthesised, so an unattended run
+        # never builds against a sheet with holes (AUTO-75).
         for quick in (False, True):
             args = argparse.Namespace(quick=quick, minutes=1.0)
             extra = cli.run_extras(args, redo=set())
-            self.assertIn("--fetch", extra["sound"], f"quick={quick}")
+            self.assertEqual(extra["sound"][:2], ["--fetch", "--synth"], f"quick={quick}")
             self.assertEqual("--review" in extra["sound"], not quick)
             self.assertEqual(extra["props"], [])
 

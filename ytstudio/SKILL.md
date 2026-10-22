@@ -165,7 +165,10 @@ authored again with the notes; `--skip keyframe` runs without a look) --
 and skips a stage whose output exists unless it is named in
 `--redo` (`--redo all` repeats everything, `--skip` leaves stages out,
 `--quick` drops the deliberation, polish, fact-check and listen-back passes
-and renders at draft). It always passes `--fetch` to `yt sound`;
+and renders at draft). It always passes `--fetch --synth` to `yt sound`, so
+the sheet never leaves the stage with holes, and runs that stage beside
+`yt keyframe` and `yt vfx` on its own thread (only `yt build` reads the cue
+sheet), joining it before the build and failing the run there if it failed;
 `cli.run_extras` lists what each stage gets and `cli.stage_argv` builds the
 argv (`yt render` is the only stage handed no model flags, `cli.NO_MODEL`;
 `yt props` asks a model and takes them like the rest).
