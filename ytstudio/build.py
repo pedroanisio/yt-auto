@@ -1629,6 +1629,7 @@ class SceneBuilder:
                 light = lights.add_light(id=ident(f"{include_id}-{row.get('id', 'light')}"),
                                          **attrs)
                 on = str(row.get("intensity", "1"))
+                name = f"light {row.get('id', 'light')!r} in {Path(file).name}"
                 # The light's own animation, keyed at section time t, arrives
                 # at include start + t, its curve and every key attribute
                 # kept; the gate keeps it inside the span. A key's curve
@@ -1636,35 +1637,85 @@ class SceneBuilder:
                 # default is linear, so each gate segment is an explicit hold:
                 # 0 until the first carried key, the last carried key until
                 # the include's end, 0 from there. The author's extrapolation
-                # is what the gate replaces, so it is the one thing not carried.
+                # is what the gate replaces, so it is not carried.
                 own = [ElementTree.fromstring(x) for x in row.get("animate", ())]
                 keyed = [a for a in own if a.get("property") == "intensity"]
-                curve = {k: v for k, v in (keyed[0].attrib if keyed else {}).items()
-                         if k not in ("extrapolateBefore", "extrapolateAfter")}
+                head = dict(keyed[0].attrib) if keyed else {}
+                # The offset is seconds on the scene's clock. A light has no
+                # start of its own, so a local time base is that same clock;
+                # a normalized one is not, and is read as seconds and named.
+                if head.get("timeBase") == "normalized":
+                    lifted.append(f"warning: {name}: its intensity animate has a "
+                                  "normalized time base, which the hoist reads as "
+                                  "seconds from the include's start")
+                # An additive track would shine at the light's intensity
+                # through the gate's 0 keys, so it is folded: the intensity
+                # is added to each key and the track replaces.
+                additive = head.get("additive") == "true"
+                if additive:
+                    lifted.append(f"warning: {name}: its additive intensity animate "
+                                  f"is carried as a replacing track, the light's "
+                                  f"intensity {on} folded into each key, so the gate "
+                                  "can hold it at 0 outside the include")
+                curve = {k: v for k, v in head.items()
+                         if k not in ("extrapolateBefore", "extrapolateAfter",
+                                      "timeBase", "additive")}
                 gate = light.add_animate(**dict(curve, property="intensity"))
                 if start > 0:
                     gate.add_key(time=0, value="0", interpolation="hold")
-                keys = sorted(((float(k.get("time", 0)), k) for a in keyed
-                               for k in a.iter("key")), key=lambda tk: tk[0])
-                carried = [(round(start + t, 3), dict(k.attrib))
-                           for t, k in keys if start + t < end]
-                if not keys or keys[0][0] > 0:
+
+                def retimed(key, prop):
+                    # A marker snaps the key to a cue of the included document,
+                    # which the scene does not carry; the key keeps its offset.
+                    attrs = dict(key.attrib, time=round(start + float(key.get("time", 0)), 3))
+                    marker = attrs.pop("marker", None)
+                    if marker is not None:
+                        lifted.append(f"warning: {name}: its {prop} key at "
+                                      f"{key.get('time', 0)} snaps to marker {marker!r}, "
+                                      "which the scene does not carry; the key is "
+                                      "placed at its offset from the include's start")
+                    return attrs
+
+                keys = [retimed(k, "intensity") for a in keyed for k in a.iter("key")]
+                keys.sort(key=lambda k: k["time"])
+                if additive:
+                    for attrs in keys:
+                        attrs["value"] = f"{round(float(attrs.get('value', 0)) + float(on), 3):g}"
+                carried = [k for k in keys if k["time"] < end]
+                beyond = [k for k in keys if k["time"] >= end]
+                if not keys or keys[0]["time"] > start:
                     # Before its first key the authored document holds that
                     # key's value; with no key it is the light's intensity.
-                    first = keys[0][1].get("value", on) if keys else on
-                    carried.insert(0, (start, {"value": first}))
+                    first = keys[0].get("value", on) if keys else on
+                    carried.insert(0, {"time": start, "value": first})
+                # A segment that crosses the include's end is clipped at the
+                # last frame before it, so the author's ramp arrives as the
+                # ramp and not as a step at the last key inside the span. A
+                # curve other than hold or linear is the engine's to shape,
+                # so its clip is a straight line, and is named.
+                if beyond and carried:
+                    last, nxt = carried[-1], beyond[0]
+                    shape = last.get("interpolation", head.get("defaultInterpolation", "linear"))
+                    clip = round(end - 1 / float(self.fps), 3)
+                    if shape != "hold" and clip > last["time"]:
+                        v0, v1 = float(last["value"]), float(nxt["value"])
+                        value = v0 + (v1 - v0) * (clip - last["time"]) / (nxt["time"] - last["time"])
+                        carried.append({"time": clip, "value": f"{round(value, 3):g}"})
+                        if shape != "linear":
+                            lifted.append(f"warning: {name}: its {shape} intensity "
+                                          f"segment crosses the include's end at {end} "
+                                          "and is clipped there along a straight line")
                 if carried:
-                    carried[-1][1]["interpolation"] = "hold"
-                for t, attrs in carried:
-                    gate.add_key(**dict(attrs, time=t))
+                    carried[-1]["interpolation"] = "hold"
+                for attrs in carried:
+                    gate.add_key(**attrs)
                 gate.add_key(time=end, value="0")
                 for a in own:
                     if a in keyed:
                         continue
                     extra = light.add_animate(**dict(a.attrib))
                     for k in a.iter("key"):
-                        extra.add_key(**dict(k.attrib,
-                                             time=round(start + float(k.get("time", 0)), 3)))
+                        extra.add_key(**retimed(k, a.get("property", "?")))
                 hoist_lights += 1
             # Images the author embedded in the world are credited from the
             # download manifest; a file the manifest does not list is an error.

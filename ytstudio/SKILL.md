@@ -65,7 +65,9 @@ came from breaking one of them.
    hoists them (the file's tokens win, design fills the rest; a light keeps its
    `<animate>` verbatim, re-timed by the include's start and gated to its span
    by explicit holds, so the author's curve reaches the film and no light
-   fades into a neighbouring section, and a `downloads/` image inside
+   fades into a neighbouring section; a ramp crossing the include's end is
+   clipped, and an `additive`, `marker` or `normalized` the gate cannot carry
+   is converted and named in the findings; and a `downloads/` image inside
    an include is credited from the manifest or is an error) and points the
    include at a cleaned copy, `vfx/vNN/<section>.include.scene.xml`, with
    the tokens inlined and those sections dropped, so the engine raises no

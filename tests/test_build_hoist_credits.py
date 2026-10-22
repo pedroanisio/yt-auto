@@ -137,27 +137,29 @@ def _span(data):
     return float(include.get("start")), float(include.get("end"))
 
 
-def _at(animate, t):
+def _at(animate, t, base=0.0):
     """The animation's value at t, as the schema reads the keys: a key's
     interpolation governs the segment to the next key, a key without one
     takes the animation's defaultInterpolation (linear by default), and the
-    first and last values hold outside the keys. Only hold and linear are
-    read; another curve in a gate test is a failure."""
+    first and last values hold outside the keys. An additive animate adds
+    its value to `base`, the property's own. Only hold and linear are read;
+    another curve in a gate test is a failure."""
     keys = sorted(animate.iter("key"), key=lambda k: float(k.get("time")))
     default = animate.get("defaultInterpolation", "linear")
+    own = base if animate.get("additive") == "true" else 0.0
     if t < float(keys[0].get("time")):
-        return float(keys[0].get("value"))
+        return own + float(keys[0].get("value"))
     for a, b in zip(keys, keys[1:]):
         t0, t1 = float(a.get("time")), float(b.get("time"))
         if t0 <= t < t1:
             curve = a.get("interpolation", default)
             v0, v1 = float(a.get("value")), float(b.get("value"))
             if curve == "hold":
-                return v0
+                return own + v0
             if curve == "linear":
-                return v0 + (v1 - v0) * (t - t0) / (t1 - t0)
+                return own + v0 + (v1 - v0) * (t - t0) / (t1 - t0)
             raise AssertionError(f"a {curve} segment at {t}")
-    return float(keys[-1].get("value"))
+    return own + float(keys[-1].get("value"))
 
 
 class HoistedLightCurve(Fixture):
@@ -217,6 +219,94 @@ class HoistedLightCurve(Fixture):
         self.assertEqual(_at(animate, 4), 6)
         self.assertEqual(_at(animate, 4.5), 6)
         self.assertEqual(_at(animate, 4 - 0.001), 0)
+
+
+class HoistedLightEdges(Fixture):
+    """Key attributes the gate cannot carry verbatim: an additive track
+    would shine at the light's intensity through the 0 gate keys, a marker
+    names a cue the scene does not define, a key past the include's end
+    would be dropped and its ramp turned into a step, and a normalized
+    time base is not seconds to offset. Each is converted or named."""
+
+    def light_findings(self, manifest):
+        return [f for f in manifest["findings"] if "'rim'" in f]
+
+    def test_an_additive_intensity_animate_is_folded_onto_the_lights_intensity(self):
+        # The author adds 0 then +4 to a light of intensity 2: 2 rising to 6.
+        self.write_authored(AUTHORED.replace(
+            '<animate property="intensity">', '<animate property="intensity" additive="true">'
+        ).replace('<key time="0" value="2"/>', '<key time="0" value="0"/>'
+        ).replace('<key time="1.5" value="6"/>', '<key time="1.5" value="4"/>'))
+        data, manifest = self.build()
+        animate = _intensity_animate(data)
+        start, end = _span(data)
+        self.assertIsNone(animate.get("additive"))
+        self.assertEqual(_at(animate, start - 0.001, base=2), 0)
+        self.assertEqual(_at(animate, end + 0.001, base=2), 0)
+        self.assertEqual(_at(animate, start, base=2), 2)
+        self.assertEqual(_at(animate, start + 1.5, base=2), 6)
+        self.assertEqual(len(self.light_findings(manifest)), 1, manifest["findings"])
+        self.assertIn("additive", self.light_findings(manifest)[0])
+
+    def test_a_key_snapped_to_a_marker_is_placed_by_its_offset_and_named(self):
+        self.write_authored(AUTHORED.replace(
+            '<key time="1.5" value="6"/>', '<key time="1.5" value="6" marker="cue"/>'))
+        data, manifest = self.build()
+        light = ElementTree.fromstring(data).find(".//light")
+        self.assertEqual([k.get("marker") for k in light.iter("key")
+                          if k.get("marker")], [])
+        self.assertEqual(len(self.light_findings(manifest)), 1, manifest["findings"])
+        self.assertIn("'cue'", self.light_findings(manifest)[0])
+
+    def test_a_curve_crossing_the_includes_end_is_clipped_not_stepped(self):
+        # The author ramps from 6 at 1.5 s down to 0 at 6 s; the include ends
+        # before that, so the ramp reaches the film clipped where it ends.
+        self.write_authored(AUTHORED.replace(
+            '<key time="1.5" value="6"/>',
+            '<key time="1.5" value="6"/>\n        <key time="6" value="0"/>'))
+        data, manifest = self.build()
+        animate = _intensity_animate(data)
+        start, end = _span(data)
+        self.assertLess(end, start + 6)
+        self.assertEqual(max(float(k.get("time")) for k in animate.iter("key")), end)
+        for t in (end - 0.1, end - 1):
+            self.assertAlmostEqual(_at(animate, t),
+                                   6 - 6 * (t - (start + 1.5)) / 4.5, places=2)
+        self.assertEqual(_at(animate, end + 0.001), 0)
+        self.assertEqual(self.light_findings(manifest), [])
+
+    def test_an_eased_curve_crossing_the_end_is_clipped_along_a_line_and_named(self):
+        self.write_authored(AUTHORED.replace(
+            '<key time="1.5" value="6"/>',
+            '<key time="1.5" value="6" interpolation="ease-out"/>\n'
+            '        <key time="6" value="0"/>'))
+        data, manifest = self.build()
+        start, end = _span(data)
+        key = {float(k.get("time")): k for k in _intensity_animate(data).iter("key")}
+        self.assertEqual(max(key), end)
+        clipped = max(t for t in key if t < end)
+        self.assertGreater(clipped, start + 1.5)
+        self.assertEqual(key[clipped].get("interpolation"), "hold")
+        self.assertEqual(len(self.light_findings(manifest)), 1, manifest["findings"])
+        self.assertIn("ease-out", self.light_findings(manifest)[0])
+
+    def test_a_normalized_time_base_is_read_as_composition_and_named(self):
+        self.write_authored(AUTHORED.replace(
+            '<animate property="intensity">',
+            '<animate property="intensity" timeBase="normalized">'))
+        data, manifest = self.build()
+        self.assertIsNone(_intensity_animate(data).get("timeBase"))
+        self.assertEqual(len(self.light_findings(manifest)), 1, manifest["findings"])
+        self.assertIn("normalized", self.light_findings(manifest)[0])
+
+    def test_a_local_time_base_is_the_lights_composition_time(self):
+        # A light has no start of its own, so local seconds are scene seconds.
+        self.write_authored(AUTHORED.replace(
+            '<animate property="intensity">',
+            '<animate property="intensity" timeBase="local">'))
+        data, manifest = self.build()
+        self.assertIsNone(_intensity_animate(data).get("timeBase"))
+        self.assertEqual(self.light_findings(manifest), [])
 
 
 class IncludedImageCredit(Fixture):

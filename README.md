@@ -666,7 +666,11 @@ and the editor's decisions under `editorial`. A hoisted light keeps its own
 `<animate>` verbatim (its `defaultInterpolation` and every key attribute),
 re-timed by the include's start; the gate keys that hold it at 0 outside the
 include's span are explicit holds, so an authored ramp stays a ramp and no
-light fades into the neighbouring section. A `downloads/` image an
+light fades into the neighbouring section. A ramp that crosses the include's
+end is clipped at its last frame, not stepped. What the gate cannot carry as
+written is converted and named in the findings: an `additive` track is folded
+onto the light's intensity, a key's `marker` is dropped for its offset, and a
+`normalized` time base is read as seconds. A `downloads/` image an
 included document embeds is credited from `raw/08-downloads.json` (a file the
 manifest does not list is a build error).
 
