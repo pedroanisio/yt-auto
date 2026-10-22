@@ -26,7 +26,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from ytstudio import ideas  # noqa: E402
+from ytstudio import ideas, script  # noqa: E402
 from ytstudio.core import Idea, compact  # noqa: E402
 
 PLANNED = ("question", "stakes", "viewer_belief", "promise")
@@ -168,6 +168,61 @@ class Printed(unittest.TestCase):
         for value in (idea.question, idea.stakes, idea.viewer_belief, idea.promise,
                       "sustained", "concrete"):
             self.assertIn(value, text)
+
+
+class ScriptBrief(unittest.TestCase):
+    def writer(self, idea: Idea, tmp: str, **kw) -> script.Screenwriter:
+        return script.Screenwriter(idea, minutes=1, verbose=False, root=tmp, **kw)
+
+    def test_the_brief_shows_question_stakes_belief_and_frozen_promise(self):
+        idea = planned_idea()
+        with tempfile.TemporaryDirectory() as tmp:
+            brief = self.writer(idea, tmp)._brief()
+        self.assertIn(f"Planned question: {idea.question}", brief)
+        self.assertIn(f"Stakes: {idea.stakes}", brief)
+        self.assertIn(idea.viewer_belief, brief)
+        self.assertIn(idea.promise, brief)
+        self.assertIn("frozen", brief.lower())
+
+    def test_an_idea_without_them_keeps_the_old_brief(self):
+        idea = Idea(title="t", genre="g", description="d")
+        with tempfile.TemporaryDirectory() as tmp:
+            brief = self.writer(idea, tmp)._brief()
+        for word in ("Planned question", "Stakes", "believes", "romise"):
+            self.assertNotIn(word, brief)
+
+    def test_plan_tells_the_writer_the_promise_is_frozen(self):
+        prompts = []
+
+        def ask(name, prompt, schema):
+            prompts.append(prompt)
+            return {"sections": []}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            writer = self.writer(planned_idea(), tmp)
+            writer._ask = ask
+            writer.plan()
+            plain = self.writer(Idea(title="t", genre="g", description="d"), tmp)
+            plain._ask = ask
+            plain.plan()
+        self.assertIn(script.FROZEN_PROMISE, prompts[0])
+        self.assertNotIn(script.FROZEN_PROMISE, prompts[1])
+
+    def test_the_outline_path_is_told_too(self):
+        prompts = []
+
+        def ask(name, prompt, schema):
+            prompts.append(prompt)
+            return {"promise": "the model's own", "sections": [{"connective": "open"}]}
+
+        outline = {"sections": [{"heading": "h", "seconds": 60, "beats": ["b"]}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            writer = self.writer(planned_idea(), tmp, outline=outline)
+            writer._ask = ask
+            plan = writer.plan()
+        self.assertIn(script.FROZEN_PROMISE, prompts[0])
+        # the plan's promise stays the model's: nothing copies the idea's over it
+        self.assertEqual(plan["promise"], "the model's own")
 
 
 if __name__ == "__main__":
