@@ -135,8 +135,20 @@ class Idea:
     hook: str = ""
     length: str = ""
     keywords: list[str] = field(default_factory=list)
+    #: What `yt ideas --rich` plans beyond the title (AUTO-100): the question
+    #: the title raises and does not answer, what rides on it, what a typical
+    #: viewer already believes about it, and the promise, title plus
+    #: thumbnail concept in one sentence. Empty on an idea saved before them.
+    question: str = ""
+    stakes: str = ""
+    viewer_belief: str = ""
+    promise: str = ""
     score: float | None = None
     why: str = ""
+    #: The rank decision's labels beside its score (`ideas.CURIOSITY`,
+    #: `ideas.TITLE_CONCRETE`); the sort reads only the score.
+    curiosity: str = ""
+    title_concrete: str = ""
 
     @classmethod
     def from_raw(cls, raw: dict) -> Idea:
@@ -147,7 +159,9 @@ class Idea:
         if "title" in clean:
             clean.setdefault("genre", "")
             clean.setdefault("description", "")
-        for key in ("title", "genre", "description", "hook", "length", "why"):
+        for key in ("title", "genre", "description", "hook", "length", "why",
+                    "question", "stakes", "viewer_belief", "promise",
+                    "curiosity", "title_concrete"):
             if key in clean:
                 clean[key] = str(clean[key]).strip()
         return cls(**clean)

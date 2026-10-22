@@ -8,10 +8,17 @@ fifty variants of one idea.
     yt ideas                                   # 50 ideas, mixed genres
     yt ideas --niche "home automation"         # ideas for one channel
     yt ideas --inspo "Cool Worlds,Asianometry" # borrow a channel's voice
-    yt ideas --rich --rank --count 20          # hooks, keywords, ranked
+    yt ideas --rich --rank --count 20          # hooks, keywords, the
+                                               # question and promise, ranked
     yt ideas --dedupe-from ideas.json          # keep a backlog fresh
     yt ideas --store backlog.json --count 30   # grow one shared backlog
     yt ideas --json ideas.json --csv ideas.csv --md ideas.md
+
+`--rich` also plans each idea past its title: the question the title raises
+and does not answer, the stakes, what a typical viewer already believes, and
+the promise (title plus thumbnail concept in one sentence), which `yt script`
+holds frozen. `--rank` labels each idea's curiosity gap and whether its title
+names a concrete subject beside the score; the order is the score's alone.
 
 `--inspo` accepts any channel name; the ones in CHANNEL_STYLES get a hand-written
 brief, anything else is passed through for the model to characterise itself.
@@ -116,6 +123,28 @@ SYSTEM = (
 # schemas
 # --------------------------------------------------------------------------- #
 
+#: What `--rich` plans beyond the title, in the craft corpus's terms
+#: (docs/narrative: attention 1, 3, 4; structure 5, 6, 13). A plan that starts
+#: from a title alone has nothing to keep; these are what the script keeps.
+PLANNED = {
+    "question": "the question the title raises and does not answer, naming "
+                "the concrete subject (one sentence)",
+    "stakes": "what rides on the answer, concretely, for someone",
+    "viewer_belief": "what a typical viewer already believes about the "
+                     "subject, the half-knowledge the question is pitched at",
+    "promise": "the title plus the thumbnail concept in one sentence: what "
+               "the video promises to show",
+}
+
+#: The rank decision's curiosity label: whether the idea's question holds a
+#: gap open for the length it states, only briefly, or not at all.
+CURIOSITY = ("sustained", "brief", "none")
+
+#: The rank decision's title label: does the title name a concrete subject
+#: (a thing, place, person or event) or only an abstraction.
+TITLE_CONCRETE = ("concrete", "abstract")
+
+
 def idea_schema(rich: bool) -> dict:
     """Output shape for a batch. `rich` adds production-planning fields."""
     props = {
@@ -128,7 +157,8 @@ def idea_schema(rich: bool) -> dict:
             "hook": {"type": "string"},
             "length": {"type": "string"},
             "keywords": {"type": "array", "items": {"type": "string"}},
-        }
+        } | {name: {"type": "string", "description": what}
+             for name, what in PLANNED.items()}
     return {
         "type": "object",
         "properties": {
@@ -156,8 +186,10 @@ RANK_SCHEMA = {
                     "n": {"type": "integer"},
                     "score": {"type": "number"},
                     "why": {"type": "string"},
+                    "curiosity": {"type": "string", "enum": list(CURIOSITY)},
+                    "title_concrete": {"type": "string", "enum": list(TITLE_CONCRETE)},
                 },
-                "required": ["n", "score", "why"],
+                "required": ["n", "score", "why", "curiosity", "title_concrete"],
             },
         }
     },
@@ -202,6 +234,15 @@ def build_prompt(n: int, *, niche: str | None, genres: tuple[str, ...],
             "a hook (the first 10 seconds, verbatim)",
             "a length (e.g. '8-12 min' or '45 sec')",
             "3-6 search keywords people would actually type",
+            "a question: the one question the title raises and does not "
+            "answer, naming the concrete subject; the title withholds the "
+            "mechanism or the outcome, never the topic",
+            "stakes: what rides on the answer, concretely",
+            "viewer_belief: what a typical viewer already believes about the "
+            "subject; pitch the question at what they half-know, and if the "
+            "honest answer is nothing, let the stakes say why it matters to them",
+            "a promise: the title plus the thumbnail concept in one sentence, "
+            "which the script will treat as fixed",
         ]
     parts.append("Each idea needs " + ", ".join(fields_wanted) + ".")
     if used:
@@ -329,31 +370,83 @@ class Generator:
         return self.ideas
 
 
+def _listed(n: int, idea: Idea) -> str:
+    """One idea as the ranker reads it: the planned question, belief and
+    length are there when `--rich` made them, since the curiosity label is
+    judged against them."""
+    line = f"{n}. [{idea.genre}] {idea.title} -- {idea.description}"
+    for label, value in (("length", idea.length), ("question", idea.question),
+                         ("viewers already believe", idea.viewer_belief),
+                         ("stakes", idea.stakes), ("promise", idea.promise)):
+        if value:
+            line += f"\n   {label}: {value}"
+    return line
+
+
 def rank(decider: harness.Harness, ideas: list[Idea], *, niche: str | None = None
          ) -> list[Idea]:
-    """Score every idea 1-10 on effort-to-audience value, best first."""
-    listing = "\n".join(f"{n}. [{i.genre}] {i.title} -- {i.description}"
-                        for n, i in enumerate(ideas, 1))
+    """Score every idea 1-10 on effort-to-audience value, best first, and
+    label its curiosity gap and its title's concreteness beside the score.
+
+    The labels are judgements (attention 1, 3, 4; structure 13), so they are
+    the model's fields, not a pattern over the title; they never move an idea
+    in the order. A label outside its set, after the harness has asked once
+    more, is kept as the model wrote it and named on stderr.
+    """
+    listing = "\n".join(_listed(n, i) for n, i in enumerate(ideas, 1))
     context = f" for a channel about {niche}" if niche else ""
     data = decider.decide(
         "rank",
         f"Score each of these {len(ideas)} video ideas{context} from 1-10 on "
         "effort-to-value: likely watch-time and search demand against how hard "
         "it is to make well. Be discriminating -- use the full range, and say "
-        f"in one short clause why.\n\n{listing}",
+        "in one short clause why.\n\n"
+        "Also label each idea; the labels do not change the score.\n"
+        "- curiosity: does its question open a gap a viewer feels and cannot "
+        "close from the title? sustained if the gap holds for the length the "
+        "idea states, brief if it is closed or guessed within the first "
+        "minute, none if there is no gap (the title already answers it, or "
+        "nobody watching would wonder).\n"
+        "- title_concrete: concrete if the title names a specific thing, "
+        "place, person or event and withholds one thing about it (the "
+        "mechanism or the outcome); abstract if it names no concrete subject "
+        f"or leans on an empty tease.\n\n{listing}",
         RANK_SCHEMA,
     )
     for row in data.get("ranked", []):
         index = int(row.get("n", 0)) - 1
         if 0 <= index < len(ideas):
-            ideas[index].score = row.get("score")
-            ideas[index].why = str(row.get("why", "")).strip()
+            idea = ideas[index]
+            idea.score = row.get("score")
+            idea.why = str(row.get("why", "")).strip()
+            for name, labels in (("curiosity", CURIOSITY),
+                                 ("title_concrete", TITLE_CONCRETE)):
+                value = str(row.get(name) or "").strip()
+                setattr(idea, name, value)
+                if value and value not in labels:
+                    print(f"warning: rank labelled {idea.title!r} {name}={value!r}, "
+                          f"not one of {', '.join(labels)}; kept as written",
+                          file=sys.stderr)
     return sorted(ideas, key=lambda i: (i.score is None, -(i.score or 0)))
 
 
 # --------------------------------------------------------------------------- #
 # output
 # --------------------------------------------------------------------------- #
+
+def _planned(idea: Idea) -> list[tuple[str, str]]:
+    """The `--rich` plan fields the idea has, labelled for a reader."""
+    return [(label, value) for label, value in (
+        ("question", idea.question), ("stakes", idea.stakes),
+        ("viewers already believe", idea.viewer_belief),
+        ("promise", idea.promise)) if value]
+
+
+def _labels(idea: Idea) -> str:
+    """The rank's two labels, for a reader."""
+    return " | ".join(f"{name}: {value}" for name, value in (
+        ("curiosity", idea.curiosity), ("title", idea.title_concrete)) if value)
+
 
 def print_ideas(ideas: list[Idea]) -> None:
     for n, idea in enumerate(ideas, 1):
@@ -366,8 +459,12 @@ def print_ideas(ideas: list[Idea]) -> None:
         if idea.length or idea.keywords:
             bits = [b for b in (idea.length, ", ".join(idea.keywords)) if b]
             print(wrap(" | ".join(bits), "     "))
+        for label, value in _planned(idea):
+            print(wrap(f"{label}: {value}", "     "))
         if idea.why:
             print(wrap(f"why: {idea.why}", "     "))
+        if idea.curiosity or idea.title_concrete:
+            print(wrap(_labels(idea), "     "))
 
 
 def write_json(path: str, ideas: list[Idea]) -> None:
@@ -400,8 +497,13 @@ def write_md(path: str, ideas: list[Idea], *, niche: str | None,
             lines += ["", f"> {idea.hook}"]
         if idea.keywords:
             lines += ["", "Keywords: " + ", ".join(f"`{k}`" for k in idea.keywords)]
+        planned = _planned(idea)
+        if planned:
+            lines += [""] + [f"- **{label}:** {value}" for label, value in planned]
         if idea.why:
             lines += ["", f"*{idea.why}*"]
+        if idea.curiosity or idea.title_concrete:
+            lines += ["", _labels(idea)]
         lines.append("")
     Path(path).write_text("\n".join(lines), encoding="utf-8")
 
@@ -490,9 +592,11 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
     p.add_argument("--genres", default="",
                    help=f"comma-separated genre pool (default: {len(GENRE_POOL)} mixed)")
     p.add_argument("--rich", action="store_true",
-                   help="also generate hook, length and search keywords")
+                   help="also generate hook, length, search keywords, and the "
+                        "question, stakes, viewer belief and promise")
     p.add_argument("--rank", action="store_true",
-                   help="score ideas 1-10 on effort-to-value and sort best first")
+                   help="score ideas 1-10 on effort-to-value and sort best first; "
+                        "also label curiosity and title concreteness")
     p.add_argument("--dedupe-from", action="append", default=[], metavar="FILE",
                    help="exclude titles from an earlier run (repeatable)")
     p.add_argument("--store", metavar="FILE",
