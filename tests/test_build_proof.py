@@ -362,6 +362,25 @@ class Run(_Project):
         self.assertEqual(manifest["proof_check"]["status"], "ok")
         self.assertEqual(manifest["proof_check"]["host"], "h")
 
+    def test_a_standing_script_error_rides_into_build_json_for_qa(self):
+        # The screenplay's own `error:` (a narration rule the revision did not
+        # clear, kept with --report-only) is fixed in `yt script`, not here:
+        # the scene is still written, and build.json carries the line so qa's
+        # mechanical blockers lift it (AUTO-94).
+        from ytstudio import qa
+        script = json.loads((self.root / "script.json").read_text())
+        script["findings"] = ["error: rule:filler: shot 1.1 opens on 'welcome'",
+                              "warning: rule:numbers: shot 1.2 carries two numerals"]
+        (self.root / "script.json").write_text(json.dumps(script))
+        self.film_x = 50
+        self.assertEqual(self.build_run(), 0)
+        manifest = json.loads((self.root / "build.json").read_text())
+        carried = [f for f in manifest["findings"] if f.startswith("error: script: ")]
+        self.assertEqual(carried, ["error: script: rule:filler: shot 1.1 opens on 'welcome'"])
+        self.assertFalse(any("rule:numbers" in f for f in manifest["findings"]))
+        self.assertIn("build: error: script: rule:filler: shot 1.1 opens on 'welcome'",
+                      qa.mechanical_blockers(manifest, gate=None))
+
 
 if __name__ == "__main__":
     unittest.main()
