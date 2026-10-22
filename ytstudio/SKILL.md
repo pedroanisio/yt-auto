@@ -525,7 +525,9 @@ hand-authored world showed the cost.
     removed or renamed after `save()` is refused.
   - An author's own previews (`kit.py frame`) go to `frames/kit/`. The
     gate clears a section's proof frames before rendering them again, so
-    the reviewer only sees this round's.
+    `frames/` holds only this round's; the round before is read from
+    `rounds/<stem>/rNN/frames/`, where the reviewer is pointed to it
+    (`vfx.PREVIOUS_ROUND`).
   - Revisions resume the author's own session.
   - Every gated round is kept under `vfx/vNN/rounds/<stem>/rNN/` (program,
     document, provenance, proof frames). A revision's reviewer is handed the
@@ -599,7 +601,10 @@ hand-authored world showed the cost.
     section on its best reviewed round (`stopped: finish`) and run
     continuity, reach and plan. A section already at the bar is done, not
     finished. No revision in flight is cut off; the one after it is not paid
-    for (throughput item 33).
+    for (throughput item 33). The command names the version the file went
+    to and warns when that version is finished (its record is in the
+    dossier): a run still planning has not opened its own version yet and
+    will not read it.
   - `yt vfx --take-attempt N --why "..."` overrides the competition after the
     fact: a section whose new attempt lost to the version it replaced
     (`kept_from`) gets the attempt back from `rounds/<stem>.attempt`, with the
