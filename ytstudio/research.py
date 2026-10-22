@@ -82,9 +82,12 @@ SCOPES = {
             "that must be answered before scripting -- the ones that decide "
             "whether the premise survives contact with the facts. Favour "
             "questions with checkable answers: numbers, dates, mechanisms, "
-            "named decisions. Avoid vague framing questions. For each, give "
-            "2-4 web searches that would actually find the answer, and restate "
-            "the premise in one sentence."),
+            "named decisions. Avoid vague framing questions. Among them, ask "
+            "what a lay viewer most often wrongly believes about the subject "
+            "and where that belief is documented, and look for one named, "
+            "identifiable case -- a person, a place, an event -- the film can "
+            "follow. For each, give 2-4 web searches that would actually find "
+            "the answer, and restate the premise in one sentence."),
         "claims": (
             "Extract every factual claim worth putting on camera. Use only "
             "what the notes support -- do not add knowledge of your own. Keep "
@@ -106,7 +109,13 @@ SCOPES = {
             "seconds, 2-5 beats in the order they are said, the claims it "
             "rests on (quote the claim text) and the assets it shows (quote "
             "their titles). Put the weakest material last or cut it. Total "
-            "runtime should match the target length."),
+            "runtime should match the target length. Also give "
+            "misconceptions: each belief the film should break, with the "
+            "source that documents people holding it (a survey, a study, a "
+            "published correction); leave the list empty rather than name a "
+            "belief no source documents. And identifiable_case: one named "
+            "person, place or event the film can follow, with its source, or "
+            "an empty who when the research found none."),
     },
     "cinematic": {
         "name": "cinematic",
@@ -157,7 +166,9 @@ SCOPES = {
             "seconds, 2-5 beats describing what is seen, the behaviours the "
             "motion rests on under claims_used (quote the claim text) and the "
             "reference it matches under assets_used (quote the titles). Total "
-            "runtime should match the target length."),
+            "runtime should match the target length. Return an empty "
+            "misconceptions list and an empty identifiable_case: nothing is "
+            "said aloud to correct or to follow."),
     },
 }
 
@@ -508,9 +519,57 @@ OUTLINE_SCHEMA = {
                 "required": ["heading", "seconds", "beats"],
             },
         },
+        # AUTO-90 (attention 7, 12): the belief the film breaks and a case it
+        # can follow, each with the source that documents it, so the
+        # screenplay's plan cites them instead of inventing them.
+        "misconceptions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "belief": {"type": "string"},
+                    "source": {"type": "string",
+                               "description": "where people are documented believing it"},
+                },
+                "required": ["belief", "source"],
+            },
+        },
+        "identifiable_case": {
+            "type": "object",
+            "properties": {
+                "who": {"type": "string",
+                        "description": "a named person, place or event; empty for none"},
+                "source": {"type": "string"},
+            },
+            "required": ["who", "source"],
+        },
     },
-    "required": ["working_title", "runtime", "sections"],
+    "required": ["working_title", "runtime", "sections", "misconceptions",
+                 "identifiable_case"],
 }
+
+
+def sourced_misconceptions(outline: dict, gaps: dict) -> list[dict]:
+    """The beliefs the film breaks, as `{belief, source}`: the outline's, which
+    carry the source that documents them, else the gap audit's, which name
+    no source and say so with an empty one."""
+    rows = [{"belief": str(m.get("belief") or "").strip(),
+             "source": str(m.get("source") or "").strip()}
+            for m in (outline or {}).get("misconceptions") or [] if isinstance(m, dict)]
+    rows = [r for r in rows if r["belief"]]
+    if rows:
+        return rows
+    return [{"belief": str(m).strip(), "source": ""}
+            for m in (gaps or {}).get("misconceptions") or [] if str(m).strip()]
+
+
+def case_of(outline: dict) -> dict:
+    """The outline's identifiable case as `{who, source}`; an empty `who`
+    when the research found none."""
+    case = (outline or {}).get("identifiable_case")
+    case = case if isinstance(case, dict) else {}
+    return {"who": str(case.get("who") or "").strip(),
+            "source": str(case.get("source") or "").strip()}
 
 
 # --------------------------------------------------------------------------- #
@@ -997,7 +1056,8 @@ class Researcher:
             "sources": sources.get("sources", []),
             "assets": assets.get("assets", []),
             "gaps": gaps.get("gaps", []),
-            "misconceptions": gaps.get("misconceptions", []),
+            "misconceptions": sourced_misconceptions(outline, gaps),
+            "identifiable_case": case_of(outline),
             "verdict": gaps.get("verdict", ""),
             "outline": outline,
             "urls_opened": sorted(set(self.visited)),
@@ -1420,7 +1480,15 @@ def write_dossier(dossier: Dossier, data: dict, downloads: list[dict]) -> list[P
                    f"  - fix: {gap.get('how_to_resolve', '')}"]
     if data.get("misconceptions"):
         md += ["", "## Misconceptions to address", ""]
-        md += [f"- {m}" for m in data["misconceptions"]]
+        for m in data["misconceptions"]:
+            # {belief, source} since AUTO-90; a bare string in older dossiers
+            belief, source = ((m.get("belief", ""), m.get("source", ""))
+                              if isinstance(m, dict) else (m, ""))
+            md.append(f"- {belief}" + (f" — {source}" if source else ""))
+    case = data.get("identifiable_case") or {}
+    if isinstance(case, dict) and case.get("who"):
+        md += ["", "## A case to follow", "",
+               f"- {case['who']}" + (f" — {case['source']}" if case.get("source") else "")]
 
     outline = data.get("outline") or {}
     if outline.get("sections"):

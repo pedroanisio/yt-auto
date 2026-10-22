@@ -141,11 +141,34 @@ def traits_of(shot, placed: dict, *, section: str, cues: list[dict],
             if cue.get("motif"):
                 traits.add(f"motif:{_key(cue['motif'])[:20]}")
     traits |= {f"fx:{_key(t)[:20]}" for t in fx}
+    # The screenplay names its beats (AUTO-90); `first` and `last` are the
+    # positional stand-ins `gather` passes when it does not.
+    function = getattr(shot, "function", "")
+    if function in STORY_TRAITS:
+        traits.add(function)
     if first:
         traits.add("hook")
     if last:
         traits.add("payoff")
     return traits
+
+
+#: The screenplay functions a beat carries as a trait of the same name.
+STORY_TRAITS = ("hook", "rehook", "payoff")
+
+
+def print_findings(beat_notes: list[str], findings: list[str]) -> None:
+    """The screenplay's beat notes (`gather`'s, e.g. no payoff shot marked)
+    apart from what the editor and the scene checks raised, so a film written
+    before shots had a function is not reported as an SDK finding."""
+    if beat_notes:
+        print("\n  the screenplay's beats:")
+        for note in beat_notes:
+            print(f"    {note}")
+    if findings:
+        print(f"\n  the SDK raised {len(findings)} finding(s):")
+        for finding in findings[:10]:
+            print(f"    {finding}")
 
 
 def gather(project, overrides: dict | None = None) -> tuple[list[Beat], dict]:
@@ -196,6 +219,15 @@ def gather(project, overrides: dict | None = None) -> tuple[list[Beat], dict]:
                               if e.get("type")}
 
     flat = [(section, shot) for section in sections for shot in section.shots]
+    # The opening is always a hook: a pilot that starts mid-film says nothing
+    # about it. The payoff is the shot the screenplay marks so; one written
+    # before shots had a function (or marking none) is ended by its last
+    # shot, and the record says the cut stood on position.
+    marked = {getattr(shot, "function", "") for _, shot in flat}
+    notes = []
+    if flat and "payoff" not in marked:
+        notes.append(f"note: the screenplay marks no payoff shot; the last shot, "
+                     f"{flat[-1][1].label}, stands for it")
     beats = []
     for n, (section, shot) in enumerate(flat):
         row = placed.get(shot.label)
@@ -208,9 +240,12 @@ def gather(project, overrides: dict | None = None) -> tuple[list[Beat], dict]:
             visual=(shot.visual or "")[:240],
             traits=traits_of(shot, row, section=section.heading, cues=cues,
                              fx=fx_by_section.get(_key(section.heading), set()),
-                             first=(n == 0), last=(n == len(flat) - 1))))
+                             first=(n == 0),
+                             last=(n == len(flat) - 1 and "payoff" not in marked))))
     if not beats:
         raise RuntimeError("the built scene has no shots to choose from")
+    if notes:
+        build = {**build, "beat_notes": notes}
     return sorted(beats, key=lambda b: b.at), build
 
 
@@ -459,6 +494,9 @@ def run(args) -> int:
     engine = Harness(project.root, "pilot", model=args.model, role=ROLE,
                      house=rules, house_digest=digest,
                      fresh=getattr(args, "fresh", False), verbose=not args.quiet)
+    # The beat note is gather's, not the SDK's: printed under its own
+    # heading, and first in pilot.json's findings, the same strings as there.
+    beat_notes = [str(n) for n in build.get("beat_notes") or []]
     findings: list[str] = []
     chosen: dict[int, list[str]] = {}
     verdict: dict = {}
@@ -524,10 +562,7 @@ def run(args) -> int:
     print_pilot(idea.title, cuts)
     if verdict.get("notes"):
         print(f"\n  editor's notes: {verdict['notes'][:300]}")
-    if findings:
-        print(f"\n  the SDK raised {len(findings)} finding(s):")
-        for finding in findings[:10]:
-            print(f"    {finding}")
+    print_findings(beat_notes, findings)
     errors = [f for f in findings if f.startswith("error")]
     if errors:
         print(f"\nerror: {len(errors)} check error(s); nothing written",
@@ -543,7 +578,7 @@ def run(args) -> int:
                 "outputs": names,
                 # Same shape and strings as build.json, so anything reading
                 # findings there reads them here without a second format.
-                "findings": findings,
+                "findings": beat_notes + findings,
                 "selection": selection, "notes": verdict.get("notes", ""),
                 "engine": engine.report(),
                 "usage": spend.from_report(engine.report()),

@@ -405,6 +405,16 @@ figure for the section that owns it; a figure spoken twice is rewritten after
 drafting. A shot's visible text lives in `on_screen_text`, apart from the
 direction in `on_screen`, and the reading-speed check measures only that text.
 
+The plan is a story brief: the film's promise and payoff, who wants what
+and what is in the way, the stakes for the viewer, the misconception it
+breaks (from the dossier's sourced misconceptions, numbered M1, M2 ...), the
+audience, the reveal, a ledger of questions each opened in one section and
+answered in the same section or a later one (or left open on purpose, with
+why), and an ending with a callback and the next film.
+Each section joins the one before with but, therefore or because, and
+every shot names its function (hook, setup, reveal, rehook, payoff ...) and
+what its picture shows of its line; `script.md` prints the question ledger.
+
 `--minutes` · `--wpm` · `--sections` · `--outline` to use the dossier's own beat
 sheet · `--inspo` for voice · `--notes` which outrank everything else ·
 `--jobs` · `--report-only`

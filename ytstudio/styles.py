@@ -383,7 +383,9 @@ def dossier_context(path: str, idea: Idea, *, limit: int = 20) -> str:
                      + "\n".join(assets))
     if data.get("misconceptions"):
         parts.append("Misconceptions the video must visibly correct:\n"
-                     + "\n".join(f"- {m}" for m in data["misconceptions"][:8]))
+                     # {belief, source} since AUTO-90, a string before
+                     + "\n".join(f"- {m.get('belief', '') if isinstance(m, dict) else m}"
+                                 for m in data["misconceptions"][:8]))
     return "\n\n".join(parts)
 
 

@@ -66,7 +66,9 @@ class RecordingHarness:
                 if what == "start" and name in names]
 
 
-class Levels(unittest.TestCase):
+class _Researched(unittest.TestCase):
+    """A researcher on the recording harness, with the catalogues stubbed."""
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -94,6 +96,8 @@ class Levels(unittest.TestCase):
     def raw(self) -> list[str]:
         return sorted(p.stem for p in (self.root / "raw").iterdir())
 
+
+class Levels(_Researched):
     def test_the_first_level_starts_before_any_second_level_decision(self):
         data = self.researcher(jobs=3).run()
         first, second = self.harness.starts(FIRST), self.harness.starts(SECOND)
@@ -132,6 +136,91 @@ class Levels(unittest.TestCase):
         p = research.register(argparse.ArgumentParser().add_subparsers())
         text = p.format_help().rsplit("--jobs", 1)[1].split("  --", 1)[0]
         self.assertIn("decisions", text)
+
+
+class Misconceptions(_Researched):
+    """AUTO-90: the outline names the beliefs the film breaks and a case it can
+    follow, each with the source that documents it, so the screenplay's plan
+    cites them (attention 7, 12) instead of inventing them."""
+
+    BELIEF = {"belief": "The tail trails behind the comet.",
+              "source": "https://example.org/survey"}
+    CASE = {"who": "Comet NEOWISE, July 2020", "source": "https://example.org/neowise"}
+
+    def test_the_outline_requires_sourced_misconceptions_and_a_case(self):
+        props = research.OUTLINE_SCHEMA["properties"]
+        self.assertIn("misconceptions", research.OUTLINE_SCHEMA["required"])
+        self.assertIn("identifiable_case", research.OUTLINE_SCHEMA["required"])
+        self.assertEqual(set(props["misconceptions"]["items"]["required"]),
+                         {"belief", "source"})
+        self.assertEqual(set(props["identifiable_case"]["required"]), {"who", "source"})
+
+    def test_the_dossier_carries_them_with_their_sources(self):
+        r = self.researcher(jobs=1, parties=1)
+        answer = self.harness.decide
+
+        def decide(name, prompt, schema):
+            row = answer(name, prompt, schema)
+            if name == "07-outline":
+                row.update(misconceptions=[self.BELIEF], identifiable_case=self.CASE)
+            return row
+        self.harness.decide = decide
+        data = r.run()
+        self.assertEqual(data["misconceptions"], [self.BELIEF])
+        self.assertEqual(data["identifiable_case"], self.CASE)
+        self.assertEqual(data["outline"]["misconceptions"], [self.BELIEF])
+        from ytstudio import script
+        block = script.research_block(data)
+        self.assertIn("M1: The tail trails behind the comet. "
+                      "(source: https://example.org/survey)", block)
+        self.assertIn("Comet NEOWISE, July 2020 (source: https://example.org/neowise)",
+                      block)
+
+    def test_without_a_sourced_one_the_audits_beliefs_stay_unsourced(self):
+        r = self.researcher(jobs=1, parties=1)
+        answer = self.harness.decide
+
+        def decide(name, prompt, schema):
+            row = answer(name, prompt, schema)
+            if name == "06-gaps":
+                row["misconceptions"] = ["Tails trail."]
+            return row
+        self.harness.decide = decide
+        data = r.run()
+        self.assertEqual(data["misconceptions"], [{"belief": "Tails trail.", "source": ""}])
+        self.assertEqual(data["identifiable_case"], {"who": "", "source": ""})
+
+    def test_the_styles_prompt_prints_the_belief_old_or_new(self):
+        from ytstudio import styles
+        for rows, belief in (([self.BELIEF], self.BELIEF["belief"]),
+                             (["Tails trail."], "Tails trail.")):
+            (self.root / "dossier.json").write_text(json.dumps(
+                {"idea": {"title": "Comets"}, "misconceptions": rows}))
+            text = styles.dossier_context(str(self.root), self.idea)
+            self.assertIn(f"- {belief}", text)
+            self.assertNotIn("{", text)
+
+    def test_the_dossier_readme_prints_each_beliefs_source_and_the_case(self):
+        dossier = research.Dossier(self.root, self.idea, at=self.root)
+        data = {"premise": "p", "questions": [], "claims": [], "sources": [],
+                "assets": [], "gaps": [], "urls_opened": [], "notes": [],
+                "usage": {}, "misconceptions": [self.BELIEF, "An older bare belief."],
+                "identifiable_case": self.CASE}
+        research.write_dossier(dossier, data, [])
+        md = (self.root / "README.md").read_text(encoding="utf-8")
+        self.assertIn("- The tail trails behind the comet. — https://example.org/survey", md)
+        self.assertIn("- An older bare belief.\n", md)
+        case = md.split("## A case to follow", 1)[1]
+        self.assertIn("- Comet NEOWISE, July 2020 — https://example.org/neowise", case)
+
+    def test_the_explainer_plan_asks_for_the_belief_and_the_case(self):
+        text = research.SCOPES["explainer"]["plan"]
+        self.assertIn("wrongly believe", text)
+        self.assertIn("named", text)
+        outline = research.SCOPES["explainer"]["outline"]
+        self.assertIn("misconceptions", outline)
+        self.assertIn("identifiable_case", outline)
+        self.assertNotIn("misconception", research.SCOPES["cinematic"]["plan"].lower())
 
 
 class Writer(unittest.TestCase):

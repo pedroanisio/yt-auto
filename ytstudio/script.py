@@ -61,12 +61,122 @@ SYSTEM = (
 # schemas
 # --------------------------------------------------------------------------- #
 
+#: How a section joins the one before it (docs/narrative structure 1: the
+#: honest connective between beats is BUT or THEREFORE, never AND THEN).
+#: `open` is section 1's alone; `and` is listed so a writer can confess it
+#: and a pre-check can flag it, rather than dress an AND up as a BUT.
+CONNECTIVES = ("open", "and", "but", "therefore", "because")
+
+#: Who the film is pitched at; it decides what a writer defines.
+AUDIENCES = ("lay", "enthusiast", "expert")
+
+#: What a shot does in the story. `qa` samples every rehook and payoff shot,
+#: `pilot` keeps the hook and the payoff, and `build` hands the editor the
+#: payoff shot; any other value is body.
+FUNCTIONS = ("hook", "context", "setup", "reveal", "rehook", "payoff", "handoff")
+
+#: How a value outside one of these lists is treated: the harness asks again
+#: once, then the stage records it (a `note:` in script.json's `findings`)
+#: and reads it as no role at all. Stated in the schema, so the model is told.
+_ENUM_DRIFT = ("A value outside this list is asked again once, then recorded as a "
+               "note and treated as having no role.")
+
+#: An empty string passes the schema (only presence is checked); the plan's
+#: deterministic pre-checks catch it, so the description says so.
+_NOT_EMPTY = "Never empty: an empty value fails the plan's pre-check."
+
+#: The film-wide story fields of a plan, shared by the plan and by the
+#: `plan-fields` decision `--outline` asks over the research's outline.
+STORY_PROPERTIES = {
+    "promise": {"type": "string",
+                "description": "what the first fifteen seconds promise the viewer"},
+    "payoff": {"type": "string", "description": "how that promise is paid off"},
+    "train": {"type": "string", "description": (
+        "One sentence: who or what pursues what, against which named obstacle, "
+        "and the question the film answers (a question mark, or a whether/why/how "
+        "clause). Not a topic. " + _NOT_EMPTY)},
+    "stakes": {"type": "string", "description": (
+        "the concrete consequence if the obstacle wins. " + _NOT_EMPTY)},
+    "viewer_stake": {"type": "string", "description": (
+        "why it matters to the viewer, addressed to them. " + _NOT_EMPTY)},
+    "misconception": {"type": "string", "description": (
+        "the intuitive but wrong belief the film breaks, led by the research's "
+        "misconception id (\"[M1] ...\") when the research lists one; empty "
+        "when there is none, with the reason in misconception_why")},
+    "misconception_why": {"type": "string",
+                          "description": "why misconception is empty, or empty"},
+    "audience": {"type": "string", "enum": list(AUDIENCES),
+                 "description": "who the film is pitched at. " + _ENUM_DRIFT},
+    "reveal": {
+        "type": "object",
+        "properties": {
+            "section": {"type": "integer",
+                        "description": "the section number holding the main reveal"},
+            "constraint_section": {"type": "integer", "description": (
+                "the earlier section that shows why the reveal is hard")},
+        },
+        "required": ["section", "constraint_section"],
+    },
+    "questions": {
+        "type": "array",
+        "description": "the ledger: every question the film raises and where it is answered",
+        "items": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "Q1, Q2, ..."},
+                "text": {"type": "string"},
+                "opened_in": {"type": "integer", "description": "section number"},
+                "closed_in": {"type": "integer", "description": (
+                    "the section that answers it, the same as opened_in or a later "
+                    "one; 0 for a question deliberately left open, with why in "
+                    "left_open_why")},
+                "left_open_why": {"type": "string", "description": (
+                    "why a question with closed_in 0 is left open on purpose; "
+                    "empty otherwise")},
+            },
+            "required": ["id", "text", "opened_in", "closed_in"],
+        },
+    },
+    "ending": {
+        "type": "object",
+        "properties": {
+            "payoff_line": {"type": "string", "description": (
+                "the last narrated line: the title's promise, paid in resolved form")},
+            "callback": {"type": "string",
+                         "description": "how the ending mirrors the opening"},
+            "next_film": {"type": "string", "description": (
+                "one named film that continues the question")},
+        },
+        "required": ["payoff_line", "callback", "next_film"],
+    },
+}
+STORY_REQUIRED = ["promise", "payoff", "train", "stakes", "viewer_stake", "audience",
+                  "reveal", "questions", "ending"]
+
+#: What each section carries for the story, beside its beats.
+SECTION_STORY = {
+    "opens": {"type": "array", "items": {"type": "string"},
+              "description": "ids of the questions this section raises"},
+    "closes": {"type": "array", "items": {"type": "string"},
+               "description": "ids of the questions this section answers"},
+    "connective": {"type": "string", "enum": list(CONNECTIVES), "description": (
+        "how this section joins the one before: open for section 1 only, then "
+        "but or therefore (because when it explains); and only when nothing "
+        "else is honest. " + _ENUM_DRIFT)},
+    "rehook": {"type": "string", "description": (
+        "the id of a question this section re-opens to hold the viewer, or empty")},
+    "escalation": {"type": "string",
+                   "description": "one clause: what gets harder or costlier here"},
+    "anchor_visual": {"type": "string",
+                      "description": "the one picture this section stands on"},
+}
+SECTION_STORY_REQUIRED = ["opens", "closes", "connective", "anchor_visual"]
+
 PLAN_SCHEMA = {
     "type": "object",
     "properties": {
         "logline": {"type": "string"},
-        "promise": {"type": "string"},
-        "payoff": {"type": "string"},
+        **STORY_PROPERTIES,
         "sections": {
             "type": "array",
             "items": {
@@ -78,12 +188,30 @@ PLAN_SCHEMA = {
                     "beats": {"type": "array", "items": {"type": "string"}},
                     "claims": {"type": "array", "items": {"type": "string"}},
                     "visuals": {"type": "array", "items": {"type": "string"}},
+                    **SECTION_STORY,
                 },
-                "required": ["heading", "purpose", "seconds", "beats"],
+                "required": ["heading", "purpose", "seconds", "beats",
+                             *SECTION_STORY_REQUIRED],
             },
         },
     },
-    "required": ["logline", "promise", "payoff", "sections"],
+    "required": ["logline", *STORY_REQUIRED, "sections"],
+}
+
+#: The story fields over an outline the research already wrote: its sections
+#: are fixed, so each answer row is one of them, in order.
+PLAN_FIELDS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        **STORY_PROPERTIES,
+        "sections": {
+            "type": "array",
+            "items": {"type": "object",
+                      "properties": {"heading": {"type": "string"}, **SECTION_STORY},
+                      "required": list(SECTION_STORY_REQUIRED)},
+        },
+    },
+    "required": [*STORY_REQUIRED, "sections"],
 }
 
 
@@ -99,8 +227,12 @@ def section_schema(sourced: bool) -> dict:
         "source": {"type": "string"},
         "seconds": {"type": "integer"},
         "note": {"type": "string"},
+        "function": {"type": "string", "enum": list(FUNCTIONS),
+                     "description": "what the shot does in the story. " + _ENUM_DRIFT},
+        "shows": {"type": "string", "description": (
+            "one clause: what the picture demonstrates of this line's claim")},
     }
-    required = ["visual", "narration", "seconds", "asset", "style"]
+    required = ["visual", "narration", "seconds", "asset", "style", "function", "shows"]
     return {
         "type": "object",
         "properties": {
@@ -195,13 +327,15 @@ class Shot:
     label: str = ""     # "3.2", for humans reading the page
     at: int = 0         # start time in seconds from the top
     revised: str = ""   # why the polish pass rewrote this line
+    function: str = ""  # its role in the story (FUNCTIONS); "" before AUTO-90
+    shows: str = ""     # what the picture demonstrates of the line's claim
 
     @classmethod
     def from_raw(cls, raw: dict) -> Shot:
         known = {f.name for f in fields(cls)}
         clean = {k: v for k, v in raw.items() if k in known and v is not None}
         for key in ("visual", "narration", "on_screen", "asset", "style",
-                    "source", "note"):
+                    "source", "note", "function", "shows"):
             if key in clean:
                 clean[key] = str(clean[key]).strip()
         if "on_screen_text" in clean:
@@ -228,6 +362,31 @@ class Section:
     seconds: int = 0
     beats: list[str] = field(default_factory=list)
     shots: list[Shot] = field(default_factory=list)
+    # The plan's story fields for this section (SECTION_STORY); empty in a
+    # screenplay written before AUTO-90.
+    opens: list[str] = field(default_factory=list)
+    closes: list[str] = field(default_factory=list)
+    connective: str = ""
+    rehook: str = ""
+    escalation: str = ""
+    anchor_visual: str = ""
+
+    @classmethod
+    def from_spec(cls, raw: dict, shots: list[Shot] | None = None,
+                  heading: str = "") -> Section:
+        """A section from its plan entry or its JSON form, story fields included."""
+        ids = lambda key: [str(q) for q in raw.get(key) or []  # noqa: E731
+                           if str(q).strip()]
+        return cls(heading=str(raw.get("heading") or heading),
+                   purpose=str(raw.get("purpose") or ""),
+                   seconds=int(raw.get("seconds", 0) or 0),
+                   beats=[str(b) for b in raw.get("beats") or []],
+                   shots=list(shots or []),
+                   opens=ids("opens"), closes=ids("closes"),
+                   connective=str(raw.get("connective") or "").strip(),
+                   rehook=str(raw.get("rehook") or "").strip(),
+                   escalation=str(raw.get("escalation") or "").strip(),
+                   anchor_visual=str(raw.get("anchor_visual") or "").strip())
 
     @property
     def words(self) -> int:
@@ -376,14 +535,10 @@ def sections_of(data: dict) -> list[Section]:
     known = {f.name for f in fields(Shot)}
     sections = []
     for raw in (data or {}).get("sections", []):
-        sections.append(Section(
-            heading=str(raw.get("heading", "")),
-            purpose=str(raw.get("purpose", "")),
-            seconds=int(raw.get("seconds", 0) or 0),
-            beats=[str(b) for b in raw.get("beats", [])],
-            shots=[Shot(**{**{k: v for k, v in shot.items() if k in known},
-                           "narration": spoken(shot.get("narration", ""))})
-                   for shot in raw.get("shots", [])]))
+        sections.append(Section.from_spec(raw, [
+            Shot(**{**{k: v for k, v in shot.items() if k in known},
+                    "narration": spoken(shot.get("narration", ""))})
+            for shot in raw.get("shots", [])]))
     return sections
 
 
@@ -395,6 +550,28 @@ def load_script(path: str) -> tuple[list[Section], dict]:
 
 #: Claims are offered best-sourced first when there are more than fit.
 _CONFIDENCE = {"high": 0, "medium": 1, "low": 2}
+
+
+def misconception_line(item) -> str:
+    """One misconception from the dossier: `{belief, source}` since AUTO-90,
+    a bare string before."""
+    if isinstance(item, dict):
+        belief = " ".join(str(item.get("belief") or "").split())
+        source = " ".join(str(item.get("source") or "").split())
+        return f"{belief} (source: {source})" if source else f"{belief} (no source)"
+    return " ".join(str(item).split())
+
+
+def identifiable_case(data: dict) -> str:
+    """The named person, place or event the research found for the film to
+    follow, with its source; "" when it found none."""
+    case = data.get("identifiable_case") or (data.get("outline") or {}).get(
+        "identifiable_case")
+    if not isinstance(case, dict) or not str(case.get("who") or "").strip():
+        return ""
+    who = " ".join(str(case["who"]).split())
+    source = " ".join(str(case.get("source") or "").split())
+    return f"{who} (source: {source})" if source else f"{who} (no source)"
 
 
 def research_block(data: dict, *, limit: int = 60) -> str:
@@ -447,8 +624,14 @@ def research_block(data: dict, *, limit: int = 60) -> str:
         parts.append("Footage and imagery already found and licensed:\n"
                      + "\n".join(assets))
     if data.get("misconceptions"):
-        parts.append("Misconceptions to correct out loud:\n"
-                     + "\n".join(f"- {m}" for m in data["misconceptions"][:8]))
+        # Numbered, so the plan cites one ("[M2] ...") rather than invents it.
+        parts.append("Misconceptions to correct out loud, with where people are "
+                     "documented believing them:\n"
+                     + "\n".join(f"- M{n}: {misconception_line(m)}"
+                                 for n, m in enumerate(data["misconceptions"][:8], 1)))
+    case = identifiable_case(data)
+    if case:
+        parts.append(f"An identifiable case the film can follow: {case}")
     gaps = [f"- {g.get('severity', '?')}: {g.get('issue', '')}"
             for g in data.get("gaps", [])
             if g.get("severity") in ("blocker", "important")]
@@ -534,6 +717,127 @@ def fit_sections(sections: list[dict], seconds: int) -> list[dict]:
     return sections
 
 
+#: What the plan asks for beyond the beats, in the craft corpus's terms
+#: (docs/narrative: judging 13, structure 1, 7, 8, 14, 22, 36, attention 7,
+#: 9-10). The same words go to the plan and to `--outline`'s plan fields.
+STORY_BRIEF = (
+    "Plan it as a story the viewer follows, not a list of facts in order.\n"
+    "- train: one sentence saying who or what pursues what, against which "
+    "named obstacle, and the question the film answers. A sentence that names "
+    "only a topic is not a train.\n"
+    "- promise: what the first fifteen seconds promise the viewer; payoff: how "
+    "that promise is paid off.\n"
+    "- stakes: the concrete consequence if the obstacle wins; viewer_stake: "
+    "why it matters to the viewer, addressed to them.\n"
+    "- misconception: the belief the film breaks, the intuitive but wrong one "
+    "a viewer arrives with. Lead it with the research's id (\"[M1] ...\") when "
+    "the research lists it; never invent one. When there is none, leave it "
+    "empty and say why in misconception_why.\n"
+    "- audience: lay, enthusiast or expert.\n"
+    "- reveal: the section holding the main reveal, and constraint_section, "
+    "the earlier section that shows the viewer why it is hard. The reveal "
+    "comes after the constraint, never before.\n"
+    "- questions: the ledger of every question the film raises: an id (Q1, "
+    "Q2, ...), the question, the section that opens it and the section that "
+    "answers it (the same section or a later one). Every question opened is "
+    "answered, or is marked left open (closed_in 0) with why in "
+    "left_open_why, as a choice; a question that points past the film belongs "
+    "in ending.next_film.\n"
+    "- ending: payoff_line, the last narrated line, which pays the promise in "
+    "resolved form; callback, how it mirrors the opening; next_film, one "
+    "named film that continues the question.\n"
+    "For each section also give: opens and closes (question ids); connective, "
+    "how it joins the section before it: open for section 1 only, then BUT "
+    "(it turns against what came before) or THEREFORE (it follows from it), "
+    "because when it explains why; and when nothing else is honest, so it can "
+    "be seen; rehook, the id of a question it re-opens to hold the viewer, or "
+    "empty; escalation, one clause on what gets harder or costlier; and "
+    "anchor_visual, the one picture it stands on.\n"
+    "Every plan field is crew-facing: write them in English, like the shot "
+    "descriptions, whatever language the film is in, so the later stages can "
+    "read them.")
+
+#: What the writer of every section is told about the audience.
+AUDIENCE_BRIEF = {
+    "lay": ("The audience is lay: define every term the first time it is said, "
+            "in plain words, and say the misconception out loud before you "
+            "break it."),
+    "enthusiast": ("The audience is enthusiasts: they know the field's common "
+                   "terms, so define only the specialist ones."),
+    "expert": ("The audience is expert: skip the basics and the definitions they "
+               "already hold, and spend the words on what is new or contested."),
+}
+
+#: What each connective asks of the section that carries it.
+CONNECTIVE_BRIEF = {
+    "open": "It opens the film.",
+    "and": ("The plan joins it to the section before with AND: it adds, it does "
+            "not turn or follow. Make the join a consequence or a turn if the "
+            "material honestly allows."),
+    "but": "It joins the section before with BUT: it turns against what that section established.",
+    "therefore": ("It joins the section before with THEREFORE: it follows from "
+                  "what that section established, as its consequence."),
+    "because": "It joins the section before with BECAUSE: it explains why what came before happened.",
+}
+
+
+def story_lines(plan: dict) -> list[str]:
+    """The film's story, as every section's writer is handed it: the train,
+    the stakes, the belief it breaks and who it is pitched at."""
+    rows = [(label, " ".join(str(plan.get(key) or "").split()))
+            for key, label in (("train", "The film's train"),
+                               ("stakes", "What is at stake"),
+                               ("viewer_stake", "Why the viewer cares"),
+                               ("misconception", "The belief the film breaks"))]
+    out = ["\n".join(f"{label}: {text}" for label, text in rows if text)]
+    out.append(AUDIENCE_BRIEF.get(str(plan.get("audience") or ""), ""))
+    return [p for p in out if p]
+
+
+def _question(plan: dict, qid: str) -> str:
+    for q in plan.get("questions") or []:
+        if isinstance(q, dict) and str(q.get("id", "")) == qid:
+            return f"{qid} ({' '.join(str(q.get('text') or '').split())})"
+    return qid
+
+
+def section_story_lines(spec: dict, plan: dict, *, index: int, total: int) -> list[str]:
+    """One section's part of the story: the questions it opens and answers,
+    how it joins the one before, what it re-opens, what escalates, the
+    picture it stands on, its place around the reveal and, for the last
+    section, the ending the plan locked."""
+    bits = []
+    for key, verb in (("opens", "This section opens"), ("closes", "This section answers")):
+        ids = [str(q) for q in spec.get(key) or [] if str(q).strip()]
+        if ids:
+            bits.append(f"{verb}: " + "; ".join(_question(plan, q) for q in ids))
+    if CONNECTIVE_BRIEF.get(str(spec.get("connective") or "")):
+        bits.append(CONNECTIVE_BRIEF[str(spec["connective"])])
+    if str(spec.get("rehook") or "").strip():
+        bits.append(f"Re-open {_question(plan, str(spec['rehook']).strip())} partway "
+                    "through, so the viewer stays for its answer.")
+    if str(spec.get("escalation") or "").strip():
+        bits.append(f"What gets harder or costlier here: {spec['escalation']}")
+    if str(spec.get("anchor_visual") or "").strip():
+        bits.append(f"The picture this section stands on: {spec['anchor_visual']}")
+    reveal = plan.get("reveal") if isinstance(plan.get("reveal"), dict) else {}
+    if reveal.get("section") == index:
+        bits.append("This section holds the film's main reveal"
+                    + (f"; section {reveal['constraint_section']} showed why it is hard"
+                       if reveal.get("constraint_section") else "") + ".")
+    elif reveal.get("constraint_section") == index and reveal.get("section"):
+        bits.append(f"This section shows why the reveal in section {reveal['section']} "
+                    "is hard; do not give the reveal away.")
+    ending = plan.get("ending") if isinstance(plan.get("ending"), dict) else {}
+    if index == total and any(ending.get(k) for k in ("payoff_line", "callback", "next_film")):
+        bits.append(
+            "This is the last section. Its last narrated line pays the promise, "
+            f"in the film's language: \"{ending.get('payoff_line', '')}\". It mirrors "
+            f"the opening: {ending.get('callback', '')}. It hands off to one next "
+            f"film: {ending.get('next_film', '')}.")
+    return ["\n".join(bits)] if bits else []
+
+
 class Screenwriter:
     """Plans the beat sheet, writes each section, then polishes and checks."""
 
@@ -569,6 +873,9 @@ class Screenwriter:
             root or ".", "script", model=model, role=SYSTEM,
             house_digest=self.house_digest, verbose=verbose)
         self.usage = self.harness.usage
+        #: What the stage recorded instead of deciding: a value the model gave
+        #: outside a schema list, kept as written and read as no role.
+        self.findings: list[str] = []
         #: Drafting at its own effort, on the same books as the fact-check.
         self._drafter = harness.Harness(
             root or ".", "script", model=model, role=SYSTEM, effort=draft_effort,
@@ -626,20 +933,7 @@ class Screenwriter:
 
     def plan(self) -> dict:
         if self.outline.get("sections"):
-            self._say(f"[plan] reusing the dossier outline "
-                      f"({len(self.outline['sections'])} sections)")
-            sections = []
-            for raw in self.outline["sections"]:
-                sections.append({
-                    "heading": str(raw.get("heading", "")),
-                    "purpose": "", "seconds": int(raw.get("seconds", 0) or 0),
-                    "beats": [str(b) for b in raw.get("beats", [])],
-                    "claims": [str(c) for c in raw.get("claims_used", [])],
-                    "visuals": [str(a) for a in raw.get("assets_used", [])],
-                })
-            fit_sections(sections, self.seconds)
-            return {"logline": self.outline.get("working_title", self.idea.title),
-                    "promise": "", "payoff": "", "sections": sections}
+            return self._plan_from_outline()
 
         count = section_count(self.seconds, self.sections)
         self._say(f"[plan] {count} section(s) for {timecode(self.seconds)}")
@@ -647,18 +941,87 @@ class Screenwriter:
                  f"Plan this video as {count} sections that total "
                  f"{self.seconds} seconds. Open on the strongest concrete "
                  "fact or image, never a definition. Give each section a "
-                 "heading, the job it does in one clause, a runtime in "
-                 "seconds, and 2-5 beats in the order they are said. Where "
+                 "heading, the job it does in one clause (purpose), a runtime "
+                 "in seconds, and 2-5 beats in the order they are said. Where "
                  "research is supplied, name the claims each section rests on "
                  "and the assets it shows. Put the weakest material last or "
-                 "cut it. Also give the logline, what the first fifteen "
-                 "seconds promise the viewer, and how that promise is paid "
-                 "off."]
+                 "cut it. Also give the logline.",
+                 STORY_BRIEF]
         data = self._ask("plan", "\n\n".join(parts), PLAN_SCHEMA)
 
         # The model's section runtimes rarely add up; hold the total.
         fit_sections(data.get("sections") or [], self.seconds)
+        self._record_drift(data)
         return data
+
+    def _plan_from_outline(self) -> dict:
+        """The research's outline as the beat sheet, with the story fields
+        asked over it (`plan-fields`) rather than left blank: the outline
+        holds the sections and their beats, not the train or the ledger."""
+        self._say(f"[plan] reusing the dossier outline "
+                  f"({len(self.outline['sections'])} sections)")
+        sections = []
+        for raw in self.outline["sections"]:
+            sections.append({
+                "heading": str(raw.get("heading", "")),
+                "purpose": "", "seconds": int(raw.get("seconds", 0) or 0),
+                "beats": [str(b) for b in raw.get("beats", [])],
+                "claims": [str(c) for c in raw.get("claims_used", [])],
+                "visuals": [str(a) for a in raw.get("assets_used", [])],
+            })
+        fit_sections(sections, self.seconds)
+        outline = [{"section": n, "heading": s["heading"], "seconds": s["seconds"],
+                    "beats": s["beats"]} for n, s in enumerate(sections, 1)]
+        parts = [self._brief(), *self._context(),
+                 harness.brief("The research's outline, whose sections are fixed",
+                               outline),
+                 "Write the story fields for this outline. Answer one entry "
+                 f"under sections for each of its {len(sections)} sections, in "
+                 "its order.",
+                 STORY_BRIEF]
+        prompt = "\n\n".join(parts)
+        fields_ = self._ask("plan-fields", prompt, PLAN_FIELDS_SCHEMA)
+        rows = fields_.get("sections") or []
+        # The count is part of the answer's validity, which the schema cannot
+        # state: asked once more with the problem named (invariant 3), under
+        # its own name so both answers are kept and a rerun replays them.
+        if len(rows) != len(sections):
+            problem = (f"you answered {len(rows)} section(s) for an outline of "
+                       f"{len(sections)}")
+            self._say(f"[plan] plan-fields: asking again ({problem})")
+            fields_ = self._ask(
+                "plan-fields-retry",
+                prompt + f"\n\nYour previous answer was rejected: {problem}. Answer "
+                f"exactly {len(sections)} entries under sections, one per outline "
+                "section, in its order.", PLAN_FIELDS_SCHEMA)
+            rows = fields_.get("sections") or []
+        if len(rows) != len(sections):
+            # Neither answer is usable; kept, they would fail every rerun.
+            for name in ("plan-fields", "plan-fields-retry"):
+                self.harness.forget(name)
+            raise ClaudeError(f"the plan fields answered {len(rows)} section(s) for "
+                              f"an outline of {len(sections)}, after asking again")
+        for section, row in zip(sections, rows):
+            section.update({k: row[k] for k in SECTION_STORY if k in row})
+        data = {"logline": self.outline.get("working_title", self.idea.title),
+                **{k: fields_[k] for k in STORY_PROPERTIES if k in fields_},
+                "sections": sections}
+        self._record_drift(data)
+        return data
+
+    def _record_drift(self, plan: dict) -> None:
+        """A list value the model kept after the harness asked again is the
+        stage's to record (invariant 3): a `note:` naming it, the value kept
+        as written and read as no role."""
+        audience = plan.get("audience")
+        if audience is not None and audience not in AUDIENCES:
+            self.findings.append(f"note: audience {audience!r} not in the schema; "
+                                 "no audience brief is given")
+        for n, section in enumerate(plan.get("sections") or [], 1):
+            connective = section.get("connective")
+            if connective is not None and connective not in CONNECTIVES:
+                self.findings.append(f"note: section {n}: connective {connective!r} "
+                                     "not in the schema; no connective is asked for")
 
     # -- stage two: write it -----------------------------------------------
 
@@ -678,10 +1041,12 @@ class Screenwriter:
             parts.append(f"Logline: {plan['logline']}\n"
                          f"The hook promises: {plan.get('promise', '')}\n"
                          f"Paid off by: {plan.get('payoff', '')}")
+        parts += story_lines(plan)
         parts.append(
             f"Write section {index} of {total}: \"{spec.get('heading', '')}\".\n"
             f"Its job: {spec.get('purpose', 'as the beats require')}\n"
             f"Its beats, in order:\n{beats}")
+        parts += section_story_lines(spec, plan, index=index, total=total)
         if spec.get("claims"):
             parts.append("The claims this section rests on:\n"
                          + "\n".join(f"- {c}" for c in spec["claims"]))
@@ -735,7 +1100,13 @@ class Screenwriter:
             "- asset: the licensed asset it uses, or what has to be made\n"
             "- style: which visual treatment this shot belongs to\n"
             "- seconds: its duration\n"
-            "- note: pacing, sound or performance direction, or empty")
+            "- note: pacing, sound or performance direction, or empty\n"
+            "- function: what the shot does in the story, one of "
+            + ", ".join(FUNCTIONS) + " (rehook: it re-opens a question to hold "
+            "the viewer; payoff: it pays the film's promise)\n"
+            "- shows: one clause saying what the picture demonstrates of this "
+            "line's claim: the picture proves the words, it does not decorate "
+            "them")
         if sourced:
             parts.append("- source: the source backing this shot's claim, as "
                          "given in the research. Put the word UNSOURCED where "
@@ -921,10 +1292,7 @@ class Screenwriter:
     def _draft(self, index: int, specs: list[dict], plan: dict, sourced: bool,
                ledger: Ledger, written: list[Shot]) -> tuple[Section, list[Shot], bool]:
         spec = specs[index - 1]
-        section = Section(heading=str(spec.get("heading", f"Section {index}")),
-                          purpose=str(spec.get("purpose", "")),
-                          seconds=int(spec.get("seconds", 0) or 0),
-                          beats=[str(b) for b in spec.get("beats", [])])
+        section = Section.from_spec(spec, heading=f"Section {index}")
         try:
             shots = self.write_section(
                 spec, index=index, total=len(specs), plan=plan,
@@ -981,6 +1349,12 @@ class Screenwriter:
         at = 0
         for shot in written:
             shot.at, at = at, at + shot.seconds
+            if shot.function not in FUNCTIONS:
+                # Kept as the writer wrote it; qa, pilot and build act only on
+                # the listed roles, so the shot is read as body.
+                self.findings.append(f"note: shot {shot.label}: function "
+                                     f"{shot.function!r} not in the schema; "
+                                     "treated as body")
 
         if written:
             self._drop_repeats(sections, written)
@@ -993,6 +1367,10 @@ class Screenwriter:
             "logline": plan.get("logline", ""),
             "promise": plan.get("promise", ""),
             "payoff": plan.get("payoff", ""),
+            # The story the plan locked (AUTO-90), as the model answered it.
+            **{k: plan[k] for k in STORY_PROPERTIES
+               if k in plan and k not in ("promise", "payoff")},
+            "findings": list(self.findings),
             "target_seconds": self.seconds,
             "wpm": self.wpm,
             "sections": [asdict(s) for s in sections],
@@ -1121,17 +1499,24 @@ def print_script(idea: Idea, data: dict, sections: list[Section]) -> None:
           f"{sum(s.words for s in shots)} words · {len(shots)} shots")
     if data.get("logline"):
         print(wrap(f"logline: {data['logline']}", "  "))
+    for key in ("train", "stakes"):
+        if data.get(key):
+            print(wrap(f"{key}: {data[key]}", "  "))
 
     for section in sections:
         print(f"\n\n{'=' * 78}\n{section.heading.upper()}  "
               f"[{timecode(section.shots[0].at) if section.shots else '-'}, "
-              f"{section.actual_seconds}s, {section.words} words]")
+              f"{section.actual_seconds}s, {section.words} words]"
+              + (f"  {section.connective.upper()}" if section.connective else ""))
         if section.purpose:
             print(wrap(section.purpose, "  "))
         for shot in section.shots:
             print(f"\n  {shot.label}  {timecode(shot.at)}  ({shot.seconds}s)"
-                  + (f"  [{shot.style}]" if shot.style else ""))
+                  + (f"  [{shot.style}]" if shot.style else "")
+                  + (f"  {shot.function}" if shot.function else ""))
             print(wrap(f"VIDEO  {shot.visual}", "    "))
+            if shot.shows:
+                print(wrap(f"SHOWS  {shot.shows}", "    "))
             if shot.narration:
                 print(wrap(f'AUDIO  "{shot.narration}"', "    "))
             if shot.on_screen:
@@ -1159,6 +1544,33 @@ def print_script(idea: Idea, data: dict, sections: list[Section]) -> None:
     if check.get("verdict"):
         print(wrap(f"verdict: {check['verdict']}", "  "))
 
+    # What the stage recorded instead of deciding (a value off a schema
+    # list), so the operator sees it without opening script.json.
+    if data.get("findings"):
+        print(f"\n\n{'=' * 78}\nFINDINGS")
+        for finding in data["findings"]:
+            print(wrap(f"· {finding}", "  "))
+
+
+def question_ledger(questions) -> list[str]:
+    """The plan's questions as a Markdown table: where each opens and where
+    it is answered, so an unanswered one is visible on the page."""
+    rows = [q for q in questions or [] if isinstance(q, dict)]
+    if not rows:
+        return []
+    cell = lambda v: " ".join(str(v if v is not None else "").split()).replace("|", "/")  # noqa: E731
+
+    def answered(q: dict) -> str:
+        # closed_in 0 is a question left open on purpose (structure 8)
+        if q.get("closed_in") == 0:
+            why = cell(q.get("left_open_why"))
+            return "left open" + (f": {why}" if why else "")
+        return cell(q.get("closed_in"))
+    return (["## Question ledger", "", "| id | question | opened in | answered in |",
+             "|---|---|---|---|"]
+            + [f"| {cell(q.get('id'))} | {cell(q.get('text'))} | {cell(q.get('opened_in'))} "
+               f"| {answered(q)} |" for q in rows] + [""])
+
 
 def write_md(path: str, idea: Idea, data: dict, sections: list[Section]) -> None:
     shots = [s for sec in sections for s in sec.shots]
@@ -1166,20 +1578,40 @@ def write_md(path: str, idea: Idea, data: dict, sections: list[Section]) -> None
           f"`{idea.genre}` · target **{timecode(data['target_seconds'])}** · "
           f"{sum(s.words for s in shots)} words at {data['wpm']} wpm · "
           f"{len(shots)} shots", ""]
-    for key, label in (("logline", "Logline"), ("promise", "The hook promises"),
-                       ("payoff", "Paid off by")):
+    for key, label in (("logline", "Logline"), ("train", "Train"),
+                       ("promise", "The hook promises"), ("payoff", "Paid off by"),
+                       ("stakes", "Stakes"), ("viewer_stake", "For the viewer"),
+                       ("misconception", "The belief it breaks"),
+                       ("misconception_why", "No misconception, because"),
+                       ("audience", "Audience")):
         if data.get(key):
             md += [f"**{label}.** {data[key]}", ""]
+    reveal = data.get("reveal") if isinstance(data.get("reveal"), dict) else {}
+    if reveal.get("section"):
+        md += [f"**Reveal.** section {reveal['section']}, after the constraint in "
+               f"section {reveal.get('constraint_section', '?')}", ""]
+    md += question_ledger(data.get("questions"))
 
     for n, section in enumerate(sections, 1):
         start = timecode(section.shots[0].at) if section.shots else "-"
         md += [f"## {n}. {section.heading}", "",
                f"*{start} · {section.actual_seconds}s · {section.words} words*"
                + (f" — {section.purpose}" if section.purpose else ""), ""]
+        story = [(f"**{section.connective.upper()}**" if section.connective else ""),
+                 (f"opens {', '.join(section.opens)}" if section.opens else ""),
+                 (f"answers {', '.join(section.closes)}" if section.closes else ""),
+                 (f"re-opens {section.rehook}" if section.rehook else ""),
+                 (f"escalates: {section.escalation}" if section.escalation else ""),
+                 (f"stands on: {section.anchor_visual}" if section.anchor_visual else "")]
+        if any(story):
+            md += [" · ".join(s for s in story if s), ""]
         for shot in section.shots:
             md += [f"### {shot.label} · {timecode(shot.at)} ({shot.seconds}s)"
-                   + (f" · `{shot.style}`" if shot.style else ""), "",
+                   + (f" · `{shot.style}`" if shot.style else "")
+                   + (f" · *{shot.function}*" if shot.function else ""), "",
                    f"**VIDEO** — {shot.visual}", ""]
+            if shot.shows:
+                md += [f"**SHOWS** — {shot.shows}", ""]
             if shot.narration:
                 md += [f"**AUDIO** — {shot.narration}", ""]
             extras = [(f"**SUPER** — {shot.on_screen}" if shot.on_screen else ""),
@@ -1189,6 +1621,13 @@ def write_md(path: str, idea: Idea, data: dict, sections: list[Section]) -> None
                       (f"*polished: {shot.revised}*" if shot.revised else "")]
             md += [e for e in extras if e]
             md.append("")
+
+    ending = data.get("ending") if isinstance(data.get("ending"), dict) else {}
+    if any(ending.get(k) for k in ("payoff_line", "callback", "next_film")):
+        md += ["## Ending", "",
+               f"- **Payoff line:** {ending.get('payoff_line', '')}",
+               f"- **Callback:** {ending.get('callback', '')}",
+               f"- **Next film:** {ending.get('next_film', '')}", ""]
 
     check = data.get("check") or {}
     if check.get("flags") or check.get("verdict"):
@@ -1230,8 +1669,8 @@ def write_prompter(path: str, idea: Idea, sections: list[Section],
 
 
 def write_csv(path: str, sections: list[Section]) -> None:
-    cols = ["label", "at", "seconds", "section", "style", "visual", "narration",
-            "on_screen", "asset", "source", "note"]
+    cols = ["label", "at", "seconds", "section", "function", "style", "visual",
+            "shows", "narration", "on_screen", "asset", "source", "note"]
     with open(path, "w", encoding="utf-8", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=cols)
         writer.writeheader()
@@ -1331,9 +1770,7 @@ def run(args) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    sections = [Section(heading=s["heading"], purpose=s["purpose"],
-                        seconds=s["seconds"], beats=s["beats"],
-                        shots=[Shot(**shot) for shot in s["shots"]])
+    sections = [Section.from_spec(s, [Shot(**shot) for shot in s["shots"]])
                 for s in data["sections"]]
     shots = [s for sec in sections for s in sec.shots]
     if not shots:

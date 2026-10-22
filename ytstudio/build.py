@@ -922,6 +922,7 @@ class Placed:
     speaker: str = ""
     audio: str = ""            # the take's WAV, when there is one
     words: list[dict] = field(default_factory=list)
+    function: str = ""         # the screenplay's role for it (script.FUNCTIONS)
 
 
 def timeline(sections: list[Section], voice: dict | None) -> list[Placed]:
@@ -945,7 +946,8 @@ def timeline(sections: list[Section], voice: dict | None) -> list[Placed]:
                 narration=shot.narration,
                 speaker=str(getattr(shot, "speaker", "") or ""),
                 audio=(take or {}).get("file", ""),
-                words=(take or {}).get("words", [])))
+                words=(take or {}).get("words", []),
+                function=str(getattr(shot, "function", "") or "")))
             cursor = max(cursor, at + seconds)
     return sorted(out, key=lambda p: p.at)
 
@@ -971,10 +973,12 @@ class SceneBuilder:
                  bitrate: int = 16_000_000,
                  max_bitrate: int = 24_000_000, buffer_size: int = 48_000_000,
                  preset: str = "slow", edit: dict | None = None,
-                 look: dict | None = None,
+                 look: dict | None = None, story: dict | None = None,
                  verbose: bool = True) -> None:
         self.idea = idea
         self.edit = edit or {}
+        #: The promise and the shot that pays it (`story_of`), for the editor.
+        self.story = story or {}
         self.look = look
         self.sections = sections
         self.root = root
@@ -1052,9 +1056,12 @@ class SceneBuilder:
         for p in placed:
             shot = shots.get(p.label)
             kind, hit = drawn[p.label]
+            # A screenplay written before AUTO-90 has no function: the row
+            # leaves it out, so such a film's edit question is unchanged.
+            story = {"function": p.function} if p.function else {}
             rows.append({
                 "label": p.label, "section": p.section, "at": p.at,
-                "seconds": p.seconds, "timed_by": p.source,
+                "seconds": p.seconds, "timed_by": p.source, **story,
                 "visual": (shot.visual if shot else "")[:300],
                 "on_screen": shot.on_screen if shot else "",
                 "narration": " ".join(p.narration.split())[:300],
@@ -1075,6 +1082,7 @@ class SceneBuilder:
             "uncovered": [p.label for p in placed if drawn[p.label][0] == "none"],
             "images": [{"path": m.path, "licence": m.licence, "credit": m.credit,
                         "about": m.about} for m in media],
+            **({"story": dict(self.story)} if self.story else {}),
         }
 
     def _symbol_seconds(self, hit: dict) -> float | None:
@@ -2174,8 +2182,57 @@ def look_prompt(data: dict) -> str:
     ])
 
 
+def story_of(script: dict, sections: list[Section]) -> dict:
+    """What the editor is told about the ending: the promise, the line that
+    pays it and the shot that carries that line. The shot is the screenplay's
+    `payoff` (the last one marked so); a screenplay that marks none, or was
+    written before shots had a function, is ended by its last shot, and
+    `payoff_from` says which. `payoff_is_last` says whether the payoff shot
+    ends the film: only then is the editor's `tail_seconds`, which holds
+    after the last shot, the payoff's landing. {} when the screenplay has
+    neither a promise nor a payoff line: the editor's question is then the
+    one it always was."""
+    script = script or {}
+    ending = script.get("ending") if isinstance(script.get("ending"), dict) else {}
+    promise = str(script.get("promise") or "").strip()
+    line = str(ending.get("payoff_line") or "").strip()
+    if not (promise or line):
+        return {}
+    shots = [s for sec in sections for s in sec.shots]
+    marked = [s.label for s in shots if getattr(s, "function", "") == "payoff"]
+    last = shots[-1].label if shots else ""
+    payoff = marked[-1] if marked else last
+    return {"promise": promise, "payoff_line": line, "payoff_shot": payoff,
+            "payoff_from": "function" if marked else "position",
+            "payoff_is_last": payoff == last}
+
+
 def edit_prompt(data: dict) -> str:
     """The question the editor answers, over the builder's brief."""
+    story = []
+    if data.get("story"):
+        # `tail_seconds` is applied after the film's last shot (SceneBuilder,
+        # clamped to 0..5), so it is the payoff's landing only when the
+        # payoff ends the film. Before a hand-off, the beat after the payoff
+        # line is the shots that follow it, timed by the narration; this
+        # stage has no lever for it, and the prompt says so.
+        if data["story"].get("payoff_is_last", True):
+            hold = ("`tail_seconds` holds after the film's last shot, which is "
+                    "the payoff shot: it is the beat the payoff is left to land, "
+                    "the house default 0.5 to 1.5 s after the last word, longer "
+                    "only when the picture needs it.")
+        else:
+            hold = ("`tail_seconds` holds after the film's last shot, and the "
+                    "payoff shot is not the last shot: the shots after it (the "
+                    "hand-off) follow it as the narration times them, and no "
+                    "field here holds after the payoff line. Set `tail_seconds` "
+                    "for the film's last shot.")
+        story = [
+            "The film's ending (from the screenplay): `payoff_shot` carries the "
+            "line that pays the promise. " + hold + " When the payoff shot is "
+            "uncovered and no neighbour or image genuinely carries it, the "
+            "ending has no picture to land on and that belongs in `blocking`.",
+            brief("Story", data["story"])]
     return "\n\n".join([
         "Decide the edit for this film's composition. For EVERY shot listed in "
         "`uncovered` give one `coverage` entry: `extend_previous` or "
@@ -2189,6 +2246,7 @@ def edit_prompt(data: dict) -> str:
         "anything that prevents publication regardless of coverage; leave it "
         "empty when nothing does.",
         brief("Film", {k: data[k] for k in ("title", "treatment", "frame", "design")}),
+        *story,
         brief("Shots, in order", data["shots"]),
         brief("Uncovered shots", data["uncovered"]),
         brief("Images the project has", data["images"]),
@@ -2352,7 +2410,7 @@ def run(args) -> int:
         print("error: no screenplay; run `yt script` first, or pass --script FILE",
               file=sys.stderr)
         return 1
-    sections, _ = load_script(script_file)
+    sections, script = load_script(script_file)
 
     codecs = enum_of("output", "codec")
     if codecs and args.codec not in codecs:
@@ -2395,7 +2453,7 @@ def run(args) -> int:
         bitrate=args.bitrate,
         max_bitrate=args.max_bitrate,
         buffer_size=args.buffer_size, preset=args.preset,
-        verbose=not args.quiet)
+        story=story_of(script, sections), verbose=not args.quiet)
 
     # The edit is the model's: what covers each gap, where captions stay out,
     # how long the film holds. The builder only applies it.

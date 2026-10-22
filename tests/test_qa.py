@@ -27,6 +27,42 @@ def _build():
             "findings": []}
 
 
+def _beats():
+    """The same film, its shots tagged by the screenplay's `function`
+    (AUTO-90): a re-hook mid-film and the payoff before the last shot."""
+    build = _build()
+    for shot in build["shots"]:
+        shot["function"] = {"1.1": "hook", "2.1": "rehook", "2.2": "payoff"}.get(
+            shot["label"], "context")
+    return build
+
+
+class Edge(unittest.TestCase):
+    """Which sampled shots a single mechanical defect blocks on: the hook, the
+    ending and the payoff beat, matched as whole tokens of `why`."""
+
+    def frozen_on(self, label):
+        rows = [r for r in qa.sample(_beats()) if r["label"] == label]
+        rows[0]["motion"] = {"steps": [0.0, 0.0], "mean": 0.0, "max": 0.0,
+                             "frozen": True, "jump": None, "verdict": "frozen"}
+        found = [f for f in qa.mechanical_findings(rows) if f["kind"] == "frozen"]
+        self.assertEqual(len(found), 1)
+        return found[0]["severity"]
+
+    def test_a_defect_on_the_payoff_beat_blocks(self):
+        self.assertEqual(self.frozen_on("2.2"), "blocking")
+
+    def test_a_defect_on_a_rehook_does_not_block(self):
+        self.assertEqual(self.frozen_on("2.1"), "minor")
+
+    def test_tokens_not_substrings(self):
+        self.assertFalse(qa._on_edge({"why": "beat: rehook"}))
+        self.assertFalse(qa._on_edge({"why": "section start: Hooke's law; 50% of runtime"}))
+        self.assertTrue(qa._on_edge({"why": "25% of runtime; beat: payoff"}))
+        self.assertTrue(qa._on_edge({"why": "hook; section start: Open"}))
+        self.assertTrue(qa._on_edge({"why": "ending"}))
+
+
 class Sampling(unittest.TestCase):
     def test_samples_sit_at_shot_midpoints_across_the_runtime(self):
         samples = qa.sample(_build())
@@ -44,6 +80,50 @@ class Sampling(unittest.TestCase):
         self.assertEqual(len(samples), 3)
         self.assertIn("1.1", labels)
         self.assertIn("3.2", labels)
+
+    def test_the_hook_and_the_ending_survive_a_tight_limit_beside_the_beats(self):
+        samples = qa.sample(_beats(), limit=4)
+        self.assertEqual(sorted(s["label"] for s in samples), ["1.1", "2.1", "2.2", "3.2"])
+
+    def test_every_rehook_and_payoff_shot_is_sampled_with_its_beat(self):
+        samples = {s["label"]: s["why"] for s in qa.sample(_beats())}
+        self.assertIn("beat: rehook", samples["2.1"].split("; "))
+        self.assertIn("beat: payoff", samples["2.2"].split("; "))
+        # the positional rows stay: a mislabel cannot drop the real ending
+        self.assertIn("hook", samples["1.1"].split("; "))
+        self.assertIn("ending", samples["3.2"].split("; "))
+
+    def test_many_rehooks_do_not_crowd_out_the_section_starts(self):
+        # nothing caps the rehooks a screenplay marks; the default limit
+        # still keeps the hook, the ending and every section (sample's promise)
+        shots = []
+        for n in range(20):
+            section = f"S{n // 4 + 1}"
+            function = ("hook" if n == 0 else "context" if n % 4 == 0 else "rehook")
+            shots.append({"label": f"{n // 4 + 1}.{n % 4 + 1}", "at": n * 5.0,
+                          "seconds": 5, "asset": "effect", "section": section,
+                          "function": function})
+        build = {"scene": {"duration": 100}, "shots": shots}
+        samples = qa.sample(build)
+        self.assertEqual(len(samples), 14)
+        why = [token for s in samples for token in s["why"].split("; ")]
+        for section in ("S1", "S2", "S3", "S4", "S5"):
+            self.assertIn(f"section start: {section}", why)
+        self.assertIn("hook", why)
+        self.assertIn("ending", why)
+        self.assertIn("beat: rehook", why)
+
+    def test_the_payoff_comes_before_the_section_starts(self):
+        build = _beats()
+        samples = qa.sample(build, limit=3)
+        self.assertEqual(sorted(s["label"] for s in samples), ["1.1", "2.2", "3.2"])
+
+    def test_a_rehook_beside_the_hook_still_names_both(self):
+        build = _beats()
+        build["shots"][0]["function"] = "rehook"
+        why = qa.sample(build)[0]["why"].split("; ")
+        self.assertIn("hook", why)
+        self.assertIn("beat: rehook", why)
 
     def test_frame_names_carry_the_timestamp(self):
         self.assertEqual(qa.frame_name(83.456), "t_01m23s456.png")

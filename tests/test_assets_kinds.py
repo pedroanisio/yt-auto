@@ -358,7 +358,8 @@ class FakeEngine:
         return {"shots": [{"shot": "a comet", "why": "w", "kind": "image",
                            "searches": ["comet"]}],
                 "topic_searches": [], "working_title": "t", "runtime": "60 s",
-                "sections": []}
+                "sections": [], "misconceptions": [],
+                "identifiable_case": {"who": "", "source": ""}}
 
 
 class Dossier(unittest.TestCase):

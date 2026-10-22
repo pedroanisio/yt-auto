@@ -1,0 +1,35 @@
+{
+  "idea": {"title": "How a comet grows a tail", "genre": "explainer",
+           "description": "Why the tail points away from the Sun."},
+  "logline": "A comet's tail is the Sun pushing back.",
+  "promise": "Why the tail never trails behind.",
+  "payoff": "Light and wind push it, not motion.",
+  "target_seconds": 20,
+  "wpm": 150,
+  "sections": [
+    {"heading": "The ice", "purpose": "set the scene", "seconds": 10,
+     "beats": ["a dirty snowball"],
+     "shots": [
+       {"visual": "a comet nucleus turning", "narration": "A comet is mostly ice.",
+        "on_screen": "Lower third: \"Nucleus\"", "on_screen_text": ["Nucleus"],
+        "asset": "make", "style": "Flat", "source": "NASA", "seconds": 5,
+        "note": "", "n": 1, "label": "1.1", "at": 0, "revised": ""},
+       {"visual": "jets of gas", "narration": "[picture only, no narration]",
+        "on_screen": "", "on_screen_text": [], "asset": "make", "style": "Flat",
+        "source": "", "seconds": 5, "note": "", "n": 2, "label": "1.2", "at": 5,
+        "revised": ""}]},
+    {"heading": "The push", "purpose": "pay it off", "seconds": 10,
+     "beats": ["sunlight pushes"],
+     "shots": [
+       {"visual": "the tail swings away from the Sun",
+        "narration": "Sunlight pushes the tail away.", "on_screen": "",
+        "on_screen_text": [], "asset": "make", "style": "Flat", "source": "ESA",
+        "seconds": 10, "note": "", "n": 3, "label": "2.1", "at": 10, "revised": ""}]}
+  ],
+  "polished": 0,
+  "failed_sections": 0,
+  "lang": "",
+  "house": {},
+  "check": {},
+  "usage": {"cost_usd": 0.0, "model": "sonnet", "calls": 0}
+}

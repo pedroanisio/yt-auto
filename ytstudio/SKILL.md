@@ -311,6 +311,34 @@ whole file or none.
 
 **The fact-check binds the picture.** `yt script --verify` writes its flags into script.json (`check`). Its blocker and important flags reach the people who draw the film, verbatim (`vfx.picture_constraints`): the vfx planner, each section's brief and reviewer (the whole-film flags plus that section's shots), and the keyframe brief. A claim the narration avoids can still be shown wrong by a picture.
 
+**The screenplay is a story brief (AUTO-90).** `yt script`'s plan names the
+film's `promise` and `payoff`, its `train` (who wants what, what is in the
+way), the `stakes` and `viewer_stake`, the `misconception` it breaks (cited
+as `[M1]` from the research block, which numbers the dossier's sourced
+misconceptions and names its identifiable case), the `audience` (lay,
+enthusiast, expert), the `reveal` and the section that constrains it, a
+question ledger (`questions`, each opened in one section and answered in
+the same section or a later one, or marked left open, `closed_in` 0, with
+`left_open_why`) and the `ending` (`payoff_line`, `callback`, `next_film`). Each
+section names the questions it `opens` and `closes`, its `connective` to the
+one before (and, but, therefore, because), a `rehook`, an `escalation` and
+an `anchor_visual`. With `--outline` the outline keeps its sections and these
+fields come from one `plan-fields` decision (an answer with another number of
+sections is asked once more as `plan-fields-retry`; wrong twice, both are
+dropped and the stage fails). Every shot names its `function`
+(hook, context, setup, reveal, rehook, payoff, handoff) and `shows`, what its
+picture must demonstrate of its line. An audience, connective or function
+outside its list is kept as written and recorded in script.json's
+`findings`; an older script.json without these fields still loads.
+Downstream: build.json's shot rows carry `function` and the editor is handed
+the promise, the payoff line and the shot that pays it (its `tail_seconds`
+holds after the film's last shot, so it is the payoff's landing only when
+the payoff ends the film, and the prompt says which); `yt pilot` takes a
+beat's hook, rehook and payoff traits from the function (the last shot
+stands for the payoff only when none is marked, with a note); `yt qa`
+samples every rehook and payoff shot beside the hook and the ending; each vfx
+section author is told what each shot `shows`.
+
 Beside the chain:
 
 | Tool | What it does | Writes |
@@ -461,7 +489,7 @@ blocking editorial note. It is not a delivery verdict. The order is:
 6. READY TO PUBLISH only when `yt qa` reports an overall of 9.0 with no
    category under 8.5, nothing blocking and no placeholder. A blocking
    mechanical finding (flat, clipped, frozen, a jump, an off-camera object
-   on the hook, the ending or more than one sampled shot) blocks on its own
+   on the hook, the ending, the payoff shot or more than one sampled shot) blocks on its own
    and caps `visual_quality` and `animation_vfx` at 6 until it is fixed.
    QA's mechanical pass also compares the film with the authors' proof
    frames (as `yt build` did on the built document before the encode):
