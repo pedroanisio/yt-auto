@@ -549,6 +549,14 @@ class Stage(unittest.TestCase):
         self.assertEqual(len(self.jobs), 4)                   # one job per sample
         self.assertTrue(all("frames" in j for j in self.jobs))
 
+    def test_qa_json_names_the_house_it_was_judged_under(self):
+        # AUTO-89: with no house file anywhere, the shipped default is the house.
+        qa.RENDERER = self.renderer(frozen_hook=False)
+        qa.run(self.args(no_house=False))
+        record = json.loads((self.root / "qa.json").read_text())
+        self.assertEqual(record["house"]["sources"], ["ytstudio/house/default.md"])
+        self.assertTrue(record["house"]["sha256"])
+
     def test_reuse_measures_the_old_frames_again_without_rendering(self):
         (self.root / "render.json").unlink()            # nothing blocking from the engine
         qa.RENDERER = self.renderer(frozen_hook=False)

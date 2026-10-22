@@ -331,10 +331,24 @@ Beside the chain:
 Keys load from `--env-file`, then `$YT_ENV_FILE`, `./_tmp/do_not_delete.env`,
 `./.env`, `~/.config/pals-notes/.env`; `yt sound --fetch` wants
 `FREESOUND_CLIENT_ID` and `FREESOUND_CLIENT_SECRET` (the secret is the
-token), and without them nothing is fetched. The channel's standards are
-`work/house.md`; `work/<slug>/house.md` overrides sections by name. Every
-stage that asks the model takes `--model`, `--effort` and `--fallback-model`
-(default sonnet); `yt doctor`, `yt ls` and `yt assets` call no model.
+token), and without them nothing is fetched. Every stage that asks the
+model takes `--model`, `--effort` and `--fallback-model` (default sonnet);
+`yt doctor`, `yt ls` and `yt assets` call no model.
+
+The house standards ship: `ytstudio/house/default.md` is `docs/narrative/`
+distilled by hand into `## all`, `## script`, `## styles`, `## vfx`,
+`## sound`, `## voice` and `## format` (the script stage reads the format
+before its own section; the keyframe reads `## vfx` until a house writes
+`## keyframe`), each with a comment naming the corpus rules it states, which
+never reaches a prompt. The channel's `work/house.md`, then
+`work/<slug>/house.md`, then `--house FILE` replace its sections by name;
+`--no-house` drops all of it. The digest names the default as
+`ytstudio/house/default.md`. A decision's cache key holds its stage's block
+(`## all` and its own section), so a changed section is a changed question:
+an edit to `## all` re-asks every cached decision in every project on the
+next run, an edit to `## voice` only the read's, and an edit to a comment
+nothing. `yt doctor` reads `house.md` from `--work` and warns for each
+manifest whose stage's block was `decided under a different house digest`.
 
 ## Rendering
 
