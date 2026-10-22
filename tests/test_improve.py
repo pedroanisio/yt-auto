@@ -559,6 +559,17 @@ class Plan(ImproveCase):
                                    root=self.root)[0]
         self.assertEqual(argv[argv.index("--minutes") + 1], "0.25")
 
+    def test_script_written_again_has_its_plan_reviewed(self):
+        # AUTO-92: a script the loop writes again, routed or downstream, is
+        # read by the plan reviewer before its sections are paid for.
+        self.assertEqual(improve.FORCE["script"], ["--polish", "--verify", "--review"])
+        self.assertEqual(improve.REUSE["script"], ["--polish", "--verify", "--review"])
+        base = ["--project", str(self.root), "--model", "sonnet", "--quiet"]
+        for routed in ({"script"}, set()):
+            argv = improve.stage_argvs(["script"], routed, base, quality="final",
+                                       root=self.root)[0]
+            self.assertTrue(cli.build_parser().parse_args(argv).review, routed)
+
 
 # --------------------------------------------------------------------------- #
 # the loop

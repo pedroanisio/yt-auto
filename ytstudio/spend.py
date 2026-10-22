@@ -169,6 +169,40 @@ DEFAULT_USD = {"research": 5.0, "styles": 2.0, "script": 3.0, "props": 0.0,
                "keyframe": 5.0, "voice": 2.0, "retime": 0.5, "vfx": VFX_PASS_USD,
                "sound": 0.5, "build": 0.1, "render": 0.0, "gate": 0.1, "qa": 0.5}
 
+#: What the plan review adds to a script (AUTO-92), assumed until a record
+#: measures it: the reviewer's one reading of the plan and, at most, a
+#: second plan and its reading.
+PLAN_REVIEW_USD = 0.5
+
+#: A flag that adds to what its stage costs: stage -> flag -> (the increment,
+#: the decision whose row in the stage's record shows the flag was on). The
+#: stage's DEFAULT_USD is the base. A record holding that decision (or a
+#: numbered one, `plan-review-2`) already counts it; one without it, or no
+#: record at all, gains the increment when the flag is asked.
+FLAG_USD = {"script": {"--review": (PLAN_REVIEW_USD, "plan-review")}}
+
+
+def _flag_increments(root: Path | None, stage: str, flags: Iterable[str]) -> list[tuple[str, float]]:
+    """The flags asked of `stage` whose cost the record under `root` does
+    not hold, each with its increment; with no `root`, every one asked."""
+    asked = [(f, *FLAG_USD[stage][f]) for f in dict.fromkeys(flags or ())
+             if f in FLAG_USD.get(stage, {})]
+    if not asked or root is None:
+        return [(f, usd) for f, usd, _ in asked]
+    rel = MANIFEST.get(stage)
+    doc = read_json(Path(root) / rel, warn=False) if rel else None
+    engine = doc.get("engine") if isinstance(doc, dict) else None
+    rows = engine.get("decisions") if isinstance(engine, dict) else None
+    names = {str(d.get("name")) for d in rows or [] if isinstance(d, dict)}
+    return [(f, usd) for f, usd, decision in asked
+            if not any(n == decision or n.startswith(decision + "-") for n in names)]
+
+
+def _with_flags(usd: float, source: str, added: list[tuple[str, float]]) -> tuple[float, str]:
+    """A price and its source with the flags' increments added and named."""
+    return (round(usd + sum(x for _, x in added), 2),
+            source + "".join(f" + {f} ${x:.2f}" for f, x in added))
+
 
 def _section_costs(root: Path) -> dict[int, float]:
     """What each authored section cost, from the active vfx.json: its own
@@ -211,14 +245,16 @@ def _reported(root: Path, stage: str, sections: list[int] | None) -> float | Non
     return round(float(cost), 2)
 
 
-def _like(root: Path, stage: str) -> tuple[float, str] | None:
-    """The median of what the stage cost in the other projects beside this one."""
+def _like(root: Path, stage: str, flags: Iterable[str] = ()) -> tuple[float, str] | None:
+    """The median of what the stage cost in the other projects beside this
+    one, each priced with the asked `flags` its own record lacks."""
     root = Path(root)
     found = []
     for other in sorted(root.parent.iterdir()) if root.parent.is_dir() else []:
         if other.is_dir() and other != root:
             cost = _reported(other, stage, None)
             if cost is not None:
+                cost = round(cost + sum(x for _, x in _flag_increments(other, stage, flags)), 2)
                 found.append((cost, other.name))
     if not found:
         return None
@@ -227,30 +263,38 @@ def _like(root: Path, stage: str) -> tuple[float, str] | None:
 
 
 def stage_estimates(root: Path, stages: list[str],
-                    sections: list[int] | None = None) -> list[dict]:
+                    sections: list[int] | None = None,
+                    extras: dict[str, list[str]] | None = None) -> list[dict]:
     """One row per stage of a pass, gate and QA included: its cost from its
     own report (`measured`), else from like projects' (`like`), else the
     default (`assumed`). An assumed vfx pass is guessed whole, its downstream
-    included, so the stages after it add nothing then."""
+    included, so the stages after it add nothing then. `extras` is the argv
+    each stage would be handed: a flag in FLAG_USD adds its increment where
+    the record priced from does not already hold it, and the row names it."""
     rows = []
     folded = False
     for stage in list(stages) + [s for s in ("gate", "qa") if s not in stages]:
         wanted = sections if stage == "vfx" else None
+        flags = (extras or {}).get(stage) or ()
         have = _reported(root, stage, wanted)
-        like = _like(root, stage) if have is None and not wanted else None
+        like = _like(root, stage, flags) if have is None and not wanted else None
         if have is not None:
-            row = {"stage": stage, "usd": have, "basis": "measured",
-                   "source": (MANIFEST.get(stage) or "qa.json")
-                   + (f" sections {','.join(map(str, wanted))}" if wanted else "")}
+            usd, source = _with_flags(
+                have, (MANIFEST.get(stage) or "qa.json")
+                + (f" sections {','.join(map(str, wanted))}" if wanted else ""),
+                _flag_increments(root, stage, flags))
+            row = {"stage": stage, "usd": usd, "basis": "measured", "source": source}
         elif like is not None:
-            row = {"stage": stage, "usd": like[0], "basis": "like", "source": like[1]}
+            row = {"stage": stage, "usd": like[0], "basis": "like", "source": like[1]
+                   + ("".join(f" (with {f})" for f, _ in _flag_increments(None, stage, flags)))}
         elif folded:
             row = {"stage": stage, "usd": 0.0, "basis": "assumed",
                    "source": "included in the vfx default"}
         else:
-            usd = VFX_PASS_USD if stage == "vfx" else DEFAULT_USD.get(stage, 0.5)
-            row = {"stage": stage, "usd": usd, "basis": "assumed",
-                   "source": "default, nothing reported"}
+            usd, source = _with_flags(
+                VFX_PASS_USD if stage == "vfx" else DEFAULT_USD.get(stage, 0.5),
+                "default, nothing reported", _flag_increments(None, stage, flags))
+            row = {"stage": stage, "usd": usd, "basis": "assumed", "source": source}
         folded = folded or (stage == "vfx" and row["basis"] == "assumed")
         rows.append(row)
     return rows

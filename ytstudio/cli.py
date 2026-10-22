@@ -155,8 +155,9 @@ def _register_run(sub, parents: list) -> None:
                       f"(exit {retime.UNSETTLED}), and vfx gets the remainder as "
                       "--stage-budget-usd (default: no cap)")
     flags.reviewer_model(p, default=None,
-                         help="the model that reviews keyframe and vfx; never the author's "
-                              f"own (default {vfx.REVIEWER_MODEL})")
+                         help="the model that reviews the script's plan, keyframe and "
+                              "vfx; never the author's own (default "
+                              f"{vfx.REVIEWER_MODEL}; --quick drops the plan review)")
     flags.review_budget(p, default=None,
                         help=f"what one review may cost (default {vfx.REVIEW_USD:g})")
     p.set_defaults(run=_run_pipeline)
@@ -170,7 +171,8 @@ MODEL_FLAGS = ("--model", "--effort", "--fallback-model")
 def run_extras(args, *, redo: set) -> dict[str, list[str]]:
     """The flags `yt run` adds to each stage: the quality passes unless
     --quick, a fresh research when it is redone, and the fetches that turn a
-    design into files (props, the sound cues)."""
+    design into files (props, the sound cues). The plan review (script
+    --review) is a quality pass, so --quick drops it with the others."""
     quick = getattr(args, "quick", False)
     # The reviewer flags go to the stages that review; unset, each keeps its default.
     reviewer: list[str] = []
@@ -184,7 +186,7 @@ def run_extras(args, *, redo: set) -> dict[str, list[str]]:
         "research": ["--fresh"] if redo & {"research", "all"} and not quick else [],
         "styles": ["--rich"] + ([] if quick else ["--deliberate", "critique"]),
         "script": ["--minutes", str(args.minutes)]
-                  + ([] if quick else ["--polish", "--verify"]),
+                  + ([] if quick else ["--polish", "--verify", "--review"] + reviewer),
         "props": [],
         # The look is locked once per set of inputs; a redo means plan and
         # author the lead section again, not replay the cached one.
@@ -376,9 +378,10 @@ def _run_pipeline(args) -> int:
         print(f"error: unknown stage(s) {', '.join(sorted(unknown))}; pick from "
               f"{', '.join(PIPELINE)}", file=sys.stderr)
         return 1
-    # keyframe and vfx review: a model never grades its own work, so a run
-    # that would reach them is refused here, before any stage spends.
-    reviews = {"keyframe", "vfx"} - skip
+    # keyframe and vfx review, and the script's plan review unless --quick: a
+    # model never grades its own work, so a run that would reach them is
+    # refused here, before any stage spends.
+    reviews = ({"keyframe", "vfx"} | (set() if args.quick else {"script"})) - skip
     if reviews and (own := flags.own_reviewer(
             args.model, getattr(args, "reviewer_model", None) or vfx.REVIEWER_MODEL)):
         print(own, file=sys.stderr)
@@ -401,7 +404,7 @@ def _run_pipeline(args) -> int:
 
     if args.dry_run:
         plan, stop = run_plan(project, skip, redo, say=say)
-        print_plan(plan, spend.stage_estimates(project.root, plan), stop)
+        print_plan(plan, spend.stage_estimates(project.root, plan, extras=extra), stop)
         return 0
 
     def run_stage(stage: str, argv_extra: dict[str, list[str]]) -> int:
@@ -415,7 +418,8 @@ def _run_pipeline(args) -> int:
     budget = args.budget_usd
     priced: dict[str, dict] = {}
     if budget is not None:
-        priced = {r["stage"]: r for r in spend.stage_estimates(project.root, walk_order(skip))}
+        priced = {r["stage"]: r for r in spend.stage_estimates(project.root, walk_order(skip),
+                                                               extras=extra)}
     ran: set[str] = set()
     committed, over = 0.0, False
 

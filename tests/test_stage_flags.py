@@ -20,7 +20,9 @@ SKILL = ROOT / "ytstudio" / "SKILL.md"
 
 #: concept -> (canonical flag, old spelling -> stage that used it, stages that take it)
 CONCEPTS = {
-    "rounds": ("--rounds", {"--revisions": "vfx"}, ("keyframe", "vfx", "probe")),
+    "rounds": ("--rounds", {"--revisions": "vfx"}, ("keyframe", "vfx", "probe", "script")),
+    "reviewer": ("--reviewer-model", {}, ("keyframe", "vfx", "probe", "run", "script")),
+    "review budget": ("--review-budget-usd", {}, ("keyframe", "vfx", "probe", "run", "script")),
     "bar": ("--bar", {"--author-bar": "vfx"}, ("keyframe", "vfx", "probe")),
     "budget": ("--budget-usd", {"--budget": "research"},
                ("keyframe", "vfx", "probe", "research", "assess", "improve", "run")),

@@ -98,11 +98,12 @@ REPORT_JSON, REPORT_MD = "improve.json", "improve.md"
 
 #: The flags that make a routed stage decide again, and the ones a stage
 #: downstream of it runs with (reusing what its inputs did not change).
-FORCE = {"research": ["--fresh"], "styles": ["--rich"], "script": ["--polish", "--verify"],
+FORCE = {"research": ["--fresh"], "styles": ["--rich"], "script": ["--polish", "--verify", "--review"],
          "props": ["--fresh"], "keyframe": ["--fresh"], "voice": ["--fresh"],
          "retime": ["--fresh"], "vfx": ["--fresh"],
          "sound": ["--fetch", "--review", "--fresh"], "build": ["--fresh"], "render": []}
-REUSE = {"styles": ["--rich"], "script": ["--polish", "--verify"], "sound": ["--fetch"]}
+REUSE = {"styles": ["--rich"], "script": ["--polish", "--verify", "--review"],
+         "sound": ["--fetch"]}
 
 #: What each stage owns, so the router can place a finding whose owner is prose.
 DUTIES = {stage: qa.DUTIES[stage] for stage in ROUTABLE}
@@ -1069,7 +1070,8 @@ class Improver:
             st in REPLAYS and "--fresh" not in argv and "--sections" not in argv)]
         guess = estimate(paid, None)
         if paid:
-            guess = total(stage_estimates(self.root, paid, last.get("sections")))
+            guess = total(stage_estimates(self.root, paid, last.get("sections"),
+                                          extras=dict(steps)))
         remaining = self.budget - self.spent
         if guess > remaining:
             self.say(f"error: resuming {name} is estimated at ${guess:.2f} and "
@@ -1261,7 +1263,8 @@ class Improver:
                 if fid in by_id]) if "vfx" in routing["stages"] else None
             argvs = stage_argvs(stages, routing["stages"], self.base, quality=self.quality,
                                 root=self.root, sections=sections)
-            rows = stage_estimates(self.root, stages, sections)
+            rows = stage_estimates(self.root, stages, sections,
+                                   extras=dict(zip(stages, argvs)))
             guess = total(rows)
             if last_cost and not any(r["basis"] != "assumed" for r in rows):
                 guess = estimate(stages, last_cost)
