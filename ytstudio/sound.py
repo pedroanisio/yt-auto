@@ -1418,7 +1418,8 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
     def judged(job: _Job, got: Levels) -> dict:
         """The judge's verdict on the candidate under test, with the evidence
         it was shown. A judge that fails leaves the file `unjudged`: the
-        fetch does not die for a model outage, and the record says so."""
+        fetch does not die for a model outage, and the record says so.
+        Runs on a pool thread; it writes only the job and its own image."""
         hit = job.hit
         evidence = judge_facts(hit, got)
         image = None
@@ -1427,7 +1428,8 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
             image.parent.mkdir(parents=True, exist_ok=True)
             image.write_bytes(got.spectrogram)
             evidence["spectrogram"] = image.relative_to(root).as_posix()
-        summary["judged"] = summary.get("judged", 0) + 1
+        with book:
+            summary["judged"] = summary.get("judged", 0) + 1
         try:
             answer = judge(job.cue, {"hit": {k: evidence[k] for k in (
                 "name", "tags", "description", "duration", "licence")} | {"id": hit.id},
@@ -1481,16 +1483,25 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
                     levels.update(zip(wanted, got))
                 except MeasureError as exc:
                     summary["measure_error"] = str(exc)
-            discard: set[str] = set()
+            # The level checks are instant and run here; the judge is a
+            # session each, so the round's candidates are judged in the pool
+            # and the verdicts applied here, in cue order.
+            checked, asked = [], {}
             for job in testing:
                 got = levels.get(job.rel)
+                fields, why = (level_to_design(job.cue, got, narration)
+                               if got is not None else (None, ""))
+                checked.append((job, got, fields, why))
+                if got is not None and not why and judge is not None and job.hit is not None:
+                    asked[job.n] = pool.submit(judged, job, got)
+            discard: set[str] = set()
+            for job, got, fields, why in checked:
                 if got is None:
                     accept(job, None)
                     continue
-                fields, why = level_to_design(job.cue, got, narration)
                 verdict: dict | None = None
-                if not why and judge is not None and job.hit is not None:
-                    verdict = judged(job, got)
+                if job.n in asked:
+                    verdict = asked[job.n].result()
                     if verdict["verdict"] == "reject":
                         why = f"judged not to fit the cue: {verdict['reason']}"
                 if why:
