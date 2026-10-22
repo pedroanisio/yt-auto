@@ -12,6 +12,7 @@ import json
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -117,6 +118,41 @@ class Beside(RunCase):
         self.codes["vfx"] = 1
         self.assertEqual(self.run_yt(), 1)
         self.assertEqual(self.started("sound"), ["sound:start", "sound:end"])
+
+    def test_a_ctrl_c_in_the_keyframe_ends_the_run_without_waiting_for_sound(self):
+        # The interpreter waits on a non-daemon thread, so before this a
+        # Ctrl-C printed the traceback and the sound stage spent on for the
+        # rest of its hour. The thread is a daemon: the interrupt surfaces at
+        # once, `main` prints "interrupted", and sound goes with the process.
+        self.assertTrue(cli.Beside("sound", lambda: 0).daemon)
+        release = threading.Event()
+
+        def interrupted():
+            raise KeyboardInterrupt
+
+        def let_sound_finish():
+            release.set()
+            for thread in threading.enumerate():
+                if thread.name == "yt sound":
+                    thread.join(timeout=5)
+
+        self.hooks.update(keyframe=interrupted, sound=lambda: release.wait(timeout=5))
+        self.addCleanup(let_sound_finish)
+        started = time.monotonic()
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_yt("--skip", "render")
+        self.assertLess(time.monotonic() - started, 2.0)
+        self.assertEqual(self.started("sound"), ["sound:start"])
+
+    def test_a_system_exit_on_the_sound_thread_counts_with_its_code(self):
+        # argparse rejecting the sound argv raises SystemExit on that thread;
+        # threading drops it silently, so it is caught and its code kept.
+        def usage():
+            raise SystemExit(2)
+        self.hooks["sound"] = usage
+        self.assertEqual(self.run_yt(), 2)
+        self.assertIn("sound exited 2", self.err)
+        self.assertEqual(self.started("build"), [])
 
 
 class SkipAndRedo(RunCase):

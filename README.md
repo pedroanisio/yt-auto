@@ -1089,7 +1089,8 @@ quality. `cli.run_extras` is the flags each stage gets (`--rich` and
 stage's argv; `yt props` gets no extras, only the flags every model stage
 gets (only `yt render` goes without the model flags). Only the build reads
 the cue sheet, so `yt sound` runs beside `yt keyframe` and `yt vfx` on its
-own thread (`cli.Beside`) and is joined before `yt build`; a sound stage that
+own thread (`cli.Beside`, a daemon, so a Ctrl-C ends the run and the sound
+stage with it) and is joined before `yt build`; a sound stage that
 failed fails the run there, and a walk that stops earlier still waits for it.
 `--dry-run` prints the stages the walk would take from the project as it
 stands, one row per stage with its estimated cost (`spend.stage_estimates`:

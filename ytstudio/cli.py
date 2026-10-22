@@ -274,16 +274,20 @@ def look_gate(stage: str, project: workspace.Project, skip: set, redo: set = fro
 class Beside(threading.Thread):
     """One stage run beside the walk, on its own thread. `code` is what it
     exited once joined; a crash is printed and counts as a failure, so the
-    walk never waits on a stage that is gone."""
+    walk never waits on a stage that is gone. A daemon: a Ctrl-C ends the
+    run at once, and the stage with the process, instead of the interpreter
+    waiting on the thread while it spends on."""
 
     def __init__(self, stage: str, run) -> None:
-        super().__init__(name=f"yt {stage}")
+        super().__init__(name=f"yt {stage}", daemon=True)
         self.stage, self._run, self.code = stage, run, 1
 
     def run(self) -> None:
         try:
             self.code = int(self._run() or 0)
-        except Exception:  # noqa: BLE001 -- reported here, not lost with the thread
+        except SystemExit as exc:  # argparse's refusal would otherwise vanish with the thread
+            self.code = int(exc.code) if isinstance(exc.code, int) and exc.code else 1
+        except BaseException:  # noqa: BLE001 -- reported here, not lost with the thread
             traceback.print_exc()
             self.code = 1
 
