@@ -6,6 +6,7 @@ engine and no network: fake engines, a fake clock and patched renders.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -688,6 +689,102 @@ class VfxRound(Clocked):
         self.assertIn(doc["file"].rsplit("/", 1)[1], authors[1]["prompt"])
         self.assertEqual(doc["score"], 8)                  # a review happened
         self.assertFalse(doc["rounds"][0]["timed_out"])
+
+
+# --------------------------------------------------------------------------- #
+# AUTO-77
+# --------------------------------------------------------------------------- #
+
+#: An approved look as `yt keyframe` keeps it: constants, a helper, and the
+#: top-level build and save of its own section.
+LOOK = '''"""Section 1: the look."""
+from srkit import FRAME, S, save
+
+INK = "#F2F5F7"
+DURATION = 3
+
+
+def project(scene):
+    """The project every section opens with."""
+    scene.add_project(width=FRAME["width"], height=FRAME["height"], fps=str(FRAME["fps"]),
+                      duration=DURATION)
+
+
+scene = S.Scene(version="auto")
+project(scene)
+scene.add_composition()
+save(scene, "01-open.scene.xml")
+'''
+
+#: Another section's program, composed against the look's module.
+SECTION = '''from srkit import S, save
+from look import project
+
+scene = S.Scene(version="auto")
+project(scene)
+scene.add_composition()
+save(scene, "02-two.scene.xml")
+'''
+
+
+class LookModule(KitCase):
+    """The approved look is an importable module in the workspace, and the
+    build's provenance carries the hash of every workspace module a program
+    imported, so a hand edit to the look lapses it."""
+
+    def setUp(self):
+        super().setUp()
+        self.approved = self.dir.parent / f"{self.dir.name}-keyframe" / "look.py"
+        self.approved.parent.mkdir()
+        self.addCleanup(shutil.rmtree, self.approved.parent, True)
+        self.approved.write_text(LOOK, encoding="utf-8")
+
+    def test_install_copies_the_approved_look_byte_for_byte(self):
+        installed = sdkkit.install(self.dir, look=self.approved)
+        self.assertEqual((self.dir / sdkkit.LOOK_MODULE).read_bytes(), self.approved.read_bytes())
+        self.assertEqual(installed["look"], sdkkit.LOOK_MODULE)
+        self.assertFalse((self.dir / "01-open.scene.xml").exists())
+
+    def test_no_look_means_no_module(self):
+        self.assertFalse((self.dir / sdkkit.LOOK_MODULE).exists())
+        self.assertIsNone(sdkkit.install(self.dir)["look"])
+        self.assertIsNone(sdkkit.install(self.dir, look=self.approved.parent / "gone.py")["look"])
+        self.assertFalse((self.dir / sdkkit.LOOK_MODULE).exists())
+
+    def test_a_section_program_importing_look_builds_with_the_looks_hash_in_provenance(self):
+        sdkkit.install(self.dir, look=self.approved)
+        result = sdkkit.build(self.program(SECTION, "02-two.py"), validate=False)
+        self.assertTrue(result["ok"], result.get("error"))
+        # the look's own save ran at import and wrote nothing: one document, the program's
+        self.assertEqual([d["path"] for d in result["documents"]], ["02-two.scene.xml"])
+        self.assertFalse((self.dir / "01-open.scene.xml").exists())
+        record = sdkkit.provenance_of(self.dir / "02-two.scene.xml")
+        self.assertEqual(record["imports"][sdkkit.LOOK_MODULE],
+                         hashlib.sha256(LOOK.encode("utf-8")).hexdigest())
+        self.assertIn("srkit.py", record["imports"])        # every workspace module it loaded
+        self.assertNotIn("02-two.py", record["imports"])    # the program is `program_sha256`
+
+    def test_a_changed_look_lapses_the_provenance(self):
+        sdkkit.install(self.dir, look=self.approved)
+        sdkkit.build(self.program(SECTION, "02-two.py"), validate=False)
+        doc = self.dir / "02-two.scene.xml"
+        self.assertIsNotNone(sdkkit.provenance_of(doc))
+        look = self.dir / sdkkit.LOOK_MODULE
+        look.write_text(look.read_text().replace('"#F2F5F7"', '"#FFFFFF"'), encoding="utf-8")
+        self.assertIsNone(sdkkit.provenance_of(doc))
+        look.unlink()
+        self.assertIsNone(sdkkit.provenance_of(doc))        # gone is no better than changed
+
+    def test_a_program_that_imports_nothing_records_only_the_kit(self):
+        from tests.test_sdkkit import MINIMAL
+        sdkkit.build(self.program(MINIMAL), validate=False)
+        record = sdkkit.provenance_of(self.dir / "minimal.scene.xml")
+        self.assertEqual(list(record["imports"]), ["srkit.py"])
+
+    def test_the_brief_says_import_and_srkit_says_when_save_writes(self):
+        self.assertIn("import", sdkkit.LOOK_BRIEF)
+        self.assertIn("redefine nothing", sdkkit.LOOK_BRIEF)
+        self.assertIn("__main__", (self.dir / "srkit.py").read_text())
 
 
 if __name__ == "__main__":

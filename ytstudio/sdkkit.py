@@ -102,6 +102,11 @@ raises at once with the names that are allowed (`S.describe("camera")` tells
 you the rest). `save` checks the whole document, writes it and records it for
 `python3 kit.py build`, which runs the program twice and refuses a document
 that changes between runs: seed every random choice.
+
+`save` writes only when the program itself calls it (`__main__`). A module the
+program imports, `look.py` among them, may end with its own build and save:
+importing it writes nothing. The build records the hash of every module loaded
+from this directory beside the document, in its provenance.
 """
 import hashlib, json, os, sys
 sys.path.insert(0, {sr_root!r})
@@ -140,18 +145,40 @@ except Exception:
     pass
 
 
+def _imports():
+    """Every module loaded from this directory, by file name, with its hash:
+    what the document was built with besides the program."""
+    out = {{}}
+    for name, module in list(sys.modules.items()):
+        file = getattr(module, "__file__", None)
+        if name == "__main__" or not file:
+            continue
+        file = os.path.abspath(file)
+        if os.path.dirname(file) != _here:
+            continue
+        try:
+            with open(file, "rb") as fh:
+                out[os.path.basename(file)] = hashlib.sha256(fh.read()).hexdigest()
+        except OSError:
+            pass
+    return dict(sorted(out.items()))
+
+
 def save(scene, path):
-    """Check the document, write it as pretty XML, record it for the build."""
+    """Check the document, write it as pretty XML, record it for the build.
+    Called from an imported module rather than the program, write nothing."""
+    path = os.path.abspath(path)
+    if sys._getframe(1).f_globals.get("__name__") != "__main__":
+        return path
     findings = [str(f) for f in S.check(scene)]
     data = scene.to_bytes(layout="pretty")
-    path = os.path.abspath(path)
     with open(path, "wb") as fh:
         fh.write(data)
     record = os.environ.get("SRKIT_RECORD")
     if record:
         with open(record, "a", encoding="utf-8") as fh:
             fh.write(json.dumps({{"path": path, "sha256": hashlib.sha256(data).hexdigest(),
-                                 "findings": findings}}) + "\\n")
+                                 "findings": findings, "imports": _imports()}}) + "\\n")
     for f in findings:
         print(f, file=sys.stderr)
     print(f"saved {{os.path.relpath(path)}} · {{len(data)}} bytes · {{len(findings)}} finding(s)")
@@ -341,16 +368,29 @@ def _docstring(path: Path) -> str:
         return ""
 
 
+#: The approved look's program, importable from every section's workspace.
+LOOK_MODULE = "look.py"
+
+
 def install(directory: Path, *, frame: tuple[int, int] | None = None, fps: int = 30,
-            host: str = "", measured: list[dict] | None = None) -> dict:
+            host: str = "", measured: list[dict] | None = None,
+            look: Path | None = None) -> dict:
     """Write the kit into `directory`. `frame` writes frame.json (a stage that
-    already writes one passes None). Returns what was installed."""
+    already writes one passes None). `look` is the approved look's program,
+    copied byte for byte as `look.py` beside srkit.py so a section program can
+    import it. Returns what was installed."""
     directory = Path(directory)
     kit = directory / KIT_DIR
     (kit / "examples").mkdir(parents=True, exist_ok=True)
     (directory / "srkit.py").write_text(SRKIT.format(sr_root=str(sr_root())), encoding="utf-8")
     (directory / "kit.py").write_text(KIT_CLI.format(automation_root=str(AUTOMATION_ROOT)),
                                       encoding="utf-8")
+    installed_look = None
+    if look is not None and Path(look).is_file():
+        target = directory / LOOK_MODULE
+        if Path(look).resolve() != target.resolve():
+            target.write_bytes(Path(look).read_bytes())
+        installed_look = LOOK_MODULE
     if frame is not None:
         (directory / "frame.json").write_text(
             json.dumps({"width": frame[0], "height": frame[1], "fps": fps}), encoding="utf-8")
@@ -366,7 +406,8 @@ def install(directory: Path, *, frame: tuple[int, int] | None = None, fps: int =
     if libraries:
         (kit / "REFERENCES.md").write_text(references_text(libraries), encoding="utf-8")
     return {"dir": str(directory), "engine_source": engine.get("source"),
-            "renderer_notes": len(notes), "examples": [p.name for p in example_files()]}
+            "renderer_notes": len(notes), "examples": [p.name for p in example_files()],
+            "look": installed_look}
 
 
 #: The system prompt of an agent that composes with the kit, so every stage
@@ -459,6 +500,17 @@ learn it. `[pre-check]` items you can test yourself; `[review]` items need your 
 
 """ + framecheck.checklist_text() + """
 """
+
+#: What a brief says about the approved look's module, so every stage that
+#: installs one says the same: import it, redefine nothing it provides.
+LOOK_BRIEF = (
+    f"`{LOOK_MODULE}` in your workspace is that program, byte for byte. Import what it "
+    "provides -- `from look import ...` its palette and type constants, the helper "
+    "functions that build its labels, formulas, cards, materials, lights and recurring "
+    "objects, and its camera language -- and redefine nothing it provides; change only "
+    "what your shots require. Importing it writes nothing: its own `save` runs only when "
+    f"it is the program. Never edit `{LOOK_MODULE}`: the build records its hash in your "
+    "document's provenance, and a changed look lapses it.")
 
 
 def time_line(timeout: float) -> str:
@@ -909,6 +961,9 @@ def build(program: Path, *, host: str = "", runs: int = 2, timeout: float = PROG
             saved[r["path"]] = on_disk
         runs_rows.append(saved)
         reads = [r for r in rows if "read" in r]
+        # What each document was built with besides the program: the workspace
+        # modules loaded when it was saved (srkit, the look), by name and hash.
+        imports = {r["path"]: r.get("imports") or {} for r in rows if "path" in r}
     first = runs_rows[0]
     for saved in runs_rows[1:]:
         if saved != first:
@@ -933,6 +988,7 @@ def build(program: Path, *, host: str = "", runs: int = 2, timeout: float = PROG
         result["documents"].append(checked)
         provenance = {"document": checked["path"], "document_sha256": digest,
                       "program": program.name, "program_sha256": result["program_sha256"],
+                      "imports": imports.get(path, {}),
                       "deterministic": True, "runs": len(runs_rows),
                       "schema_release": getattr(S, "SCHEMA_RELEASE", ""),
                       "sdk_findings": len(checked["sdk"]),
@@ -985,7 +1041,8 @@ def build_findings(program: Path, document: str) -> list[str]:
 
 def provenance_of(doc: Path) -> dict | None:
     """The provenance a build wrote beside a document, if the document is
-    still the one it built (same bytes)."""
+    still the one it built (same bytes) and every workspace module the program
+    imported is still the one it was built with (`imports`, beside the document)."""
     doc = Path(doc)
     try:
         record = json.loads(doc.with_suffix("").with_suffix(".provenance.json")
@@ -994,6 +1051,12 @@ def provenance_of(doc: Path) -> dict | None:
         return None
     if record.get("document_sha256") != _sha(doc.read_bytes()):
         return None
+    for name, digest in (record.get("imports") or {}).items():
+        try:
+            if _sha((doc.parent / name).read_bytes()) != digest:
+                return None
+        except OSError:
+            return None
     return record
 
 
