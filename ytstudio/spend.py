@@ -247,15 +247,17 @@ def _reported(root: Path, stage: str, sections: list[int] | None) -> float | Non
 
 def _like(root: Path, stage: str, flags: Iterable[str] = ()) -> tuple[float, str] | None:
     """The median of what the stage cost in the other projects beside this
-    one, each priced with the asked `flags` its own record lacks."""
+    one, each priced with the asked `flags` its own record lacks; the
+    source names a flag only when it added to the project the median is."""
     root = Path(root)
     found = []
     for other in sorted(root.parent.iterdir()) if root.parent.is_dir() else []:
         if other.is_dir() and other != root:
             cost = _reported(other, stage, None)
             if cost is not None:
-                cost = round(cost + sum(x for _, x in _flag_increments(other, stage, flags)), 2)
-                found.append((cost, other.name))
+                added = _flag_increments(other, stage, flags)
+                found.append((round(cost + sum(x for _, x in added), 2),
+                              other.name + "".join(f" (with {f})" for f, _ in added)))
     if not found:
         return None
     found.sort()
@@ -285,8 +287,7 @@ def stage_estimates(root: Path, stages: list[str],
                 _flag_increments(root, stage, flags))
             row = {"stage": stage, "usd": usd, "basis": "measured", "source": source}
         elif like is not None:
-            row = {"stage": stage, "usd": like[0], "basis": "like", "source": like[1]
-                   + ("".join(f" (with {f})" for f, _ in _flag_increments(None, stage, flags)))}
+            row = {"stage": stage, "usd": like[0], "basis": "like", "source": like[1]}
         elif folded:
             row = {"stage": stage, "usd": 0.0, "basis": "assumed",
                    "source": "included in the vfx default"}

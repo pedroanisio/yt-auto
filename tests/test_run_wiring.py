@@ -153,6 +153,16 @@ class ReviewIncrement(unittest.TestCase):
         self.assertEqual(asked["usd"], max(2.4, round(2.2 + self.inc, 2)))
         self.assertEqual(self.row()["usd"], 2.4)
 
+    def test_a_like_row_names_the_flag_only_when_it_added_to_the_price(self):
+        self.write(self.work / "reviewed", 2.4, ["plan", "plan-review"])
+        asked = self.row({"script": ["--review"]})
+        self.assertEqual(asked["usd"], 2.4)
+        self.assertNotIn("--review", asked["source"])
+        self.write(self.work / "unreviewed", 2.6, ["plan"])
+        asked = self.row({"script": ["--review"]})
+        self.assertEqual(asked["usd"], round(2.6 + self.inc, 2))
+        self.assertIn("--review", asked["source"])
+
 
 class Priced(_RunCase):
     def setUp(self):
