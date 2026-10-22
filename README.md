@@ -437,7 +437,9 @@ reading, the stage's engine report and its spend go to `plan_review.json`
 instead, removed by the next run that gets past the plan.
 `--report-only` records a revise and drafts on; a reject still stops. No score
 is set as a bar here, as keyframe and vfx set one: the verdict is the bar. The review is capped by
-`--review-budget-usd` (2), adds about $0.50, and is kept in `script.json`
+`--review-budget-usd` (2), adds about $0.50 (the picture-check below about
+$0.50 more, so `--review` is priced at about $1 before a record measures
+it), and is kept in `script.json`
 `plan_review` and the `## Plan review` section of `script.md`.
 
 The same reviewer reads the drafted screenplay with the sound off. After the

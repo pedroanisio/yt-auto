@@ -174,12 +174,18 @@ DEFAULT_USD = {"research": 5.0, "styles": 2.0, "script": 3.0, "props": 0.0,
 #: second plan and its reading.
 PLAN_REVIEW_USD = 0.5
 
+#: What the picture-check adds under the same flag (AUTO-98), assumed until
+#: a record measures it: the reviewer's reading of every shot's picture (and
+#: at most one `picture-check-again`) plus the author's one `revise-picture`.
+PICTURE_CHECK_USD = 0.5
+
 #: A flag that adds to what its stage costs: stage -> flag -> (the increment,
 #: the decision whose row in the stage's record shows the flag was on). The
 #: stage's DEFAULT_USD is the base. A record holding that decision (or a
 #: numbered one, `plan-review-2`) already counts it; one without it, or no
 #: record at all, gains the increment when the flag is asked.
-FLAG_USD = {"script": {"--review": (PLAN_REVIEW_USD, "plan-review")}}
+FLAG_USD = {"script": {"--review": (PLAN_REVIEW_USD + PICTURE_CHECK_USD,
+                                    "plan-review")}}
 
 
 def _flag_increments(root: Path | None, stage: str, flags: Iterable[str]) -> list[tuple[str, float]]:

@@ -501,6 +501,15 @@ class OnlyThePictureRevisionChangesThePicture(unittest.TestCase):
                          ["properties"])
 
 
+class Spend(unittest.TestCase):
+    def test_the_review_flag_prices_the_picture_check_too(self):
+        from ytstudio import spend
+        increment, decision = spend.FLAG_USD["script"]["--review"]
+        self.assertEqual(decision, "plan-review")
+        self.assertEqual(increment, spend.PLAN_REVIEW_USD + spend.PICTURE_CHECK_USD)
+        self.assertGreater(spend.PICTURE_CHECK_USD, 0)
+
+
 class Corpus(unittest.TestCase):
     def test_the_picture_check_cites_rules_the_corpus_has(self):
         from tests.test_script_rules import strength_table
