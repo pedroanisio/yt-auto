@@ -2652,7 +2652,8 @@ class Screenwriter:
                  index: int, flags: list[dict], name: str) -> dict | None:
         """Write section `index` again with the review's flags on it, as
         `name` (`redraft-NN`). The section keeps its old shots when the
-        call fails or comes back empty."""
+        call fails or comes back empty. The question ledger's `notes` on
+        the new shots come back with it, for the round that stands."""
         before = [s for sec in sections[:index - 1] for s in sec.shots]
         after = sections[index].shots if index < len(sections) else []
         old = sections[index - 1].shots
@@ -2669,13 +2670,15 @@ class Screenwriter:
         except ClaudeError as exc:
             self._say(f"[review] {name} failed ({exc}); the section stays as written")
             return None
-        self.findings += questions.notes
         if not shots:
             return None
         sections[index - 1].shots = shots
+        # The ledger's notes go with the redraft, into the findings only
+        # when the round stands (review_and_revise).
         return {"section": index, "name": name, "shots_before": len(old),
                 "shots_after": len(shots),
-                "flags": [story_flag_line(f) for f in flags]}
+                "flags": [story_flag_line(f) for f in flags],
+                "notes": list(questions.notes)}
 
     def review_and_revise(self, sections: list[Section], plan: dict, *,
                           fix: bool = True) -> dict:
@@ -2726,12 +2729,13 @@ class Screenwriter:
             kept_shots = copy.deepcopy([sec.shots for sec in sections])
             result = self.revise(shots, to_shots, name=f"revise-story-{round_no}",
                                  flagged_by="the story review")
-            redrafts = []
+            redrafts, notes = [], []
             for index, flags_on in sorted(to_sections.items()):
                 done = self._redraft(sections, specs, plan, index, flags_on,
                                      f"redraft-{index:02d}" if round_no == 1
                                      else f"redraft-{index:02d}-r{round_no}")
                 if done:
+                    notes += done.pop("notes")
                     redrafts.append(done)
             shots = self._renumber(sections)
             if not result["applied"] and not redrafts:
@@ -2759,6 +2763,7 @@ class Screenwriter:
                 break
             record["revisions"] += result["applied"]
             record["redrafts"] += redrafts
+            self.findings += notes
             record["kept"] += result["kept"]
             current = again
             round_no += 1

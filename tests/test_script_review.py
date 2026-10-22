@@ -688,6 +688,23 @@ class QuestionLedger(unittest.TestCase):
         self.assertEqual([(q["id"], q["opened_at"], q["closed_at"]) for q in data["questions"]],
                          [("Q1", "1.1", "3.1"), ("Q2", "2.1", "3.2")])
 
+    def test_a_note_from_a_redraft_put_back_is_not_in_the_findings(self):
+        section_flag = flag(n=0, section=2, criterion="open_loops",
+                            problem="section 2 opens Q2 and drops it",
+                            fix="end section 2 on the inspection log")
+        for judged, noted in (("worse", False), ("better", True)):
+            with self.subTest(judged=judged):
+                w = writer()
+                answers = consider_then(("consider" if judged == "worse" else "recommend",
+                                         judged), flags=[section_flag])
+                answers["redraft-02"] = dict(shots_for(2, ("context",)),
+                                             opens=[{"id": "Q2", "opens_at": 7}])
+                faked(w, answers)
+                data = w.run(review=True)
+                self.assertEqual(data["review"]["reverted"], not noted)
+                notes = [f for f in data["findings"] if "opens_at 7" in f]
+                self.assertEqual(bool(notes), noted, data["findings"])
+
     def test_report_only_records_the_readers_gap_and_revises_nothing(self):
         w = writer()
         calls = faked(w, {"write-03": self.marked(3, closes=[{"id": "Q1", "closes_at": 1},
