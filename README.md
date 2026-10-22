@@ -23,7 +23,9 @@ same API on the Codex CLI; `YT_ENGINE=codex` runs the harness's stages on it
 (its module docstring lists what maps, what is emulated and what Codex lacks).
 A dollar budget needs a price for the model: when the model is unpriced (for
 example under a ChatGPT sign-in), set `CODEX_PRICES` or a token cap with
-`CODEX_BUDGET_TOKENS`, or the budgeted call refuses to start.
+`CODEX_BUDGET_TOKENS`, or the budgeted call refuses to start. The claude
+models are priced in `ytstudio/spend.py` (`CLAUDE_PRICES` overrides a row),
+so a call cut off by its timeout is billed from its stream, not booked at $0.
 
 ## Requirements
 
@@ -1015,8 +1017,11 @@ does reach the render hosts: one short ssh per host asks for the engine, the
 memory and the GPU. It reports the toolchain (engine, ffmpeg, the scene SDK,
 the delivery gate, the third-party packages the stages import, which voice
 engines are usable, which keys are set) and then every video,
-with fail, warn and note lines and the command that fixes each. Exit 1 on any
-fail, so it works in a script.
+with fail, warn and note lines and the command that fixes each; a record that
+bills a model neither engine priced (`spend.PRICES`, `$CLAUDE_PRICES`,
+`codex_engine.PRICES`, `$CODEX_PRICES`) is a warning, since a Claude call on
+it that times out is booked at $0 and a Codex call on it is recorded without a
+cost. Exit 1 on any fail, so it works in a script.
 
 ### `yt assets`
 

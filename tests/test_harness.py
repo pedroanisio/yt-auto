@@ -211,6 +211,43 @@ class Inspect(HarnessCase):
         self.assertEqual(FakeEngine.json_calls, [])          # no text-only pass
         self.assertIn("```json", FakeEngine.stream_calls[0]["prompt"])
 
+    def test_an_inspection_cut_off_is_a_failed_row_with_what_it_spent(self):
+        # AUTO-73: the agent's spend was booked, but no decision row said so,
+        # and the stage's record billed nothing for it.
+        cwd = self.root / "qa" / "pass-01"
+        cwd.mkdir(parents=True)
+
+        class Cut(FakeEngine):
+            def stream(self, prompt, system=None):
+                yield Event(type="assistant", subtype="tool_use", tool_name="Read",
+                            tool_input={"file_path": "a.png"})
+                raise harness.ClaudeError("claude timed out after 1s")
+
+        harness.ENGINE = Cut
+        h = self.make()
+        with self.assertRaises(harness.HarnessError):
+            h.inspect("pass-01", "p", SCHEMA, cwd=cwd)
+        report = h.report()
+        self.assertEqual([(d["name"], d["kind"], d["cached"], d["tool_calls"])
+                          for d in report["decisions"]], [("pass-01", "failed", False, 1)])
+        self.assertAlmostEqual(report["cost_usd"], 0.01)
+        self.assertFalse((self.root / "decisions").exists())
+
+    def test_an_inspection_with_no_words_and_no_form_is_a_failed_row(self):
+        cwd = self.root / "qa" / "pass-01"
+        cwd.mkdir(parents=True)
+
+        class Mute(FakeEngine):
+            def stream(self, prompt, system=None):
+                yield Event(type="result", raw={})
+
+        harness.ENGINE = Mute
+        h = self.make()
+        with self.assertRaises(harness.HarnessError):
+            h.inspect("pass-01", "p", SCHEMA, cwd=cwd)
+        self.assertEqual([d["kind"] for d in h.report()["decisions"]], ["failed"])
+        self.assertAlmostEqual(h.report()["cost_usd"], 0.01)
+
     def test_inspection_is_cached_on_the_files_as_well_as_the_prompt(self):
         cwd = self.root / "qa" / "pass-01"
         cwd.mkdir(parents=True)

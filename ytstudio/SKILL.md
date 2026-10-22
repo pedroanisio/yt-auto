@@ -144,7 +144,16 @@ harness stages (`retime`, `pilot`, `gate`, `review`, `qa`) still also carry
 their harness account there. `yt improve` reads cost through
 `spend.cost_in`, which takes `usage.cost_usd`, else the older `cost_usd`, else
 the older `engine.cost_usd`, so records written before still read. `sound.json`
-and `build.json` are not on the shape yet.
+and `build.json` are not on the shape yet. Every model has a price:
+`spend.PRICES` is keyed by the ids the CLI reports in `modelUsage`, the harness
+installs it into the engine on import, `$CLAUDE_PRICES` overrides a row, and a
+call cut off by its timeout is billed from it. A short name (`sonnet`) is
+`spend.price_for`'s to resolve, not a row: the engine's table holds no alias,
+so a session on a short name keeps the CLI's own stop at 80% of its cap beside
+the stream meter. A decision that raised is a `failed` row in the harness report with
+what the engine spent, so the record bills it; `yt doctor` warns when a
+record's `by_model` names an id neither engine priced (a Codex id is priced
+from `codex_engine.PRICES` and `$CODEX_PRICES`).
 
 **What `yt build` does with a bad number.** A malformed editor or
 sound-designer number (`tail_seconds`, a cue's `fade_in`, `fade_out` or
@@ -576,8 +585,8 @@ hand-authored world showed the cost.
     `sdkkit.stream_round(budget_usd=)` stops the stream and resumes it once
     for the build and a still, as the 80% clock does, instead of letting
     the CLI's hard cap end it with exit 1. Spend is metered from the
-    stream's usage and `PRICES`. An unpriced model (no price is configured
-    for it) runs its first session with `--max-budget-usd` at 80% of the
+    stream's usage and `spend.PRICES` (`$CLAUDE_PRICES` overrides a row). An
+    unpriced model (no row anywhere) runs its first session with `--max-budget-usd` at 80% of the
     grant; on the CLI's `error_max_budget_usd` the reported cost is counted
     once and the session is resumed once for the build and a still with the
     rest of the grant.

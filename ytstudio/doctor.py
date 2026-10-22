@@ -27,7 +27,7 @@ import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from . import env, keyframe, render, workspace
+from . import env, keyframe, render, spend, workspace
 from .assets import licence_tier
 from .core import read_json, timecode, write_json
 
@@ -467,6 +467,47 @@ def check_renders(project: workspace.Project, report: Report) -> None:
                     }.get(status, "read the report, then re-run the job"))
 
 
+def _priced(model: str) -> bool:
+    """Whether either engine has a row for `model`. A record does not say
+    which CLI wrote it, and under `YT_ENGINE=codex` `by_model` is keyed by
+    Codex's own ids, priced from its table and `$CODEX_PRICES`; the module
+    is imported here, as `harness.use_engine` does, not at the top."""
+    if spend.price_for(model) is not None:
+        return True
+    import codex_engine
+    return codex_engine.price_for(model) is not None
+
+
+def check_spend(project: workspace.Project, report: Report) -> None:
+    """Warn when a record bills a model nobody priced (AUTO-73): a stage's
+    `usage.by_model` (or a harness stage's `engine.by_model`) names the ids
+    the CLI reported, and a Claude call on an id with no row in `spend.PRICES`
+    or `$CLAUDE_PRICES` is booked at $0 when it times out (a Codex call on one
+    is recorded without a cost). keyframe.json keeps its two harness reports
+    one level down (`engine.elements`, `engine.review`), so an account
+    without a breakdown is opened once."""
+    unpriced: dict[str, list[str]] = {}
+    for path in sorted(project.root.glob("*.json")):
+        rec = read_json(path, warn=False)
+        if not isinstance(rec, dict):
+            continue
+        for key in ("usage", "engine"):
+            account = rec.get(key)
+            if not isinstance(account, dict):
+                continue
+            accounts = [account] if "by_model" in account else [
+                v for v in account.values() if isinstance(v, dict)]
+            for model in (m for a in accounts for m in (a.get("by_model") or {})):
+                if not _priced(str(model)):
+                    unpriced.setdefault(str(model), []).append(path.name)
+    for model, names in sorted(unpriced.items()):
+        report.add("warn", "spend", f"{model} has no price; {', '.join(sorted(set(names)))} "
+                   "bill calls on it; a Claude call on it that times out is booked at $0, "
+                   "a Codex call on it is recorded without a cost",
+                   "add its row to ytstudio/spend.PRICES or $CLAUDE_PRICES (a Claude id), "
+                   "codex_engine.PRICES or $CODEX_PRICES (a Codex one)")
+
+
 def check_project(project: workspace.Project) -> Report:
     report = Report(project.root.name)
     done = project.done()
@@ -879,6 +920,7 @@ def check_project(project: workspace.Project) -> Report:
                        f"{qa_done.get('overall', '?')}")
 
     check_renders(project, report)
+    check_spend(project, report)
 
     # -- pilot -------------------------------------------------------------
     # The pilot writes its own document (segment outputs, schema raised to

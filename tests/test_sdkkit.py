@@ -15,14 +15,16 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from claude_engine import Event, Usage  # noqa: E402
 from tests import hermetic  # noqa: E402
 from tests.test_universality import leaks  # noqa: E402
-from ytstudio import sdkkit  # noqa: E402
+from ytstudio import harness, sdkkit  # noqa: E402,F401  harness installs the price table
 
 MINIMAL = '''from srkit import FRAME, S, save
 scene = S.Scene(version="auto")
@@ -437,6 +439,66 @@ class Frames(unittest.TestCase):
             for th in threads:
                 th.join()
         self.assertEqual(peak[0], 1)
+
+
+class Streams:
+    """Streams scripted calls of messages on the id the CLI reports, whatever
+    short name the session was configured with; records the cap of each call."""
+
+    def __init__(self, calls: list, cwd: Path, model: str, reports: str):
+        self.config = SimpleNamespace(timeout=3600.0, env={}, max_turns_budget_usd=None,
+                                      cwd=cwd, model=model)
+        self.calls, self.script, self.reports = [], list(calls), reports
+        self.session_id = None
+        self.usage = Usage()
+        self.emitted = 0
+
+    def stream(self, prompt, system=None, resume=False):
+        self.calls.append({"prompt": prompt, "resume": resume,
+                           "cap": self.config.max_turns_budget_usd})
+        self.session_id = "s"
+        for i, tokens in enumerate(self.script.pop(0)):
+            self.emitted += 1
+            yield Event(type="assistant", text="working", raw={
+                "type": "assistant", "message": {"id": f"m{len(self.calls)}-{i}",
+                                                 "model": self.reports,
+                                                 "usage": {"output_tokens": tokens}}})
+
+
+class Staged(unittest.TestCase):
+    """AUTO-73: a session configured with a short name (`sonnet`) is priced by
+    the id the stream reports, with the shipped table and nothing patched in.
+    The short name itself has no row in the engine's table, so the CLI's own
+    stop at 80% of the cap is set too: both guards apply."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp(prefix="staged-"))
+        self.addCleanup(shutil.rmtree, self.dir, True)
+
+    def run_round(self, engine, cap=4.0):
+        return list(sdkkit.stream_round(engine, "do it", system="sys", budget_usd=cap))
+
+    def test_the_meter_stops_the_stream_at_the_mark_on_the_id_the_stream_reports(self):
+        # claude-sonnet-5-5 is $10 per 1M output tokens: 110k tokens are $1.10,
+        # so the third message passes the $3.20 mark of a $4 cap.
+        engine = Streams([[110_000] * 4, [10]], self.dir, model="sonnet",
+                         reports="claude-sonnet-5-5")
+        self.run_round(engine)
+        self.assertEqual(engine.emitted, 4)            # three, then the finish's one
+        self.assertEqual(len(engine.calls), 2)
+        self.assertTrue(engine.calls[1]["resume"])
+        self.assertAlmostEqual(engine.calls[0]["cap"], 3.2)
+        self.assertAlmostEqual(engine.calls[1]["cap"], 0.7)
+        self.assertAlmostEqual(engine.usage.timed_out_cost_usd, 3.3)
+
+    def test_an_id_the_table_lacks_still_has_the_clis_stop_at_the_mark(self):
+        # Pins the policy that predates the table: staging on an unpriced id
+        # is unchanged, the CLI's own stop is what holds the cap.
+        engine = Streams([[110_000] * 4], self.dir, model="sonnet", reports="claude-x-9")
+        self.run_round(engine)
+        self.assertEqual(len(engine.calls), 1)
+        self.assertAlmostEqual(engine.calls[0]["cap"], 3.2)
+        self.assertEqual(engine.emitted, 4)            # the meter is blind: not stopped here
 
 
 class Renderer(unittest.TestCase):

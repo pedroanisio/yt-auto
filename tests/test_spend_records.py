@@ -9,18 +9,22 @@ from __future__ import annotations
 
 import inspect
 import json
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
 
+import claude_engine  # noqa: E402
 from claude_engine import Usage  # noqa: E402
-from ytstudio import (assess, cli, gate, harness, improve, keyframe, pilot, props,  # noqa: E402
-                      qa, research, retime, review, script, spend, styles, vfx, voice)
+from ytstudio import (assess, cli, doctor, gate, harness, improve, keyframe, pilot,  # noqa: E402
+                      props, qa, research, retime, review, script, spend, styles, vfx,
+                      voice, workspace)
 from ytstudio.core import Idea, write_json  # noqa: E402
 
 import test_wordless  # noqa: E402
@@ -73,6 +77,199 @@ class Helper(unittest.TestCase):
                          1.5)
         self.assertIsNone(spend.cost_in({}))
         self.assertIsNone(spend.cost_in(None))
+
+
+class Prices(unittest.TestCase):
+    """AUTO-73: every model has a price, so a call cut off by its timeout is
+    billed, not booked at $0. The table is spend's; the engine reads a copy."""
+
+    CURRENT = ("claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5",
+               "claude-fable-5-1", "claude-opus-5", "claude-sonnet-5")
+
+    def test_the_table_prices_the_models_the_cli_reports(self):
+        for model in self.CURRENT:
+            row = spend.PRICES[model]
+            self.assertEqual(set(row), {"input", "cached_input", "output", "cache_creation"},
+                             model)
+            self.assertTrue(all(v > 0 for v in row.values()), model)
+            self.assertLess(row["cached_input"], row["input"], model)
+            self.assertLess(row["input"], row["output"], model)
+        self.assertEqual(spend.PRICES["claude-sonnet-5-5"]["input"], 2.0)
+        self.assertEqual(spend.PRICES["claude-sonnet-5-5"]["output"], 10.0)
+        self.assertEqual(spend.PRICES["claude-opus-5-5"]["output"], 20.0)
+
+    def test_an_alias_prices_as_the_generation_the_cli_resolves_it_to(self):
+        # Every short name a stage is configured with (`--model sonnet`).
+        self.assertEqual(set(spend.ALIASES), {"fable", "opus", "sonnet", "haiku"})
+        for alias, model in spend.ALIASES.items():
+            self.assertIn(model, self.CURRENT)
+            self.assertEqual(spend.price_for(alias), spend.PRICES[model])
+            # The alias is price_for's to resolve, not a row: the stream reports
+            # the full id, and a session on a short name keeps the CLI's own
+            # budget stop beside the meter (tests/test_sdkkit.py Staged).
+            self.assertNotIn(alias, spend.PRICES)
+            self.assertNotIn(alias, claude_engine.PRICES)
+
+    def test_the_dated_haiku_snapshot_is_priced_as_its_generation(self):
+        # The API serves Haiku 4.5 under its dated id; that is what the stream reports.
+        self.assertEqual(spend.price_for("claude-haiku-4-5-20251001"),
+                         spend.PRICES["claude-haiku-4-5"])
+        self.assertEqual(claude_engine.PRICES.get("claude-haiku-4-5-20251001"),
+                         spend.PRICES["claude-haiku-4-5"])
+
+    def test_the_table_is_installed_into_the_engine_when_harness_is_imported(self):
+        # ytstudio.harness is imported at the top of this module.
+        for model, row in spend.PRICES.items():
+            self.assertEqual(claude_engine.PRICES.get(model), row, model)
+        self.assertAlmostEqual(
+            claude_engine._partial_cost({"output_tokens": 1_000_000}, "claude-sonnet-5-5"),
+            10.0)
+
+    def test_the_environment_still_overrides_and_an_unknown_model_has_none(self):
+        override = {"claude-sonnet-5-5": {"input": 0, "cached_input": 0, "output": 1_000_000}}
+        with mock.patch.dict(os.environ, {"CLAUDE_PRICES": json.dumps(override)}):
+            self.assertEqual(spend.price_for("claude-sonnet-5-5")["output"], 1_000_000)
+            self.assertAlmostEqual(
+                claude_engine._partial_cost({"output_tokens": 1}, "claude-sonnet-5-5"), 1.0)
+        self.assertEqual(spend.price_for("claude-sonnet-5-5"), spend.PRICES["claude-sonnet-5-5"])
+        self.assertIsNone(spend.price_for("a-model-nobody-priced"))
+        self.assertIsNone(spend.price_for(""))
+
+    def test_an_environment_that_is_not_a_table_is_ignored_not_a_crash(self):
+        for raw in ("[1, 2]", "7", "not json", '"claude-sonnet-5-5"'):
+            with mock.patch.dict(os.environ, {"CLAUDE_PRICES": raw}):
+                self.assertEqual(spend.price_for("claude-sonnet-5-5"),
+                                 spend.PRICES["claude-sonnet-5-5"], raw)
+
+
+SCHEMA = {"type": "object", "properties": {"answer": {"type": "string"}},
+          "required": ["answer"]}
+
+
+class FailedDecision(unittest.TestCase):
+    """AUTO-73: a decision that raised still cost money. It is a `failed` row
+    in the stage's report, so the record bills it and `yt improve` sizes the
+    next pass from what was really spent."""
+
+    class Down:
+        """Spends, then the CLI fails."""
+
+        def __init__(self, config):
+            self.usage = Usage(cost_usd=0.3, calls=1)
+
+        def ask_json(self, prompt, schema, system=None):
+            raise harness.ClaudeError("the model is down")
+
+    class Wordless(Down):
+        """Spends twice, and never gives the required field."""
+
+        def ask_json(self, prompt, schema, system=None):
+            return {"nothing": True}
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self._engine = harness.ENGINE
+        self.addCleanup(setattr, harness, "ENGINE", self._engine)
+
+    def failing(self, engine):
+        harness.ENGINE = engine
+        h = harness.Harness(self.root, "build", model="sonnet", verbose=False)
+        with self.assertRaises(harness.HarnessError):
+            h.decide("edit", "p", SCHEMA)
+        return h.report()
+
+    def test_an_engine_error_is_a_failed_row_that_the_record_bills(self):
+        report = self.failing(self.Down)
+        self.assertEqual([(d["name"], d["kind"], d["cached"]) for d in report["decisions"]],
+                         [("edit", "failed", False)])
+        self.assertAlmostEqual(report["decisions"][0]["cost_usd"], 0.3)
+        self.assertAlmostEqual(report["cost_usd"], 0.3)
+        self.assertAlmostEqual(spend.from_report(report)["cost_usd"], 0.3)
+        self.assertFalse((self.root / "decisions").exists())      # a failure is never served
+
+    def test_an_answer_off_its_schema_twice_is_a_failed_row_too(self):
+        report = self.failing(self.Wordless)
+        self.assertEqual([d["kind"] for d in report["decisions"]], ["failed"])
+        self.assertAlmostEqual(report["cost_usd"], 0.3)
+
+
+class Doctor(unittest.TestCase):
+    """AUTO-73: a record that bills a model nobody priced is a warning, since
+    every timed-out call on that model was booked at $0."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        write_json(self.root / "idea.json", {"title": "T", "genre": "g", "description": "d"})
+
+    def spend_findings(self):
+        report = doctor.check_project(workspace.Project(self.root))
+        return [f for f in report.findings if f.area == "spend"]
+
+    def test_an_unpriced_model_in_a_record_is_a_warning_naming_both(self):
+        by_model = {"claude-sonnet-5-5": {"calls": 2, "cost_usd": 0.4},
+                    "claude-x-9": {"calls": 1, "cost_usd": 0.0}}
+        write_json(self.root / "styles.json",
+                   {"styles": [], "usage": spend.record(0.4, "sonnet", 3, by_model=by_model)})
+        write_json(self.root / "retime.json",
+                   {"engine": {"model": "sonnet", "by_model": {"claude-x-9": {"calls": 1}}}})
+        found = self.spend_findings()
+        self.assertEqual([f.level for f in found], ["warn"])
+        self.assertIn("claude-x-9", found[0].message)
+        self.assertNotIn("claude-sonnet-5-5", found[0].message)
+        self.assertIn("styles.json", found[0].message)
+        self.assertIn("retime.json", found[0].message)
+        # The record does not say which engine ran, so both engines' fixes
+        # are named: a Claude id is booked at $0 when cut off, a Codex id is
+        # recorded without a cost.
+        self.assertIn("CLAUDE_PRICES", found[0].fix)
+        self.assertIn("CODEX_PRICES", found[0].fix)
+
+    def test_a_codex_model_its_own_engine_prices_is_quiet(self):
+        # Under YT_ENGINE=codex the CLI reports modelUsage keyed by its own
+        # ids; codex_engine prices them and refuses a budgeted call on one it
+        # cannot, so a gpt row is no warning, and a $CODEX_PRICES row counts.
+        write_json(self.root / "styles.json", {"styles": [], "usage": spend.record(
+            0.4, "gpt-5", 1, by_model={"gpt-5": {"calls": 1, "cost_usd": 0.4}})})
+        self.assertEqual(self.spend_findings(), [])
+        write_json(self.root / "script.json", {"usage": spend.record(
+            0.1, "gpt-9", 1, by_model={"gpt-9": {"calls": 1}})})
+        self.assertEqual([f.level for f in self.spend_findings()], ["warn"])
+        row = {"input": 1, "cached_input": 0.1, "output": 5}
+        with mock.patch.dict(os.environ, {"CODEX_PRICES": json.dumps({"gpt-9": row})}):
+            self.assertEqual(self.spend_findings(), [])
+
+    def test_a_harness_report_nested_one_level_down_is_read_too(self):
+        # keyframe.json carries two harness reports under `engine` and a
+        # `usage` with no breakdown; the stage that streams is the one most
+        # likely to be cut off, so its unpriced id must not stay invisible.
+        write_json(self.root / "keyframe.json", {
+            "engine": {"elements": {"model": "sonnet", "cost_usd": 0.2,
+                                    "by_model": {"claude-x-9": {"calls": 1}}},
+                       "review": {"model": "sonnet", "cost_usd": 0.1,
+                                  "by_model": {"claude-sonnet-5-5": {"calls": 1}}}},
+            "usage": spend.record(0.3, "sonnet", 2)})
+        found = self.spend_findings()
+        self.assertEqual([f.level for f in found], ["warn"])
+        self.assertIn("claude-x-9", found[0].message)
+        self.assertNotIn("claude-sonnet-5-5", found[0].message)
+        self.assertIn("keyframe.json", found[0].message)
+
+    def test_priced_models_and_records_without_a_breakdown_are_quiet(self):
+        write_json(self.root / "styles.json", {"styles": [], "usage": spend.record(
+            0.4, "sonnet", 1, by_model={"claude-sonnet-5-5": {"calls": 1}})})
+        write_json(self.root / "voice.json", {"engine": "kokoro", "usage": spend.record(0, "", 0)})
+        self.assertEqual(self.spend_findings(), [])
+
+    def test_a_price_set_in_the_environment_counts(self):
+        write_json(self.root / "styles.json", {"styles": [], "usage": spend.record(
+            0.4, "m", 1, by_model={"claude-x-9": {"calls": 1}})})
+        row = {"input": 1, "cached_input": 0.1, "output": 5}
+        with mock.patch.dict(os.environ, {"CLAUDE_PRICES": json.dumps({"claude-x-9": row})}):
+            self.assertEqual(self.spend_findings(), [])
 
 
 class Writers(unittest.TestCase):
