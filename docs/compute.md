@@ -147,7 +147,8 @@ by hand. What `yt` itself runs is scoped by job, not by project:
   (`ytstudio/render.py`, the one list; `yt gate` extends it): `.cache/`,
   `.slices/` (the per-key slice outputs), `*.bak`, `raw/`, `review-frames/`,
   `vfx-stubs/`, `qa/`, `decisions/`, `video*.mp4`, `pilot*.mp4`, `/mix.wav`,
-  `/*.png`, `/*.pdf`, `vfx/frames/`, `vfx/v*/frames/` and `.estimate-*`.
+  `/*.png`, `/*.pdf`, `vfx/frames/`, `vfx/v*/frames/`, `build/proof/` (the
+  build's frames compared with the proof frames) and `.estimate-*`.
   `props/` and `sound/` travel because the scene references them. What
   comes back after a job is `render.PULL_BACK`: `*.mp4`, `*.png`, `*.wav`,
   `render.json`, `render-*.json`, `pilot*.json` and `.estimate-*.json`.
