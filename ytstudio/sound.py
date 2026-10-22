@@ -1288,8 +1288,9 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
 
     A round's cues are searched, downloaded and judged `jobs` at a time
     (`FETCH_JOBS`), none of it on this machine; the index and the counts
-    change under one lock, and the verdicts are applied on the calling
-    thread in cue order, so the record reads as a serial run.
+    change under one lock, each Freesound id is fetched under its own (two
+    cues landing on one id share the file), and the verdicts are applied on
+    the calling thread in cue order, so the record reads as a serial run.
     """
     root = Path(root)
     measure = measure or measure_remote
@@ -1297,6 +1298,7 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
     token = freesound.token() if token is None else token
     index = read_json(_index_path(root), warn=False) or {}
     book = threading.Lock()          # held while the index or the counts change
+    claims: dict[str, threading.Lock] = {}   # one lock per Freesound id on its way in
     narration, narration_from = narration_level(data)
     summary: dict = {"source": "freesound", "quality": FETCH_QUALITY,
                      "dir": SOUND_DIR, "filled": 0, "cached": 0, "bytes": 0,
@@ -1392,24 +1394,30 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
                 give_up(job)
                 return
             hit = job.hits.pop(0)
+            # Two cues of one round can land on the same id: the lookup, the
+            # download and the index write happen under the id's own lock,
+            # so the second finds the first's file and downloads nothing.
             with book:
-                rel = index.get(str(hit.id))
-                cached = bool(rel) and (root / rel).is_file()
-                if cached:
-                    summary["cached"] += 1
-            if not cached:
-                rel = (f"{SOUND_DIR}/{job.n:02d}-"
-                       f"{slugify(job.cue.get('name') or job.cue.get('kind', 'cue'), 40)}"
-                       f".{hit.ext}")
-                try:
-                    freesound.download(hit, root / rel)
-                except freesound.FreesoundError as exc:
-                    job.refusals.append((f"hit {hit.id}", str(exc)))
-                    job.tries += 1
-                    continue
+                claim = claims.setdefault(str(hit.id), threading.Lock())
+            with claim:
                 with book:
-                    index[str(hit.id)] = rel
-                    write_json(_index_path(root), index)
+                    rel = index.get(str(hit.id))
+                    cached = bool(rel) and (root / rel).is_file()
+                    if cached:
+                        summary["cached"] += 1
+                if not cached:
+                    rel = (f"{SOUND_DIR}/{job.n:02d}-"
+                           f"{slugify(job.cue.get('name') or job.cue.get('kind', 'cue'), 40)}"
+                           f".{hit.ext}")
+                    try:
+                        freesound.download(hit, root / rel)
+                    except freesound.FreesoundError as exc:
+                        job.refusals.append((f"hit {hit.id}", str(exc)))
+                        job.tries += 1
+                        continue
+                    with book:
+                        index[str(hit.id)] = rel
+                        write_json(_index_path(root), index)
             job.rel, job.hit = rel, hit
 
     def refuse(job: _Job, why: str) -> None:

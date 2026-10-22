@@ -66,8 +66,8 @@ class Overlap(FetchCase):
         self.cues = (cue("ambience", "A1", "Room tone", 15, query="hum"),
                      cue("sfx", "S1", "Tap", 1, query="tap"))
 
-    def meeting(self, label: str, parties: int = 2):
-        gate = threading.Barrier(parties, timeout=1.0)
+    def meeting(self, label: str, parties: int = 2, timeout: float = 1.0):
+        gate = threading.Barrier(parties, timeout=timeout)
 
         def wait():
             try:
@@ -120,6 +120,32 @@ class Overlap(FetchCase):
         data = self.fetch()
         self.assertEqual([m["cue_id"] for m in data["unfilled"]], ["A1", "S1"])
         self.assertEqual(data["fetch"]["unfilled"], 2)
+
+    def test_two_cues_on_one_freesound_id_download_it_once(self):
+        # Both searches land on id 7; the second cue finds the first's file
+        # under the id's lock, so one download, one file, one index entry,
+        # as the serial fetch gave. The barrier proves the two downloads
+        # never overlapped: the first waits alone and times out.
+        self.catalogue["hum"] = [row(7, "Hum.wav", 20.0)]
+        self.cues = (cue("ambience", "A1", "Room tone", 15, query="hum"),
+                     cue("ambience", "A2", "Hall tone", 15, query="hum"))
+        inner, wait = freesound.fetch_bytes, self.meeting("download", timeout=0.2)
+
+        def fake_bytes(url, **kw):
+            wait()
+            return inner(url, **kw)
+        freesound.fetch_bytes = fake_bytes
+        data = self.fetch()
+        self.assertEqual(len(self.downloads), 1)
+        self.assertEqual(self.alone, ["download"])
+        self.assertEqual([c["file"] for c in data["cues"]],
+                         ["sound/01-room-tone.mp3", "sound/01-room-tone.mp3"])
+        self.assertEqual(sorted((self.root / "sound").glob("*.mp3")),
+                         [self.root / "sound" / "01-room-tone.mp3"])
+        index = json.loads((self.root / "sound" / "index.json").read_text())
+        self.assertEqual(index, {"7": "sound/01-room-tone.mp3"})
+        self.assertEqual(data["fetch"]["filled"], 2)
+        self.assertEqual(data["fetch"]["cached"], 1)
 
     def test_a_rounds_judgements_overlap(self):
         wait = self.meeting("judge")
