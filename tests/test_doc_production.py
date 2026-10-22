@@ -46,6 +46,30 @@ class ProductionDoc(unittest.TestCase):
         self.assertNotIn("`on_screen` (the super)", doc)
         self.assertNotIn("Every `on_screen` super", doc)
 
+    def test_narrative_clarity_names_the_story_the_corpus_asks_for(self):
+        row = next(line for line in _section("## 2. The publication bar").splitlines()
+                   if "Narrative clarity" in line)
+        for word in ("hook", "stakes", "escalation", "payoff", "visual support"):
+            self.assertIn(word, row)
+
+    def test_the_story_criteria_are_house_priors_with_rule_numbers(self):
+        text = _section("## 6. Craft criteria")
+        self.assertIn("**Story.**", text)
+        story = " ".join(text[text.index("**Story.**"):].split("\n\n")[0].split())
+        self.assertIn("prior", story)
+        self.assertIn("docs/narrative/", story)
+        for rule in ("judging 13", "attention 8", "structure 19", "structure 7",
+                     "structure 27"):
+            self.assertIn(rule, story)
+
+    def test_the_narrative_beats_are_the_plans_beat_fields(self):
+        self.assertIn("`sections[].beats`", _section("## 7. Evidence sampling"))
+
+    def test_narrative_clarity_is_not_judged_from_audience_data_yet(self):
+        text = _section("## 12. What this harness cannot yet evidence")
+        self.assertIn("retention", text)
+        self.assertIn("screenplay", text)
+
     def test_captions_are_a_sidecar_unless_burned(self):
         text = _section("### The frame, in bands")
         self.assertIn("sidecar", text)

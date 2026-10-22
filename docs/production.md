@@ -53,7 +53,7 @@ runtime:
 | 6 | Voiceover | intelligibility, naturalness, emphasis, sync |
 | 7 | Sound design | effects, ambience, impacts, spatial balance, dynamics |
 | 8 | Music / score | progression, emotional fit, transitions, repetition |
-| 9 | Narrative clarity | hook, retention, payoff, visual support for each claim |
+| 9 | Narrative clarity | hook, stakes, open questions closed, escalation, payoff on the promise, visual support for each claim |
 | 10 | Overall production | does it read as a documentary, or as a slideshow |
 
 **READY TO PUBLISH requires all of:**
@@ -214,6 +214,17 @@ window, not an absence.
 **Provenance.** Third-party imagery carries its licence and credit, or is
 replaced by an original drawing until the licence exists.
 
+**Story.** House craft defaults, from `docs/narrative/`, each a prior until
+the retention loop replaces it; the number after each is its rule there.
+The film's train fits in one sentence: who or what pursues what, against
+what, and which question the film answers (judging 13). The viewer is told
+what is at risk, and by when, before the mechanism is explained (attention
+8). Each section states the one question it answers in its first line and
+closes it before the section ends (structure 19). The last section pays the
+title's promise in resolved form (structure 7). Nothing follows the payoff
+but the cut: no recap (structure 27, which that file's Contested section
+lists as a default, not a law).
+
 ---
 
 ## 7. Evidence sampling
@@ -229,7 +240,8 @@ Never judge from the opening. For every review pass, inspect across the
 - every shot containing a map, diagram, data visualisation, or dense overlay
 - every shot with substantial camera or element movement
 - every generated, archival or 3D asset in context
-- the major narrative beats
+- the major narrative beats: the plan's `sections[].beats` in `script.json`,
+  with the beat that states its `promise` and the one that pays its `payoff`
 - approximately **25%, 50% and 75%** of runtime
 - the final sequence, the call to action, the ending
 
@@ -456,6 +468,11 @@ An honest spec says where it is blind, so nobody mistakes silence for a pass:
   under `not_evidenced` instead of guessing a neutral mark.
 - **Placeholder shots are disqualifying, not deductible.** While any remain,
   the verdict is NOT READY regardless of the other nine categories.
+- **Narrative clarity is judged from the screenplay and the frames, never
+  from audience data, until the retention loop exists.** No published
+  film's retention curve reaches the pipeline yet, so the score rests on
+  the plan, the narration and what the frames show, and the craft defaults
+  in §6 stay priors rather than measured bounds.
 
 ---
 
