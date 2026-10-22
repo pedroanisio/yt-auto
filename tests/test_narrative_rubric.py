@@ -398,5 +398,17 @@ class Fixtures(unittest.TestCase):
         self.assertEqual(plan["verdict"], "accept")
 
 
+class Docs(unittest.TestCase):
+    def test_the_corpus_readme_and_skill_name_the_module(self):
+        readme = (CORPUS / "README.md").read_text(encoding="utf-8")
+        item = readme[readme.index("3. **The narrative rubric.**"):readme.index("4. **The evidence loop.**")]
+        self.assertIn("ytstudio/narrative.py", item)
+        self.assertIn("reject", item)
+        self.assertIsNone(re.search(r"verdict Pass", item))
+        skill = (ROOT / "ytstudio" / "SKILL.md").read_text(encoding="utf-8")
+        row = next(line for line in skill.splitlines() if line.startswith("| `yt script` |"))
+        self.assertIn("narrative.py", row)
+
+
 if __name__ == "__main__":
     unittest.main()

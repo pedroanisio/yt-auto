@@ -57,13 +57,27 @@ judging 13; Zeigarnik → attention Contested.
    `work/house.md` and a project's `house.md` replace sections by name.
    There is no generator: when a rule changes, the section that cites it is
    edited, and the test catches a citation that drifts.
-3. **The narrative rubric.** `yt script --review` scores a plan and script
-   against criteria drawn from the `Check:` lines, in the shape set by
-   `judging-narrative.md` rules 7–13: absolute per-criterion labels of five
-   or fewer levels, a different model family from the writer, majority of
-   at least three runs, verdict Pass / Consider / Recommend, every Consider
-   problem tied to a beat id. Validate-retry-fail runs before voice is paid
-   for.
+3. **The narrative rubric.** `ytstudio/narrative.py` holds it, in the
+   shape set by `judging-narrative.md` rules 7–13: `RUBRIC`, seven criteria
+   (train, hook, stakes, open loops, reveal setup, ending, honesty) drawn
+   from the `Check:` lines, each with four labelled levels (Excellent, Good,
+   Fair, Poor) of one line, a worked example, the corpus rules it cites and
+   the strength of its lead rule from the table below; the review's schema
+   (a logline and a synopsis before the grades, a grade per criterion, a
+   verdict reject / consider / recommend, every problem a flag tied to a
+   section and a shot); the plan review's schema; the level order permuted
+   per sample; and `check_review`, which names a recommend carrying a Poor,
+   a consider with no flag and a flag on no criterion. `reject` is
+   coverage's Pass, renamed because doctor, improve and the operator read
+   verdict strings. The hook's window is written in words, the house's to
+   set. One tuple is rendered into the writer's prompt and the reviewer's
+   role, as `framecheck.CHECKLIST` is. `tests/test_narrative_rubric.py`
+   holds every cited rule id to this corpus, and `tests/fixtures/narrative/`
+   starts the calibration set (judging 10): plans and scripts seeded with
+   one known fault each, and one good pair. The review that runs it (a
+   different model family from the writer, majority of at least three
+   runs, validate-retry-fail before voice is paid for) is the script stage's
+   to wire.
 4. **The evidence loop.** `yt improve` ingests the channel's retention curves
    (judging 1–3), maps dips, spikes and the Intro figure to beat ids and
    routes findings to the script stage under the rule they bear on. Every
