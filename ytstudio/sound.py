@@ -55,6 +55,7 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 from claude_engine import ClaudeError, EngineConfig, Usage
+from .build import NORMALIZE_MODES
 from .core import (Idea, read_json, slugify, timecode, wrap,
                    write_json)
 from .ideas import CHANNEL_STYLES, style_brief
@@ -121,8 +122,23 @@ PALETTE_SCHEMA = {
                 "music_bed": {"type": "string"},
                 "effects": {"type": "string"},
                 "master": {"type": "string"},
+                # The numbers the pipeline reads, beside the prose: the fetch
+                # levels against narration_lufs, the build takes normalize.
+                "narration_lufs": {"type": "number"},
+                "bed_below_narration_db": {"type": "number"},
+                "effects_peak_dbtp": {"type": "number"},
+                "normalize": {
+                    "type": "object",
+                    "properties": {
+                        "mode": {"type": "string", "enum": list(NORMALIZE_MODES)},
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["mode", "reason"],
+                },
             },
-            "required": ["narration", "music_bed", "effects", "master"],
+            "required": ["narration", "music_bed", "effects", "master",
+                         "narration_lufs", "bed_below_narration_db",
+                         "effects_peak_dbtp", "normalize"],
         },
         "references": {"type": "array", "items": {"type": "string"}},
     },
@@ -152,6 +168,8 @@ CUES_SCHEMA = {
                     "layers": {"type": "array", "items": {"type": "string"}},
                     "entry": {"type": "string"},
                     "exit": {"type": "string"},
+                    "fade_in": {"type": "number"},
+                    "fade_out": {"type": "number"},
                     "level": {"type": "string"},
                     "source": {"type": "string"},
                     "search": {"type": "array", "items": {"type": "string"}},
@@ -192,9 +210,11 @@ REVIEW_SCHEMA = {
 }
 
 #: The cue fields a revision may rewrite: the design, never the file contract
-#: `--fetch` writes for `yt build`, and never the cue's id.
+#: `--fetch` writes for `yt build`, and never the cue's id. The fades are the
+#: numbers beside `entry` and `exit`, in seconds.
 REVISE_TEXT = ("name", "purpose", "description", "motif", "instrumentation",
                "tempo", "sync", "entry", "exit", "level", "source")
+REVISE_FADES = ("fade_in", "fade_out")
 REVISE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -206,6 +226,7 @@ REVISE_SCHEMA = {
         "exit": {"type": "string"}, "level": {"type": "string"},
         "source": {"type": "string"},
         "at": {"type": "integer"}, "seconds": {"type": "integer"},
+        "fade_in": {"type": "number"}, "fade_out": {"type": "number"},
         "why": {"type": "string"},
     },
     "required": ["action", "why"],
@@ -230,6 +251,10 @@ class Cue:
     layers: list[str] = field(default_factory=list)
     entry: str = ""
     exit: str = ""
+    # How the cue comes in and goes out, in seconds; `yt build` sets the
+    # track's fadeIn and fadeOut from them. 0 is a hard edge.
+    fade_in: float = 0.0
+    fade_out: float = 0.0
     level: str = ""
     source: str = ""
     search: list[str] = field(default_factory=list)
@@ -267,6 +292,11 @@ class Cue:
                 clean[key] = max(floor, int(clean.get(key, floor) or floor))
             except (TypeError, ValueError):
                 clean[key] = floor
+        for key in REVISE_FADES:
+            try:
+                clean[key] = max(0.0, float(clean.get(key, 0) or 0))
+            except (TypeError, ValueError):
+                clean[key] = 0.0
         return cls(**clean)
 
     @property
@@ -339,6 +369,83 @@ def coverage(cues: list[Cue], runtime: int) -> dict:
         "silent_by_design": [f"{timecode(c.at)} ({c.seconds}s)"
                              for c in cues if c.kind == "silence"],
     }
+
+
+#: The rules a cue sheet is checked against before the model listens back:
+#: what the timecodes say outright, which the listen-back used to be asked to
+#: find and then kept (Run 2: 15 of 15 flags kept, verdict still not ready).
+RULES = ("rule:overlap", "rule:level", "rule:clock", "rule:no-bed", "rule:fade")
+
+
+def _is_transient(cue: Cue) -> bool:
+    """`build.transient_shift`'s classification: a short effect, which the
+    limiter takes after the lift when nothing sustained plays under it."""
+    from . import build
+    return cue.kind in build.TRANSIENT_KINDS and cue.seconds <= build.TRANSIENT_SECONDS
+
+
+def rule_findings(cues: list[Cue], runtime: int) -> list[dict]:
+    """Flags, shaped as the review's, for what the sheet gets wrong on its
+    face: two cues of one kind sounding at once, a cue with no level, a cue
+    past the end of the film, a short effect with no bed under it. Each
+    carries `rule`, and its `problem` opens with it. The model still chooses
+    the change, through `revise`."""
+    def flag(cue: Cue, rule: str, severity: str, problem: str, fix: str) -> dict:
+        return {"cue": cue.cue_id, "rule": rule, "severity": severity,
+                "problem": f"{rule}: {problem}", "fix": fix}
+
+    out: list[dict] = []
+    ordered = sorted(cues, key=lambda c: (c.at, c.cue_id))
+    for n, cue in enumerate(ordered):
+        # Overlap: the later cue is the one asked to move, naming the earlier.
+        for other in ordered[:n]:
+            if other.kind == cue.kind and other.out > cue.at:
+                out.append(flag(
+                    cue, "rule:overlap", "important",
+                    f"{cue.kind} {cue.cue_id} starts at {timecode(cue.at)} while "
+                    f"{other.cue_id} ({timecode(other.at)}-{timecode(other.out)}) "
+                    "is still sounding",
+                    f"start it at or after {timecode(other.out)}, end {other.cue_id} "
+                    "before it starts, or merge the two"))
+                break
+        if not cue.level.strip():
+            out.append(flag(
+                cue, "rule:level", "important",
+                f"{cue.cue_id} states no level",
+                "give its level relative to the narration (for a silence, how "
+                "far the drop goes and what stays)"))
+        if cue.at >= runtime:
+            out.append(flag(
+                cue, "rule:clock", "blocker",
+                f"{cue.cue_id} starts at {timecode(cue.at)}, after the film ends "
+                f"at {timecode(runtime)}",
+                "move it inside the film, or keep it with the reason"))
+        elif cue.out > runtime:
+            out.append(flag(
+                cue, "rule:clock", "important",
+                f"{cue.cue_id} runs to {timecode(cue.out)}, past the film's end "
+                f"at {timecode(runtime)}",
+                f"shorten it to end by {timecode(runtime)}"))
+        if _is_transient(cue) and not any(
+                o is not cue and o.kind != "silence" and not _is_transient(o)
+                and o.at <= cue.at < o.out for o in ordered):
+            out.append(flag(
+                cue, "rule:no-bed", "important",
+                f"{cue.cue_id} hits at {timecode(cue.at)} with no music, ambience "
+                "or sustained effect under it; the limiter, which runs after "
+                "normalisation, takes the loudness and the integrated target is missed",
+                "bring its level down to sit within the master's headroom, or "
+                "say which bed carries it and keep it with that reason"))
+        # A bed's fade out is required: without one the file is cut hard at
+        # the window's end, mid-sound. A hard entry on a cut can be right.
+        if cue.kind in LOUDNESS_KINDS and cue.fade_out <= 0:
+            out.append(flag(
+                cue, "rule:fade", "important",
+                f"{cue.kind} {cue.cue_id} states no fade out; a bed with none is "
+                "cut hard, mid-sound, where its window ends",
+                "give `fade_out` in seconds, and `fade_in` if it swells rather "
+                "than enters on a cut"))
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -474,6 +581,16 @@ class SoundDesigner:
         "envelope. In `source` say which path the cue takes: `catalogue` or "
         "`synth`.")
 
+    #: Beside the prose of `entry` and `exit`, the numbers the mix applies.
+    #: A library file is often longer than its cue and is cut at the window's
+    #: end, so a bed with no fade out stops mid-sound.
+    FADE_ASK = (
+        "Beside `entry` and `exit`, give `fade_in` and `fade_out` in seconds: "
+        "how long the cue takes to come in and to go out. They are required "
+        "for music and ambience (a bed with no fade out is cut hard, "
+        "mid-sound, where its window ends) and optional for the rest; 0 is a "
+        "hard edge, which is right for an effect that lands on a frame.")
+
     def _sourcing(self) -> str:
         if self.free_only:
             text = ("Sourcing is restricted to public-domain or CC0 "
@@ -539,7 +656,18 @@ class SoundDesigner:
             "treatment, how far the music bed sits under it in dB and which "
             "frequencies it leaves alone, how loud impacts and effects peak, "
             f"and the master target (YouTube normalises to about "
-            f"{TARGET_LUFS} LUFS integrated, with true peak at -1 dBTP).\n\n"
+            f"{TARGET_LUFS} LUFS integrated, with true peak at -1 dBTP). "
+            "Give the figures as numbers too: `narration_lufs`, "
+            "`bed_below_narration_db` and `effects_peak_dbtp`; the fetch "
+            "levels every file against the first.\n\n"
+            "Then decide how the master is normalised, in `normalize`: "
+            "`integrated` is one gain to the target over the whole programme, "
+            "`dynamic` rides it on 3-second loudness, `none` leaves it. The "
+            "measured trade-off: on a voice-led film with designed silences, "
+            "integrated came in 3 dB under the target with an LRA of 19 LU, "
+            "and dynamic reached it with an LRA of 6 but lifts the beds "
+            "between sentences. Give the mode and its reason in one "
+            "sentence; the build honours the mode with that reason.\n\n"
             "Finally, name a few reference tracks or scores as direction for "
             "the composer -- what to listen to for the feel, not what to use.")
         self.palette = self._ask("palette", "\n\n".join(parts), PALETTE_SCHEMA)
@@ -555,6 +683,11 @@ class SoundDesigner:
             f"{m.get('instrumentation', '')}, {m.get('character', '')}"
             for m in self.palette.get("motifs", []))
         mix = self.palette.get("mix", {})
+        numbers = "; ".join(
+            f"{label} {mix[key]}" for key, label in
+            (("narration_lufs", "narration at"), ("bed_below_narration_db", "bed dB under it"),
+             ("effects_peak_dbtp", "effects peak dBTP")) if mix.get(key) is not None)
+        decided = mix.get("normalize") if isinstance(mix.get("normalize"), dict) else {}
         return (f"The sound design you already committed to:\n"
                 f"Approach: {self.palette.get('approach', '')}\n"
                 f"Score: {self.palette.get('instrumentation', '')}\n"
@@ -563,7 +696,10 @@ class SoundDesigner:
                 f"Never: {self.palette.get('avoid', '')}\n"
                 f"Motifs:\n{motifs}\n"
                 f"Mix: narration {mix.get('narration', '')}; bed "
-                f"{mix.get('music_bed', '')}; effects {mix.get('effects', '')}")
+                f"{mix.get('music_bed', '')}; effects {mix.get('effects', '')}"
+                + (f"\nMix numbers: {numbers}" if numbers else "")
+                + (f"\nMaster normalised {decided.get('mode', '')}: "
+                   f"{decided.get('reason', '')}" if decided.get("mode") else ""))
 
     def spot_section(self, section: Section, *, index: int, total: int,
                      placed: list[Cue]) -> list[Cue]:
@@ -600,7 +736,8 @@ class SoundDesigner:
             "Do not score wall to wall. Leave the narration room where the "
             "point is the words, and give every cue a reason that names what "
             "the viewer gets from it. State the level each cue sits at "
-            "relative to the narration.\n\n" + self._sourcing())
+            "relative to the narration.\n\n" + self.FADE_ASK + "\n\n"
+            + self._sourcing())
         data = self._ask(f"spot-{index:02d}", "\n\n".join(parts), CUES_SCHEMA)
 
         cues = []
@@ -627,7 +764,7 @@ class SoundDesigner:
             f"time in seconds between 0 and {self.runtime} and a duration. "
             "Say in each cue's purpose what has to be happening on screen for "
             "it to work, since the picture is not written yet.\n\n"
-            + self._sourcing())
+            + self.FADE_ASK + "\n\n" + self._sourcing())
         data = self._ask("spot-whole", "\n\n".join(parts), CUES_SCHEMA)
         cues = []
         for raw in data.get("cues", []):
@@ -640,7 +777,8 @@ class SoundDesigner:
     # -- stage three: listen back ------------------------------------------
 
     def review(self, cues: list[Cue], stats: dict, *,
-               only: list[str] | None = None, name: str = "review") -> dict:
+               only: list[str] | None = None, name: str = "review",
+               answered: dict[tuple[str, str], str] | None = None) -> dict:
         self._say(f"[review] {len(only) if only else len(cues)} cues, "
                   f"{stats['music_share']}% of the runtime scored")
         sheet = "\n".join(
@@ -668,12 +806,19 @@ class SoundDesigner:
                  "excuse, levels that cannot coexist, and anything whose "
                  "sourcing will not survive a copyright claim. The in and "
                  "out timecodes on each line are where a cue starts and "
-                 "stops; its `exit` text says how it leaves, never when, so "
-                 "judge overlaps and what is still sounding by the "
-                 "timecodes alone. Give the cue "
-                 "id, the problem, how severe it is, and the smallest fix. "
-                 "Then one sentence on whether this is ready to hand to an "
-                 "editor."]
+                 "stops; its `exit` text says how it leaves, never when. The "
+                 "sheet's own rules have already checked two cues of one kind "
+                 "sounding at once, a missing level, the clock and a bare "
+                 "transient, and what they found was answered before this "
+                 "pass. Give the cue id, the problem, how severe it is, and "
+                 "the smallest fix. Then one sentence on whether this is "
+                 "ready to hand to an editor."]
+        if answered:
+            parts.append(
+                "These rule findings were kept as written, with the reason; "
+                "do not raise them again:\n"
+                + "\n".join(f"- {cue} {rule}: {why}"
+                            for (cue, rule), why in answered.items()))
         if only:
             parts.append(
                 "These cues were just revised. Judge only " + ", ".join(only)
@@ -701,10 +846,12 @@ class SoundDesigner:
             f"{c.cue_id} [{c.kind}] {timecode(c.at)}-{timecode(c.out)} "
             f"({c.seconds}s) {c.name} -- {c.purpose} | level: {c.level or '?'} "
             f"| source: {c.source}" for c in cues)
-        now = {k: getattr(cue, k) for k in REVISE_TEXT}
+        # the timing and the fades too: a fix may overwrite them
+        now = {k: getattr(cue, k) for k in REVISE_TEXT + REVISE_FADES + ("at", "seconds")}
+        who = "A rule of the sheet" if flag.get("rule") else "The listen-back"
         parts = [self._brief(), self._palette_recap(),
                  f"The cue sheet:\n\n{sheet}",
-                 f"The listen-back flagged {cue.cue_id} "
+                 f"{who} flagged {cue.cue_id} "
                  f"({flag.get('severity', '')}): {flag.get('problem', '')} "
                  f"(suggested: {flag.get('fix', '')}).\n"
                  f"Its fields now: {now}",
@@ -739,6 +886,15 @@ class SoundDesigner:
         for key, value in (("at", at), ("seconds", seconds)):
             if value != getattr(cue, key):
                 before[key], after[key] = getattr(cue, key), value
+        for key in REVISE_FADES:                 # a fade fits inside its cue
+            if data.get(key) is None:
+                continue
+            try:
+                value = min(max(0.0, float(data[key])), float(seconds))
+            except (TypeError, ValueError):
+                continue
+            if value != getattr(cue, key):
+                before[key], after[key] = getattr(cue, key), value
         if not after:
             return {"applied": None, "why": why or "nothing to change"}
         for key, value in after.items():
@@ -754,16 +910,54 @@ class SoundDesigner:
         is the review, with `revisions` (what changed), `kept` (cues left as
         written, with the reason, and still flagged) and `unresolved` (flags
         still standing after the last round, each kept with that reason).
+
+        The sheet's own rules (`rule_findings`) go to `revise` first, before
+        the model listens back: a rule flag it keeps, or answers with a change
+        that still breaks the rule, stands in `flags` and `unresolved` with
+        its `rule`, and `yt build` names it. The rules are read again after
+        each change, so a second rule on the same cue that the change answered
+        is not asked, and after the model's own loop, which moves cues too: a
+        kept rule that loop cleared is resolved and leaves `kept`, and one it
+        broke is unresolved, unanswered. The review is told what the rules
+        kept, and why, so it does not raise it again.
         """
-        review = self.review(cues, stats)
-        if not review or not fix:
+        rules = rule_findings(cues, self.runtime)
+        if not fix:
+            review = self.review(cues, stats)
+            if not review and rules:
+                review = {"flags": [], "verdict": ""}
+            if review:
+                review["flags"] = list(review.get("flags", [])) + rules
             return review
+
+        revisions: list[dict] = []
+        rule_kept: dict[tuple[str, str], str] = {}
+        queue = list(rules)
+        while queue:
+            f = queue.pop(0)
+            result = self.revise(cues, f)
+            if not result["applied"]:
+                rule_kept[(f["cue"], f["rule"])] = result["why"]
+                continue
+            revisions.append(result["applied"] | {"rule": f["rule"]})
+            # One change often answers two rules (a bed with no level has no
+            # fade either): the rest of the queue is read off the sheet as it
+            # is now, so a problem the change removed is not asked about.
+            fresh = {(g["cue"], g["rule"]): g for g in rule_findings(cues, self.runtime)}
+            queue = [fresh[k] for k in ((g["cue"], g["rule"]) for g in queue) if k in fresh]
+        if revisions:
+            stats = coverage(cues, self.runtime)
+
+        review = self.review(cues, stats, answered=rule_kept)
+        if not review:
+            if not rules:
+                return review
+            review = {"flags": [], "verdict": ""}
 
         def binding(flags, skip=()):
             return [f for f in flags if f.get("severity") in REVISABLE
                     and f.get("cue") not in skip]
 
-        revisions: list[dict] = []
         kept: dict[str, str] = {}
         used = 0
         for _ in range(max(0, rounds)):
@@ -791,6 +985,17 @@ class SoundDesigner:
                 [f for f in review.get("flags", []) if f.get("cue") not in changed]
                 + [f for f in again.get("flags", []) if f.get("cue") in changed])
             review["recheck"] = again.get("verdict", "")
+        # The rules, on the sheet as the model's loop left it: a flag it was
+        # asked about carries its answer; one that loop made was never asked.
+        asked = {(f["cue"], f["rule"]) for f in rules}
+        standing = rule_findings(cues, self.runtime)
+        for f in standing:
+            key = (f["cue"], f["rule"])
+            f["kept"] = rule_kept.get(key) or (
+                f"still breaks {f['rule']} after the revision; left as it is"
+                if key in asked else "introduced by a revision; not answered")
+        if standing:
+            self._say(f"[rules] {len(rules)} finding(s), {len(standing)} standing")
         left = binding(review.get("flags", []), kept)
         for f in review.get("flags", []):
             if f.get("cue") in kept:
@@ -798,11 +1003,16 @@ class SoundDesigner:
         for f in left:
             f["kept"] = (f"still flagged after {used} round(s) of revision; "
                          "left as it is")
+        review["flags"] = list(review.get("flags", [])) + standing
         review["revisions"] = revisions
-        review["kept"] = [{"cue": c, "why": why} for c, why in kept.items()]
-        review["unresolved"] = left
-        self._say(f"[revise] changed {len(revisions)}, kept {len(kept)}, "
-                  f"{len(left)} still flagged")
+        # a rule keep whose problem the model's own loop then removed is not
+        # reported: `kept` is what is left as written and still flagged
+        review["kept"] = ([{"cue": f["cue"], "why": f["kept"], "rule": f["rule"]}
+                           for f in standing if (f["cue"], f["rule"]) in rule_kept]
+                          + [{"cue": c, "why": why} for c, why in kept.items()])
+        review["unresolved"] = left + standing
+        self._say(f"[revise] changed {len(revisions)}, kept {len(kept) + len(rule_kept)}, "
+                  f"{len(left) + len(standing)} still flagged")
         return review
 
     # -- run ---------------------------------------------------------------
@@ -830,7 +1040,7 @@ class SoundDesigner:
                   if do_review and cues else {})
         if review.get("revisions"):
             stats = coverage(cues, self.runtime)
-        return {
+        data = {
             "idea": asdict(self.idea),
             "runtime": self.runtime,
             "palette": palette,
@@ -842,6 +1052,19 @@ class SoundDesigner:
             "usage": asdict(self.usage),
             "engine": self.harness.report(),
         }
+        # The master's normalise mode is the designer's decision, written
+        # where `yt build` reads it. A palette without one leaves the build
+        # to its own default, which it records.
+        decided = (palette.get("mix") or {}).get("normalize")
+        if isinstance(decided, dict) and decided.get("mode") in NORMALIZE_MODES:
+            data["normalize"] = {"mode": decided["mode"],
+                                 "reason": str(decided.get("reason") or "")}
+        elif isinstance(decided, dict):
+            # asked again once by the harness already; the build's default
+            # stands and build.json records it as such
+            self._say(f"[palette] normalize mode {decided.get('mode')!r} is not one "
+                      f"of {', '.join(NORMALIZE_MODES)}; the build decides")
+        return data
 
 
 # --------------------------------------------------------------------------- #
@@ -1095,11 +1318,15 @@ def add_spectral(got: Levels, facts: str, png: str) -> None:
 
 
 def narration_level(data: dict) -> tuple[float, str]:
-    """(dB, where it came from): the narration level the sheet's mix states,
-    else the programme target."""
+    """(dB, where it came from): the sheet's `narration_lufs`, else the
+    figure in its narration prose, else the programme target."""
     from . import build
-    said = ((data.get("palette") or {}).get("mix") or {}).get("narration")
-    level = build.level_db(str(said or ""))
+    mix = (data.get("palette") or {}).get("mix") or {}
+    stated = _finite(mix.get("narration_lufs")) \
+        if _is_number(mix.get("narration_lufs")) else None
+    if stated is not None:
+        return stated, "the sheet's narration_lufs"
+    level = build.level_db(str(mix.get("narration") or ""))
     return (level, "the sheet's narration level") if level is not None \
         else (TARGET_LUFS, "programme target")
 
@@ -1107,6 +1334,11 @@ def narration_level(data: dict) -> tuple[float, str]:
 def noise_ceiling(narration: float) -> float:
     """The loudest a lifted source's noise floor may sit."""
     return narration - NOISE_BELOW_NARRATION_DB
+
+
+def _is_number(value) -> bool:
+    """A number the model gave as one: `true` is an int to Python, not a level."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def _finite(value: float) -> float | None:
@@ -1893,6 +2125,14 @@ def print_sound(idea: Idea, data: dict, cues: list[Cue]) -> None:
         for key in ("narration", "music_bed", "effects", "master"):
             if mix.get(key):
                 print(wrap(f"{key}: {mix[key]}", "    "))
+        numbers = [f"{key} {mix[key]:g}" for key in
+                   ("narration_lufs", "bed_below_narration_db", "effects_peak_dbtp")
+                   if _is_number(mix.get(key))]
+        if numbers:
+            print(wrap("numbers: " + ", ".join(numbers), "    "))
+    decided = data.get("normalize") or {}
+    if decided.get("mode"):
+        print(wrap(f"normalize: {decided['mode']} — {decided.get('reason', '')}", "    "))
     if palette.get("references"):
         print(wrap("listen to: " + ", ".join(palette["references"]), "  "))
 
@@ -1914,6 +2154,8 @@ def print_sound(idea: Idea, data: dict, cues: list[Cue]) -> None:
                              ("note", cue.note)):
             if value:
                 print(wrap(f"{label}: {value}", "      "))
+        if cue.fade_in or cue.fade_out:
+            print(wrap(f"fade: {cue.fade_in:g}s in, {cue.fade_out:g}s out", "      "))
         if cue.layers:
             print(wrap("layers: " + ", ".join(cue.layers), "      "))
         if cue.search:
@@ -1975,7 +2217,12 @@ def write_md(path: str, idea: Idea, data: dict, cues: list[Cue]) -> None:
     mix = palette.get("mix") or {}
     if mix:
         md += ["## Mix", ""]
-        md += [f"- **{k.replace('_', ' ')}.** {v}" for k, v in mix.items() if v]
+        md += [f"- **{k.replace('_', ' ')}.** {v}" for k, v in mix.items()
+               if v and k != "normalize"]
+        decided = data.get("normalize") or {}
+        if decided.get("mode"):
+            md.append(f"- **Master normalised `{decided['mode']}`.** "
+                      f"{decided.get('reason', '')}")
         md.append("")
     if palette.get("references"):
         md += ["*Listen to, as direction only: "
@@ -2005,6 +2252,8 @@ def write_md(path: str, idea: Idea, data: dict, cues: list[Cue]) -> None:
                              ("Note", cue.note)):
             if value:
                 md.append(f"- **{label}.** {value}")
+        if cue.fade_in or cue.fade_out:
+            md.append(f"- **Fade.** {cue.fade_in:g}s in, {cue.fade_out:g}s out")
         if cue.layers:
             md.append("- **Layers.** " + ", ".join(cue.layers))
         if cue.search:
@@ -2048,9 +2297,9 @@ def write_md(path: str, idea: Idea, data: dict, cues: list[Cue]) -> None:
 def write_csv(path: str, cues: list[Cue]) -> None:
     cols = ["cue_id", "kind", "in", "out", "seconds", "section", "shot", "name",
             "purpose", "description", "motif", "instrumentation", "tempo",
-            "sync", "layers", "entry", "exit", "level", "source", "search",
-            "query", "note", "file", "licence", "credit", "source_url",
-            "duration"]
+            "sync", "layers", "entry", "exit", "fade_in", "fade_out", "level",
+            "source", "search", "query", "note", "file", "licence", "credit",
+            "source_url", "duration"]
     with open(path, "w", encoding="utf-8", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=cols)
         writer.writeheader()

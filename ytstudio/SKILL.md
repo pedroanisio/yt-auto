@@ -160,7 +160,9 @@ from `codex_engine.PRICES` and `$CODEX_PRICES`).
 sound-designer number (`tail_seconds`, a cue's `fade_in`, `fade_out` or
 `gain_db`, a `level` written in words only) is replaced by its default and
 also recorded as a `warning:` finding in `build.json`, naming the field, the
-cue and the value used. The caption track places the same
+cue and the value used. A cue's `fade_in` and `fade_out` (seconds, from the
+sheet) set the track's fades; a file longer than its window with no fade out
+is cut hard mid-sound, and that is a `warning:` naming the cue. The caption track places the same
 `design.caption_cues` as the sidecar, from the `voice.json` takes, so
 burned-in and sidecar captions are the same cues. The placeholder card draws
 with the design's ink and label size, no literal colour. `yt build` prints
@@ -710,8 +712,10 @@ hand-authored world showed the cost.
 - **The sound is Freesound previews, not masters.** `yt sound --fetch`
   fills each cue with the best CC0/CC-BY hit's high-quality mp3 preview and
   `yt build` places it on a bus per role, every non-narration bus ducked under the narration and the
-  master normalised once (`integrated`; `dynamic` only with `--normalize-reason`
-  or a reason in sound.json's `normalize`). The fetch measures each file on a render host, by
+  master normalised once, in the mode the sound designer decided on the
+  palette (sound.json's `normalize`: `integrated`, `dynamic` with its reason,
+  or `none`; `--normalize` overrides, `integrated` when nobody decided, and
+  `build.json` records `normalize_from`). The fetch measures each file on a render host, by
   loudness for beds and peak for effects, writes the cue's `gain_db`, and refuses a source the
   track's gain cannot reach or whose noise floor the lift would put within 12 dB of the
   narration, trying the next-ranked hit; with no host it says `NOT LEVELLED`. Cues
@@ -719,7 +723,14 @@ hand-authored world showed the cost.
   applied in cue order. A cue
   nothing matched stays `unfilled`, shows under `audio_missing` in
   `build.json`, and a design of which nothing could be placed makes the
-  build unpublishable. `yt sound --synth` realises every cue still without
+  build unpublishable. `yt sound --review` checks the sheet's own rules
+  before the model listens back (`rule:overlap`, `rule:level`, `rule:clock`,
+  `rule:no-bed`, and `rule:fade` for a bed with no fade out); the model
+  answers each still standing through `revise` (one change often clears a
+  cue's second rule, which is then not asked), the listen-back is told what
+  it kept and why, and a rule flag it keeps stands in
+  `review.unresolved` with its reason, which `yt build` records as a
+  `warning:` naming the cues. `yt sound --synth` realises every cue still without
   a file as original procedural sound: an agent writes and runs
   `sound/synth/make_audio.py` (NumPy and SciPy, no samples, a fixed seed),
   every WAV must pass `check.py` -- the pipeline's own check: 48 kHz stereo

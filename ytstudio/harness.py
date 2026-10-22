@@ -208,7 +208,8 @@ def type_errors(result: Any, schema: dict, path: str = "") -> list[str]:
 #: Appended to the question when the first answer did not hold to the schema.
 RETRY_INSTRUCTION = (
     "\n\nYour previous answer did not hold to the schema: %s. Answer the same "
-    "question again, with every required field present and of the declared type.")
+    "question again, with every required field present and of the declared type, "
+    "and every enumerated field holding one of its listed values.")
 
 
 def enum_violations(result: Any, schema: dict, path: str = "") -> list[str]:
@@ -402,9 +403,12 @@ class Harness:
         try:
             result = engine.ask_json(prompt, schema, system=self.system)
             # invariant 3: validate, retry once with the problem named, then
-            # fail (a missing field) or let the stage record its fallback (a type)
+            # fail (a missing field) or let the stage record its fallback (a
+            # type, a value outside its enum)
             problems = ([f"{f} is missing" for f in missing_fields(result, schema)]
-                        + type_errors(result, schema))
+                        + type_errors(result, schema)
+                        + [f"{v} is not one of the schema's values"
+                           for v in enum_violations(result, schema)])
             if problems:
                 self._say(f"[{self.stage}] {name}: asking again ({'; '.join(problems[:3])})")
                 result = engine.ask_json(prompt + RETRY_INSTRUCTION % "; ".join(problems[:10]),

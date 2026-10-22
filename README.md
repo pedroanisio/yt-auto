@@ -578,17 +578,36 @@ a still (as at 80% of its time) rather than being cut off with exit 1.
 Spots audio against the screenplay: where music enters and what it is doing
 there, which effect lands on which word or frame, what the room sounds like
 underneath, and where everything drops out. Produces a sonic palette with named
-motifs, mix targets in real numbers (bed dB under narration, −14 LUFS master,
-−1 dBTP), and a numbered cue sheet. `silence` is a cue kind, because scored
-silence is a decision.
+motifs, mix targets in real numbers (`narration_lufs`,
+`bed_below_narration_db`, `effects_peak_dbtp` beside the prose; the fetch
+levels every file against the first, with the prose figure as fallback),
+the master's normalise mode with its reason (`normalize` in `sound.json`,
+decided against the measured trade-off: integrated under-reaches a voice-led
+film with designed silences, dynamic lifts the beds between sentences), and a
+numbered cue sheet. `silence` is a cue kind, because scored silence is a
+decision. Every cue carries `fade_in` and `fade_out` in seconds
+beside its `entry` and `exit` prose, required for music and ambience
+(`rule:fade` flags a bed with no fade out) and optional for the rest; `yt
+build` sets the track's `fadeIn`/`fadeOut` from them.
 
 Coverage is computed, not asked for — merged music intervals, share of runtime
 scored, longest unbroken run, unscored stretches — and `--review` hands those
 numbers back for a listen-back pass that flags wall-to-wall music, cues that
 fight the narration, effects with no sync point and sourcing that will not
-survive a claim. Unless `--report-only` is given the review then revises: each
+survive a claim. What the timecodes say outright is not asked of the model:
+`sound.rule_findings` flags two cues of one kind sounding at once
+(`rule:overlap`), a cue with no level (`rule:level`), a cue past the film's
+end (`rule:clock`) and a short effect with no bed under it (`rule:no-bed`,
+the build's own transient classification), and each goes to the same revise
+call before the first listen-back, read off the sheet again after every change
+so a second rule on a cue the change already answered is not asked; a rule
+flag the model keeps, or answers
+with a change that still breaks the rule, stands in `unresolved` with its
+`rule` and reason, and `yt build` records it as a `warning:` naming the cues.
+Unless `--report-only` is given the review then revises: each
 important or blocking flag gets one revise call that may edit only the cue's
-design fields (never `file`, `licence`, `credit`, `gain_db`, fades or `loop`),
+design fields, its `fade_in` and `fade_out` among them (never `file`,
+`licence`, `credit`, `gain_db` or `loop`),
 only the revised cues are checked again, for at most two rounds, a flag that
 cannot be fixed is kept with its reason, and coverage is recomputed when cues
 changed. `--report-only` reports the findings and changes nothing.
@@ -669,7 +688,9 @@ A malformed number from the editor (`tail_seconds`) or the sound designer (a
 cue's `fade_in`, `fade_out` or `gain_db`, or a `level` written in words only)
 is replaced by its default (`tail_seconds` 0.5, the others 0) and recorded as
 a `warning:` in `build.json`'s `findings`, naming the field, the cue and the
-value used.
+value used. A cue whose file runs longer than its window and has no
+`fade_out` is cut hard mid-sound at `clipOut`, and is a `warning:` naming the
+cue; so is each rule finding the sound design's listen-back kept.
 
 An `<include>` carries neither the included document's styles, paints nor
 lights (the engine warns, E12), so the builder lifts them: every `<light>`
@@ -757,11 +778,14 @@ blocks the build; the explicit alias table (Helvetica, Arial, `serif`,
 Captions are a sidecar track by default (the platform takes it and the viewer
 turns it on; `yt gate` checks `narration.vtt` either way), because burned in
 they share the lower band with the authored type; `--burn-captions` burns them
-into the picture. The master is normalised to integrated loudness;
-`--normalize dynamic` is honoured only with `--normalize-reason` (or
-`normalize.reason` in `sound.json`), else it falls back to integrated with a
-finding, and `none` leaves the master unnormalised. Every bus but the
-narration ducks under it.
+into the picture. The master's normalise mode is the sound designer's
+decision: `sound.json`'s `normalize` (`mode`, `reason`) is read, and
+`integrated` is the fallback when no stage decided; `--normalize` is the
+operator's override. `dynamic` is honoured only with a reason (the flag's
+`--normalize-reason`, or the design's), else it falls back to integrated with
+a finding, and `none` leaves the master unnormalised. `build.json` records the
+mode and `normalize_from` (`sound.json`, `the --normalize flag` or
+`default`). Every bus but the narration ducks under it.
 
 `--width` · `--height` · `--fps` · `--codec` (checked against the schema's own
 list) · `--bitrate` and friends (never `crf`) · `--loudness` · `--true-peak`

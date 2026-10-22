@@ -499,6 +499,9 @@ def stage_gain(totals: list[float], lo: float, hi: float) -> tuple[float, list[f
 #: programme's peaks without carrying its loudness.
 TRANSIENT_KINDS = ("sfx", "stinger", "transition")
 TRANSIENT_SECONDS = 2.0
+#: How far a file may run past its cue's window, in seconds, before the cut
+#: is a hard one worth naming: the window is whole seconds, the file is not.
+HARD_CUT_TOLERANCE = 0.05
 #: The room the master's ceiling leaves above the integrated target is
 #: shared between the bed's own crest and the transients. The crest belongs
 #: to each film's mix, so it is measured, not fixed: a generic start for the
@@ -568,6 +571,10 @@ def transient_shift(rows: list[tuple[str, float, float]], headroom: float
     bed = max(beds)
     return round(max(0.0, max(transients) - (bed + headroom)), 3), bed
 
+
+#: How the master may be normalised. The sound designer decides it on the
+#: palette (sound.json's `normalize`); `--normalize` is the operator's override.
+NORMALIZE_MODES = ("integrated", "dynamic", "none")
 
 #: The bus each cue kind is routed to; the track's `role` is asked of the
 #: schema, these are only the ids the document uses.
@@ -959,7 +966,7 @@ class SceneBuilder:
                  background: str = "", lang: str = "", captions: bool = True,
                  burn_captions: bool = False,
                  audio: bool = True, loudness: float = -14.0,
-                 true_peak: float = -1.0, normalize: str = "integrated",
+                 true_peak: float = -1.0, normalize: str | None = None,
                  normalize_reason: str = "", limiter: bool = True,
                  bitrate: int = 16_000_000,
                  max_bitrate: int = 24_000_000, buffer_size: int = 48_000_000,
@@ -993,9 +1000,16 @@ class SceneBuilder:
         self.captions, self.audio = captions, audio
         self.burn_captions = burn_captions
         self.loudness, self.true_peak = loudness, true_peak
+        # `normalize` is the flag, None when not given: the sound design's
+        # `normalize` then decides, and integrated is the last resort.
         self.normalize = normalize
         self.normalize_reason = normalize_reason
         self.sound_normalize = (sound or {}).get("normalize")
+        # The listen-back's rule findings left standing (sound.rule_findings),
+        # each kept with a reason: the mix inherits them as warnings.
+        left = ((sound or {}).get("review") or {}).get("unresolved")
+        self.sound_rules_kept = [f for f in (left if isinstance(left, list) else [])
+                                 if isinstance(f, dict) and f.get("rule")]
         self.limiter = limiter
         self.bitrate, self.max_bitrate = bitrate, max_bitrate
         self.buffer_size, self.preset = buffer_size, preset
@@ -1228,6 +1242,28 @@ class SceneBuilder:
 
     # -- the mix ---------------------------------------------------------------
 
+    def normalize_mode(self) -> tuple[str, str, str, str]:
+        """(mode, reason, where it came from, a finding or ""): the
+        --normalize flag when given, else the sound design's `normalize`,
+        else integrated. Dynamic with no reason stays integrated, and says so:
+        a gain riding 3-second loudness lifts the beds between sentences."""
+        asked = self.sound_normalize if isinstance(self.sound_normalize, dict) else {}
+        asked_mode = asked.get("mode") if asked.get("mode") in NORMALIZE_MODES else ""
+        asked_reason = str(asked.get("reason") or "")
+        if self.normalize:
+            mode, source = self.normalize, "the --normalize flag"
+            reason = self.normalize_reason or (asked_reason if asked_mode == mode else "")
+        elif asked_mode:
+            mode, reason, source = asked_mode, asked_reason, "sound.json"
+        else:
+            mode, reason, source = "integrated", "", "default"
+        finding = ""
+        if mode == "dynamic" and not reason.strip():
+            finding = ("warning: normalize=dynamic asked with no reason; the master "
+                       "stays integrated (one gain to the target)")
+            mode = "integrated"
+        return mode, reason, source, finding
+
     def _mix(self, scene, assets, placed: list[Placed], duration: float) -> dict:
         """The narration takes and the sound design's cues, as one <audioMix>.
 
@@ -1237,13 +1273,25 @@ class SceneBuilder:
         on the master's volume. A cue with no file, or a file that is not
         there, is listed as missing and not invented.
         """
+        normalize, reason, normalize_from, said = self.normalize_mode()
         report = {"tracks": 0, "narration": 0, "buses": {}, "missing": [],
                   "silence": 0, "unplaced": False, "findings": [],
+                  "normalize": normalize, "normalize_from": normalize_from,
                   "staging": {"bed_db": None, "headroom_db": None,
                               "shift_db": 0.0, "shifted": []}}
         if not self.audio:
             return report
         findings = report["findings"]
+        if said:
+            findings.append(said)
+        if self.sound_rules_kept:
+            # A rule the sheet broke and the designer kept, with the reason:
+            # the build does not fix it, it names it.
+            findings.append(
+                f"warning: the sound design kept {len(self.sound_rules_kept)} rule "
+                "finding(s) the listen-back left standing: " + "; ".join(
+                    f"{f.get('cue', '?')} {f.get('rule')} ({f.get('kept') or 'no reason'})"
+                    for f in self.sound_rules_kept))
         roles = enum_of("audioTrack", "role")
         role_of = {"narration": pick(roles, "voiceover", "dialogue"),
                    "music": pick(roles, "music"),
@@ -1355,10 +1403,22 @@ class SceneBuilder:
                                     "0 is used")
                     return 0.0
 
+            fades = {}
             for key, attr in (("fade_in", "fadeIn"), ("fade_out", "fadeOut")):
-                fade = number(key)
+                fades[key] = fade = number(key)
                 if fade > 0:
                     setattr(track, attr, round(min(fade, window), 3))
+            if (length and length > window + HARD_CUT_TOLERANCE and not cue.get("loop")
+                    and fades["fade_out"] <= 0):
+                # clipOut stops the file mid-sound; only a fade makes that an
+                # ending. The sheet owns the fade, so the mix names the cue. A
+                # file a few hundredths over its whole-second window is not cut
+                # where anyone hears it.
+                findings.append(
+                    f"warning: cue {cue_id}'s file runs {length:.1f}s and its "
+                    f"window {window:g}s, with no fade_out: it is cut hard, "
+                    f"mid-sound, at {at + window:g}s; give the cue a fade out "
+                    "in the sound design")
             trim = number("gain_db")
             said = str(cue.get("level") or "").strip()
             level = level_db(said)
@@ -1372,7 +1432,7 @@ class SceneBuilder:
         # far above the bed is limited after the lift and the programme loses
         # loudness it never gets back. The short effects come down as a
         # group until the loudest sits within the master's own headroom.
-        if self.normalize != "none":
+        if normalize != "none":
             crest, crest_from = measured_crest(self.root, target=self.loudness,
                                                true_peak=self.true_peak)
             headroom = transient_headroom(self.loudness, self.true_peak, crest=crest)
@@ -1439,18 +1499,7 @@ class SceneBuilder:
         # `integrated` measures the whole programme once -- which is why
         # cutting a range never makes the audio cheaper.
         master = mixer().add_master()
-        normalize, reason = self.normalize, self.normalize_reason
-        asked = self.sound_normalize
-        if isinstance(asked, dict) and asked.get("mode") in ("dynamic", "integrated", "none"):
-            normalize, reason = asked["mode"], str(asked.get("reason") or "")
-        if normalize == "dynamic" and not reason.strip():
-            # a gain riding 3-second loudness lifts the beds between sentences
-            findings.append(
-                "warning: normalize=dynamic asked with no reason; the master "
-                "stays integrated (one gain to the target)")
-            normalize = "integrated"
-        if normalize:
-            master.normalize = normalize
+        master.normalize = normalize
         if normalize != "none":
             master.loudness = self.loudness
         master.truePeak = self.true_peak
@@ -1992,7 +2041,8 @@ class SceneBuilder:
                       "max_bitrate": self.max_bitrate,
                       "loudness": self.loudness,
                       "true_peak": self.true_peak,
-                      "normalize": self.normalize,
+                      "normalize": sound["normalize"],
+                      "normalize_from": sound["normalize_from"],
                       "limiter": self.limiter},
             "look": self.look,
             "timeline": {"shots": len(placed),
@@ -2248,10 +2298,10 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                         "-14.4 in one peer's file")
     p.add_argument("--true-peak", type=float, default=-1.0, dest="true_peak",
                    help="true-peak ceiling in dBTP (default -1)")
-    p.add_argument("--normalize", default="integrated",
-                   choices=["integrated", "dynamic", "none"],
-                   help="how the master is normalised (default integrated; "
-                        "dynamic needs --normalize-reason)")
+    p.add_argument("--normalize", default=None, choices=list(NORMALIZE_MODES),
+                   help="override how the master is normalised. Unset, the "
+                        "sound design's `normalize` decides, else integrated; "
+                        "dynamic needs --normalize-reason or the design's reason")
     p.add_argument("--normalize-reason", default="", dest="normalize_reason",
                    help="why the master is not integrated: dynamic without a "
                         "reason falls back to integrated")

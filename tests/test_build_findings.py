@@ -74,8 +74,11 @@ class EditorTail(_Project):
 
 class SoundNumbers(_Project):
     def one(self, field, value):
+        # the bad number's own finding; a bed left with no fade out is
+        # another (AUTO-84), pinned in test_sound_fades
         _, manifest = self.build(_edit(), [_cue(**{field: value})])
-        return [f for f in manifest["findings"] if "M1" in f and field in f]
+        return [f for f in manifest["findings"]
+                if "M1" in f and field in f and "not a number" in f]
 
     def test_a_fade_in_that_is_not_a_number(self):
         found = self.one("fade_in", "slow")

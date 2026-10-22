@@ -103,7 +103,7 @@ All paths are relative to the project directory, `work/<slug>/`.
 | `props.json` | The CC0 props `yt props` fetched from Poly Haven under `props/<kind>/<id>/`: per item `kind`, `file`, `files`, `licence`, `credit`, `source_url`. The vfx brief lists them so the author places real models, HDRIs and textures. |
 | `voice.json` | The clock: per take `file`, `at`, `seconds`, word-level `words`, and the per-section drift. |
 | `dossier.json` | The truth: `claims` with `source_url` and confidence, `assets` with `licence`, `credit_line`, `commercial_ok`, `misconceptions`, `gaps`. |
-| `sound.json` | The audio design: cues with `kind` (including `silence`), `at`, `seconds`, `level`, `motif`, a `query` for the library, and the mix targets. After `yt sound --fetch`, each filled cue also carries `file` (under `sound/`), `licence`, `credit`, `source_url` and `duration`, which is what the build places; `unfilled[]` lists what nothing matched. |
+| `sound.json` | The audio design: cues with `kind` (including `silence`), `at`, `seconds`, `level`, `fade_in`, `fade_out`, `motif`, a `query` for the library, the mix targets (numbers beside the prose: `narration_lufs`, `bed_below_narration_db`, `effects_peak_dbtp`) and `normalize` (`mode`, `reason`), the master's normalise mode the build reads. After `yt sound --fetch`, each filled cue also carries `file` (under `sound/`), `licence`, `credit`, `source_url` and `duration`, which is what the build places; `unfilled[]` lists what nothing matched. |
 | `work/house.md` | The editorial standard, which production serves rather than reinterprets. |
 | `docs/compute.md` | Where heavy work runs, and the traps of each machine. |
 
