@@ -139,8 +139,11 @@ def writer(**kw):
 
 def faked(w, check, fixes=None):
     """Answer by the schema: the plan accepted, two shots a section, the
-    picture-check `check`, and `fixes` for the revise named `revise-picture`."""
+    picture-check `check`, and `fixes` for the revise named `revise-picture`.
+    `check` given as a list is one answer per picture-check call, in order;
+    an exception, there or as `fixes`, is raised instead of answering."""
     calls = []
+    answers = list(check) if isinstance(check, list) else None
 
     def ask(name, prompt, schema):
         which = kind(schema)
@@ -152,8 +155,13 @@ def faked(w, check, fixes=None):
         if which == "shots":
             return section_shots(int(name.split("-")[1]))
         if which == "picture-check":
-            return copy.deepcopy(check)
+            got = answers.pop(0) if answers is not None else check
+            if isinstance(got, Exception):
+                raise got
+            return copy.deepcopy(got)
         if which == "fixes" and name == "revise-picture":
+            if isinstance(fixes, Exception):
+                raise fixes
             return {"fixes": copy.deepcopy(fixes or [])}
         return {}
     w._ask = ask
@@ -216,6 +224,48 @@ class Prompt(unittest.TestCase):
         found = re.findall(r"\b(blue|red|green|yellow|highlight|arrow|zoom|glow)\b",
                            text, re.I)
         self.assertEqual(found, [])
+
+
+def without(*numbers):
+    """A picture-check answer that reads every section but `numbers`."""
+    return picture([{"section": n, "claim": f"claim {n}", "carries_beat": True,
+                     "missing": "", "confused_at": []} for n in (1, 2, 3)
+                    if n not in numbers])
+
+
+class ValidateRetryFail(unittest.TestCase):
+    def test_a_section_left_unread_is_asked_again_by_its_number(self):
+        w = writer()
+        calls = faked(w, [without(2), picture()])
+        data = w.run(review=True)
+        [again] = named(calls, "picture-check-again")
+        self.assertIn("section(s) 2", again["prompt"])
+        self.assertIs(again["schema"], narrative.PICTURE_SCHEMA)
+        self.assertTrue(data["picture"]["again"])
+        self.assertEqual(data["picture"]["unread"], [])
+        self.assertFalse(any("read no claim" in f for f in data["findings"]))
+
+    def test_still_unread_after_asking_again_is_a_note(self):
+        w = writer()
+        calls = faked(w, [without(2), without(2)])
+        data = w.run(review=True)
+        self.assertEqual(len(named(calls, "picture-check-again")), 1)   # once, no more
+        self.assertEqual(data["picture"]["unread"], [2])
+        self.assertTrue(any(f.startswith("note: picture-check read no claim for "
+                                         "section(s) 2") for f in data["findings"]),
+                        data["findings"])
+
+    def test_a_failed_check_is_a_warning_and_changes_nothing(self):
+        w = writer()
+        calls = faked(w, script.ClaudeError("the reviewer is down"))
+        data = w.run(review=True)
+        record = data["picture"]
+        self.assertIn("the reviewer is down", record["failed"])
+        self.assertEqual(record["flags"], [])
+        self.assertFalse(named(calls, "revise-picture"))
+        self.assertTrue(any(f.startswith("warning: picture-check failed")
+                            for f in data["findings"]), data["findings"])
+        self.assertEqual(shot(data, "1.1")["visual"], "PICTURE 1.1")
 
 
 class Flags(unittest.TestCase):
