@@ -161,6 +161,7 @@ class Mix(unittest.TestCase):
         (self.root / "vfx" / "open.scene.xml").write_text("<scene/>")
         _wav(self.root / "sound" / "long.wav", 12)
         _wav(self.root / "sound" / "short.wav", 2)
+        _wav(self.root / "sound" / "nearly.wav", 6.01)
         self.vfx = {"scene": {"by_label": {
             label: {"file": "vfx/open.scene.xml", "symbol": "fx-all"}
             for label in ("1.1", "1.2", "2.1")}}}
@@ -200,6 +201,13 @@ class Mix(unittest.TestCase):
     def test_a_file_that_fits_its_window_needs_no_fade(self):
         cue = asdict(sound.Cue.from_raw(raw(kind="sfx", seconds=4)))
         cue.update(cue_id="S1", file="sound/short.wav")
+        _, manifest = self.build(cue)
+        self.assertEqual(self.hard_cut(manifest), [])
+
+    def test_a_file_a_hundredth_longer_than_its_window_is_not_cut(self):
+        # the sheet's window is whole seconds, the file's length is not
+        cue = asdict(sound.Cue.from_raw(raw(seconds=6)))
+        cue.update(cue_id="M1", file="sound/nearly.wav")
         _, manifest = self.build(cue)
         self.assertEqual(self.hard_cut(manifest), [])
 

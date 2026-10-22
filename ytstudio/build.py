@@ -400,6 +400,9 @@ def stage_gain(totals: list[float], lo: float, hi: float) -> tuple[float, list[f
 #: programme's peaks without carrying its loudness.
 TRANSIENT_KINDS = ("sfx", "stinger", "transition")
 TRANSIENT_SECONDS = 2.0
+#: How far a file may run past its cue's window, in seconds, before the cut
+#: is a hard one worth naming: the window is whole seconds, the file is not.
+HARD_CUT_TOLERANCE = 0.05
 #: The room the master's ceiling leaves above the integrated target is
 #: shared between the bed's own crest and the transients. The crest belongs
 #: to each film's mix, so it is measured, not fixed: a generic start for the
@@ -1295,10 +1298,12 @@ class SceneBuilder:
                 fades[key] = fade = number(key)
                 if fade > 0:
                     setattr(track, attr, round(min(fade, window), 3))
-            if (length and length > window and not cue.get("loop")
+            if (length and length > window + HARD_CUT_TOLERANCE and not cue.get("loop")
                     and fades["fade_out"] <= 0):
                 # clipOut stops the file mid-sound; only a fade makes that an
-                # ending. The sheet owns the fade, so the mix names the cue.
+                # ending. The sheet owns the fade, so the mix names the cue. A
+                # file a few hundredths over its whole-second window is not cut
+                # where anyone hears it.
                 findings.append(
                     f"warning: cue {cue_id}'s file runs {length:.1f}s and its "
                     f"window {window:g}s, with no fade_out: it is cut hard, "
