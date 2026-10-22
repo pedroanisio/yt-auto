@@ -532,11 +532,17 @@ class LedgerDrafting(unittest.TestCase):
     repeats."""
 
     def run_writer(self, jobs, marks=BALANCED, fix_targets=(), keep=(), plan=QPLAN,
-                   lines=None):
+                   lines=None, closes=None):
+        """`closes` maps a shot number to the questions the writer's fix or
+        keep names under `closes`; a number it lacks names none."""
         w = writer(research="", jobs=jobs)
         w.plan = lambda: copy.deepcopy(plan)
         lock = threading.Lock()
         prompts, names = {}, []
+        closes = closes or {}
+
+        def named(n):
+            return {"closes": list(closes[n])} if n in closes else {}
 
         def ask(name, prompt, schema):
             with lock:
@@ -553,10 +559,11 @@ class LedgerDrafting(unittest.TestCase):
             if which == "fixes":
                 with lock:
                     prompts.setdefault("fixes", []).append(prompt)
+                    prompts.setdefault("schemas", []).append(schema)
                 return {"fixes": [{"n": n, "action": "fix", "narration": "Answered here.",
-                                   "why": "ledger"} for n in fix_targets]
-                        + [{"n": n, "action": "keep", "why": "answered by the picture"}
-                           for n in keep]}
+                                   "why": "ledger", **named(n)} for n in fix_targets]
+                        + [{"n": n, "action": "keep", "why": "answered by the picture",
+                            **named(n)} for n in keep]}
             raise AssertionError(which)
         w._ask = ask
         return w, prompts, names
@@ -588,17 +595,67 @@ class LedgerDrafting(unittest.TestCase):
         shots = data["sections"][2]["shots"]
         self.assertEqual([s["closes"] for s in shots], [[], ["Q1"]])
 
-    def test_an_open_loop_goes_to_revise_ledger_and_the_answering_line_closes_it(self):
+    def test_an_open_loop_goes_to_revise_ledger_and_the_line_the_writer_names_closes_it(self):
         marks = dict(BALANCED, Four={"opens": [{"id": "Q3", "opens_at": 1}]})
-        w, prompts, names = self.run_writer(4, marks, fix_targets=[8])
+        w, prompts, names = self.run_writer(4, marks, fix_targets=[8], closes={8: ["Q2"]})
         data = w.run()
         self.assertIn("revise-ledger", names)
         self.assertEqual(len(prompts["fixes"]), 1)
         self.assertIn("rule:open-loop", prompts["fixes"][0])
         self.assertIn("Q2", prompts["fixes"][0])
+        # the writer is asked to name the questions its line answers
+        item = prompts["schemas"][0]["properties"]["fixes"]["items"]["properties"]
+        self.assertIn("closes", item)
+        self.assertIn("closes", prompts["fixes"][0].split("flagged by", 1)[1])
         self.assertEqual(data["sections"][3]["shots"][1]["narration"], "Answered here.")
+        self.assertEqual(data["sections"][3]["shots"][1]["closes"], ["Q2"])
         self.assertEqual(data["questions"][1]["closed_at"], "4.2")
         self.assertFalse([f for f in data["findings"] if "rule:open-loop" in f])
+
+    def test_a_changed_line_that_names_no_answer_leaves_the_open_loop_standing(self):
+        # the writer rewords shot 4.2 for the figure it repeats and does not
+        # say the line answers Q2: that the line changed is no answer
+        plan = copy.deepcopy(QPLAN)
+        plan["sections"][0]["beats"] = ["It weighs 120 kg"]
+        marks = dict(BALANCED, Four={"opens": [{"id": "Q3", "opens_at": 1}]})
+        w, prompts, _ = self.run_writer(
+            1, marks, fix_targets=[8], plan=plan,
+            lines={"One": "It weighs 120 kg."})
+        original = w._ask
+
+        def ask(name, prompt, schema):
+            got = original(name, prompt, schema)
+            if name == "write-04":
+                got["shots"][1]["narration"] = "It still weighs 120 kg."
+            return got
+        w._ask = ask
+        data = w.run()
+        self.assertIn("120 kg", prompts["fixes"][0])
+        self.assertIn("rule:open-loop", prompts["fixes"][0])
+        self.assertEqual(data["sections"][3]["shots"][1]["narration"], "Answered here.")
+        self.assertEqual(data["sections"][3]["shots"][1]["closes"], [])
+        self.assertEqual(data["questions"][1]["closed_at"], "")
+        lines = [f for f in data["findings"] if "rule:open-loop" in f]
+        self.assertEqual(len(lines), 1, data["findings"])
+        self.assertIn("Q2", lines[0])
+
+    def test_an_answer_before_the_question_goes_to_revise_ledger_and_an_unnamed_line_clears_it(self):
+        # section 1 answers Q2 at its second shot, before section 2 raises it
+        marks = dict(BALANCED, One={"opens": [{"id": "Q1", "opens_at": 1}],
+                                    "closes": [{"id": "Q2", "closes_at": 2}]})
+        for named, standing in (({2: []}, 0), ({}, 1)):
+            with self.subTest(named=named):
+                w, prompts, names = self.run_writer(4, marks, fix_targets=[2],
+                                                    closes=named)
+                data = w.run()
+                self.assertEqual(names.count("revise-ledger"), 1)
+                self.assertIn("rule:closed-unopened", prompts["fixes"][0])
+                lines = [f for f in data["findings"] if "rule:closed-unopened" in f]
+                # a fix naming the line's answers without Q2 takes the mark
+                # off; one that names none leaves the mark and the flag
+                self.assertEqual(len(lines), standing, data["findings"])
+                self.assertEqual(data["questions"][1]["closed_at"],
+                                 "4.2" if not standing else "1.2")
 
     def test_an_open_loop_the_writer_keeps_stands_as_a_warning_with_its_reason(self):
         marks = dict(BALANCED, Four={"opens": [{"id": "Q3", "opens_at": 1}]})
@@ -651,7 +708,45 @@ class LedgerDrafting(unittest.TestCase):
         self.assertEqual(names[-1], "revise-ledger-2")
         self.assertIn("rule:unanswered-by-reader", prompts["fixes"][-1])
         self.assertEqual(shots[7].narration, "Answered here.")
+        # the rewrite named no answer: the reader's gap stands
+        self.assertEqual(rule_ids(done["flags"]), ["rule:unanswered-by-reader"])
+
+    def test_the_cold_readers_gap_is_answered_by_a_rewrite_that_names_the_question(self):
+        w, prompts, names = self.run_writer(1, fix_targets=[8], closes={8: ["Q2"]})
+        sections = drafted()
+        shots = [s for sec in sections for s in sec.shots]
+        cold = {"answered": [{"question_id": "Q1", "shot_index": 6}]}
+        done = w.revise_ledger(sections, shots, QPLAN, cold_read=cold,
+                               name="revise-ledger-2")
         self.assertEqual(done["flags"], [])
+        # the answer holds for that line only: a section written again in
+        # its place is measured afresh
+        fresh = drafted()
+        sections[3].shots = fresh[3].shots
+        self.assertEqual(rule_ids(w.ledger_flags(QPLAN, sections, cold)),
+                         ["rule:unanswered-by-reader"])
+
+    def test_a_kept_open_loop_holds_for_its_line_only(self):
+        marks = dict(BALANCED, Four={"opens": [{"id": "Q3", "opens_at": 1}]})
+        w, prompts, names = self.run_writer(1, keep=[8])
+        sections = drafted(marks)
+        shots = [s for sec in sections for s in sec.shots]
+        w.revise_ledger(sections, shots, QPLAN)
+        self.assertEqual(names.count("revise-ledger"), 1)
+        self.assertIn("kept: answered by the picture",
+                      " ".join(w.ledger_lines(QPLAN, sections)))
+        # the cold reader did not hear Q2 either: the line the writer
+        # defended is not asked about again under another rule
+        cold = {"answered": [{"question_id": "Q1", "shot_index": 6}]}
+        w.revise_ledger(sections, shots, QPLAN, cold_read=cold, name="revise-ledger-2",
+                        figures=False)
+        self.assertNotIn("revise-ledger-2", names)
+        # the section written again in its place: its new last line is asked
+        sections[3].shots = drafted(marks)[3].shots
+        self.assertNotIn("kept:", " ".join(w.ledger_lines(QPLAN, sections)))
+        w.revise_ledger(sections, sections[3].shots, QPLAN, name="revise-ledger-3",
+                        figures=False)
+        self.assertIn("revise-ledger-3", names)
 
 
 # --------------------------------------------------------------------------- #

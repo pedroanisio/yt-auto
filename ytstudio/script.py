@@ -391,6 +391,35 @@ PICTURE_REVISE_SCHEMA = {
     "required": ["fixes"],
 }
 
+#: `revise` over the question ledger's flags (`revise-ledger`, AUTO-96):
+#: REVISE_SCHEMA with the questions the line answers once the writer is done
+#: with it. That a line changed says nothing of what it answers (the same
+#: line may be flagged for a figure said twice), so only the writer's naming
+#: of a question marks it answered or takes the mark off (invariant 3).
+LEDGER_REVISE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "fixes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    **REVISE_SCHEMA["properties"]["fixes"]["items"]["properties"],
+                    "closes": {"type": "array", "items": {"type": "string"},
+                               "description": (
+                                   "for a line flagged about a question: the ids of the "
+                                   "flagged questions this line answers as you leave "
+                                   "it, fixed or kept; one you leave out is read as not "
+                                   "answered by it. Omit for a line flagged only for a "
+                                   "figure")},
+                },
+                "required": ["n", "action", "narration", "why"],
+            },
+        }
+    },
+    "required": ["fixes"],
+}
+
 #: The picture-check's findings as flags (`picture_flags`): their kind, the
 #: severity `revise-picture` and `vfx.picture_constraints` read, and the fix.
 #: A section whose pictures do not carry its beat (direction 4), a bare
@@ -1696,11 +1725,13 @@ class Screenwriter:
         #: cold reader, with nothing in its system but the mission and its
         #: role; and the reader that matches its premise to the train.
         self._readers: dict[object, harness.Harness] = {}
-        #: The question ledger's flags a revision answered (a changed line)
-        #: and kept (with the writer's reason), by rule and question
-        #: (`_ledger_key`), so a renumbered draft keeps them (AUTO-96).
-        self._ledger_answered: set[tuple] = set()
-        self._ledger_kept: dict[tuple, str] = {}
+        #: The question ledger's flags a revision answered (the reader's,
+        #: on a changed line the writer said answers it: the line) and kept
+        #: (the line and the writer's reason), by rule and question
+        #: (`_ledger_key`), so a renumbered draft keeps them while the line
+        #: is still the flag's (`_ledger_held`; AUTO-96).
+        self._ledger_answered: dict[tuple, tuple] = {}
+        self._ledger_kept: dict[tuple, tuple] = {}
 
     # -- plumbing ----------------------------------------------------------
 
@@ -2212,8 +2243,15 @@ class Screenwriter:
         change a shot's `visual`, `shows` and on-screen text. Under any other
         name a picture field in the answer is ignored, so the fact-check's
         revise still rewrites the narration only.
+
+        A decision named `revise-ledger..` (AUTO-96) also asks, for each line
+        flagged about a question, which flagged questions the line answers
+        as the writer leaves it; the answer is in `closes` (shot number to
+        question ids) for `revise_ledger` to mark, never inferred from a
+        changed line.
         """
         picture = name.startswith("revise-picture")
+        ledger = name.startswith("revise-ledger")
         answered = narrative.SEVERITIES if picture else REVISABLE
         by_n = {s.n: s for s in shots}
         todo: dict[int, list[dict]] = {}
@@ -2221,7 +2259,7 @@ class Screenwriter:
             n = int(f.get("n", 0) or 0)
             if n in by_n and f.get("severity") in answered:
                 todo.setdefault(n, []).append(f)
-        result = {"applied": [], "kept": [], "failed": False}
+        result = {"applied": [], "kept": [], "failed": False, "closes": {}}
         if not todo:
             return result
         self._say(f"[revise] {len(todo)} flagged line(s)")
@@ -2301,6 +2339,13 @@ class Screenwriter:
                      "near its shot's length. When the line is right as written, "
                      "answer keep and say why in one clause. Answer for every flagged "
                      "number and no other."]
+            if ledger:
+                parts.append(
+                    "A flag about a question of the film's ledger names it by its id. "
+                    "For each such line, fixed or kept, list under closes the flagged "
+                    "questions the line answers as you leave it: a question you leave "
+                    "out is read as not answered there, and a line changed for another "
+                    "flag is not read as an answer.")
         else:
             parts = [self._brief(), *([self.research] if self.research else []),
                      "The script as written:\n\n" + shot_listing(shots, cite=True),
@@ -2315,6 +2360,7 @@ class Screenwriter:
         try:
             data = self._ask(name, "\n\n".join(parts),
                              PICTURE_REVISE_SCHEMA if picture
+                             else LEDGER_REVISE_SCHEMA if ledger
                              else RULE_REVISE_SCHEMA if rules
                              else BACK_REVISE_SCHEMA if back else REVISE_SCHEMA)
         except ClaudeError as exc:
@@ -2329,6 +2375,10 @@ class Screenwriter:
                 continue
             why = str(fix.get("why", "")).strip()
             line = spoken(fix.get("narration", ""))
+            # The questions the writer says this line answers, read only
+            # under revise-ledger; `revise_ledger` marks them (AUTO-96).
+            if ledger and isinstance(fix.get("closes"), list):
+                result["closes"][n] = _ids(fix["closes"])
             if fix.get("action") == "keep":
                 result["kept"].append({"n": n, "label": shot.label, "why": why})
                 continue
@@ -2845,14 +2895,20 @@ class Screenwriter:
         fixed. Under `fix` False (`--report-only`) the ledger's flags are
         only recorded; the figures are reworded as before.
 
-        A flagged line the writer changed counts as answered, as a picture
-        flag does: the line is not read again here, and an open loop's
-        rewritten line is then the shot that answers the question (the
-        writer's change is its report, as `closes_at` was). A line kept with
-        a reason keeps its flag, with the reason, in the findings. Both are
-        remembered by rule and question, across renumbering, for the next
-        call and for the stage's findings. Returns the `flags` still
-        standing, the rewrites `applied` and the lines `kept`."""
+        What a line answers is the writer's word, never that the line
+        changed: one line can carry a figure flag and a question flag, and a
+        reworded figure answers no question. So the writer names, for each
+        line flagged about a question, the flagged questions it answers as
+        left (`closes`, LEDGER_REVISE_SCHEMA), and that marks the line, or
+        takes its mark off, as `closes_at` did; the ledger is then measured
+        again. A line named in no `closes` keeps its marks and its flag. The
+        reader's report cannot be read again here, so a changed line that
+        names its question answers the reader's flag for that line, and a
+        line kept with a reason keeps its flag, with the reason, in the
+        findings. Both hold only while that line is the flag's line
+        (`_ledger_held`): a section written again in its place is measured
+        afresh. Returns the `flags` still standing, the rewrites `applied`
+        and the lines `kept`."""
         todo: list[dict] = []
         if figures:
             rows = repeated_figures(sections)
@@ -2864,40 +2920,65 @@ class Screenwriter:
                 self._say(f"[ledger] {len(rows)} repeated figure(s)")
         asked = [f for f in question_findings(plan, sections, cold_read)
                  if f["severity"] in REVISABLE and f["n"]
-                 and _ledger_key(f) not in self._ledger_kept
-                 and _ledger_key(f) not in self._ledger_answered] if fix else []
+                 and not self._ledger_held(self._ledger_kept, f, sections)
+                 and not self._ledger_held(self._ledger_answered, f, sections)] if fix else []
         if asked:
             self._say(f"[ledger] {len(asked)} question flag(s)")
-        result = ({"applied": [], "kept": []} if not todo + asked else
+        result = ({"applied": [], "kept": [], "closes": {}} if not todo + asked else
                   self.revise(shots, todo + asked, name=name,
                               flagged_by="the ledger of the film's questions and figures"))
         changed = {row["n"] for row in result["applied"]}
         why = {k["n"]: k["why"] for k in result["kept"]}
+        said = result.get("closes") or {}
         by_n = {s.n: s for s in shots}
         for f in asked:
-            if f["n"] in changed:
-                self._ledger_answered.add(_ledger_key(f))
-                if f["rule"] == "rule:open-loop" and f["question"] not in by_n[f["n"]].closes:
-                    by_n[f["n"]].closes.append(f["question"])
+            shot, qid, named = by_n.get(f["n"]), f.get("question"), said.get(f["n"])
+            if shot is None or not qid:
+                continue
+            if named is not None:
+                if qid in named and qid not in shot.closes:
+                    shot.closes.append(qid)
+                elif qid not in named and qid in shot.closes:
+                    shot.closes.remove(qid)
+            if f["rule"] == "rule:unanswered-by-reader" and f["n"] in changed \
+                    and named and qid in named:
+                self._ledger_answered[_ledger_key(f)] = (shot,)
             elif f["n"] in why:
-                self._ledger_kept[_ledger_key(f)] = why[f["n"]]
+                self._ledger_kept[_ledger_key(f)] = (shot, why[f["n"]])
         return {"flags": self.ledger_flags(plan, sections, cold_read),
                 "applied": result["applied"], "kept": result["kept"]}
+
+    def _ledger_held(self, store: dict, flag: dict, sections: list[Section]) -> tuple | None:
+        """What `store` holds for `flag` (the line it was answered or kept
+        on, first), while that line is still the one the flag falls on and,
+        for an answer, still carries the question's mark; else None."""
+        entry = store.get(_ledger_key(flag))
+        if entry is None:
+            return None
+        here = next((s for sec in sections for s in sec.shots if s.n == flag["n"]), None)
+        if here is not entry[0]:
+            return None
+        if store is self._ledger_answered and flag.get("question") not in here.closes:
+            return None
+        return entry
 
     def ledger_flags(self, plan: dict, sections: list[Section],
                      cold_read: dict | None = None) -> list[dict]:
         """The ledger's flags on the draft as it stands, less those a
-        revision answered."""
+        revision answered on the line they still fall on."""
         return [f for f in question_findings(plan, sections, cold_read)
-                if _ledger_key(f) not in self._ledger_answered]
+                if not self._ledger_held(self._ledger_answered, f, sections)]
 
     def ledger_lines(self, plan: dict, sections: list[Section],
                      cold_read: dict | None = None, *, fix: bool = True) -> list[str]:
         """The ledger's standing flags as findings, each kept one with the
         writer's reason; `warning:` for every tier, so none blocks."""
         flags = self.ledger_flags(plan, sections, cold_read)
-        kept = {(f["rule"], f["n"]): self._ledger_kept[_ledger_key(f)]
-                for f in flags if _ledger_key(f) in self._ledger_kept}
+        kept = {}
+        for f in flags:
+            held = self._ledger_held(self._ledger_kept, f, sections)
+            if held:
+                kept[(f["rule"], f["n"])] = held[1]
         return flag_lines(flags, kept, revised=fix)
 
     def revise_rules(self, sections: list[Section], shots: list[Shot], plan: dict,
