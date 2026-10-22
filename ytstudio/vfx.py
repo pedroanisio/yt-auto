@@ -560,46 +560,75 @@ def script_sections(path: str | None) -> list[dict]:
             for s in sections]
 
 
-#: Fact-check severities that bind what the picture may show.
+#: Fact-check, story-review and picture-check severities that bind what the
+#: picture may show.
 BINDING_SEVERITIES = ("blocker", "important")
+
+#: Where script.json keeps each kind of binding flag: the fact-check
+#: (`yt script --verify`), the story review (narrative.REVIEW_SCHEMA's
+#: flags, AUTO-93) and the picture-check's standing flags (`yt script
+#: --review`, AUTO-98). The first is the fact-check's block of a brief, the
+#: other two the story's.
+CONSTRAINT_SOURCES = ("check", "review", "picture")
+
+#: Each block's heading in a brief, by what it binds.
+CONSTRAINT_BLOCKS = (
+    (("check",), "## Fact-check constraints (from `yt script --verify`; they outrank the "
+                 "treatment: a picture must not show what the research does not support)"),
+    (("review", "picture"), "## Story constraints (from `yt script --review`: the story "
+                            "review and the picture-check, which read the screenplay's "
+                            "pictures without its words; they outrank the treatment: a "
+                            "picture must demonstrate what its line claims, and a "
+                            "section's pictures must carry its point)"),
+)
 
 
 def picture_constraints(script: dict | str | Path | None) -> list[dict]:
-    """The screenplay fact-check's binding flags (`yt script --verify` writes
-    them to script.json under `check`), verbatim, each with the shot label it
-    binds ("" for the whole film). They reach every author who draws the film:
-    a claim the narration avoids can still be shown wrong by a picture."""
+    """The screenplay's binding flags, verbatim, each with the shot label it
+    binds ("" for the whole film) and its `source`: the fact-check's
+    (`check`), the story review's (`review`) and the picture-check's still
+    standing (`picture`). They reach every author who draws the film: a
+    claim the narration avoids can still be shown wrong by a picture, and a
+    claim the picture never shows is not told at all."""
     data = script if isinstance(script, dict) else (read_json(script, warn=False) or {}
                                                      if script else {})
     labels = {sh.get("n"): str(sh.get("label") or "")
               for sec in data.get("sections") or [] if isinstance(sec, dict)
               for sh in sec.get("shots") or [] if isinstance(sh, dict) and "n" in sh}
     out = []
-    for f in ((data.get("check") or {}).get("flags") or []):
-        if not isinstance(f, dict) or f.get("severity") not in BINDING_SEVERITIES:
-            continue
-        try:
-            n = int(f.get("n") or 0)
-        except (TypeError, ValueError):
-            n = 0
-        out.append({"label": labels.get(n, "") if n else "", "severity": f["severity"],
-                    "problem": str(f.get("problem", "")), "fix": str(f.get("fix", ""))})
+    for source in CONSTRAINT_SOURCES:
+        block = data.get(source)
+        for f in (block.get("flags") or [] if isinstance(block, dict) else []):
+            if not isinstance(f, dict) or f.get("severity") not in BINDING_SEVERITIES:
+                continue
+            try:
+                n = int(f.get("n") or 0)
+            except (TypeError, ValueError):
+                n = 0
+            out.append({"label": labels.get(n, "") if n else "", "severity": f["severity"],
+                        "problem": str(f.get("problem", "")), "fix": str(f.get("fix", "")),
+                        "source": source})
     return out
 
 
 def constraint_lines(constraints: list[dict], labels: set[str] | None = None) -> list[str]:
-    """The binding flags for some shots (with the whole-film ones), as a brief
-    section; [] when none applies."""
+    """The binding flags for some shots (with the whole-film ones), as brief
+    sections: the fact-check's, then the story's; [] when none applies. A
+    row without a `source` is the fact-check's, as rows were before."""
     rows = [c for c in constraints or []
             if labels is None or not c["label"] or c["label"] in labels]
-    if not rows:
-        return []
-    lines = ["## Fact-check constraints (from `yt script --verify`; they outrank the "
-             "treatment: a picture must not show what the research does not support)", ""]
-    for c in rows:
-        lines += [f"- [{c['severity']}] {'shot ' + c['label'] if c['label'] else 'whole film'}: "
-                  f"{c['problem']}", f"  REQUIRED: {c['fix']}"]
-    return lines + [""]
+    lines: list[str] = []
+    for sources, heading in CONSTRAINT_BLOCKS:
+        block = [c for c in rows if c.get("source", "check") in sources]
+        if not block:
+            continue
+        lines += [heading, ""]
+        for c in block:
+            lines += [f"- [{c['severity']}] "
+                      f"{'shot ' + c['label'] if c['label'] else 'whole film'}: "
+                      f"{c['problem']}", f"  REQUIRED: {c['fix']}"]
+        lines.append("")
+    return lines
 
 
 #: A symbol may fall this far short of its shots before it is an error.
