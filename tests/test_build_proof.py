@@ -208,6 +208,19 @@ class FakeHarness:
         return {}
 
 
+class LookHarness(FakeHarness):
+    """The edit, a look, and `none` when shown it."""
+
+    def decide(self, name, prompt, schema):
+        if name == "look":
+            from tests.test_colour_look import LOOK
+            return LOOK
+        return super().decide(name, prompt, schema)
+
+    def inspect(self, name, prompt, schema, *, cwd, **kw):
+        return {"verdict": "none", "reason": "washed out"}
+
+
 class Run(_Project):
     """The check sits after builder.build(): the scene is not written on a mismatch."""
 
@@ -222,12 +235,17 @@ class Run(_Project):
         (self.root / "vfx.json").write_text(json.dumps(_vfx(WORLD)))
         self.proof(x=50)
 
-    def build_run(self, *extra):
+    def build_run(self, *extra, harness=FakeHarness):
         from ytstudio import cli
         args = cli.build_parser().parse_args(
             ["build", "--project", str(self.root), "--no-audio", "--quiet", *extra])
-        with mock.patch.object(build, "Harness", FakeHarness), \
-                mock.patch.object(build, "look_host", lambda: "h"), \
+        self.probes = 0
+
+        def look_host():
+            self.probes += 1
+            return "h"
+        with mock.patch.object(build, "Harness", harness), \
+                mock.patch.object(build, "look_host", look_host), \
                 mock.patch("ytstudio.render.engine_render_still", self.still), \
                 mock.patch("sys.stdout", new=io.StringIO()):
             return build.run(args)
@@ -254,6 +272,17 @@ class Run(_Project):
         manifest = json.loads((self.root / "build.json").read_text())
         self.assertEqual(manifest["proof_check"]["status"], "ok")
         self.assertTrue(manifest["publishable"])
+
+    def test_the_host_is_probed_once_when_a_look_was_checked_before(self):
+        # remote_host pays an ssh per probe: the proof check reuses the look
+        # check's host instead of asking again
+        self.film_x = 50
+        self.assertEqual(self.build_run(harness=LookHarness), 0)
+        self.assertEqual(self.probes, 1)
+        manifest = json.loads((self.root / "build.json").read_text())
+        self.assertEqual(manifest["look_check"]["status"], "dropped")
+        self.assertEqual(manifest["proof_check"]["status"], "ok")
+        self.assertEqual(manifest["proof_check"]["host"], "h")
 
 
 if __name__ == "__main__":

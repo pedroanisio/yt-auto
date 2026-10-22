@@ -245,7 +245,9 @@ def check_look(builder, engine, look, *, host: str | None = None,
 
     One still with the look and one without go to the harness, which says
     apply | revise | none. Only 'apply' applies it; a revision is checked once
-    more. With no render host nothing is seen, so nothing is graded.
+    more. With no render host nothing is seen, so nothing is graded. The
+    record names the host probed, so a later check reuses it: each probe is
+    an ssh.
     """
     import tempfile
     from . import render
@@ -253,7 +255,7 @@ def check_look(builder, engine, look, *, host: str | None = None,
         return None, {"status": "none chosen"}
     host = look_host() if host is None else host
     if not host:
-        return None, {"status": "not checked",
+        return None, {"status": "not checked", "host": host,
                       "reason": "no render host reachable; the look was not applied"}
     render_still = render_still or render.engine_render_still
     at = look_frame_time(builder)
@@ -281,10 +283,11 @@ def check_look(builder, engine, look, *, host: str | None = None,
 
     answer, why = judge(look, True)
     if answer is None:
-        return None, {"status": "not checked", "at": at,
+        return None, {"status": "not checked", "host": host, "at": at,
                       "reason": f"a frame was not rendered: {why}"}
     verdict = answer.get("verdict") if isinstance(answer, dict) else None
-    record = {"at": at, "verdict": verdict, "reason": str((answer or {}).get("reason", ""))}
+    record = {"host": host, "at": at, "verdict": verdict,
+              "reason": str((answer or {}).get("reason", ""))}
     if verdict == "apply":
         return look, dict(record, status="applied")
     revision = clean_look(answer.get("revision")) if verdict == "revise" else None
@@ -2233,8 +2236,10 @@ def run(args) -> int:
         if chosen and not builder.look:
             manifest["look_declined"] = chosen
         # Each world against its proof frame, now, before the encode, the
-        # gate and QA are paid for finding it (AUTO-70).
-        manifest["proof_check"] = proof_check(data, manifest, vfx, project.root)
+        # gate and QA are paid for finding it (AUTO-70), on the host the look
+        # check probed when it probed one.
+        manifest["proof_check"] = proof_check(data, manifest, vfx, project.root,
+                                              host=check.get("host"))
     except (HarnessError, Exception) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

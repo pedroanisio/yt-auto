@@ -153,7 +153,8 @@ Plus `build.json`, whose keys are: `idea`; `scene` (size, frame rate,
 duration, background, codec, language, the output and loudness settings);
 `look` (the colour look applied, or null), `look_check` (the verdict on the
 rendered still: `applied`, `revised`, `dropped`, `not checked` or `none
-chosen`) and `look_declined` (the look the model chose when it was not
+chosen`, and the `host` probed, which `proof_check` reuses) and
+`look_declined` (the look the model chose when it was not
 applied); `timeline`; `layers` (what was drawn, what remains placeholder);
 `placeholders`; `publishable`; `timing`; `editorial`; `design`; `hoisted`,
 `includes` and `split_worlds` (a world's run of shots left in more than one
