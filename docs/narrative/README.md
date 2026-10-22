@@ -72,12 +72,17 @@ judging 13; Zeigarnik → attention Contested.
    verdict strings. The hook's window is written in words, the house's to
    set. One tuple is to be rendered into the writer's prompt and the
    reviewer's role, as `framecheck.CHECKLIST` is. `tests/test_narrative_rubric.py` holds every cited
-   rule id to this corpus, and `tests/fixtures/narrative/` starts the
-   calibration set (judging 10): plans and scripts seeded with one known
-   fault each, and one good pair. judging 10 asks the calibration run for
-   reject on every seeded case; the cases whose one fault is a Fair, or a
-   Poor on a criterion that does not decide a film (a hook that lists its
-   conclusions, a recap ending, a reveal before its constraint), are held
+   rule id to this corpus, and `tests/fixtures/narrative/` is the floor of
+   the calibration set (judging 10): plans and scripts seeded with one known
+   fault each (a list-shaped plan, a topic-only train, an empty payoff, an
+   AND chain, a reveal before its constraint, a recap ending, a hook that
+   enumerates its conclusions, a premise a cold reader could not restate,
+   terms a lay audience is never given), and one good pair with a padded
+   copy of its script. judging 10 asks the calibration run for reject on
+   every seeded case; the cases whose one fault is a Fair, or a Poor on a
+   criterion that does not decide a film (a hook that lists its
+   conclusions, a recap ending, a reveal before its constraint, an AND
+   chain, a narration that never voices its train, unexplained terms), are held
    to consider instead, because judging 11 and 12 make a fixable fault a
    consider, and a gate that rejects them would regenerate a film one
    flag would mend. Their `expected.json` says so in `judging_10`: the
@@ -90,10 +95,20 @@ judging 13; Zeigarnik → attention Contested.
    of the valid ones (fewer than two is `not_evidenced`), a cold reader
    that hears the narration alone (judging 14), and every verdict appended
    to `work/review-log.jsonl` for the labels this calibration needs. Its
-   reject stops voice only under `--gate`, to be turned on once that log
-   holds 20 labelled scripts and these fixtures fail under the live
-   reviewer. The plan review before any section is drafted is wired too
-   (`yt script --review`, AUTO-92).
+   reject stops voice only under `--gate`, and `--gate` may be turned on
+   only when `python -m ytstudio.narrative calibrate tests/fixtures/narrative`
+   (AUTO-97) shows the condition judging 9 and 10 set: the seeded-bad
+   fixtures all fail, the good one passes, the length audit passes (the
+   padded copy of the good script, the same content at about twice the
+   words, may not win more than 60% of its sample pairs), and
+   work/review-log.jsonl holds at least 20 rows with a human `label`. The
+   fixtures are the floor, never the channel's scripts; the 20 labelled
+   rows are the set. A live run reads every case with the plan review, the
+   three samples and the cold read on the real models, at about $1 a case
+   at opus, about $11 for the shipped set, capped by `--budget-usd`; `yt
+   doctor` warns `gate on with N labelled verdicts (20 needed)` for a
+   script written under `--gate` below that count. The plan review before
+   any section is drafted is wired too (`yt script --review`, AUTO-92).
 4. **The evidence loop.** `yt improve` ingests the channel's retention curves
    (judging 1–3), maps dips, spikes and the Intro figure to beat ids and
    routes findings to the script stage under the rule they bear on. Every
