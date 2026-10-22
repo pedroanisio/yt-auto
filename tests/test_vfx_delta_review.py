@@ -173,6 +173,20 @@ class TheStop(Case):
         self.assertEqual(doc["best_round"], 0)
         self.assertEqual(len(FakeEngine.reviews), 1)          # the third review went unread
 
+    def test_a_revision_judged_the_same_but_over_the_bar_still_stops_as_same(self):
+        # the score contradicts the verdict, the case the card calls common:
+        # done is judged on the round the section stands on, not the last one,
+        # so the stop is recorded and the record agrees with itself
+        FakeEngine.docs = [WORLD_DOC, WORLD_DOC.replace("#AAAAAA", "#BBBBBB")]
+        FakeEngine.reviews = [review(6, findings=[FINDING]), review(7.5, "same")]
+        doc = self.author(self.planner(revisions=2))
+        self.assertEqual([r["score"] for r in doc["rounds"]], [6, 7.5])
+        self.assertEqual(len(self.authors()), 2)
+        self.assertEqual((doc["best_round"], doc["score"]), (0, 6))
+        self.assertEqual(doc["stopped"], "same")
+        self.assertEqual(doc["budget"]["stopped"], "same")
+        self.assertIn("#AAAAAA", (self.root / doc["file"]).read_text())
+
     def test_a_revision_judged_worse_ends_the_loop_on_the_incumbent(self):
         FakeEngine.docs = [WORLD_DOC, WORLD_DOC.replace("#AAAAAA", "#BBBBBB")]
         FakeEngine.reviews = [review(5, findings=[FINDING]), review(4, "worse", "regressed")]

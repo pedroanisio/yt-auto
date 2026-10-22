@@ -3092,7 +3092,11 @@ class VfxPlanner:
         revisions = 0
         while revisions < self.revisions:
             errors = [f for f in findings if f.startswith("error")]
-            score = rounds[-1]["score"]
+            # Done is judged on the round the section stands on, the one the
+            # verdicts promoted: a revision judged `same` whose score happens
+            # to clear the bar does not end the section on an incumbent under it.
+            standing = best_round(rounds) or rounds[-1]
+            score = standing["score"]
             short = score is not None and score < self.author_bar
             if not errors and not short:
                 break
