@@ -559,6 +559,32 @@ class Plan(ImproveCase):
                                    root=self.root)[0]
         self.assertEqual(argv[argv.index("--minutes") + 1], "0.25")
 
+    def test_script_revises_the_named_shots_when_every_finding_names_one(self):
+        # AUTO-95: a finding that names its shot sends back that line, not
+        # the screenplay from its plan; one film-wide finding needs the whole.
+        base = ["--project", str(self.root)]
+        named = [{"id": "F1", "shot": "1.3"}, {"id": "F2", "shot": "2.1"}]
+        argv = improve.stage_argvs(["script", "voice"], {"script"}, base, quality="final",
+                                   root=self.root, script_findings=named)
+        self.assertEqual(argv[0][argv[0].index("--revise") + 1], "feedback")
+        self.assertNotIn("--polish", argv[0])
+        self.assertNotIn("--revise", argv[1])
+        for findings in (named + [{"id": "F3", "shot": None}], [], None):
+            argv = improve.stage_argvs(["script"], {"script"}, base, quality="final",
+                                       root=self.root, script_findings=findings)[0]
+            self.assertNotIn("--revise", argv)
+            self.assertTrue({"--polish", "--verify"} <= set(argv), findings)
+
+    def test_a_pass_routed_to_script_by_shot_runs_revise_feedback(self):
+        self.start_pass(card(5.0, findings=[dict(prose("the line stumbles", owner="script"),
+                                                 shot="1.3")]))
+        FakeEngine.route = route_all_to("script")
+        record = self.improver(FakeRunner(self.root, []), dry_run=True).run()
+        script_argv = next(a for a in record["plan"]["argv"] if a[0] == "script")
+        self.assertEqual(script_argv[script_argv.index("--revise") + 1], "feedback")
+        twin = read_json(self.root / "feedback" / "script.json")
+        self.assertEqual([f["shot"] for f in twin["findings"]], ["1.3"])
+
 
 # --------------------------------------------------------------------------- #
 # the loop

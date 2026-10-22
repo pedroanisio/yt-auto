@@ -555,11 +555,22 @@ def plan(routed: Iterable[str], root: Path) -> list[str]:
     return out
 
 
+def by_shot(findings: Iterable[dict] | None) -> bool:
+    """Does every finding name the shot it is about? Then the screenplay is
+    sent those lines (`yt script --revise feedback`), not re-run from its
+    plan: judging 3 sends a dip back to the beat that dipped."""
+    rows = list(findings or [])
+    return bool(rows) and all(str(f.get("shot") or "").strip() for f in rows)
+
+
 def stage_argvs(stages: list[str], routed: Iterable[str], base: list[str], *,
                 quality: str, root: Path,
-                sections: Iterable[int] | None = None) -> list[list[str]]:
+                sections: Iterable[int] | None = None,
+                script_findings: Iterable[dict] | None = None) -> list[list[str]]:
     """Each stage's argv. A routed vfx pass names `sections` (the ones the
-    findings fall in) instead of re-authoring the whole film with --fresh."""
+    findings fall in) instead of re-authoring the whole film with --fresh; a
+    routed script pass whose `script_findings` all name a shot revises those
+    lines from the feedback's `.json` twin instead of the whole screenplay."""
     from .cli import stage_argv
     routed = set(routed)
     sound_data = read_json(Path(root) / "sound.json", warn=False) or {}
@@ -568,6 +579,9 @@ def stage_argvs(stages: list[str], routed: Iterable[str], base: list[str], *,
         flags = list((FORCE if stage in routed else REUSE).get(stage, []))
         if stage == "vfx" and stage in routed and sections:
             flags = ["--sections", ",".join(str(n) for n in sorted(set(sections)))]
+        if stage == "script" and stage in routed and by_shot(script_findings):
+            out.append(stage_argv(stage, base, {stage: ["--revise", "feedback"]}))
+            continue
         if stage == "script":
             seconds = (read_json(Path(root) / "script.json", warn=False) or {}).get(
                 "target_seconds")
@@ -1056,7 +1070,9 @@ class Improver:
         pdir = self.root / IMPROVE_DIR / name
         argvs = stage_argvs(stages, set(last.get("routed") or {}), self.base,
                             quality=self.quality, root=self.root,
-                            sections=last.get("sections"))
+                            sections=last.get("sections"),
+                            script_findings=((last.get("routed") or {}).get("script")
+                                             or {}).get("findings"))
         start = stages.index(failed_at)
         attempt = pdir / "attempt"
         if (attempt / "snapshot.json").is_file():
@@ -1260,7 +1276,10 @@ class Improver:
                 by_id[fid] for fid in (routing["stages"].get("vfx") or {}).get("findings", [])
                 if fid in by_id]) if "vfx" in routing["stages"] else None
             argvs = stage_argvs(stages, routing["stages"], self.base, quality=self.quality,
-                                root=self.root, sections=sections)
+                                root=self.root, sections=sections, script_findings=[
+                                    by_id[fid] for fid in (routing["stages"].get("script")
+                                                           or {}).get("findings", [])
+                                    if fid in by_id])
             rows = stage_estimates(self.root, stages, sections)
             guess = total(rows)
             if last_cost and not any(r["basis"] != "assumed" for r in rows):

@@ -1163,7 +1163,11 @@ a defect survives three briefed passes, and writes `improve.json` and an
 `improve.md` in the shape of the §11 report. The estimate is per stage, read from
 each stage's own report (else a like project's) and marked measured, like or
 assumed, and a routed vfx pass re-authors only the sections its findings fall in
-(`--sections`), the whole film (`--fresh`) when a finding cannot be placed.
+(`--sections`), the whole film (`--fresh`) when a finding cannot be placed. A
+routed script pass whose findings all name a shot sends only those lines back
+(`yt script --revise feedback`, read from the brief's `.json` twin); one
+finding that names none runs the whole screenplay again (`--polish
+--verify`).
 
 ```bash
 yt improve --title X --dry-run                      # the routing, the briefs, the estimate
