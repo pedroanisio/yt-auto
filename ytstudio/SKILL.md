@@ -505,7 +505,11 @@ hand-authored world showed the cost.
   `<doc>.provenance.json` (program and document hashes, the hash of every
   workspace module the program imported -- `imports`: `srkit.py`, `look.py`
   -- and the schema release). `sdkkit.provenance_of(doc)` lapses the moment
-  the document, or a module it imported, is edited by hand.
+  the document, or a module it imported, is edited by hand. The kit counts:
+  a release that changes `srkit.py` lapses every document built with the old
+  one, carried sections included, by design -- the claim is that `build`
+  here reproduces the document, and a rebuild makes it current again.
+  Nothing gates on a lapsed provenance; the record shows it.
 - **Who uses it.** Every authoring agent: `yt vfx` (one program per
   section, `vfx/vNN/<section>.py` saving `<section>.scene.xml`), `yt
   keyframe` (`keyframe/keyframe.py`), `yt assess` (`proof.py`) and `yt

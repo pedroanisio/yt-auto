@@ -808,6 +808,18 @@ class LookModule(KitCase):
         look.unlink()
         self.assertIsNone(sdkkit.provenance_of(doc))        # gone is no better than changed
 
+    def test_a_changed_kit_lapses_the_provenance_by_design(self):
+        # srkit.py is among the imports: a kit release re-installed into a
+        # workspace lapses what was built with the old one, carried sections too
+        sdkkit.install(self.dir, look=self.approved)
+        sdkkit.build(self.program(SECTION, "02-two.py"), validate=False)
+        doc = self.dir / "02-two.scene.xml"
+        kit = self.dir / "srkit.py"
+        kit.write_text(kit.read_text() + "\n# a release\n", encoding="utf-8")
+        self.assertIsNone(sdkkit.provenance_of(doc))
+        sdkkit.build(self.program(SECTION, "02-two.py"), validate=False)   # rebuilt: current again
+        self.assertIsNotNone(sdkkit.provenance_of(doc))
+
     def test_a_program_that_imports_nothing_records_only_the_kit(self):
         from tests.test_sdkkit import MINIMAL
         sdkkit.build(self.program(MINIMAL), validate=False)
