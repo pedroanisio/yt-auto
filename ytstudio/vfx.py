@@ -179,6 +179,10 @@ class SpendBudget:
     def track(self, n: int, *, author: Usage, review: Usage) -> None:
         self._usages[n] = {"author": author, "review": review}
 
+    def usages(self, n: int) -> list[Usage]:
+        """The agents tracked for section `n` (none before `track`)."""
+        return list(self._usages.get(n, {}).values())
+
     def _part(self, n: int, which: str) -> float:
         usage = self._usages.get(n, {}).get(which)
         return usage.cost_usd if usage is not None else 0.0
@@ -3367,6 +3371,9 @@ class VfxPlanner:
                             result = future.result()
                         except Exception as exc:     # one section's failure is that section's record
                             self._say(f"    [{n}] the section's authoring failed: {exc}")
+                            # The agents it started still spent money: the
+                            # stage's account and the record both say so.
+                            self._account(*self.spend.usages(n))
                             result = self._failed_record(n, s, group, exc)
                             self.ws.write_record(self.ws.doc_name(n, s), result)
                         # The record is the one the section wrote as it finished:
@@ -3440,7 +3447,8 @@ class VfxPlanner:
                             "shots": [s["label"] for s in w["shots"]],
                             "phases": [e["id"] for e in w["phases"]]} for w in worlds],
                 "revisions": 0, "rounds": [], "best_round": None, "score": None,
-                "review": None, "cost_usd": 0.0, **self._provenance(n, ["error"])}
+                "review": None, "cost_usd": round(self.spend.spent(n), 4),
+                **self._provenance(n, ["error"])}
 
     def _provenance(self, n: int, findings: list) -> dict:
         """What a section record says about the look: made as the look (the
