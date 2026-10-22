@@ -93,6 +93,31 @@ class Sampling(unittest.TestCase):
         self.assertIn("hook", samples["1.1"].split("; "))
         self.assertIn("ending", samples["3.2"].split("; "))
 
+    def test_many_rehooks_do_not_crowd_out_the_section_starts(self):
+        # nothing caps the rehooks a screenplay marks; the default limit
+        # still keeps the hook, the ending and every section (sample's promise)
+        shots = []
+        for n in range(20):
+            section = f"S{n // 4 + 1}"
+            function = ("hook" if n == 0 else "context" if n % 4 == 0 else "rehook")
+            shots.append({"label": f"{n // 4 + 1}.{n % 4 + 1}", "at": n * 5.0,
+                          "seconds": 5, "asset": "effect", "section": section,
+                          "function": function})
+        build = {"scene": {"duration": 100}, "shots": shots}
+        samples = qa.sample(build)
+        self.assertEqual(len(samples), 14)
+        why = [token for s in samples for token in s["why"].split("; ")]
+        for section in ("S1", "S2", "S3", "S4", "S5"):
+            self.assertIn(f"section start: {section}", why)
+        self.assertIn("hook", why)
+        self.assertIn("ending", why)
+        self.assertIn("beat: rehook", why)
+
+    def test_the_payoff_comes_before_the_section_starts(self):
+        build = _beats()
+        samples = qa.sample(build, limit=3)
+        self.assertEqual(sorted(s["label"] for s in samples), ["1.1", "2.2", "3.2"])
+
     def test_a_rehook_beside_the_hook_still_names_both(self):
         build = _beats()
         build["shots"][0]["function"] = "rehook"

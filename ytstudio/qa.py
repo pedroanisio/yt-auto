@@ -249,10 +249,6 @@ def _burst(t: float, *, fps: float, seconds: float | None, frame: str) -> dict:
     return plan
 
 
-#: The screenplay functions every sample includes, each row's `why` naming
-#: it as `beat: <function>`.
-SAMPLED_BEATS = ("rehook", "payoff")
-
 #: The reasons a single mechanical defect blocks on: the opening, the last
 #: shot and the shot that pays the promise. A re-hook is sampled, not an edge.
 EDGE_REASONS = ("hook", "ending", "beat: payoff")
@@ -276,15 +272,19 @@ def sample(build: dict, *, limit: int = 14) -> list[dict]:
 
     wanted: list[tuple[dict, str]] = [(shots[0], "hook"), (shots[-1], "ending")]
     # The screenplay's own beats (AUTO-90: build.json carries each shot's
-    # `function`) come next, beside the positional rows rather than instead
-    # of them, so a mislabelled payoff cannot drop the film's real ending.
-    wanted += [(s, f"beat: {s['function']}") for s in shots
-               if s.get("function") in SAMPLED_BEATS]
+    # `function`) sit beside the positional rows rather than instead of them,
+    # so a mislabelled payoff cannot drop the film's real ending. The payoff
+    # is an edge, so it comes with the ending; the re-hooks, which nothing
+    # caps, come after the section starts so they cannot crowd them out.
+    beats = lambda name: [(s, f"beat: {name}") for s in shots  # noqa: E731
+                          if s.get("function") == name]
+    wanted += beats("payoff")
     seen_sections = set()
     for s in shots:
         if s.get("section") and s["section"] not in seen_sections:
             seen_sections.add(s["section"])
             wanted.append((s, f"section start: {s['section']}"))
+    wanted += beats("rehook")
     for pct in (25, 50, 75):
         wanted.append((containing(runtime * pct / 100), f"{pct}% of runtime"))
     effects = sorted((s for s in shots if s.get("asset") == "effect"),
