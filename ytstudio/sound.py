@@ -48,7 +48,9 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
 import wave
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
@@ -1244,7 +1246,7 @@ class _Job:
     miss: dict
     used: str = ""
     old_id: object = None           # the Freesound id of a kept file
-    hits: list | None = None        # hits still to try (kept files: searched on refusal)
+    hits: list | None = None        # hits still to try; None: not searched yet
     rel: str | None = None          # the file now under test
     hit: object = None              # its Freesound hit (None for a kept file)
     refusals: list = field(default_factory=list)
@@ -1254,7 +1256,7 @@ class _Job:
 
 
 def fetch(root: str | Path, data: dict, *, token: str | None = None,
-          say=None, measure=None, judge=None) -> dict:
+          say=None, measure=None, judge=None, jobs: int = FETCH_JOBS) -> dict:
     """Fill the cue sheet in `data` with files under `<root>/sound/`.
 
     Mutates `data`: each filled cue gains the contract fields (`file`,
@@ -1281,12 +1283,18 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
     `judgement` (verdict, reason, confidence, the evidence shown, and the
     candidates rejected before it), and a cue every candidate failed is
     unfilled with the reasons. A judge that errors leaves the file `unjudged`.
+
+    A round's cues are searched, downloaded and judged `jobs` at a time
+    (`FETCH_JOBS`), none of it on this machine; the index and the counts
+    change under one lock, and the verdicts are applied on the calling
+    thread in cue order, so the record reads as a serial run.
     """
     root = Path(root)
     measure = measure or measure_remote
     say = say or (lambda msg: print(msg, file=sys.stderr))
     token = freesound.token() if token is None else token
     index = read_json(_index_path(root), warn=False) or {}
+    book = threading.Lock()          # held while the index or the counts change
     narration, narration_from = narration_level(data)
     summary: dict = {"source": "freesound", "quality": FETCH_QUALITY,
                      "dir": SOUND_DIR, "filled": 0, "cached": 0, "bytes": 0,
@@ -1294,7 +1302,7 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
                      "refused": [], "narration_db": narration,
                      "narration_from": narration_from}
     unfilled: list[dict] = []
-    jobs: list[_Job] = []
+    work: list[_Job] = []
     if not token:
         # The name of the variable, never a value.
         summary["error"] = (f"no Freesound token: set {freesound.TOKEN_VARS[0]} "
@@ -1321,7 +1329,7 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
             else:
                 # A fetched file nobody measured (an older run, or no host
                 # then): measured now, in the same batch as the new ones.
-                jobs.append(_Job(cue, cid, n, miss, rel=existing, tries=1,
+                work.append(_Job(cue, cid, n, miss, rel=existing, tries=1,
                                  used=cue.get("query_used") or "",
                                  old_id=cue.get("freesound_id")))
             continue
@@ -1331,42 +1339,53 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
             unfilled.append(miss | {"reason": f"no token ({freesound.TOKEN_VARS[0]} "
                                               "not set)"})
             continue
-        want = max(1, int(cue.get("seconds") or 1))
-        hits, used = freesound.ranked(queries, want_seconds=want, token=token)
-        if not hits:
-            reason = "no CC0 or CC-BY hit on Freesound for any query"
-            if cue.get("kind") == "music":
-                reason += ("; a composition brief with no library stand-in "
-                           "stays unfilled")
-            unfilled.append(miss | {"reason": reason})
-            say(f"  {cid} unfilled: tried {', '.join(repr(q) for q in queries)}")
-            continue
-        jobs.append(_Job(cue, cid, n, miss, used=used, hits=hits[:FETCH_TRIES]))
+        work.append(_Job(cue, cid, n, miss))
 
     levels: dict[str, Levels | None] = {}
     taken: set[str] = set()          # files a cue now uses
 
     def give_up(job: _Job) -> None:
         job.done = True
-        why = (" | ".join(f"{label}: {reason}" for label, reason in job.refusals)
-               if job.refusals else "no CC0 or CC-BY hit on Freesound for any query")
-        if len(job.refusals) > 1:
-            why = f"{len(job.refusals)} sources refused, {why}"
-        unfilled.append(job.miss | {"reason": why}
-                        | ({"rejected": job.rejected} if job.rejected else {}))
-        say(f"  {job.cid} unfilled: {why}")
+        if job.refusals:
+            why = " | ".join(f"{label}: {reason}" for label, reason in job.refusals)
+            if len(job.refusals) > 1:
+                why = f"{len(job.refusals)} sources refused, {why}"
+            say(f"  {job.cid} unfilled: {why}")
+        else:
+            why = "no CC0 or CC-BY hit on Freesound for any query"
+            if job.cue.get("kind") == "music":
+                why += "; a composition brief with no library stand-in stays unfilled"
+            say(f"  {job.cid} unfilled: tried "
+                f"{', '.join(repr(q) for q in job.miss['queries'])}")
+        with book:
+            unfilled.append(job.miss | {"reason": why}
+                            | ({"rejected": job.rejected} if job.rejected else {}))
+
+    def search(job: _Job) -> None:
+        """The job's candidates: the first query with any allowed hit, a kept
+        file's own id left out, `FETCH_TRIES` at most."""
+        want = max(1, int(job.cue.get("seconds") or 1))
+        found, job.used = freesound.ranked(job.miss["queries"], want_seconds=want,
+                                           token=token)
+        job.hits = [h for h in found if h.id != job.old_id][:FETCH_TRIES]
 
     def advance(job: _Job) -> None:
-        """Give the job its next file to test, or end it."""
+        """Give the job its next file to test, or end it: the search when it
+        has none yet, then a download per candidate. Runs on a pool thread,
+        so the index and the counts change only under the lock."""
         while job.rel is None and not job.done:
+            if job.hits is None:
+                search(job)
             if job.tries >= FETCH_TRIES or not job.hits:
                 give_up(job)
                 return
             hit = job.hits.pop(0)
-            rel = index.get(str(hit.id))
-            if rel and (root / rel).is_file():
-                summary["cached"] += 1
-            else:
+            with book:
+                rel = index.get(str(hit.id))
+                cached = bool(rel) and (root / rel).is_file()
+                if cached:
+                    summary["cached"] += 1
+            if not cached:
                 rel = (f"{SOUND_DIR}/{job.n:02d}-"
                        f"{slugify(job.cue.get('name') or job.cue.get('kind', 'cue'), 40)}"
                        f".{hit.ext}")
@@ -1376,8 +1395,9 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
                     job.refusals.append((f"hit {hit.id}", str(exc)))
                     job.tries += 1
                     continue
-                index[str(hit.id)] = rel
-                write_json(_index_path(root), index)
+                with book:
+                    index[str(hit.id)] = rel
+                    write_json(_index_path(root), index)
             job.rel, job.hit = rel, hit
 
     def refuse(job: _Job, why: str) -> None:
@@ -1388,14 +1408,11 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
         say(f"  {job.cid} refused {job.rel}: {why}")
         job.tries += 1
         if job.hit is None:
-            # A kept file refused: forget it, and look for others to try.
+            # A kept file refused: forget it, and look for others to try
+            # (the next round's advance searches; with no token there are none).
             for key in FETCHED_FIELDS:
                 job.cue.pop(key, None)
-            if token:
-                want = max(1, int(job.cue.get("seconds") or 1))
-                found, job.used = freesound.ranked(
-                    job.miss["queries"], want_seconds=want, token=token)
-                job.hits = [h for h in found if h.id != job.old_id][:FETCH_TRIES]
+            job.hits = None if token else []
         job.rel = job.hit = None
 
     def judged(job: _Job, got: Levels) -> dict:
@@ -1450,50 +1467,50 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
         gain = f", gain {fields['gain_db']:+.1f} dB" if fields else ""
         say(f"  {job.cid} {rel} {how}{gain}")
 
-    while True:
-        active = [j for j in jobs if not j.done]
-        for job in active:
-            advance(job)
-        testing = [j for j in active if not j.done]
-        if not testing:
-            break
-        wanted = sorted({j.rel for j in testing} - set(levels))
-        if wanted and "measure_error" not in summary:
-            try:
-                got = measure([root / rel for rel in wanted])
-                levels.update(zip(wanted, got))
-            except MeasureError as exc:
-                summary["measure_error"] = str(exc)
-        discard: set[str] = set()
-        for job in testing:
-            got = levels.get(job.rel)
-            if got is None:
-                accept(job, None)
-                continue
-            fields, why = level_to_design(job.cue, got, narration)
-            verdict: dict | None = None
-            if not why and judge is not None and job.hit is not None:
-                verdict = judged(job, got)
-                if verdict["verdict"] == "reject":
-                    why = f"judged not to fit the cue: {verdict['reason']}"
-            if why:
-                discard.add(job.rel)
-                if verdict is not None:
-                    job.rejected.append({
-                        "freesound_id": job.hit.id, "name": job.hit.name,
-                        "reason": verdict["reason"],
-                        "confidence": verdict.get("confidence"),
-                        "evidence": verdict["evidence"]})
-                refuse(job, why)
-            else:
-                accept(job, fields, verdict)
-        for rel in discard - taken - {j.rel for j in jobs if not j.done}:
-            (root / rel).unlink(missing_ok=True)
-            levels.pop(rel, None)
-            for key in [k for k, v in index.items() if v == rel]:
-                index.pop(key)
-        if discard:
-            write_json(_index_path(root), index)
+    with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+        while True:
+            active = [j for j in work if not j.done]
+            list(pool.map(advance, active))
+            testing = [j for j in active if not j.done]
+            if not testing:
+                break
+            wanted = sorted({j.rel for j in testing} - set(levels))
+            if wanted and "measure_error" not in summary:
+                try:
+                    got = measure([root / rel for rel in wanted])
+                    levels.update(zip(wanted, got))
+                except MeasureError as exc:
+                    summary["measure_error"] = str(exc)
+            discard: set[str] = set()
+            for job in testing:
+                got = levels.get(job.rel)
+                if got is None:
+                    accept(job, None)
+                    continue
+                fields, why = level_to_design(job.cue, got, narration)
+                verdict: dict | None = None
+                if not why and judge is not None and job.hit is not None:
+                    verdict = judged(job, got)
+                    if verdict["verdict"] == "reject":
+                        why = f"judged not to fit the cue: {verdict['reason']}"
+                if why:
+                    discard.add(job.rel)
+                    if verdict is not None:
+                        job.rejected.append({
+                            "freesound_id": job.hit.id, "name": job.hit.name,
+                            "reason": verdict["reason"],
+                            "confidence": verdict.get("confidence"),
+                            "evidence": verdict["evidence"]})
+                    refuse(job, why)
+                else:
+                    accept(job, fields, verdict)
+            for rel in discard - taken - {j.rel for j in work if not j.done}:
+                (root / rel).unlink(missing_ok=True)
+                levels.pop(rel, None)
+                for key in [k for k, v in index.items() if v == rel]:
+                    index.pop(key)
+            if discard:
+                write_json(_index_path(root), index)
 
     if summary.get("unmeasured") or "measure_error" in summary:
         host = next((v.host for v in levels.values() if v), "")
