@@ -107,6 +107,7 @@ one-line note.
 | revision rounds the author gets | `--rounds` | `keyframe` (with `--sheet`), `vfx`, `probe` | `--revisions` (`vfx`) |
 | the review score under which work goes back | `--bar` | `keyframe` (with `--sheet`), `vfx`, `probe` | `--author-bar` (`vfx`) |
 | a spend cap in dollars | `--budget-usd` (`--stage-budget-usd`, `--synth-budget-usd`, `--review-budget-usd` cap the whole stage, the synthesis, a review) | `research`, `keyframe`, `vfx`, `probe`, `assess`, `improve`, `sound`, `run` (the whole run) | `--budget` (`research`) |
+| the model that reviews, never the author's own: it must differ from `--model` by family, or the stage is refused before anything is paid | `--reviewer-model` (default `opus`; `--review-budget-usd` is what one review may cost, 2) | `keyframe`, `vfx`, `probe`, `run` (handed to keyframe and vfx) | |
 | ignore what is cached and do the stage again | `--fresh` | `research`, `keyframe`, `vfx`, `props`, `voice`, `sound`, `build`, `retime`, `review`, `qa`, `gate`, `pilot` | |
 | the model, its reasoning effort, its fallbacks | `--model`, `--effort`, `--fallback-model` | every stage that calls a model, `props` included; not `render` | |
 | how many of the stage's independent pieces run at once | `--jobs` | `ideas`, `research`, `styles`, `script`, `keyframe`, `vfx`, `probe`, `sound` (with `--fetch`: cues searched, downloaded and judged at once, default 4) | |
@@ -619,13 +620,23 @@ hand-authored world showed the cost.
     removed or renamed after `save()` is refused.
   - An author's own previews (`kit.py frame`) go to `frames/kit/`. The
     gate clears a section's proof frames before rendering them again, so
-    the reviewer only sees this round's.
+    `frames/` holds only this round's; the round before is read from
+    `rounds/<stem>/rNN/frames/`, where the reviewer is pointed to it
+    (`vfx.PREVIOUS_ROUND`).
   - Revisions resume the author's own session.
   - Every gated round is kept under `vfx/vNN/rounds/<stem>/rNN/` (program,
-    document, provenance, proof frames). A section ends on its best-reviewed
-    round, so a last revision that crashes, breaks the build or scores lower
-    falls back to that round. A section whose authoring raises becomes an
-    error record; the other sections are kept.
+    document, provenance, proof frames). A revision's reviewer is handed the
+    round the section stands on (its score, findings and kept frames) and
+    says whether the revision is `better`, `same` or `worse` and what became
+    of each finding (`review.previous`); a round replaces the incumbent only
+    on `better`, a tie keeps it, since the score's round-to-round noise is as
+    large as the gains. A revision judged `same` or `worse` ends the loop
+    (`stopped` on the record): the listing was answered and nothing was
+    gained, so no further revision is paid for. The next author's listing
+    leads with what persists or regressed. A section ends on the round the
+    verdicts promoted, so a last revision that crashes, breaks the build or
+    is judged no better falls back to that round. A section whose authoring
+    raises becomes an error record; the other sections are kept.
   - A proof frame the host could not render (unreachable, no engine, or an
     engine that died naming no finding: `vfx.infra_failure`) is retried
     once on the other host and otherwise filed as `infra:`, never
@@ -638,17 +649,26 @@ hand-authored world showed the cost.
     while frames are missing, and the frames the first pass lost are
     recorded on the round (`rounds[].infra` in `vfx.json`, "lost to the
     host" in `vfx.md`); no revision is paid for the host's failure. A round
-    the host loses twice does not pass: the section ends on an `error:`
-    naming the host and `yt vfx --sections N`, with `stopped: host` in its
-    budget row, so the world the gate never saw rendered stays out of the
-    film (`has_errors`) and an earlier reviewed version of the section is
-    kept over it (`keeps_previous`).
+    the host loses twice does not pass: with no reviewed round to stand on,
+    the section ends on an `error:` naming the host and `yt vfx --sections
+    N`, with `stopped: host` in its budget row, so the world the gate never
+    saw rendered stays out of the film (`has_errors`) and an earlier
+    reviewed version of the section is kept over it (`keeps_previous`); a
+    revision whose frames stay lost (or that got no review) ends the
+    section on the round it stands on, `stopped: infra` (`unreviewed`).
   - Money is budgeted per section and per stage (`vfx.SpendBudget`):
-    `--budget-usd` (15) covers one section's author sessions and its
-    reviews, `--stage-budget-usd` (default: that times the sections) covers
-    all of them, and the estimate prints before the first agent starts.
-    Each session's cap is what the budgets leave minus the review that
-    follows it; a section that cannot pay another session and review stops
+    `--budget-usd` (18: what the default `--rounds` cost at the most, so the
+    estimate and the budget agree) covers one section's author sessions and
+    its reviews, `--stage-budget-usd` (default: that times the sections)
+    covers all of them, and the estimate prints before the first agent
+    starts. The reviewer is `--reviewer-model` (`opus`; never the author's
+    own model: `--model opus` without a reviewer of another family, say
+    `--reviewer-model sonnet`, is refused with exit 2 before anything is
+    paid, as `yt probe` rules, on `yt vfx`, `yt keyframe` and `yt run`)
+    under `--review-budget-usd` (2) a review, and each round's
+    review cost is on the record (`rounds[].review_usd`, `budget.review_usd`).
+    Each session's cap is what the budgets leave minus the cap of the review
+    that follows it; a section that cannot pay another session and review stops
     ("budget") and ends on its best reviewed round, and the run prints
     spend against budget per section and for the stage (`budget` in each
     record). A session is told its cap (`sdkkit.budget_line`, and `kit.py`
@@ -665,14 +685,31 @@ hand-authored world showed the cost.
     `vfx/vNN/` and carries the others forward from the active version
     (`carried_from`, $0). Continuity, reach and plan are then redone.
     `--sections` refuses `--fresh`.
+  - Each section writes its own record as it goes:
+    `vfx/vNN/rounds/<stem>/record.json`, partial after every gate
+    (`finished: false`, the rounds so far) and whole when the section ends,
+    written through a temporary file and one rename. 12-author is assembled
+    from those files, so a stop, a kill or a crash keeps every section that
+    finished (Run 2 lost eight finished sections to one kill).
   - `yt vfx --recover` rebuilds the record of a run that ended before it saved
-    one (the stage writes 12-author only when every section is done, so a
-    kill, a timeout or a crash loses all of it): each section goes back on its
-    best reviewed round from `vfx/vNN/rounds/` and the cached reviews, a
-    section never reviewed is recorded with an error for `--sections N`, and
-    the film-wide stages run. Nothing is authored. Measured on the Euler film:
-    a 6 h run killed by a wrapping `timeout` came back for the price of the
-    continuity pass. Never wrap `yt vfx` in a timeout shorter than its clock.
+    12-author: a section with a record goes back on the round its record
+    names (a partial one on the round its verdicts promoted); one without
+    goes back on its best reviewed round from `vfx/vNN/rounds/` and the
+    cached reviews; a section never reviewed is recorded with an error for
+    `--sections N`, and the film-wide stages run. Nothing is authored.
+    Measured on the Euler film: a 6 h run killed by a wrapping `timeout` came
+    back for the price of the continuity pass. Never wrap `yt vfx` in a
+    timeout shorter than its clock.
+  - `yt vfx --finish-now --title X` tells the run authoring that project to
+    finish: it writes `vfx/vNN/FINISH` into the version being authored, and
+    the run reads it between rounds (as it reads a `SIGUSR1`) to end every
+    section on its best reviewed round (`stopped: finish`) and run
+    continuity, reach and plan. A section already at the bar is done, not
+    finished. No revision in flight is cut off; the one after it is not paid
+    for (throughput item 33). The command names the version the file went
+    to and warns when that version is finished (its record is in the
+    dossier): a run still planning has not opened its own version yet and
+    will not read it.
   - `yt vfx --take-attempt N --why "..."` overrides the competition after the
     fact: a section whose new attempt lost to the version it replaced
     (`kept_from`) gets the attempt back from `rounds/<stem>.attempt`, with the

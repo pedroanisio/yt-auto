@@ -8,7 +8,9 @@ time, with the fix that would remove it. A fix marked **done** is in the code;
 **proposed** is not yet.
 
 The run: a 60-second 3D science explainer in English, ElevenLabs voice,
-every stage on opus, started 2026-10-19 20:47 (-03).
+every stage on opus, started 2026-10-19 20:47 (-03). (The vfx reviewer was
+opus too, the author's own model; a stage now refuses that: `--model opus`
+takes `--reviewer-model` of another family.)
 
 ## Stage log
 
@@ -271,7 +273,12 @@ every stage on opus, started 2026-10-19 20:47 (-03).
     only choices are to wait out every revision (each up to 60 min) or to
     lose the round. *Proposed:* a signal (or a `--rounds` change read
     between rounds) that makes the stage promote its best round so far,
-    finish continuity, reach and plan, and write its records.
+    finish continuity, reach and plan, and write its records. *Done
+    (AUTO-82):* each section writes `vfx/vNN/rounds/<stem>/record.json` as
+    it finishes (partial after each gate), 12-author is assembled from those
+    files and `--recover` reads them; `yt vfx --finish-now --title X` writes
+    `vfx/vNN/FINISH`, read between rounds beside `SIGUSR1`, and every section
+    ends on its best reviewed round with `stopped: finish`.
 
 34. **An author workspace pins the checkout that created it.** `kit.py`
     and `sr.py` in `vfx/vNN/` insert the absolute path of the code tree that

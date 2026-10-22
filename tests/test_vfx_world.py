@@ -160,9 +160,21 @@ class FakeEngine:
                         tool_input={"file_path": "frames/x.png"})
             review = FakeEngine.reviews.pop(0) if FakeEngine.reviews else {
                 "frames": [], "score": 9, "summary": "fine"}
+            if vfx.PREVIOUS_ROUND in prompt and "previous" not in review:
+                review = self.verdict_for(review, prompt)
             yield Event(type="assistant",
                         text="I looked.\n```json\n" + json.dumps(review) + "\n```")
         yield Event(type="result", raw={})
+
+    @staticmethod
+    def verdict_for(review: dict, prompt: str) -> dict:
+        """A script from before the reviewer was asked for a verdict (AUTO-78)
+        judges by score, as the stage did then: higher is better, equal is the
+        same. The previous round's score is read from the brief it was handed."""
+        before = re.search(r'"score": ([\d.]+)', prompt.split(vfx.PREVIOUS_ROUND, 1)[1])
+        score, was = float(review.get("score") or 0), float(before.group(1)) if before else 0.0
+        verdict = "better" if score > was else "same" if score == was else "worse"
+        return dict(review, previous={"verdict": verdict, "findings": []})
 
 
 class WorldSymbols(unittest.TestCase):
@@ -1179,23 +1191,28 @@ class Review(unittest.TestCase):
         self.assertTrue(list(frames.glob(f"{stem}__world-open__*.png")))  # the gate's proofs
 
     def test_the_section_ends_on_its_best_reviewed_round(self):
-        FakeEngine.reviews = [{"frames": [], "score": 6, "summary": "the best"},
-                              {"frames": [], "score": 4, "summary": "worse"},
-                              {"frames": [], "score": 3, "summary": "worse still"}]
+        # AUTO-78: a revision judged worse ends the loop, so the last round is
+        # the one that falls back; the fake's verdict follows its scores
+        FakeEngine.reviews = [{"frames": [], "score": 5, "summary": "round zero"},
+                              {"frames": [], "score": 6, "summary": "the best"},
+                              {"frames": [], "score": 4, "summary": "worse"}]
         FakeEngine.docs = [WORLD_DOC, WORLD_DOC.replace("#AAAAAA", "#BBBBBB"),
                            WORLD_DOC.replace("#AAAAAA", "#CCCCCC")]
         doc = self.author()[0]
-        self.assertEqual([r["score"] for r in doc["rounds"]], [6, 4, 3])
-        self.assertEqual(doc["best_round"], 0)
+        self.assertEqual([r["score"] for r in doc["rounds"]], [5, 6, 4])
+        self.assertEqual(doc["best_round"], 1)
         self.assertEqual(doc["score"], 6)
         self.assertEqual(doc["review"]["summary"], "the best")
         kept = (self.root / doc["file"]).read_text()
-        self.assertIn("#AAAAAA", kept)                        # round 0's document is back
+        self.assertIn("#BBBBBB", kept)                        # round 1's document is back
         self.assertNotIn("#CCCCCC", kept)
         self.assertIsNotNone(doc["provenance"])               # and still its program's output
         stem = doc["file"].rsplit("/", 1)[1][:-len(".scene.xml")]
         rounds = self.root / "vfx" / "v01" / "rounds" / stem
-        self.assertEqual(sorted(p.name for p in rounds.iterdir()), ["r00", "r01", "r02"])
+        # the section's record (AUTO-82) sits beside its kept rounds
+        self.assertEqual(sorted(p.name for p in rounds.iterdir() if p.is_dir()),
+                         ["r00", "r01", "r02"])
+        self.assertTrue((rounds / "record.json").is_file())
 
     def test_a_final_revision_that_crashes_falls_back_to_the_best_round(self):
         FakeEngine.reviews = [{"frames": [], "score": 5, "summary": "round zero"}]

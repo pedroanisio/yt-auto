@@ -1,10 +1,12 @@
 """The stage flags that mean the same thing everywhere, spelled once.
 
-    --rounds      revision rounds the author gets
-    --bar         the review score under which work goes back
-    --budget-usd  a spend cap in dollars
-    --fresh       ignore what is cached and do the stage again
-    --jobs        how many of the stage's independent pieces run at once
+    --rounds             revision rounds the author gets
+    --bar                the review score under which work goes back
+    --budget-usd         a spend cap in dollars
+    --reviewer-model     the model that reviews, never the author's own
+    --review-budget-usd  what one review may cost
+    --fresh              ignore what is cached and do the stage again
+    --jobs               how many of the stage's independent pieces run at once
 
 A stage adds the ones it has with its own default and help. The spellings
 earlier releases used stay as hidden aliases that land in the same place and
@@ -48,6 +50,31 @@ def bar(p, *, default, help, old=(), dest="bar") -> None:
 def budget(p, *, default, help, old=(), dest="budget_usd", metavar=None) -> None:
     _flag(p, "--budget-usd", old, dest, type=float, default=default, help=help,
           metavar=metavar)
+
+
+def reviewer_model(p, *, default, help, dest="reviewer_model") -> None:
+    p.add_argument("--reviewer-model", dest=dest, default=default, metavar="MODEL", help=help)
+
+
+def review_budget(p, *, default, help, dest="review_budget_usd") -> None:
+    p.add_argument("--review-budget-usd", dest=dest, type=float, default=default, help=help)
+
+
+def model_family(name: str) -> str:
+    """`opus`, `claude-opus-5-5` and `opus[1m]` are one model family."""
+    low = (name or "").lower()
+    return next((f for f in ("fable", "opus", "sonnet", "haiku") if f in low), low)
+
+
+def own_reviewer(model: str, reviewer_model: str) -> str:
+    """The error when the reviewer is the author's own model (one family),
+    else "". A model never grades its own work, so every stage that reviews
+    refuses this before anything is paid, and says what to pass."""
+    if model_family(reviewer_model) != model_family(model):
+        return ""
+    return (f"error: the reviewer must be a different model from the author (--model {model}, "
+            f"--reviewer-model {reviewer_model}): a model does not grade its own work; pass "
+            "--reviewer-model with another model")
 
 
 def fresh(p, *, help="ignore what is cached and do this stage again") -> None:

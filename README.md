@@ -554,15 +554,20 @@ frames is a camera pointing at nothing. The model then reviews the frames
 against the publication bar and scores them. An error, or a score under
 `--bar` (7), sends the findings back to the author for up to
 `--rounds` rounds (2); every round and its score are kept in `vfx.json`.
+A revision's reviewer sees the round before it and judges the revision
+`better`, `same` or `worse`: only `better` replaces the round the section
+stands on, and a revision judged `same` or `worse` ends the rounds.
 A frame the host could not render is the host's failure, not the author's:
 it is retried once on the other host, else filed as `infra:`, and a round
 blocked only by such frames is gated again after a bounded wait with no
 session and no revision paid (`rounds[].infra` in `vfx.json` says what the
-host lost). A round the host loses twice does not pass: it ends on an
-`error:` naming the host and `yt vfx --sections N` (`stopped: host` in the
-section's budget row), so the world the gate never saw rendered stays out
-of the film and an earlier reviewed version of the section is kept over
-it. A frame both hosts stop at the still deadline or kill for
+host lost). A round the host loses twice does not pass: with no reviewed
+round to stand on it ends on an `error:` naming the host and `yt vfx
+--sections N` (`stopped: host` in the section's budget row), so the world
+the gate never saw rendered stays out of the film and an earlier reviewed
+version of the section is kept over it; a revision whose frames stay lost
+ends the section on the round it stands on, `stopped: infra`. A frame both
+hosts stop at the still deadline or kill for
 memory is the author's error, naming the document's cost drivers: no host
 holds that world as written.
 
@@ -582,16 +587,29 @@ construct left unused. The planner and the author both see the whole
 vocabulary, and `examples.scene.xml` now proves a lit 3D set with a physical
 camera and particles alongside the 2D constructs.
 
-`--budget-usd` (15) is one section's budget for its author sessions and its
-reviews together, and `--stage-budget-usd` caps all sections (default: the
-section budget times the sections). The run prints its estimate before any
-agent starts and its spend against both budgets after; a section that cannot
-pay another session and review stops and keeps its best reviewed round. An
-author is told its session's cap, and at 80% of it is asked for its build and
-a still (as at 80% of its time) rather than being cut off with exit 1.
+`--budget-usd` (18, what the default rounds cost at the most) is one section's
+budget for its author sessions and its reviews together, and
+`--stage-budget-usd` caps all sections (default: the section budget times the
+sections). The reviewer is `--reviewer-model` (`opus`, never the author's own:
+`--model opus` needs a reviewer of another family, say `--reviewer-model
+sonnet`, or the stage is refused before anything is paid; `yt run` hands both
+reviewer flags to keyframe and vfx) under `--review-budget-usd` (2) a review. The run prints its estimate before
+any agent starts and its spend against both budgets after; a section that
+cannot pay another session and review stops and keeps its best reviewed
+round. An author is told its session's cap, and at 80% of it is asked for its
+build and a still (as at 80% of its time) rather than being cut off with exit 1.
+
+Each section writes its record (`vfx/vNN/rounds/<stem>/record.json`) as it
+finishes, and a partial one after every gate, so a stopped or killed run keeps
+every section that finished and `--recover` reads them back. `yt vfx
+--finish-now --title X` writes `vfx/vNN/FINISH`, which the run reads between
+rounds (as it reads `SIGUSR1`) to end every section on its best reviewed round
+and run the film-wide stages.
 
 `--per-section` · `--jobs` · `--budget-usd` per section · `--stage-budget-usd` ·
-`--budget-hours` · `--width` · `--height` · `--rounds` · `--bar` · `--inspo` · `--fresh`
+`--reviewer-model` · `--review-budget-usd` · `--budget-hours` · `--width` ·
+`--height` · `--rounds` · `--bar` · `--inspo` · `--fresh` · `--finish-now` ·
+`--recover`
 
 ### `yt sound`
 
