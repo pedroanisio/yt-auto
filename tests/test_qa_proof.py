@@ -180,6 +180,66 @@ class ProofFrames(unittest.TestCase):
         self.assertIn("<colorManagement", self.scene.read_text())     # untouched
         self.assertEqual([p.name for p in self.home.glob("scene*")], ["scene.xml"])
 
+    def test_the_ungraded_copy_is_named_for_the_pass(self):
+        # two qa runs on one project do not share it, and one a kill left
+        # behind says which pass wrote it
+        self.proof("open__fx-open__2s.png", x=50)
+        names = []
+
+        def noting(args, project, scene, samples, frames_dir, *, render=None):
+            names.append(Path(scene).name)
+            return self.fake_render(args, project, scene, samples, frames_dir)
+        with mock.patch.object(qa, "render_frames", noting):
+            qa.proof_frame_findings(None, None, str(self.scene), _vfx(WORLD),
+                                    self.home, SHOTS, self.out)
+        self.assertEqual(names, ["scene.proof-pass-01.xml"])
+
+    def test_a_copy_that_cannot_be_written_skips_the_check_and_says_so(self):
+        self.proof("open__fx-open__2s.png", x=50)
+        self.film_x = 400
+        with mock.patch.object(qa, "render_frames", self.fake_render), \
+                mock.patch.object(Path, "write_bytes", side_effect=PermissionError("read-only")):
+            found, note = qa.proof_frame_findings(None, None, str(self.scene), _vfx(WORLD),
+                                                  self.home, SHOTS, self.out)
+        self.assertEqual(found, [])
+        self.assertEqual(self.asked, [])
+        self.assertIn("proof check skipped: could not write the ungraded copy", note)
+        self.assertIn("read-only", note)
+
+    def _reused(self, plan_rows):
+        # a pass with its proof frame already rendered, as --reuse finds it
+        self.proof("open__fx-open__2s.png", x=50)
+        frame = _png(self.out / "proof" / "proof-open__fx-open__2s.png", 400)
+        if plan_rows is not None:
+            (self.out / "proof").mkdir(parents=True, exist_ok=True)
+            (self.out / "proof" / "plan.json").write_text(json.dumps(plan_rows))
+        present = []
+
+        def skipping(args, project, scene, samples, frames_dir, *, render=None):
+            present.append(frame.is_file())            # render_frames keeps a frame there
+            for row in samples:
+                if not (frames_dir / row["frame"]).is_file():
+                    _png(frames_dir / row["frame"], self.film_x)
+            return []
+        with mock.patch.object(qa, "render_frames", skipping):
+            found, _ = qa.proof_frame_findings(None, None, str(self.scene), _vfx(WORLD),
+                                               self.home, SHOTS, self.out)
+        return found, present
+
+    def test_a_reused_pass_whose_frames_were_rendered_graded_renders_them_again(self):
+        # a pass recorded before AUTO-72 rendered its proof frames graded; under
+        # an applied look they would read as a mismatch of every world
+        for rows in (None, [{"world": "fx-open", "frame": "proof-open__fx-open__2s.png"}]):
+            found, present = self._reused(rows)
+            self.assertEqual(present, [False])
+            self.assertEqual(found, [])
+
+    def test_a_reused_pass_whose_frames_were_ungraded_keeps_them(self):
+        found, present = self._reused(
+            [{"world": "fx-open", "frame": "proof-open__fx-open__2s.png", "graded": False}])
+        self.assertEqual(present, [True])
+        self.assertEqual(len(found), 1)
+
     def test_each_proof_row_is_recorded_as_ungraded(self):
         self.proof("open__fx-open__2s.png", x=50)
         self.film_x = 400

@@ -472,8 +472,10 @@ def proof_frame_findings(args, project, scene: str, vfx: dict | None, home: Path
 
     The film is rendered ungraded, from a copy of the scene beside it with
     the `<colorManagement>` removed, as the proof frame was (AUTO-72); the
-    copy lives only for the render. Each row is recorded under
-    `out_dir/proof/plan.json` with `graded: false`."""
+    copy is named for the pass and lives only for the render. Each row is
+    recorded under `out_dir/proof/plan.json` with `graded: false`; a reused
+    pass whose plan does not say so had its frames rendered graded, and
+    they are rendered again."""
     plan = proof_plan(vfx, home, shots)
     skipped = max(0, len(plan) - PROOF_LIMIT)
     plan = plan[:PROOF_LIMIT]
@@ -484,10 +486,19 @@ def proof_frame_findings(args, project, scene: str, vfx: dict | None, home: Path
         row["graded"] = False
     frames = Path(out_dir) / "proof"
     frames.mkdir(parents=True, exist_ok=True)
+    before = read_json(frames / "plan.json", warn=False, shape=list) or []
+    ungraded_before = {r.get("frame") for r in before
+                       if isinstance(r, dict) and r.get("graded") is False}
+    for row in plan:
+        if row["frame"] not in ungraded_before:
+            (frames / row["frame"]).unlink(missing_ok=True)
     write_json(frames / "plan.json", plan)
     film = Path(scene)
-    copy = film.with_name(f"{film.stem}.proof{film.suffix}")
-    copy.write_bytes(ungraded(film.read_bytes()))
+    copy = film.with_name(f"{film.stem}.proof-{Path(out_dir).name}{film.suffix}")
+    try:
+        copy.write_bytes(ungraded(film.read_bytes()))
+    except OSError as exc:
+        return [], f"proof check skipped: could not write the ungraded copy {copy}: {exc}"
     try:
         problems = render_frames(args, project, str(copy), plan, frames)
     finally:

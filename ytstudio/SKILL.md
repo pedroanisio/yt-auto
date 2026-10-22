@@ -383,10 +383,11 @@ blocking editorial note. It is not a delivery verdict. The order is:
    are ungraded: the film's is rendered from a copy of the scene with its
    `<colorManagement>` removed, as the proof frame was, so an applied look
    is not a mismatch (each row under `qa/pass-NN/proof/plan.json` says
-   `graded: false`; `yt build`'s check renders the same way). A difference
-   above `qa.PROOF_DIFF` (4; measured: 0.12 for a matching pair, 7.9 for a
-   sparse world's opening state against 24 s on, 24.6 for another world) is a
-   `proof-mismatch`, owned by `build` and always blocking: it caps
+   `graded: false`; a `--reuse` pass whose plan does not has its proof
+   frames rendered again; `yt build`'s check renders the same way). A
+   difference above `qa.PROOF_DIFF` (4; measured: 0.12 for a matching pair,
+   7.9 for a sparse world's opening state against 24 s on, 24.6 for another
+   world) is a `proof-mismatch`, owned by `build` and always blocking: it caps
    `visual_quality` and `animation_vfx` and blocks READY, and every other
    mechanical finding on that world's shots names `build` as owner too
    (`reowned` says why). A film with no proof
