@@ -2574,8 +2574,9 @@ class VfxPlanner:
                 "proof frames read as the same film -- its palette, type, construction of "
                 "labels and formulas, materials, lights and camera language. A section that "
                 "departs from the approved look is wrong, whatever else it does well: name "
-                "every departure as a finding with the fix being to copy the approved "
-                "section's construct, and do not score the section above its fidelity."])
+                "every departure as a finding with the fix being to use the approved "
+                "section's construct from `look.py` (import it; do not re-derive it), and "
+                "do not score the section above its fidelity."])
         elif look:
             prompt += "\n\n" + "\n\n".join([
                 harness.brief("The approved look (the operator approved this keyframe as the "

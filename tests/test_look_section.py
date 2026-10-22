@@ -180,6 +180,9 @@ class CarryTheLook(Case):
         review = self.reviews()[0]["prompt"]
         self.assertIn("approved section 1", review)
         self.assertIn(str(self.root / "keyframe" / "look.py"), review)
+        # a departure's fix is the module's construct, imported, not a copy of it
+        self.assertIn("construct from `look.py` (import it", review)
+        self.assertNotIn("copy the approved", review)
 
     def test_a_pending_or_rejected_look_is_not_carried(self):
         for state in ("pending", "rejected"):
