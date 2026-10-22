@@ -350,14 +350,19 @@ script.json keys stay), `rule:numbers`, `rule:hook-subject`,
 `warning: house:rule:x` and never revised: `rule:clause`, `rule:passive`
 (English only), `rule:person`, `rule:pace`, `rule:density`,
 `rule:hook-promise`, `rule:hook-stakes`, `rule:end-signal`, `rule:recap`.
-The minor tier: `rule:last-line`. A rule outside the film's language is
+The minor tier: `rule:last-line`. A greeting that says a word of the
+title is the first content sentence, not filler; `rule:hook-subject` takes
+any content word of the title, its verb included; `rule:pace` is
+consistency with `--wpm`, not direction 25's band. A rule outside the film's language is
 `not_evidenced: rule:x (lang)`. The error and important flags go to one
-revision (`revise-rules`), which fixes the line or its on-screen text or
-keeps it with a reason; the rules are read again on the final text and what
+revision (`revise-rules`, `revise-rules-2` for a line still breaking its
+rule), which fixes the line, or its on-screen text for `rule:legibility` and
+`rule:unspoken-number` only, or keeps it with a reason; the rules are read again on the final text and what
 stands goes to script.json's `findings`, `error:` for the error tier and
 `warning:` for the rest. A standing `error:` exits 1 and leaves
 `narration.txt` unwritten unless `yt script --report-only`; `yt doctor`
-fails on it under `script` with the fixing command, and `yt build` carries
+fails on it under `script` with the fixing command (and not again under
+`build`), and `yt build` carries
 it into build.json's findings, where `yt qa` lifts it as a blocker. A
 `warning:` blocks nothing.
 
