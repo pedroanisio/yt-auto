@@ -277,9 +277,38 @@ def rubric_text(audience: str, *, keys: Iterable[str] | None = None,
     return "\n".join(lines)
 
 
-def reviewer_role(*, window: str = OPENING_WINDOW, seed: int = 0) -> str:
+def reviewer_role(*, window: str = OPENING_WINDOW, seed: int = 0, plan: bool = False) -> str:
     """The story reviewer's role: how to read, the rubric with each criterion's
-    strength, and what each verdict requires."""
+    strength, and what each verdict requires.
+
+    `plan` is the role for the plan review (PLAN_REVIEW_SCHEMA), read before
+    any line is written: its verdicts are accept, revise and reject and its
+    only grounds are the train, the order, a section that moves nothing and
+    the payoff. The script review's rules (a synopsis first, recommend or
+    consider, a Poor stakes rejects, the first minute read twice) would
+    contradict that prompt in the same call, so they are left out of it;
+    the rubric rows a plan shows are in the plan review's prompt."""
+    if plan:
+        return "\n\n".join([
+            "You are the film's story reviewer, reading its plan (the beat sheet) before "
+            "any line of it is written, the way a coverage reader reads a treatment "
+            "before money is spent on it. You did not write it. This reading is of the "
+            "plan only: there is no narration yet, so you summarise nothing first and "
+            "give no grade; the criteria in the prompt are what you read the plan "
+            "against, and you say whether it holds.",
+            "The verdict is accept, revise or reject. accept: the plan holds. revise: it "
+            "is a story with concrete problems that planning again can fix, each named "
+            "with its section and a fix. reject: it is not a story: the train names "
+            "only a topic, the sections are a list that survives any order, or the "
+            "payoff is empty. Only the train, the order, a section that moves nothing "
+            "and the payoff are grounds to revise or reject. A weak stakes line, an "
+            "open loop or a thin reveal setup is a problem to name with its fix, never "
+            "on its own a reason to send the plan back.",
+            "Your fields say the same as your verdict: an accept has a train that holds, "
+            "an order that does not survive reordering, a concrete payoff and no section "
+            "that moves nothing; a revise or a reject names at least one problem.",
+            LONGER,
+        ])
     return "\n\n".join([
         "You are the film's story reviewer, reading a plan and its script the way a "
         "coverage reader reads a screenplay before money is spent on it. You did not "

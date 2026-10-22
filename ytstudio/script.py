@@ -1065,11 +1065,11 @@ class Screenwriter:
             house_digest=self.house_digest, verbose=verbose, usage=self.usage,
             decisions=self.harness.decisions, lock=self.harness.lock)
         #: The plan's reader (AUTO-92): another model family (the command
-        #: refuses the author's own), its own cap a review, the rubric as its
-        #: role and the house in its system; on the same books, so the
-        #: stage's record bills it and each of its rows names its model.
+        #: refuses the author's own), its own cap a review, the plan's
+        #: reviewer role and the house in its system; on the same books, so
+        #: the stage's record bills it and each of its rows names its model.
         self.reviewer = harness.Harness(
-            root or ".", "script", model=reviewer_model, role=narrative.reviewer_role(),
+            root or ".", "script", model=reviewer_model, role=narrative.reviewer_role(plan=True),
             house=house, house_digest=self.house_digest, budget_usd=review_budget_usd,
             verbose=verbose, usage=self.usage, decisions=self.harness.decisions,
             lock=self.harness.lock) if reviewer_model else None

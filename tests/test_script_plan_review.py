@@ -306,7 +306,10 @@ class Reviewer(unittest.TestCase):
         data = self.writer().run(review=True)
         review = [c for c in ByModel.seen if c["kind"] == "plan-review"]
         self.assertEqual([(c["model"], c["cap"]) for c in review], [("opus", 1.5)])
-        self.assertIn(narrative.reviewer_role().split(".")[0], review[0]["system"])
+        # The plan's role, not the script review's: its verdicts are accept,
+        # revise and reject, and nothing in it asks for a synopsis or grades.
+        self.assertIn(narrative.reviewer_role(plan=True), review[0]["system"])
+        self.assertNotIn("recommend", review[0]["system"])
         others = {c["model"] for c in ByModel.seen if c["kind"] != "plan-review"}
         self.assertEqual(others, {"sonnet"})
         kept = json.loads((self.root / "decisions" / "script" / "plan-review.json").read_text())
@@ -324,6 +327,50 @@ class Reviewer(unittest.TestCase):
         self.assertEqual([r["kind"] for r in rows], ["failed"])
         self.assertGreater(rows[0]["cost_usd"], 0)
         self.assertFalse([c for c in ByModel.seen if c["kind"] == "shots"])
+
+
+class PlanRole(unittest.TestCase):
+    def test_the_plan_role_replaces_the_script_reviews_verdict_rules(self):
+        role = narrative.reviewer_role(plan=True)
+        for word in ("accept", "revise", "reject", "plan"):
+            self.assertIn(word, role)
+        for word in ("recommend", "consider", "synopsis", "first minute"):
+            self.assertNotIn(word, role)
+        # stakes is a problem to name, never on its own grounds to send it back
+        self.assertIn("stakes", role)
+        self.assertNotEqual(role, narrative.reviewer_role())
+
+
+class Rounds(unittest.TestCase):
+    """`--rounds` is the fact-check's revision rounds (`--verify`)."""
+
+    def revisions(self, rounds):
+        w = script.Screenwriter(idea(), verbose=False, jobs=1, minutes=1, research="R",
+                                rounds=rounds)
+        asked = []
+
+        def ask(name, prompt, schema):
+            which = kind(schema)
+            asked.append(name)
+            if which == "plan":
+                return copy.deepcopy(PLAN)
+            if which == "shots":
+                return shots_for(int(name.split("-")[1]), ("context", "payoff"))
+            if which == "flags":
+                return {"flags": [{"n": 1, "severity": "important", "problem": "p",
+                                   "fix": "f"}], "verdict": "no"}
+            if which == "fixes":
+                return {"fixes": [{"n": 1, "action": "fix", "narration": f"line {name}",
+                                   "why": "w"}]}
+            return {}
+        w._ask = ask
+        w.run(do_verify=True)
+        return [n for n in asked if n.startswith("revise-") and n[7:].isdigit()]
+
+    def test_the_rounds_bound_the_fact_checks_revisions(self):
+        self.assertEqual(self.revisions(0), [])
+        self.assertEqual(self.revisions(1), ["revise-1"])
+        self.assertEqual(self.revisions(3), ["revise-1", "revise-2", "revise-3"])
 
 
 # --------------------------------------------------------------------------- #
