@@ -997,7 +997,8 @@ knows the truth — but only where the editor says so. Every shot whose read
 drifted goes to the model with its words, its super and its visual, and the
 answer per shot is `accept` (the screenplay takes the measured length),
 `rerecord` (the read is wrong for the house pacing; `yt voice --redo`),
-`rewrite` (the line is wrong for the shot; back to `yt script`) or
+`rewrite` (the line is wrong for the shot; `yt script --revise retime` sends
+exactly those lines back, with the read each measured) or
 `keep_planned`. `retime.json` keeps the decisions; `--dry-run` shows them and
 writes nothing; applying keeps `script.json.bak`.
 

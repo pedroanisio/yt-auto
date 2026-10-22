@@ -182,6 +182,20 @@ class Budget(Priced):
         self.assertIn("sound", self.err)
 
 
+class RewriteHint(_RunCase):
+    """After retime's `rewrite` the run stops as before, and the hint is the
+    command that sends exactly those lines back (AUTO-95)."""
+
+    def test_the_hint_after_unsettled_names_the_real_command(self):
+        self.codes["retime"] = retime.UNSETTLED
+        self.records["retime"] = {"decisions": [
+            {"label": "1.3", "action": "rewrite", "note": "twice its shot"}]}
+        self.assertEqual(self.run_yt(), retime.UNSETTLED)
+        self.assertIn("yt script --revise retime", self.err)
+        self.assertIn("1.3", self.err)
+        self.assertNotIn("keyframe:start", self.order)
+
+
 class WalkOrder(_RunCase):
     """The plan and the cap price the stages in the order the walk reaches
     them, sound before the keyframe, with the real estimator: an assumed vfx

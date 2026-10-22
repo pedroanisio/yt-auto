@@ -243,10 +243,13 @@ class RetimeSettles(unittest.TestCase):
             project = self._project(Path(tmp), [
                 {"label": "1.1", "action": "rewrite", "note": "too long"}])
             calls = []
+            said = []
             code = cli.settle_retime(retime.UNSETTLED, project, lambda s, e: calls.append(s) or 0,
-                                     say=lambda m: None)
+                                     say=said.append)
             self.assertEqual(code, retime.UNSETTLED)
             self.assertEqual(calls, [])
+            # the hint is the command that does it (AUTO-95), not a direction
+            self.assertIn("yt script --revise retime", " ".join(said))
 
     def test_a_settled_retime_passes_through(self):
         with tempfile.TemporaryDirectory() as tmp:

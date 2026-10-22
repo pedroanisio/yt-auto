@@ -84,6 +84,19 @@ class Skill(unittest.TestCase):
                 self.assertIn(flag, known, f"`yt {command}` has no {flag}")
         self.assertGreater(cited, 5, "the manual cites almost no flags; the pattern is broken")
 
+    def test_the_retime_and_script_rows_name_the_revise_command(self):
+        # retime's `rewrite` and the script stage's row both name the command
+        # that sends the lines back (AUTO-95); the flag test above checks it
+        # exists on `yt script`.
+        rows: dict[str, str] = {}
+        for line in self.text.splitlines():
+            cells = line.split("|")
+            if len(cells) > 2 and cells[1].strip().startswith("`yt "):
+                stage = cells[1].strip("` ").split()[1]
+                rows[stage] = rows.get(stage, "") + line
+        for stage in ("retime", "script"):
+            self.assertIn("`yt script --revise retime`", rows[stage], stage)
+
     def test_the_manual_says_where_its_truth_lives(self):
         self.assertIn("ytstudio/SKILL.md", self.text)
         self.assertIn(".claude/skills/yt/SKILL.md", self.text)

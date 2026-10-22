@@ -132,7 +132,7 @@ itself, and `--project DIR` names a directory directly.
 | `yt script` | dossier, styles | `script.json`, `script.md`, `narration.txt`, `shotlist.csv` | yes (`yt script --revise 1.3,2.1`, `yt script --revise retime` or `--revise feedback` sends only those lines back, see below; the narrative rubric the story will be graded on is in `ytstudio/narrative.py`: seven criteria of four labelled levels, a coverage-shaped review with the verdict reject, consider or recommend, and the plan review's schema; not yet wired into the stage, see AUTO-92, AUTO-93) |
 | `yt props` | script, styles (or phrases given) | `props/<kind>/<id>/`, `props.json` | yes (two decisions: `phrases`, the search phrases picked from the catalogue's vocabulary, and `keep`, the candidates worth building with, each with its `fit` note; the files are Poly Haven, all CC0) |
 | `yt voice` | script | `voice/`, `voice.json`, `narration.vtt`, `.srt` | yes (casting, retakes) |
-| `yt retime` | script, voice | `retime.json`, the screenplay's measured lengths (`script.json.bak` kept) | yes (accept, rerecord, rewrite, keep) |
+| `yt retime` | script, voice | `retime.json`, the screenplay's measured lengths (`script.json.bak` kept) | yes (accept, rerecord, rewrite, keep; a `rerecord` prints `yt voice --redo <labels>` and a `rewrite` prints `yt script --revise retime`) |
 | `yt keyframe` | script, voice, styles, props (what `yt vfx` reads) | the vfx plan, the lead section in `vfx/vNN/`, `keyframe/keyframe.png`, `keyframe/frames.png`, `keyframe.json`, `keyframe.md` | yes (the vfx plan; one author agent, one attempt, no vision review; `--sheet`: the older composed frame) |
 | `yt vfx` | script, voice, styles, props | `vfx/vNN/<section>.scene.xml`, `vfx/vNN/frames/`, `vfx.json`, `vfx.md`, `vfx.csv` | yes (one author agent per section, a frame review per round) |
 | `yt sound` | script | `sound.json`, `sound.md`, `cues.csv`; with `--fetch`, `sound/` and `sound/index.json` | yes (spotting; `yt sound --review` listens back and fixes its own important and blocking findings, one revision of the cue's design fields each, two rounds at most, and `yt sound --review --report-only` only reports them; the fetch judges each candidate that passes the level checks against its cue, from its evidence and a spectrogram, and records the verdict in the cue's `judgement`) |
@@ -189,7 +189,9 @@ voice, retime, keyframe, vfx, sound, build, render in that order -- `yt
 props` after the script so the vfx brief can list real assets, `yt retime`
 after voice so nothing is authored against the screenplay's guess once the
 read is measured (a `rerecord` verdict records those takes again and
-retimes once more; `rewrite`, or a read sent back twice, stops the run),
+retimes once more; `rewrite`, or a read sent back twice, stops the run,
+and the hint names `yt script --revise retime` and `yt run --redo
+voice,retime` after it, which records only the changed lines),
 `yt keyframe` right after it so the look is a section of the film timed to
 that read, and the run STOPS before `yt vfx` while the look awaits the
 operator (`yt keyframe --approve`, then `yt run` again; a rejected look is
