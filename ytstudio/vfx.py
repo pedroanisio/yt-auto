@@ -1382,8 +1382,10 @@ def best_round(rounds: list[dict]) -> dict | None:
     """The round a section stands on. The first reviewed round is the
     incumbent; a later reviewed round replaces it only when its reviewer,
     shown the incumbent, judged it `better` (a tie keeps the incumbent). A
-    review from before the verdict was asked is judged on its score. A round
-    with errors or cut off has no say."""
+    review from before the verdict was asked is judged on its score, and an
+    equal score keeps the earlier round there too: a revision that gained
+    nothing visible is not promoted for its noise. A round with errors or cut
+    off has no say. The run and `--recover` both promote by this one rule."""
     best = None
     for r in rounds:
         if r.get("score") is None or r.get("errors") or r.get("timed_out"):
@@ -3609,23 +3611,9 @@ class VfxPlanner:
         saved = self.ws.read_record(name)
         if isinstance(saved, dict) and saved.get("version") == self.ws.version:
             return self._from_record(n, name, saved)
-        stem = name[:-len(".scene.xml")]
-        kept = self.ws.dir / self.ws.ROUNDS_DIR / stem
-        numbers = sorted(int(d.name[1:]) for d in kept.glob("r[0-9][0-9]")
-                         if (d / name).is_file()) if kept.is_dir() else []
-        rounds = []
-        for r in numbers:
-            saved = read_json(self.ws.root / harness.DECISIONS_DIR / "vfx"
-                              / f"review-{self.ws.version}-{n:02d}-r{r}.json", warn=False) or {}
-            review = saved.get("result") if isinstance(saved.get("result"), dict) else None
-            score = review.get("score") if review else None
-            rounds.append({"round": r, "symbols": [], "errors": 0 if review else 1,
-                           "score": float(score) if score is not None else None,
-                           "fidelity": (review or {}).get("fidelity"), "review": review,
-                           "timed_out": False, "findings": [],
-                           "cost_usd": float(saved.get("cost_usd") or 0.0)})
-        best = max((r for r in rounds if r["score"] is not None),
-                   key=lambda r: (r["score"], r["round"]), default=None)
+        numbers = self._kept_rounds(name)
+        rounds = [self._cached_round(n, r) for r in numbers]
+        best = best_round(rounds)
         chosen = best or (rounds[-1] if rounds else None)
         if chosen is not None:
             self.ws.restore_round(name, chosen["round"])
@@ -3654,6 +3642,25 @@ class VfxPlanner:
                 "cost_usd": round(sum(r["cost_usd"] for r in rounds), 4),
                 **self._provenance(n, findings)}
 
+    def _kept_rounds(self, name: str) -> list[int]:
+        """The rounds kept under rounds/<stem>/rNN that hold the document."""
+        kept = self.ws.dir / self.ws.ROUNDS_DIR / name[:-len(".scene.xml")]
+        return sorted(int(d.name[1:]) for d in kept.glob("r[0-9][0-9]")
+                      if (d / name).is_file()) if kept.is_dir() else []
+
+    def _cached_round(self, n: int, r: int) -> dict:
+        """A kept round as the harness cache knows it: a reviewed round when
+        its review was cached, else one with an error and no say."""
+        saved = read_json(self.ws.root / harness.DECISIONS_DIR / "vfx"
+                          / f"review-{self.ws.version}-{n:02d}-r{r}.json", warn=False) or {}
+        review = saved.get("result") if isinstance(saved.get("result"), dict) else None
+        score = review.get("score") if review else None
+        return {"round": r, "symbols": [], "errors": 0 if review else 1,
+                "score": float(score) if score is not None else None,
+                "fidelity": (review or {}).get("fidelity"), "review": review,
+                "timed_out": False, "findings": [],
+                "cost_usd": float(saved.get("cost_usd") or 0.0)}
+
     def _from_record(self, n: int, name: str, saved: dict) -> dict:
         """One section's record from the one its run wrote (rounds/<stem>/record.json):
         a whole record is put back on its round as it stands; a partial one
@@ -3671,6 +3678,11 @@ class VfxPlanner:
                 findings.insert(0, unreviewed)
             return dict(saved, findings=findings)
         rounds = [r for r in saved.get("rounds") or [] if isinstance(r, dict)]
+        # A kill between keep_round and the record's write leaves a round the
+        # record does not know on disk, its review in the harness cache: it
+        # is folded in, so a reviewed round is not lost to the record's timing.
+        known = {int(r["round"]) for r in rounds if r.get("round") is not None}
+        rounds += [self._cached_round(n, r) for r in self._kept_rounds(name) if r not in known]
         best = best_round(rounds)
         chosen = best or (rounds[-1] if rounds else None)
         if chosen is not None:
@@ -3680,7 +3692,8 @@ class VfxPlanner:
         findings = list(best["findings"]) if best else [unreviewed]
         self._say(f"    [{n}] {name}: partial record, " + (
             f"round {best['round']} ({best['score']:g}/10)" if best else "no reviewed round"))
-        return dict(saved, finished=True, findings=findings,
+        return dict(saved, finished=True, findings=findings, rounds=rounds,
+                    revisions=max((int(r["round"]) for r in rounds), default=0),
                     symbols=list(best["symbols"]) if best else saved.get("symbols", []),
                     program=f"{self.ws.rel}/{program}" if (self.ws.dir / program).is_file() else "",
                     provenance=sdkkit.provenance_of(final) if final.is_file() else None,

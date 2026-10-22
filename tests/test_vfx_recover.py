@@ -7,7 +7,8 @@ no model asked, and a section that was never reviewed is marked for
 import unittest
 from unittest.mock import patch
 
-from ytstudio import vfx
+from ytstudio import harness, vfx
+from ytstudio.core import write_json
 from ytstudio.research import Dossier
 from tests.test_look_section import GROUPS, OUTLINE, TWO_DOC, Case
 from tests.test_vfx_world import STYLE, WORLD_DOC, FakeEngine, varied_png
@@ -76,6 +77,58 @@ class Recover(Case):
         self.assertEqual(taken[2], kept[2])                       # the others untouched
         with self.assertRaises(ValueError):                       # nothing left to take
             self.planner(take_attempt={2}).taken(OUTLINE, GROUPS)
+
+    def keep(self, ws, name: str, round_no: int, doc: str, review: dict | None) -> None:
+        """A gated round as a run leaves it: kept under rounds/<stem>/rNN with
+        its review in the harness cache (None: the round went unreviewed)."""
+        (ws.dir / name).write_text(doc, encoding="utf-8")
+        ws.keep_round(name, round_no)
+        if review is not None:
+            cache = self.root / harness.DECISIONS_DIR / "vfx"
+            cache.mkdir(parents=True, exist_ok=True)
+            write_json(cache / f"review-{ws.version}-{int(name[:2]):02d}-r{round_no}.json",
+                       {"result": review, "cost_usd": 0.5})
+
+    def test_the_reconstruction_follows_the_verdicts_and_a_tie_keeps_the_earlier_round(self):
+        # no record was written (a run from before AUTO-82): the rounds and the
+        # cached reviews decide, by the same rule the run promotes with
+        ws = vfx.Workspace(self.root, version="v01")
+        worse = {"frames": [], "score": 6, "summary": "higher but worse",
+                 "previous": {"verdict": "worse", "findings": []}}
+        self.keep(ws, "01-open.scene.xml", 0, WORLD_DOC, {"frames": [], "score": 5, "summary": "a"})
+        self.keep(ws, "01-open.scene.xml", 1, WORLD_DOC.replace("#AAAAAA", "#BBBBBB"), worse)
+        self.keep(ws, "02-two.scene.xml", 0, TWO_DOC, {"frames": [], "score": 7, "summary": "b"})
+        self.keep(ws, "02-two.scene.xml", 1, TWO_DOC.replace("#AAAAAA", "#BBBBBB"),
+                  {"frames": [], "score": 7, "summary": "c"})
+        rebuilt = {r["n"]: r for r in self.planner(recover=True).recovered(OUTLINE, GROUPS)}
+        self.assertEqual((rebuilt[1]["best_round"], rebuilt[1]["score"]), (0, 5))
+        self.assertIn("#AAAAAA", (self.root / rebuilt[1]["file"]).read_text())
+        self.assertEqual((rebuilt[2]["best_round"], rebuilt[2]["score"]), (0, 7))
+        self.assertIn("#AAAAAA", (self.root / rebuilt[2]["file"]).read_text())
+
+    def test_a_partial_record_folds_in_a_reviewed_round_kept_after_it(self):
+        # killed between keep_round(1) and the record's write: the round the
+        # record does not know is on disk with its review, and it is promoted
+        ws = vfx.Workspace(self.root, version="v01")
+        name = "01-open.scene.xml"
+        first = {"frames": [], "score": 5, "summary": "a"}
+        self.keep(ws, name, 0, WORLD_DOC, first)
+        ws.write_record(name, {
+            "n": 1, "section": "Open", "file": f"vfx/v01/{name}", "version": "v01",
+            "finished": False, "symbols": ["world-open"], "findings": [], "revisions": 0,
+            "rounds": [{"round": 0, "score": 5, "errors": 0, "review": first, "timed_out": False,
+                        "symbols": ["world-open"], "findings": []}],
+            "best_round": 0, "score": 5, "review": first, "cost_usd": 0.5})
+        self.keep(ws, name, 1, WORLD_DOC.replace("#AAAAAA", "#BBBBBB"),
+                  {"frames": [], "score": 8, "summary": "b",
+                   "previous": {"verdict": "better", "findings": []}})
+        self.keep(ws, "02-two.scene.xml", 0, TWO_DOC, {"frames": [], "score": 7, "summary": "c"})
+        rebuilt = {r["n"]: r for r in self.planner(recover=True).recovered(OUTLINE, GROUPS)}
+        one = rebuilt[1]
+        self.assertEqual([r["round"] for r in one["rounds"]], [0, 1])
+        self.assertEqual((one["best_round"], one["score"]), (1, 8))
+        self.assertIn("#BBBBBB", (self.root / one["file"]).read_text())
+        self.assertFalse([f for f in one["findings"] if f.startswith("error")])
 
     def test_recover_needs_an_authored_version(self):
         with self.assertRaises(ValueError):
