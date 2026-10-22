@@ -151,7 +151,15 @@ with the design's ink and label size, no literal colour. `yt build` prints
 "N include(s) for M shots" and files an `error:` finding, with the run under
 the manifest's `split_worlds` key, when one symbol's run of consecutive shots
 in a section is left in more than one include: the build is not publishable
-and the scene is not written without `--force`.
+and the scene is not written without `--force`. After building, `yt build`
+checks each world against its proof frame before the encode, the gate and QA
+are paid for (`build.proof_check`, recorded as `proof_check` in build.json):
+the built document is rendered at each world's proof-frame time by the still
+renderer (cached) on a render host and the stage bands are compared as `yt
+qa` does; a mismatch is an `error:` finding naming the world, the time and
+the difference, the build is not publishable, and the film's frame is kept
+under `build/proof/`. With no render host reachable the worlds are `not
+checked` and a `warning:` says so.
 
 `yt run` (`yt run --title X`) walks research, styles, script, props,
 voice, retime, keyframe, vfx, sound, build, render in that order -- `yt
@@ -368,7 +376,8 @@ blocking editorial note. It is not a delivery verdict. The order is:
    on the hook, the ending or more than one sampled shot) blocks on its own
    and caps `visual_quality` and `animation_vfx` at 6 until it is fixed.
    QA's mechanical pass also compares the film with the authors' proof
-   frames: for each world's latest proof frame it renders the film at the
+   frames (as `yt build` did on the built document before the encode):
+   for each world's latest proof frame it renders the film at the
    build's placement of the world's first shot plus the frame's time in the
    world and compares the stage bands (rows 230..820 of 1080). A difference
    above `qa.PROOF_DIFF` (4; measured: 0.12 for a matching pair, 7.9 for a

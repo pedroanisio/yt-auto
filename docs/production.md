@@ -158,7 +158,10 @@ applied); `timeline`; `layers` (what was drawn, what remains placeholder);
 `placeholders`; `publishable`; `timing`; `editorial`; `design`; `hoisted`,
 `includes` and `split_worlds` (a world's run of shots left in more than one
 include, which restarts it at each cut: an `error:` finding, and the build
-is not publishable); `fonts`; the audio placed (`audio_tracks`,
+is not publishable); `proof_check` (each world's proof frame against the
+built document at the same film time, rendered on a host before the encode:
+`ok`, `mismatch` (an `error:` finding per world, not publishable),
+`incomplete`, `not checked` with no host, or `no proof frames`); `fonts`; the audio placed (`audio_tracks`,
 `narration_tracks`, `buses`, `silence_windows`), the cues it could not place
 (`audio_missing`), the transient staging (`audio_staging`: the bed level,
 the headroom derived from the loudness and true-peak targets, the shift and

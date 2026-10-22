@@ -51,6 +51,7 @@ from . import fonts, house, workspace
 from .core import Idea, _key, read_json, timecode
 from . import design as designer
 from .harness import Harness, HarnessError, brief
+from .proofframes import PROOF_DIFF, PROOF_LIMIT, mismatch_text, proof_diff, proof_plan
 from .scene_sdk import enum_of, sdk
 from .script import Section, Shot, legibility, load_script
 
@@ -298,6 +299,74 @@ def check_look(builder, engine, look, *, host: str | None = None,
                               verdict="apply", reason=str(second.get("reason", "")))
     return None, dict(record, status="dropped", first=dict(record), verdict=again,
                       reason=str(second.get("reason", "")))
+
+
+#: Where the build keeps the film frames it compared with the proof frames.
+PROOF_DIR = "build/proof"
+
+
+def proof_check(data: bytes, manifest: dict, vfx: dict | None, root: Path, *,
+                host: str | None = None, render_still=None) -> dict:
+    """Each authored world against its proof frame, before the encode, the
+    gate and QA are paid for: the record for build.json's `proof_check`.
+
+    The built document is rendered at each world's proof-frame time (the
+    plan and the comparison are qa's, in proofframes) by the still renderer
+    on the host a look is seen on, and the stage bands are compared. A
+    mismatch is an `error:` finding naming the world, the time and the
+    difference, and the build is not publishable: this is what a world split
+    into includes, moved, or composed differently from the proof render
+    looks like. The film's frame is kept under PROOF_DIR. With no host
+    reachable nothing is compared, and the manifest says so.
+    """
+    from . import render
+    plan = proof_plan(vfx, root, manifest.get("shots", []))
+    if not plan:
+        return {"status": "no proof frames", "worlds": []}
+    skipped = max(0, len(plan) - PROOF_LIMIT)
+    plan = plan[:PROOF_LIMIT]
+    host = look_host() if host is None else host
+    if not host:
+        manifest["findings"].append(
+            f"warning: {len(plan)} world(s) not checked against their proof frames: "
+            "no render host reachable")
+        return {"status": "not checked", "reason": "no render host reachable",
+                "worlds": [{"world": row["world"], "t": row["t"], "status": "not checked"}
+                           for row in plan]}
+    render_still = render_still or render.engine_render_still
+    files = shipped_with(data.decode("utf-8", "replace"), root)
+    frames = Path(root) / PROOF_DIR
+    rows: list[dict] = []
+    mismatched: list[str] = []
+    unread = 0
+    for row in plan:
+        record = {"world": row["world"], "t": row["t"], "shots": row["shots"],
+                  "proof": row["proof"], "frame": row["frame"]}
+        png, note = render_still(data, row["t"], host=host, files=files)
+        diff = proof_diff(row["proof"], png) if png is not None else None
+        if diff is None:
+            unread += 1
+            rows.append(record | {"status": "unread",
+                                  "reason": (note or "the frame could not be read").splitlines()[0]})
+            continue
+        frames.mkdir(parents=True, exist_ok=True)
+        (frames / row["frame"]).write_bytes(png)
+        record["difference"] = round(diff, 2)
+        if diff <= PROOF_DIFF:
+            rows.append(record | {"status": "ok"})
+            continue
+        mismatched.append(row["world"])
+        rows.append(record | {"status": "mismatch"})
+        manifest["findings"].append(f"error: {mismatch_text(row, diff)}; the world was split "
+                                    "into includes, moved, or composed differently from the "
+                                    "proof render (see split_worlds)")
+    if mismatched:
+        manifest["publishable"] = False
+    status = "mismatch" if mismatched else "incomplete" if unread or skipped else "ok"
+    out = {"status": status, "host": host, "worlds": rows, "mismatched": mismatched}
+    if skipped:
+        out["skipped"] = skipped
+    return out
 
 
 def ident(text: str, prefix: str = "x") -> str:
@@ -1968,6 +2037,11 @@ def print_build(manifest: dict) -> None:
         print(f"  error: {row['symbol']} is split into {row['includes']} "
               f"include(s) over shots {', '.join(row['shots'])}: the world "
               "restarts at t=0 at each cut")
+    proof = manifest.get("proof_check") or {}
+    if proof.get("worlds"):
+        print(f"  proof frames: {len(proof['worlds'])} world(s) {proof['status']}"
+              + (f", mismatched: {', '.join(proof['mismatched'])}"
+                 if proof.get("mismatched") else ""))
     if manifest.get("audio_missing"):
         rows = manifest["audio_missing"]
         print(f"\n  {len(rows)} cue(s) with no file to place:")
@@ -2151,6 +2225,9 @@ def run(args) -> int:
         manifest["look_check"] = check
         if chosen and not builder.look:
             manifest["look_declined"] = chosen
+        # Each world against its proof frame, now, before the encode, the
+        # gate and QA are paid for finding it (AUTO-70).
+        manifest["proof_check"] = proof_check(data, manifest, vfx, project.root)
     except (HarnessError, Exception) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
