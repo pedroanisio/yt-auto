@@ -6,9 +6,12 @@ and `test_sound_judge`; a barrier inside the fake proves the overlap, since
 a serial fetch never has two cues inside it at the same time. What the tests
 pin: the flag is the shared `--jobs`, default 4, and the stage hands it to
 the fetch; a round's searches and downloads overlap and `sound/index.json`
-still records every file; a round's judgements overlap; and the progress
-lines and the `unfilled` record come one cue at a time, in cue order,
-however the threads interleave.
+still records every file; two cues landing on one Freesound id download it
+once and share the file; a round's judgements overlap and a hit's
+spectrogram is written once; the progress lines, a failed search's line
+among them, and the `unfilled` record come one cue at a time, in cue order,
+however the threads interleave; and an interrupt drops the round's queued
+jobs.
 """
 
 import contextlib
