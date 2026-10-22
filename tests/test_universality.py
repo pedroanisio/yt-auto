@@ -20,12 +20,16 @@ LEAKED = ("paper plane", "paper-plane", "hero-plane", "desk", "keel", "oak",
           "três portas", "trocar", "fx-doors",
           "jogador", "prêmio", "premio", "prize")
 
-#: Real names that contain a leaked word and are not about any film.
-ALLOWED = ("pve-desk-1",)
+#: Real names and verbatim quotations that contain a leaked word and are not
+#: about any film. A quotation stays as written, so its source is the reason.
+ALLOWED = ("pve-desk-1",
+           # the MrBeast production handbook, p. 8, quoted in
+           # docs/narrative/structure-and-hooks.md rule 28
+           "build hype for the prize or payoff")
 
 MODULES = sorted((ROOT / "ytstudio").glob("*.py"))
 DOCS = [ROOT / "README.md", ROOT / "ytstudio" / "SKILL.md",
-        *sorted((ROOT / "docs").glob("*.md"))]
+        *sorted((ROOT / "docs").glob("**/*.md"))]
 
 
 def strings_of(path: Path) -> str:
@@ -59,6 +63,7 @@ class NoSubjectInSharedText(unittest.TestCase):
                 self.assertEqual(leaks(comments_of(path)), [], path.name)
 
     def test_manual_and_docs_name_no_project(self):
+        self.assertIn(ROOT / "docs" / "narrative" / "README.md", DOCS)
         for path in DOCS:
             with self.subTest(doc=path.name):
                 self.assertEqual(leaks(path.read_text(encoding="utf-8")), [], path.name)
@@ -67,3 +72,4 @@ class NoSubjectInSharedText(unittest.TestCase):
         self.assertEqual(leaks("key the flight to clear the desk"), ["desk"])
         self.assertEqual(leaks("host pve-desk-1 renders"), [])
         self.assertEqual(leaks("a desktop machine"), [])
+        self.assertEqual(leaks("the prize behind the door"), ["prize"])
