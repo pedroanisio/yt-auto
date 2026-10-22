@@ -404,7 +404,10 @@ class Reviewer(unittest.TestCase):
         # revise and reject, and nothing in it asks for a synopsis or grades.
         self.assertIn(narrative.reviewer_role(plan=True), review[0]["system"])
         self.assertNotIn("recommend", review[0]["system"])
-        others = {c["model"] for c in ByModel.seen if c["kind"] != "plan-review"}
+        # Everything the author writes is the author's model; the story
+        # review that follows the draft (AUTO-93) is the reviewer's too.
+        others = {c["model"] for c in ByModel.seen
+                  if c["kind"] in ("plan", "plan-fields", "shots", "edits", "fixes")}
         self.assertEqual(others, {"sonnet"})
         kept = json.loads((self.root / "decisions" / "script" / "plan-review.json").read_text())
         self.assertEqual(kept["model"], "opus")

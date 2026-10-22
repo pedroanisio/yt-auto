@@ -2193,10 +2193,13 @@ def script_errors(script: dict | None) -> list[str]:
     --report-only`), as build findings: `error: script: rule:x: ...`. The
     build carries them so qa.mechanical_blockers lifts them; it does not
     fix them, and it does not refuse the scene for them, since the scene is
-    not where they are fixed. Warnings stay in script.json."""
+    not where they are fixed. Warnings stay in script.json. The story
+    review's reject (AUTO-93) is left out: until the reviewer is
+    calibrated it binds only under `yt script --gate`, and carried here it
+    would block delivery without one; doctor still fails on it."""
     findings = script.get("findings") if isinstance(script, dict) else None
     return [f"error: script: {str(f)[len('error: '):]}" for f in findings or []
-            if str(f).startswith("error: ")]
+            if str(f).startswith("error: ") and not str(f).startswith("error: story review:")]
 
 
 def story_of(script: dict, sections: list[Section]) -> dict:
