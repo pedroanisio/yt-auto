@@ -31,8 +31,10 @@ from __future__ import annotations
 import argparse
 import csv
 import re
+import shutil
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
@@ -1240,13 +1242,16 @@ class Screenwriter:
     # -- stage five: fix what the check found ------------------------------
 
     def revise(self, shots: list[Shot], flags: list[dict], *,
-               name: str = "revise", rules: bool = False) -> dict:
+               name: str = "revise", rules: bool = False, back: str = "") -> dict:
         """The smallest fix for each flagged line, or a reason to keep it.
 
         Returns the `applied` rewrites and the lines `kept`; a failed call
         changes nothing. `rules` says the flags are the narration rules'
         (rule_findings), not the fact-check's: the prompt says so, shows
         what each shot puts on screen, and the fix may change that text.
+        `back` names who sent the lines back (`yt script --revise`: the
+        operator, retime's editor, QA through the feedback), and the prompt
+        asks for the change each reason names instead of a fact fix.
         """
         by_n = {s.n: s for s in shots}
         todo: dict[int, list[dict]] = {}
@@ -1276,6 +1281,22 @@ class Screenwriter:
                      "not a law: when the line is right as written, answer keep "
                      "and say why in one clause. Answer for every flagged number "
                      "and no other."]
+        elif back:
+            # Direction 29: after the read, rewrite the line that stumbles,
+            # runs out of breath or buries its point. Judging 15: that pass
+            # fixes the surface, so the line keeps its job in the story.
+            parts = [self._brief(), *([self.research] if self.research else []),
+                     "The lines as written:\n\n" + shot_listing(shots, cite=True),
+                     f"These lines were sent back to the screenplay by {back}, each "
+                     "with the reason:\n\n" + problems,
+                     "For each listed line make the change its reason asks for, to "
+                     "its narration only: rewrite a line that stumbles when said "
+                     "aloud, runs out of breath before its end or buries its key "
+                     "term behind a clause, and fit a line the read measured too "
+                     "long or too short to its shot. Keep every fact the research "
+                     "supports, the voice and the line's job in the story. Never add "
+                     "a fact. When the line is right as written, answer keep and say "
+                     "why in one clause. Answer for every listed number and no other."]
         else:
             parts = [self._brief(), *([self.research] if self.research else []),
                      "The script as written:\n\n" + shot_listing(shots, cite=True),
@@ -2419,6 +2440,17 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                    help="report the findings without fixing them: the fact-check's "
                         "(with --verify) and the narration rules'; a standing "
                         "`error:` rule finding then does not stop the stage")
+    p.add_argument("--revise", default="", metavar="LABELS",
+                   help="send these shots back for one revision instead of writing "
+                        "the screenplay again: comma-separated labels (1.3,2.1), "
+                        "`retime` for every line retime.json sends back to be "
+                        "rewritten, or `feedback` for the shots feedback/script.json "
+                        "names. Only those lines change; they are measured against "
+                        "the rules and fact-checked again (with research), and the "
+                        "run prints the `yt voice --redo` their takes need")
+    p.add_argument("--why", default="", metavar="TEXT",
+                   help="with --revise: the reason, handed to the revision with "
+                        "each line")
     p.add_argument("--jobs", type=int, default=4,
                    help="sections drafted at the same time (default 4; 1 writes "
                         "them in order, each reading the one before)")
@@ -2440,6 +2472,8 @@ def run(args) -> int:
 
     split = lambda s: [p.strip() for p in s.split(",") if p.strip()]  # noqa: E731
     idea, project = workspace.resolve(args, inputs=("dossier", "direction"))
+    if args.revise:
+        return run_revise(args, idea, project)
 
     dossier = read_json(project.source("dossier", args.dossier))
     direction = read_json(project.source("styles", args.direction))
@@ -2487,30 +2521,7 @@ def run(args) -> int:
     data |= hints
 
     print_script(idea, data, sections)
-
-    # A narration rule of the error tier still standing after its revision
-    # blocks the stage: the prompter a narrator reads from is not written
-    # (an older one is removed, so it cannot be read by mistake), and the
-    # exit is 1. --report-only records it and goes on.
-    errors = [f for f in data.get("findings", []) if str(f).startswith("error:")]
-    blocked = bool(errors) and not args.report_only
-    narration = project.out("narration", args.vo_out)
-    for path, writer_fn in (
-            (project.out("script_md", args.md_out),
-             lambda p: write_md(p, idea, data, sections)),
-            (narration, lambda p: write_prompter(p, idea, sections, wpm=args.wpm)),
-            (project.out("shotlist", args.csv_out),
-             lambda p: write_csv(p, sections)),
-            (project.out("script", args.json_out),
-             lambda p: write_json(p, data))):
-        if blocked and path == narration:
-            if Path(path).exists():
-                Path(path).unlink()
-                print(f"removed {path}: it no longer matches the screenplay",
-                      file=sys.stderr)
-            continue
-        writer_fn(path)
-        print(f"wrote {path}", file=sys.stderr)
+    errors, blocked = write_outputs(args, project, idea, data, sections, wpm=args.wpm)
 
     words = sum(s.words for s in shots)
     runtime = sum(s.seconds for s in shots)
@@ -2529,3 +2540,266 @@ def run(args) -> int:
               "and go on.", file=sys.stderr)
         return 1
     return 1 if data["failed_sections"] else 0
+
+
+def write_outputs(args, project, idea: Idea, data: dict, sections: list[Section],
+                  *, wpm: int) -> tuple[list[str], bool]:
+    """script.md, narration.txt, shotlist.csv and script.json from `data`.
+
+    A narration rule of the error tier still standing after its revision
+    blocks the stage: the prompter a narrator reads from is not written (an
+    older one is removed, so it cannot be read by mistake) and the caller
+    exits 1. --report-only records it and goes on. Returns the standing
+    errors and whether they blocked."""
+    errors = [f for f in data.get("findings", []) if str(f).startswith("error:")]
+    blocked = bool(errors) and not args.report_only
+    narration = project.out("narration", args.vo_out)
+    for path, writer_fn in (
+            (project.out("script_md", args.md_out),
+             lambda p: write_md(p, idea, data, sections)),
+            (narration, lambda p: write_prompter(p, idea, sections, wpm=wpm)),
+            (project.out("shotlist", args.csv_out),
+             lambda p: write_csv(p, sections)),
+            (project.out("script", args.json_out),
+             lambda p: write_json(p, data))):
+        if blocked and path == narration:
+            if Path(path).exists():
+                Path(path).unlink()
+                print(f"removed {path}: it no longer matches the screenplay",
+                      file=sys.stderr)
+            continue
+        writer_fn(path)
+        print(f"wrote {path}", file=sys.stderr)
+    return errors, blocked
+
+
+# --------------------------------------------------------------------------- #
+# --revise: send named lines back, not the screenplay (AUTO-95)
+# --------------------------------------------------------------------------- #
+
+#: Who sent the lines back, as the revision is told it, by where they came from.
+SENT_BY = {
+    "labels": "the operator",
+    "retime": "the editor, after the read was recorded and measured (yt retime)",
+    "feedback": "QA's review of the rendered film (yt improve)",
+}
+
+
+def sent_back(spec: str, root: Path, why: str = "") -> tuple[str, list[dict], list[str]]:
+    """The lines `--revise` names: where they came from (`labels`, `retime`,
+    `feedback`), one row per reason ({label, problem, fix}), and notes on
+    what was named and cannot be revised. A missing file is a ValueError.
+
+    `retime` reads retime.json's `rewrite` decisions with what each read
+    measured; `feedback` reads the `.json` twin `yt improve` writes beside the
+    brief, never the prose, and takes the findings that name a shot."""
+    spec = spec.strip()
+    root = Path(root)
+    rows: list[dict] = []
+    notes: list[str] = []
+    if spec == "retime":
+        report = read_json(root / "retime.json", warn=False)
+        if not isinstance(report, dict):
+            raise ValueError("no retime.json to take the rewrites from; run `yt retime` "
+                             "first, or name the shots")
+        measured = {c.get("label"): c for c in report.get("changes") or []
+                    if isinstance(c, dict)}
+        for d in report.get("decisions") or []:
+            if not (isinstance(d, dict) and d.get("action") == "rewrite" and d.get("label")):
+                continue
+            label = str(d["label"])
+            change = measured.get(label) or {}
+            problem = f"the editor: {str(d.get('note') or '').strip() or 'rewrite it'}"
+            fix = "fit the line to its shot"
+            if change.get("measured") is not None and change.get("from") is not None:
+                problem = (f"the read measured {change['measured']} s against the "
+                           f"{change['from']} s planned for its shot; " + problem)
+                fix = (f"cut it to fit {change['from']} s"
+                       if float(change["measured"]) > float(change["from"])
+                       else f"give it the words {change['from']} s holds")
+            rows.append({"label": label, "problem": problem, "fix": fix})
+    elif spec == "feedback":
+        twin = read_json(root / harness.FEEDBACK_DIR / "script.json", warn=False)
+        if not isinstance(twin, dict):
+            raise ValueError(f"no {harness.FEEDBACK_DIR}/script.json: `yt improve` writes "
+                             "it beside the brief; name the shots instead")
+        must = "; ".join(str(m) for m in twin.get("must_change") or [])
+        for f in twin.get("findings") or []:
+            if not isinstance(f, dict):
+                continue
+            label = str(f.get("shot") or "").strip()
+            if not label:
+                notes.append(f"{f.get('id') or 'a finding'} names no shot; a full "
+                             "`yt script` run is what answers it")
+                continue
+            problem = str(f.get("problem") or "").strip()
+            if f.get("why"):
+                problem += f" (why: {str(f['why']).strip()})"
+            rows.append({"label": label, "problem": problem,
+                         "fix": str(f.get("fix") or "").strip() or must})
+    else:
+        for label in (p.strip() for p in spec.split(",")):
+            if label:
+                rows.append({"label": label,
+                             "problem": why or "the operator sent this line back",
+                             "fix": "the smallest change that lets it be said aloud "
+                                    "in one breath, its key term not buried"})
+        return "labels", rows, notes
+    if why:
+        for row in rows:
+            row["problem"] += f"; the operator adds: {why}"
+    return spec, rows, notes
+
+
+def run_revise(args, idea: Idea, project) -> int:
+    """`yt script --revise`: one `revise-labels` decision over the named
+    shots, then the narration rules on the changed shots only, and the
+    fact-check of the changed lines (`verify-labels`) when there is
+    research. Every other shot is written back exactly as it was read;
+    nothing is planned or drafted again, and the takes are voice's to
+    record (the run prints the `yt voice --redo` they need)."""
+    path = project.out("script", args.json_out)
+    data = read_json(path, warn=False) if Path(path).is_file() else None
+    if not isinstance(data, dict) or not data.get("sections"):
+        print("error: no screenplay to revise; run `yt script` first", file=sys.stderr)
+        return 1
+    sections = sections_of(data)
+    shots = [s for sec in sections for s in sec.shots]
+    by_label = {s.label: s for s in shots}
+    numbers = [s.n for s in shots]
+    if 0 in numbers or len(set(numbers)) != len(numbers):
+        print("error: the screenplay's shots are not numbered; run `yt script` "
+              "again before revising single lines", file=sys.stderr)
+        return 1
+    try:
+        source, rows, notes = sent_back(args.revise, project.root, args.why)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    unknown = list(dict.fromkeys(r["label"] for r in rows if r["label"] not in by_label))
+    if unknown and source == "labels":
+        print(f"error: no shot {', '.join(unknown)} in the screenplay (its shots run "
+              f"{shots[0].label} to {shots[-1].label}); nothing was revised",
+              file=sys.stderr)
+        return 2
+    notes += [f"shot {label} is not in the screenplay; skipped" for label in unknown]
+    for note in notes:
+        print(f"note: {note}", file=sys.stderr)
+    rows = [r for r in rows if r["label"] in by_label]
+    if not rows:
+        print(f"nothing to revise: {args.revise} names no shot of the screenplay",
+              file=sys.stderr)
+        return 0
+    for ignored in ("polish", "verify", "outline"):
+        if getattr(args, ignored, False):
+            print(f"note: --revise changes only the named lines; --{ignored} is not "
+                  "used", file=sys.stderr)
+
+    named = set(r["label"] for r in rows)
+    targets = [s for s in shots if s.label in named]
+    flags = [{"n": by_label[r["label"]].n, "severity": "important",
+              "problem": r["problem"], "fix": r["fix"]} for r in rows]
+    dossier = read_json(project.source("dossier", args.dossier))
+    rules, digest = house.for_args(args, project, "script")
+    wpm = int(data.get("wpm") or args.wpm)
+    lang = args.lang or str(data.get("lang") or "")
+    writer = Screenwriter(
+        idea, house=rules, house_digest=digest, root=project.root, model=args.model,
+        minutes=float(data.get("target_seconds") or 60) / 60, wpm=wpm, lang=lang,
+        research=research_block(dossier) if dossier else "", verbose=not args.quiet)
+
+    result = writer.revise(targets, flags, name="revise-labels", back=SENT_BY[source])
+    if not result["applied"] and not result["kept"]:
+        print("error: the revision gave no answer; nothing was written", file=sys.stderr)
+        return 1
+    answered = {r["n"] for r in result["applied"]} | {k["n"] for k in result["kept"]}
+    kept = result["kept"] + [{"n": s.n, "label": s.label,
+                              "why": "the revision left it as written"}
+                             for s in targets if s.n not in answered]
+    changed = {r["n"] for r in result["applied"]}
+    moved = [s for s in targets if s.n in changed]
+
+    # The fact-check is never skipped on a changed line when there is
+    # research to hold it to; a check that failed leaves everything as it was.
+    again: dict = {}
+    if moved and writer.research:
+        again = writer.verify(moved, name="verify-labels")
+        if not again:
+            print("error: the fact-check of the changed lines failed; nothing was "
+                  "written", file=sys.stderr)
+            return 1
+
+    # Only the changed shots are written into the record as read: every
+    # other shot stays the dict it was, byte for byte.
+    raw = {shot.get("label"): shot for sec in data["sections"] for shot in sec["shots"]}
+    for s in moved:
+        raw[s.label]["narration"] = s.narration
+        raw[s.label]["revised"] = s.revised
+
+    # The rules on the changed shots only: their old flags go, what the
+    # new text breaks comes in; every other flag stands as it was recorded.
+    ruled = data.get("rules") if isinstance(data.get("rules"), dict) else {}
+    old = [f for f in ruled.get("flags") or [] if isinstance(f, dict)]
+    stale = [f["problem"] for f in old if f.get("n") in changed and f.get("problem")]
+    fresh = [f for f in rule_findings(data, sections, wpm, lang) if f["n"] in changed]
+    data["findings"] = ([line for line in data.get("findings") or []
+                         if not any(p in str(line) for p in stale)]
+                        + [line for line in rule_lines(fresh)
+                           if not line.startswith("not_evidenced:")])
+    data["rules"] = {**ruled, "flags": [f for f in old if f.get("n") not in changed] + fresh,
+                     "kept": [k for k in ruled.get("kept") or []
+                              if isinstance(k, dict) and k.get("n") not in changed]}
+    if again:
+        check = dict(data.get("check") or {})
+        check["flags"] = ([f for f in check.get("flags") or []
+                           if int(f.get("n", 0) or 0) not in changed]
+                          + [f for f in again.get("flags") or []
+                             if int(f.get("n", 0) or 0) in changed])
+        check["recheck"] = again.get("verdict", "")
+        check["unresolved"] = [f for f in check["flags"]
+                               if f.get("severity") in REVISABLE and not f.get("kept")]
+        data["check"] = check
+    for key, measure in (("legibility", legibility), ("unspoken_numbers", unspoken_numbers)):
+        if key in data:
+            data[key] = measure(sections)
+    data.setdefault("revised", []).append({
+        "from": source, "asked": [s.label for s in targets], "why": args.why,
+        "applied": result["applied"], "kept": kept,
+        "at": time.strftime("%Y-%m-%dT%H:%M:%S")})
+    # What this run spent; the draft's bill was its own run's.
+    data["usage"] = spend.from_usage(writer.usage, writer.model)
+    data["engine"] = writer.harness.report()
+
+    backup = Path(path).with_suffix(".json.bak")
+    shutil.copy2(path, backup)
+    errors, blocked = write_outputs(args, project, idea, data, sections, wpm=wpm)
+    print(f"the screenplay before this revision is kept at {backup}", file=sys.stderr)
+
+    print(f"\n{idea.title.upper()}: REVISED FROM {source.upper()}")
+    for row in result["applied"]:
+        print(wrap(f"changed {row['label']}: {row['why']}", "  "))
+        if "before" in row:
+            print(wrap(f"was: {row['before']}", "      "))
+            print(wrap(f"now: {row['after']}", "      "))
+    for row in kept:
+        print(wrap(f"kept {row['label']}: {row['why']}", "  "))
+    labels = {s.n: s.label for s in shots}
+    for f in (again.get("flags") or []) if again else []:
+        if int(f.get("n", 0) or 0) in changed:
+            print(wrap(f"fact-check {labels[int(f['n'])]} ({f.get('severity', '?')}): "
+                       f"{f.get('problem', '')}", "  "))
+    for line in rule_lines(fresh):
+        if not line.startswith("not_evidenced:"):
+            print(wrap(line, "  "))
+    print(f"{writer.usage}", file=sys.stderr)
+    if moved:
+        print(f"\nthe changed lines' takes are stale; record them again: "
+              f"yt voice --redo {','.join(s.label for s in moved)} "
+              f"--project {project.root}, then `yt retime`")
+    if blocked:
+        print(f"error: {len(errors)} narration rule finding(s) of the error tier "
+              "stand; narration.txt was not written. Revise those shots again "
+              "(--revise with --why), or --report-only to record them and go on.",
+              file=sys.stderr)
+        return 1
+    return 0

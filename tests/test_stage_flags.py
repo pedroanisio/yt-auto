@@ -27,6 +27,8 @@ CONCEPTS = {
     "fresh": ("--fresh", {}, ("research", "keyframe", "vfx", "props")),
     "jobs": ("--jobs", {}, ("ideas", "research", "styles", "script", "keyframe", "vfx",
                             "probe", "sound")),
+    # the shots sent back to the screenplay for one revision (AUTO-95)
+    "revise": ("--revise", {}, ("script",)),
 }
 #: Stages that author with or ask a model; render and the local fetchers do not.
 MODEL_STAGES = ("ideas", "research", "styles", "script", "keyframe", "voice", "vfx", "sound",

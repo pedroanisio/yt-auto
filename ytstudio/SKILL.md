@@ -111,10 +111,11 @@ one-line note.
 | ignore what is cached and do the stage again | `--fresh` | `research`, `keyframe`, `vfx`, `props`, `voice`, `sound`, `build`, `retime`, `review`, `qa`, `gate`, `pilot` | |
 | the model, its reasoning effort, its fallbacks | `--model`, `--effort`, `--fallback-model` | every stage that calls a model, `props` included; not `render` | |
 | how many of the stage's independent pieces run at once | `--jobs` | `ideas`, `research`, `styles`, `script`, `keyframe`, `vfx`, `probe`, `sound` (with `--fetch`: cues searched, downloaded and judged at once, default 4) | |
+| the shots sent back to the screenplay for one revision, by label, `retime` or `feedback` | `--revise` (`--why` the reason) | `script` | |
 
 `vfx --budget-hours` is not money: it is an input to the plan (refinement
 hours available). `voice --redo` takes take labels; `run --redo` takes stage
-names.
+names; `script --revise` takes shot labels, or where to read them.
 
 ## The stages and their files
 
@@ -128,7 +129,7 @@ itself, and `--project DIR` names a directory directly.
 | `yt ideas` | a niche | `work/ideas.json` | yes (`--rich` adds each idea's `question`, `stakes`, `viewer_belief` and `promise`, which `yt script`'s brief prints, holding the promise frozen; `--rank` labels `curiosity` and `title_concrete` beside the score, which alone sorts) |
 | `yt research` | the idea | `dossier.json`, `README.md`, `claims.csv`, `assets.csv`, `raw/`; with `--download`, `downloads/` | yes |
 | `yt styles` | dossier | `styles.json`, `styles.md` | yes |
-| `yt script` | dossier, styles | `script.json`, `script.md`, `narration.txt`, `shotlist.csv` | yes (the narrative rubric the story will be graded on is in `ytstudio/narrative.py`: seven criteria of four labelled levels, a coverage-shaped review with the verdict reject, consider or recommend, and the plan review's schema; not yet wired into the stage, see AUTO-92, AUTO-93) |
+| `yt script` | dossier, styles | `script.json`, `script.md`, `narration.txt`, `shotlist.csv` | yes (`yt script --revise 1.3,2.1`, `yt script --revise retime` or `--revise feedback` sends only those lines back, see below; the narrative rubric the story will be graded on is in `ytstudio/narrative.py`: seven criteria of four labelled levels, a coverage-shaped review with the verdict reject, consider or recommend, and the plan review's schema; not yet wired into the stage, see AUTO-92, AUTO-93) |
 | `yt props` | script, styles (or phrases given) | `props/<kind>/<id>/`, `props.json` | yes (two decisions: `phrases`, the search phrases picked from the catalogue's vocabulary, and `keep`, the candidates worth building with, each with its `fit` note; the files are Poly Haven, all CC0) |
 | `yt voice` | script | `voice/`, `voice.json`, `narration.vtt`, `.srt` | yes (casting, retakes) |
 | `yt retime` | script, voice | `retime.json`, the screenplay's measured lengths (`script.json.bak` kept) | yes (accept, rerecord, rewrite, keep) |
@@ -365,6 +366,28 @@ fails on it under `script` with the fixing command (and not again under
 `build`), and `yt build` carries
 it into build.json's findings, where `yt qa` lifts it as a blocker. A
 `warning:` blocks nothing.
+
+**A line goes back without the screenplay (AUTO-95).** `yt script --revise
+LABELS` asks one `revise-labels` decision over the named shots only, each
+with its reason, and writes nothing else into the screenplay: every other
+shot is written back as it was read, byte for byte. The labels are given
+(`1.3,2.1`, with `--why` the reason), or read: `retime` takes every shot
+`retime.json` sends back as `rewrite`, with the read it measured and the
+editor's note; `feedback` takes the shots `feedback/script.json` names (the
+`.json` twin `yt improve` writes, never its prose; a finding that names no
+shot is noted and left to a full run). The revision fixes the line, as
+direction 29 asks of a read that stumbles, runs out of breath or buries its
+point, or keeps it with a reason, which the run prints and records. Then
+the narration rules read the changed shots only (their old flags and
+findings go, what the new text breaks comes in, every other flag stands as
+recorded), and with research the changed lines are fact-checked again
+(`verify-labels`; a check that fails writes nothing). script.json gains a
+`revised` entry (where the lines came from, what changed, what was kept),
+the changed shot its `revised` reason, `usage` what this run spent, and the
+four files are written with `script.json.bak` kept; a standing `error:`
+still leaves `narration.txt` unwritten. Nothing is planned or drafted
+again and no take is touched: the run prints `yt voice --redo <labels>` for
+the changed lines, whose takes are now stale.
 
 Beside the chain:
 

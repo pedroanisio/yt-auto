@@ -470,9 +470,22 @@ on it under script (once: the copy in build.json is not failed again under
 build) and `yt build` carries it into build.json, where qa lifts it as a
 blocker. A `warning:` blocks nothing.
 
+A line can go back without the screenplay. `--revise 1.3,2.1` (with `--why`
+the reason), `--revise retime` (every shot `retime.json` sent back as
+`rewrite`, with the read it measured and the editor's note) or `--revise
+feedback` (the shots `feedback/script.json` names, the `.json` twin `yt
+improve` writes beside the brief) asks one `revise-labels` decision over
+those shots only: fix the line or keep it with a reason. Nothing is planned
+or drafted again and every other shot is written back byte for byte. The
+rules then read the changed shots only, and with research the changed lines
+are fact-checked again (`verify-labels`); the four files are rewritten with
+`script.json.bak` kept, script.json records the round under `revised`, and
+the run prints `yt voice --redo <labels>` for the takes the change made
+stale.
+
 `--minutes` · `--wpm` · `--sections` · `--outline` to use the dossier's own beat
 sheet · `--inspo` for voice · `--notes` which outrank everything else ·
-`--jobs` · `--report-only`
+`--jobs` · `--report-only` · `--revise` · `--why`
 
 The runtime floor is 10 seconds (`yt sound` keeps the same floor), so a short
 film keeps its own length instead of being padded to half a minute.
