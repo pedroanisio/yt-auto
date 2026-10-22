@@ -1095,7 +1095,10 @@ class Review(unittest.TestCase):
         self.assertIsNotNone(doc["provenance"])               # and still its program's output
         stem = doc["file"].rsplit("/", 1)[1][:-len(".scene.xml")]
         rounds = self.root / "vfx" / "v01" / "rounds" / stem
-        self.assertEqual(sorted(p.name for p in rounds.iterdir()), ["r00", "r01", "r02"])
+        # the section's record (AUTO-82) sits beside its kept rounds
+        self.assertEqual(sorted(p.name for p in rounds.iterdir() if p.is_dir()),
+                         ["r00", "r01", "r02"])
+        self.assertTrue((rounds / "record.json").is_file())
 
     def test_a_final_revision_that_crashes_falls_back_to_the_best_round(self):
         FakeEngine.reviews = [{"frames": [], "score": 5, "summary": "round zero"}]

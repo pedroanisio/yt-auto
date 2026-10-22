@@ -578,14 +578,28 @@ hand-authored world showed the cost.
     `vfx/vNN/` and carries the others forward from the active version
     (`carried_from`, $0). Continuity, reach and plan are then redone.
     `--sections` refuses `--fresh`.
+  - Each section writes its own record as it goes:
+    `vfx/vNN/rounds/<stem>/record.json`, partial after every gate
+    (`finished: false`, the rounds so far) and whole when the section ends,
+    written through a temporary file and one rename. 12-author is assembled
+    from those files, so a stop, a kill or a crash keeps every section that
+    finished (Run 2 lost eight finished sections to one kill).
   - `yt vfx --recover` rebuilds the record of a run that ended before it saved
-    one (the stage writes 12-author only when every section is done, so a
-    kill, a timeout or a crash loses all of it): each section goes back on its
-    best reviewed round from `vfx/vNN/rounds/` and the cached reviews, a
-    section never reviewed is recorded with an error for `--sections N`, and
-    the film-wide stages run. Nothing is authored. Measured on the Euler film:
-    a 6 h run killed by a wrapping `timeout` came back for the price of the
-    continuity pass. Never wrap `yt vfx` in a timeout shorter than its clock.
+    12-author: a section with a record goes back on the round its record
+    names (a partial one on the round its verdicts promoted); one without
+    goes back on its best reviewed round from `vfx/vNN/rounds/` and the
+    cached reviews; a section never reviewed is recorded with an error for
+    `--sections N`, and the film-wide stages run. Nothing is authored.
+    Measured on the Euler film: a 6 h run killed by a wrapping `timeout` came
+    back for the price of the continuity pass. Never wrap `yt vfx` in a
+    timeout shorter than its clock.
+  - `yt vfx --finish-now --title X` tells the run authoring that project to
+    finish: it writes `vfx/vNN/FINISH` into the version being authored, and
+    the run reads it between rounds (as it reads a `SIGUSR1`) to end every
+    section on its best reviewed round (`stopped: finish`) and run
+    continuity, reach and plan. A section already at the bar is done, not
+    finished. No revision in flight is cut off; the one after it is not paid
+    for (throughput item 33).
   - `yt vfx --take-attempt N --why "..."` overrides the competition after the
     fact: a section whose new attempt lost to the version it replaced
     (`kept_from`) gets the attempt back from `rounds/<stem>.attempt`, with the

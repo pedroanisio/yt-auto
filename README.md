@@ -572,9 +572,17 @@ cannot pay another session and review stops and keeps its best reviewed
 round. An author is told its session's cap, and at 80% of it is asked for its
 build and a still (as at 80% of its time) rather than being cut off with exit 1.
 
+Each section writes its record (`vfx/vNN/rounds/<stem>/record.json`) as it
+finishes, and a partial one after every gate, so a stopped or killed run keeps
+every section that finished and `--recover` reads them back. `yt vfx
+--finish-now --title X` writes `vfx/vNN/FINISH`, which the run reads between
+rounds (as it reads `SIGUSR1`) to end every section on its best reviewed round
+and run the film-wide stages.
+
 `--per-section` · `--jobs` · `--budget-usd` per section · `--stage-budget-usd` ·
 `--reviewer-model` · `--review-budget-usd` · `--budget-hours` · `--width` ·
-`--height` · `--rounds` · `--bar` · `--inspo` · `--fresh`
+`--height` · `--rounds` · `--bar` · `--inspo` · `--fresh` · `--finish-now` ·
+`--recover`
 
 ### `yt sound`
 

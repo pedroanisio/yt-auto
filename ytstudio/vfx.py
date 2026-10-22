@@ -48,6 +48,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import sys
 import threading
 import time
@@ -1697,6 +1698,27 @@ class Workspace:
         stem = name[:-len(".scene.xml")]
         return [name, f"{stem}.py", f"{stem}.provenance.json"]
 
+    #: A section's record as the stage writes it: rounds/<stem>/record.json,
+    #: partial after each gate, whole when the section ends, so a run that is
+    #: stopped, killed or crashes keeps every section that finished (AUTO-82).
+    RECORD_NAME = "record.json"
+
+    def record_path(self, name: str) -> Path:
+        return self.dir / self.ROUNDS_DIR / name[:-len(".scene.xml")] / self.RECORD_NAME
+
+    def write_record(self, name: str, record: dict) -> Path:
+        """Write a section's record whole: a temporary file beside it, then
+        one rename, so a kill mid-write leaves the last one, never half."""
+        path = self.record_path(name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+        return path
+
+    def read_record(self, name: str) -> dict | None:
+        return read_json(self.record_path(name), warn=False)
+
     def keep_round(self, name: str, round_no: int) -> Path | None:
         """Copy what a gated round judged -- program, document, provenance and
         proof frames -- under rounds/<stem>/rNN/, so it can be promoted later."""
@@ -2428,6 +2450,23 @@ class Workspace:
 # the planner
 # --------------------------------------------------------------------------- #
 
+#: `yt vfx --finish-now` writes this file into the version being authored; the
+#: run reads it between rounds (as it reads SIGUSR1) and ends every section
+#: on its best reviewed round instead of paying for another revision.
+FINISH_FILE = "FINISH"
+
+
+def finish_now(root: Path) -> Path:
+    """Ask the run authoring under `root` to finish: write FINISH into the
+    newest vfx/vNN/, which is the one a running stage is in."""
+    have = Workspace.versions(Path(root) / SCENE_DIR)
+    if not have:
+        raise ValueError("--finish-now needs a run to finish; there is no version under vfx/")
+    path = Path(root) / SCENE_DIR / have[-1] / FINISH_FILE
+    path.write_text(f"finish asked at {time.strftime('%Y-%m-%dT%H:%M:%S')}\n", encoding="utf-8")
+    return path
+
+
 class VfxPlanner:
     """Plans the visuals, then has the model author them, section by section."""
 
@@ -2518,6 +2557,12 @@ class VfxPlanner:
         self.usage = self.harness.usage
         #: Section authors and reviewers run in a pool; each reports here once.
         self._account_lock = self.harness.lock
+        #: Set by SIGUSR1 (`author` installs the handler); read between rounds
+        #: beside vfx/vNN/FINISH. Either ends every section on its best round.
+        self.finish = threading.Event()
+
+    def finish_requested(self) -> bool:
+        return self.finish.is_set() or (self.ws.dir / FINISH_FILE).is_file()
 
     # -- plumbing ----------------------------------------------------------
 
@@ -2964,6 +3009,33 @@ class VfxPlanner:
             self.spend.release(n)
         rounds: list[dict] = []
 
+        def snapshot(finished: bool, symbols: list[str], findings: list[str], revisions: int,
+                     chosen: dict | None, best_round_no: int | None) -> dict:
+            """The section's record as of the rounds gated so far: partial after
+            each gate, whole when the section ends. `chosen` is the round the
+            score and review are read from."""
+            final = self.ws.dir / name
+            text = final.read_text(encoding="utf-8", errors="replace") if final.is_file() else ""
+            return {"n": n, "section": section.get("heading", ""),
+                    "file": f"{self.ws.rel}/{name}", "version": self.ws.version,
+                    "program": f"{self.ws.rel}/{program}" if (self.ws.dir / program).is_file() else "",
+                    "provenance": sdkkit.provenance_of(final) if final.is_file() else None,
+                    "symbols": symbols, "findings": findings, "tool_calls": tools_used,
+                    "props_declined": props_declined(text),
+                    "worlds": [{"id": w["id"], "start": w["start"], "seconds": w["seconds"],
+                                "shots": [s["label"] for s in w["shots"]],
+                                "phases": [e["id"] for e in w["phases"]]} for w in worlds],
+                    "revisions": revisions, "rounds": rounds, "best_round": best_round_no,
+                    "score": chosen["score"] if chosen else None,
+                    "review": chosen["review"] if chosen else None,
+                    "cost_usd": round(engine.usage.cost_usd + reviewer.usage.cost_usd, 4),
+                    "budget": self.spend.row(n), "stopped": self.spend.stopped.get(n),
+                    "reviewer": {"model": self.reviewer_model,
+                                 "budget_usd": self.review_budget_usd},
+                    "timed_out_usage": timed_out_usage(engine.usage),
+                    "engine": reviewer.report(), "finished": finished,
+                    **self._provenance(n, findings)}
+
         def gate(round_no: int) -> tuple[list[str], list[str], dict | None]:
             # The harness builds the program itself: the document judged is the
             # program's output, never the agent's word for it.
@@ -3004,6 +3076,11 @@ class VfxPlanner:
                            "review_usd": round(reviewer.usage.cost_usd - paid, 4),
                            "findings": [f for f in findings if not f.startswith("note")]})
             self.ws.keep_round(name, round_no)
+            # What a kill from here on keeps: the rounds so far, standing on
+            # the one the verdicts promoted, for --recover to put back.
+            standing = best_round(rounds) or rounds[-1]
+            self.ws.write_record(name, snapshot(False, symbols, findings, round_no, standing,
+                                                standing["round"]))
             self._say(f"    [{n}] {name} round {round_no}: {len(symbols)} symbol(s), "
                       f"{len(errors)} error(s)"
                       + (f", {len(still_lost)} frame(s) lost to the host" if still_lost else "")
@@ -3018,6 +3095,13 @@ class VfxPlanner:
             score = rounds[-1]["score"]
             short = score is not None and score < self.author_bar
             if not errors and not short:
+                break
+            # The operator asked the run to finish (`yt vfx --finish-now`, or
+            # SIGUSR1): no further revision; the section ends on its best round.
+            if self.finish_requested():
+                self.spend.stopped[n] = "finish"
+                self._say(f"    [{n}] finish asked: no revision {revisions + 1}; the best "
+                          "reviewed round is kept")
                 break
             # A revision its reviewer judged the same or worse than the round
             # it answered: the listing was answered and nothing was gained, so
@@ -3094,29 +3178,12 @@ class VfxPlanner:
                 findings = list(best["findings"])
                 self._say(f"    [{n}] round {best['round']} ({best['score']:g}/10) was the "
                           f"best; its program and document are kept")
-        final = self.ws.dir / name
-        text = final.read_text(encoding="utf-8", errors="replace") if final.is_file() else ""
         self._account(engine.usage, reviewer.usage)
-        return {"n": n, "section": section.get("heading", ""),
-                "file": f"{self.ws.rel}/{name}", "version": self.ws.version,
-                "program": f"{self.ws.rel}/{program}" if (self.ws.dir / program).is_file() else "",
-                "provenance": sdkkit.provenance_of(final) if final.is_file() else None,
-                "symbols": symbols, "findings": findings, "tool_calls": tools_used,
-                "props_declined": props_declined(text),
-                "worlds": [{"id": w["id"], "start": w["start"], "seconds": w["seconds"],
-                            "shots": [s["label"] for s in w["shots"]],
-                            "phases": [e["id"] for e in w["phases"]]} for w in worlds],
-                "revisions": revisions, "rounds": rounds,
-                "best_round": promoted if promoted is not None else (last or {}).get("round"),
-                "score": (best["score"] if promoted is not None
-                          else rounds[-1]["score"] if rounds else None),
-                "review": (best["review"] if promoted is not None
-                           else rounds[-1]["review"] if rounds else None),
-                "cost_usd": round(engine.usage.cost_usd + reviewer.usage.cost_usd, 4),
-                "budget": self.spend.row(n), "stopped": self.spend.stopped.get(n),
-                "reviewer": {"model": self.reviewer_model, "budget_usd": self.review_budget_usd},
-                "timed_out_usage": timed_out_usage(engine.usage),
-                "engine": reviewer.report(), **self._provenance(n, findings)}
+        chosen = best if promoted is not None else (rounds[-1] if rounds else None)
+        record = snapshot(True, symbols, findings, revisions, chosen,
+                          promoted if promoted is not None else (last or {}).get("round"))
+        self.ws.write_record(name, record)
+        return record
 
     def author(self, outline: dict, effects: list[dict], style: dict,
                tokens: dict[str, str]) -> list[dict]:
@@ -3191,6 +3258,7 @@ class VfxPlanner:
                     record = self.ws.carry_section(previous[n], n)
                     if record is not None:
                         carried.append(record)
+                        self.ws.write_record(self.ws.doc_name(n, s), record)
                         jobs.remove((n, s, group))
                 self._say(f"  carrying section(s) {', '.join(str(r['n']) for r in carried) or 'none'} "
                           f"forward from {', '.join(sorted({str(r.get('carried_from')) for r in carried})) or '-'}"
@@ -3208,16 +3276,24 @@ class VfxPlanner:
                       f"(sessions and reviews), ${stage_usd:g} for the stage, "
                       f"bar {self.author_bar:g}/10, {self.revisions} revision(s), reviewed by "
                       f"{self.reviewer_model} at up to ${self.review_budget_usd:g} a review")
-            with ThreadPoolExecutor(max_workers=self.jobs) as pool:
-                futures = [(job, pool.submit(self._author_one, job[0], job[1], job[2], style,
-                                             tokens)) for job in jobs]
-                authored = []
-                for (n, s, group), future in futures:
-                    try:
-                        authored.append(future.result())
-                    except Exception as exc:     # one section's failure is that section's record
-                        self._say(f"    [{n}] the section's authoring failed: {exc}")
-                        authored.append(self._failed_record(n, s, group, exc))
+            watched = self._watch_finish()
+            try:
+                with ThreadPoolExecutor(max_workers=self.jobs) as pool:
+                    futures = [(job, pool.submit(self._author_one, job[0], job[1], job[2], style,
+                                                 tokens)) for job in jobs]
+                    authored = []
+                    for (n, s, group), future in futures:
+                        try:
+                            result = future.result()
+                        except Exception as exc:     # one section's failure is that section's record
+                            self._say(f"    [{n}] the section's authoring failed: {exc}")
+                            result = self._failed_record(n, s, group, exc)
+                            self.ws.write_record(self.ws.doc_name(n, s), result)
+                        # The record is the one the section wrote as it finished:
+                        # what a kill before this point would have kept.
+                        authored.append(self.ws.read_record(self.ws.doc_name(n, s)) or result)
+            finally:
+                self._unwatch_finish(watched)
             for n, row in self.spend.report()["sections"].items():
                 self._say(f"  spent: section {n} ${row['spent_usd']:.2f} of ${row['budget_usd']:g} "
                           f"(author ${row['author_usd']:.2f}, reviews ${row['review_usd']:.2f}"
@@ -3247,8 +3323,26 @@ class VfxPlanner:
                                   f"({record.get('score')}) is worse than {before.get('version')}'s "
                                   f"({before.get('score')}); that version is kept")
                         authored[i] = kept
+                        self.ws.write_record(Path(kept["file"]).name, kept)
             return sorted(carried + authored, key=lambda r: r["n"])
         return self._stage("12-lead" if lead_mode else "12-author", work)
+
+    #: What `_watch_finish` returns when no handler was installed.
+    _UNWATCHED = object()
+
+    def _watch_finish(self):
+        """Listen for SIGUSR1, which asks the run to finish as vfx/vNN/FINISH
+        does. Only the main thread may listen; elsewhere the file alone is read."""
+        if not hasattr(signal, "SIGUSR1"):
+            return self._UNWATCHED
+        try:
+            return signal.signal(signal.SIGUSR1, lambda *_: self.finish.set())
+        except ValueError:
+            return self._UNWATCHED
+
+    def _unwatch_finish(self, previous) -> None:
+        if previous is not self._UNWATCHED:
+            signal.signal(signal.SIGUSR1, previous)
 
     def _failed_record(self, n: int, section: dict, group: dict, exc: Exception) -> dict:
         """What is recorded for a section whose authoring raised: nothing it
@@ -3498,6 +3592,9 @@ class VfxPlanner:
         reviews cached for them; its best reviewed round is put back in place,
         or its last with an error when none was reviewed."""
         name = self.ws.doc_name(n, section)
+        saved = self.ws.read_record(name)
+        if isinstance(saved, dict) and saved.get("version") == self.ws.version:
+            return self._from_record(n, name, saved)
         stem = name[:-len(".scene.xml")]
         kept = self.ws.dir / self.ws.ROUNDS_DIR / stem
         numbers = sorted(int(d.name[1:]) for d in kept.glob("r[0-9][0-9]")
@@ -3542,6 +3639,40 @@ class VfxPlanner:
                 "review": best["review"] if best else None,
                 "cost_usd": round(sum(r["cost_usd"] for r in rounds), 4),
                 **self._provenance(n, findings)}
+
+    def _from_record(self, n: int, name: str, saved: dict) -> dict:
+        """One section's record from the one its run wrote (rounds/<stem>/record.json):
+        a whole record is put back on its round as it stands; a partial one
+        (the run died between gates) ends on the round the verdicts promoted,
+        or on its last with an error when none was reviewed."""
+        unreviewed = (f"error: recovered: no round of section {n} was reviewed before the run "
+                      f"ended; author it again (`yt vfx --sections {n}`)")
+        if saved.get("finished", True):
+            if saved.get("best_round") is not None:
+                self.ws.restore_round(name, int(saved["best_round"]))
+            self._say(f"    [{n}] {name}: its record, round {saved.get('best_round')} "
+                      f"({saved.get('score')}/10)")
+            findings = list(saved.get("findings") or [])
+            if saved.get("score") is None:
+                findings.insert(0, unreviewed)
+            return dict(saved, findings=findings)
+        rounds = [r for r in saved.get("rounds") or [] if isinstance(r, dict)]
+        best = best_round(rounds)
+        chosen = best or (rounds[-1] if rounds else None)
+        if chosen is not None:
+            self.ws.restore_round(name, int(chosen["round"]))
+        final = self.ws.dir / name
+        program = self.ws.program_name(name)
+        findings = list(best["findings"]) if best else [unreviewed]
+        self._say(f"    [{n}] {name}: partial record, " + (
+            f"round {best['round']} ({best['score']:g}/10)" if best else "no reviewed round"))
+        return dict(saved, finished=True, findings=findings,
+                    symbols=list(best["symbols"]) if best else saved.get("symbols", []),
+                    program=f"{self.ws.rel}/{program}" if (self.ws.dir / program).is_file() else "",
+                    provenance=sdkkit.provenance_of(final) if final.is_file() else None,
+                    best_round=chosen["round"] if chosen else None,
+                    score=best["score"] if best else None,
+                    review=best["review"] if best else None)
 
     def taken(self, outline: dict, effects: list[dict]) -> list[dict]:
         """`--take-attempt N`: the operator overrides the competition after the
@@ -3887,6 +4018,11 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                         "out, crashed) from vfx/vNN/rounds and the cached reviews, then finish "
                         "the film-wide stages; nothing is authored, a section with no reviewed "
                         "round is marked for `--sections`")
+    p.add_argument("--finish-now", action="store_true", dest="finish_now",
+                   help="ask the run authoring this project to finish: it writes vfx/vNN/FINISH, "
+                        "which the run reads between rounds (as it reads SIGUSR1) to end every "
+                        "section on its best reviewed round and run the film-wide stages; "
+                        "nothing else is done")
     p.add_argument("--take-attempt", metavar="N[,M]", dest="take_attempt",
                    help="take these sections' new attempts over the earlier versions the "
                         "competition kept (their record says kept_from), e.g. when the kept "
@@ -3962,6 +4098,15 @@ def planner_from_args(args, idea: Idea, project, *, sections_only: set[int] | No
 
 def run(args) -> int:
     idea, project = workspace.resolve(args, inputs=("script", "voice", "styles"))
+    if getattr(args, "finish_now", False):
+        try:
+            path = finish_now(project.root)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        print(f"finish asked: {path}\n  the run reads it between rounds; every section ends on "
+              "its best reviewed round, then continuity, reach and plan run", file=sys.stderr)
+        return 0
     sections_only: set[int] = set()
     if getattr(args, "sections", None):
         try:

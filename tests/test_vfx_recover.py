@@ -43,7 +43,9 @@ class Recover(Case):
         one, two = rebuilt[1], rebuilt[2]
         self.assertEqual((one["best_round"], one["score"], one["version"]), (1, 8.0, "v01"))
         self.assertIn("#BBBBBB", doc.read_text())                    # its best round is back
-        self.assertEqual(one["findings"], [])
+        # AUTO-82: the record the section wrote is read back, its round's own
+        # findings (warnings) with it; none is an error
+        self.assertFalse([f for f in one["findings"] if f.startswith("error")])
         self.assertTrue(one["recovered"])
         self.assertGreater(one["cost_usd"], 0)                       # the reviews were paid for
         self.assertTrue(one["symbols"])
