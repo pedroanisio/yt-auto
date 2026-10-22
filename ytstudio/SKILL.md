@@ -577,7 +577,11 @@ hand-authored world showed the cost.
   validated and rendered on the engine. Their values are placeholders.
   `kit.py precheck <doc or frame.png>` runs the mechanical part of the
   reviewers' checklist (`framecheck.CHECKLIST`) before a frame is paid for,
-  and `kit.py frame` stops a still at 420 s (`sdkkit.STILL_BUDGET`) rather
+  over the author's own previews in `frames/kit/` and the gate's proof
+  frames in `frames/` alike; `sr.py frame` and the vfx gate run the same
+  items on every proof frame they render (`framecheck.precheck`), so what
+  the reviewer is told the author was handed, the author was handed. `kit.py
+  frame` stops a still at 420 s (`sdkkit.STILL_BUDGET`) rather
   than wait on a render that will not finish; `kit.py` prints the time left.
   `AUTHOR_SYSTEM`, `AUTHOR_TOOLS` and `BRIEF` are what a stage hands such an
   author.
@@ -585,7 +589,10 @@ hand-authored world showed the cost.
   in fresh interpreters. A document whose bytes differ between the runs is
   refused: seed every random choice. Every document it saved then goes
   through the SDK's checks, the harness's rules (`rule:shadow`: a 3D world
-  in which no light casts a shadow) and the engine's validation, and gets
+  in which no light casts a shadow; `rule:band`: a 2D text or formula node
+  whose box enters the caption band, rows from `design.CAPTION_FRACTION` of
+  the frame height, where `yt build` burns the captions, with the move
+  named) and the engine's validation, and gets
   `<doc>.provenance.json` (program and document hashes, the hash of every
   workspace module the program imported -- `imports`: `srkit.py`, `look.py`
   -- and the schema release). `sdkkit.provenance_of(doc)` lapses the moment
@@ -619,6 +626,23 @@ hand-authored world showed the cost.
     round, so a last revision that crashes, breaks the build or scores lower
     falls back to that round. A section whose authoring raises becomes an
     error record; the other sections are kept.
+  - A proof frame the host could not render (unreachable, no engine, or an
+    engine that died naming no finding: `vfx.infra_failure`) is retried
+    once on the other host and otherwise filed as `infra:`, never
+    `error:`. A still stopped at the deadline or killed for memory
+    (`vfx.cost_failure`) gets the same one retry; when the other host
+    stops it the same way, no host holds the world as written and the
+    frame is the author's `error:` naming the document's cost drivers, as
+    `kit.py frame` rules. A round whose only blockers are infra findings is gated
+    again after `vfx.INFRA_WAIT` seconds without a session, gets no review
+    while frames are missing, and the frames the first pass lost are
+    recorded on the round (`rounds[].infra` in `vfx.json`, "lost to the
+    host" in `vfx.md`); no revision is paid for the host's failure. A round
+    the host loses twice does not pass: the section ends on an `error:`
+    naming the host and `yt vfx --sections N`, with `stopped: host` in its
+    budget row, so the world the gate never saw rendered stays out of the
+    film (`has_errors`) and an earlier reviewed version of the section is
+    kept over it (`keeps_previous`).
   - Money is budgeted per section and per stage (`vfx.SpendBudget`):
     `--budget-usd` (15) covers one section's author sessions and its
     reviews, `--stage-budget-usd` (default: that times the sections) covers

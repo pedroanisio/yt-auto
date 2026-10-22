@@ -316,6 +316,117 @@ class NearTheBudget(Planned):
 
 
 # --------------------------------------------------------------------------- #
+# AUTO-68: a round the host lost is never charged to the author
+# --------------------------------------------------------------------------- #
+
+class InfraRound(Planned):
+    """A round whose only blockers are frames the host could not render is
+    gated again after a bounded wait, without a session, and the host's
+    failure is recorded on the round; no revision is paid for it."""
+
+    LOST = "render host unreachable: ssh: connect to host root@small port 22: Connection refused"
+
+    def gated(self, planner, still):
+        group = {"section": "Open", "seconds": 15, "effects": world.EFFECTS, "cuts": []}
+        with patch.object(vfx, "INFRA_WAIT", 0.0), \
+                patch.object(vfx.render, "engine_validate", lambda data, **kw: []), \
+                patch.object(vfx.render, "engine_render_still", still), \
+                patch.object(vfx, "encode_findings", lambda *a, **k: []):
+            return planner.author({"sections": [world.SECTION]}, [group], world.STYLE,
+                                  {"ink": "#FFFFFF"})[0]
+
+    def test_a_round_only_the_host_lost_is_regated_without_a_session_and_not_charged(self):
+        world.FakeEngine.reviews = [{"frames": [], "score": 9, "summary": "never asked"}]
+        gates: list[float] = []
+
+        def still(xml, at, **kw):
+            gates.append(at)
+            return None, self.LOST
+        planner = self.planner(budget_usd=20, stage_budget_usd=200)
+        doc = self.gated(planner, still)
+        self.assertEqual(Costed.log.count("author"), 1)            # no paid revision
+        self.assertNotIn("review", Costed.log)                      # nothing to look at
+        self.assertAlmostEqual(planner.spend.spent(1), 3.0)         # one session, nothing else
+        self.assertEqual(doc["revisions"], 0)
+        self.assertEqual(len(doc["rounds"]), 1)
+        self.assertTrue(doc["rounds"][-1]["infra"])                 # recorded as the host's
+        self.assertTrue(all(f.startswith("infra") for f in doc["rounds"][-1]["infra"]))
+        self.assertTrue([f for f in doc["findings"] if f.startswith("infra")])
+        self.assertIsNone(doc["score"])
+        # A section the gate never saw rendered does not pass: the second pass
+        # losing the frames too is an error naming the host and the way back,
+        # so the composer leaves the world out and an earlier reviewed version
+        # of the section is kept over it.
+        errors = [f for f in doc["findings"] if f.startswith("error")]
+        self.assertEqual(len(errors), 1, doc["findings"])
+        self.assertIn("the host lost", errors[0])
+        self.assertIn("two passes", errors[0])
+        self.assertIn("yt vfx --sections 1", errors[0])
+        self.assertIn(self.LOST, errors[0])
+        self.assertEqual(doc["rounds"][-1]["errors"], 1)
+        self.assertEqual(doc["budget"]["stopped"], "host")
+        self.assertTrue(vfx.has_errors(doc))
+        self.assertTrue(vfx.keeps_previous({"score": 7.5, "findings": []}, doc))
+        frames = len(vfx.shot_times(world.SECTION["shots"], 15))
+        self.assertEqual(len(gates), 2 * frames)                    # gated once, then again
+        self.assertTrue(any("gating again" in s for s in self.said), self.said)
+
+    def test_a_host_back_after_the_wait_gets_the_round_its_review(self):
+        world.FakeEngine.reviews = [{"frames": [], "score": 9, "summary": "fine"}]
+        passes: list[float] = []
+
+        def still(xml, at, **kw):
+            passes.append(at)
+            if len(passes) <= len(vfx.shot_times(world.SECTION["shots"], 15)):
+                return None, self.LOST                              # the first gate's frames
+            return world.varied_png(), "rendered on root@small"
+        planner = self.planner(budget_usd=20, stage_budget_usd=200)
+        doc = self.gated(planner, still)
+        self.assertEqual(Costed.log.count("author"), 1)
+        self.assertEqual(Costed.log.count("review"), 1)
+        self.assertEqual(doc["score"], 9)
+        self.assertEqual(doc["rounds"][0]["score"], 9)
+        self.assertTrue(doc["rounds"][0]["infra"])                  # what the first pass lost
+        self.assertFalse([f for f in doc["findings"] if f.startswith(("error", "infra"))])
+
+    def test_a_world_too_heavy_for_the_still_deadline_gets_its_revision_not_a_wait(self):
+        # Both hosts stop the still for its cost: the world is the author's to
+        # lighten, so the round is an error, revised, and never the host's.
+        world.FakeEngine.reviews = [{"frames": [], "score": 9, "summary": "never asked"}]
+        timed_out = "render host unreachable: Command '[...]' timed out after 600.0 seconds"
+        planner = self.planner(budget_usd=20, stage_budget_usd=200, revisions=1)
+        doc = self.gated(planner, lambda xml, at, **kw: (None, timed_out))
+        self.assertEqual(doc["revisions"], 1)
+        self.assertEqual(Costed.log.count("author"), 2)
+        self.assertNotIn("review", Costed.log)
+        self.assertFalse(doc["rounds"][0]["infra"])
+        self.assertTrue([f for f in doc["findings"] if f.startswith("error")])
+        self.assertFalse([f for f in doc["findings"] if f.startswith("infra")])
+        self.assertFalse(any("gating again" in s for s in self.said), self.said)
+        revision = [c for c in world.FakeEngine.stream_calls if "Write" in c["tools"]][1]
+        self.assertIn("Cost drivers of this document", revision["prompt"])
+        self.assertNotIn("infra:", revision["prompt"])
+
+    def test_an_authors_error_beside_a_lost_frame_is_still_a_revision_without_the_infra_lines(self):
+        world.FakeEngine.reviews = [{"frames": [], "score": 9, "summary": "fine"}] * 2
+        n = {"count": 0}
+
+        def still(xml, at, **kw):
+            n["count"] += 1
+            if n["count"] == 1:
+                return None, self.LOST
+            if n["count"] == 2:
+                return None, "render failed\nerror[E7]: the camera frames nothing"
+            return world.varied_png(), "rendered on root@small"
+        planner = self.planner(budget_usd=20, stage_budget_usd=200)
+        doc = self.gated(planner, still)
+        self.assertEqual(doc["revisions"], 1)
+        revision = [c for c in world.FakeEngine.stream_calls if "Write" in c["tools"]][1]
+        self.assertIn("the camera frames nothing", revision["prompt"])
+        self.assertNotIn("infra:", revision["prompt"])
+
+
+# --------------------------------------------------------------------------- #
 # the shared round
 # --------------------------------------------------------------------------- #
 

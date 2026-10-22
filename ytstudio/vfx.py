@@ -48,8 +48,10 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from xml.etree import ElementTree as _ET
 from dataclasses import asdict
@@ -839,7 +841,9 @@ SR_WRAPPER = '''#!/usr/bin/env python3
     python3 sr.py frame <file.scene.xml> [--symbol ID] [--at SECONDS]
                                            render a proof frame at each shot's midpoint
                                            (shots.json) the way `yt build` includes the
-                                           symbol; writes frames/*.png -- Read them
+                                           symbol; writes frames/*.png -- Read them.
+                                           Stills only: the gate's own encode reports
+                                           what the camera never frames, once a round
 """
 import json, sys
 sys.path.insert(0, {sr_root!r})
@@ -863,7 +867,10 @@ def frame(argv):
         else:
             i += 1
     ws = Workspace.of(path)
-    results = ws.frames(path.name, symbol=symbol, times=[at] if at is not None else None)
+    # Stills only: the draft encode that reports what the camera never frames
+    # runs once a round at the gate, on the encode host, not on every look.
+    results = ws.frames(path.name, symbol=symbol, times=[at] if at is not None else None,
+                        encode=False)
     worst = 0
     for png, findings in results:
         print(f"frame: {{png if png else '(not rendered)'}}")
@@ -875,7 +882,9 @@ def frame(argv):
         return 1
     print("\\nnow Read every frame above and judge it against the brief: the hero "
           "legible and framed, the set lit, one continuous camera; a flat, black "
-          "or empty frame is not a finished shot.")
+          "or empty frame is not a finished shot. The gate encodes each shot once "
+          "a round and reports every object the camera never frames; keep the "
+          "hero in view in every frame here and that report stays clean.")
     return 1 if worst == 2 else 0
 
 
@@ -1141,13 +1150,26 @@ def encode_findings(files: dict[str, bytes], doc_path: str, *, start: float, end
     The bundle is shipped and run through render's public job hook
     (`render.run_job`; a scratch directory is a project as far as it is
     concerned), so the hosts, the sync and the binary lookup stay in one place.
+
+    An encode of a whole world wants the memory an encode gets: it goes to
+    the encode host, one kit render per host at a time (`sdkkit.host_lock`),
+    and its lines are cached by the still fingerprint of the bundle and the
+    window, so a round that changed nothing in a world pays no encode. An
+    encode the host killed for memory (exit 137) is the author's `error:`
+    -- the world is too heavy to encode anywhere -- and is never cached;
+    nor is any other failure.
     """
     import subprocess
     import tempfile
-    host = host or render.remote_host(None, "still")
+    host = host or render.remote_host(None, "encode")
     binary = render.engine()
     if binary is None and not host:
         return None
+    cached = _encode_cache(files, doc_path, start=start, end=end, quality=quality, host=host)
+    if cached is not None and cached.is_file():
+        hit = read_json(cached, warn=False)
+        if isinstance(hit, dict) and isinstance(hit.get("lines"), list):
+            return [str(l) for l in hit["lines"]]
     with tempfile.TemporaryDirectory(prefix="proof-") as tmp:
         root = Path(tmp)
         for rel, data in files.items():
@@ -1157,22 +1179,126 @@ def encode_findings(files: dict[str, bytes], doc_path: str, *, start: float, end
                "--json", "--report", ".estimate-proof.json", "--start", f"{start:g}",
                "--end", f"{end:g}", "--quality", quality]
         try:
-            if host:
-                proc = render.run_job(cmd, root, host, job="proof", verbose=False)
-            else:
-                proc = subprocess.run([str(binary)] + cmd[1:], cwd=root, capture_output=True,
-                                      text=True, timeout=timeout)
+            with sdkkit.host_lock(host):
+                if host:
+                    proc = render.run_job(cmd, root, host, job="proof", verbose=False)
+                else:
+                    proc = subprocess.run([str(binary)] + cmd[1:], cwd=root,
+                                          capture_output=True, text=True, timeout=timeout)
         except (subprocess.SubprocessError, OSError) as exc:
             return [f"warning: the proof encode of {start:g}-{end:g}s could not run: "
                     f"{str(exc)[:120]}"]
         report = _envelope(proc.stdout or "") or read_json(root / ".estimate-proof.json", warn=False)
     lines = framecheck.report_findings(report)
+    stderr = (proc.stderr or "").strip()
     if proc.returncode != 0 and not any(l.startswith("error") for l in lines):
-        tail = (proc.stderr or "").strip().splitlines()[-2:]
-        lines.insert(0, f"warning: the proof encode of {start:g}-{end:g}s exited "
-                        f"{proc.returncode}" + (": " + " | ".join(t.strip()[:120] for t in tail)
-                                               if tail else ""))
+        tail = stderr.splitlines()[-2:]
+        # What render.run_job says of a job the host lost ("engine killed") is
+        # the host's failure, not the kernel's, so it is not read for memory.
+        engine_said = "\n".join(l for l in stderr.splitlines() if not l.startswith("remote job"))
+        if proc.returncode == 137 or OUT_OF_MEMORY.search(engine_said):
+            lines.insert(0, f"error: the proof encode of {start:g}-{end:g}s was killed for memory "
+                            f"on {host or 'this machine'} (exit {proc.returncode}): no host can "
+                            "encode this world as written. Time-bound every layer and group "
+                            "to its shots, drop what has faded to opacity 0, and lower the "
+                            "samples, the resolution of clay objects or the medium density")
+        else:
+            lines.insert(0, f"warning: the proof encode of {start:g}-{end:g}s exited "
+                            f"{proc.returncode}" + (": " + " | ".join(t.strip()[:120] for t in tail)
+                                                   if tail else ""))
+    if proc.returncode == 0 and cached is not None:
+        # Written whole, as render stores a still: a reader in another
+        # process must never see half a file and encode the window again.
+        try:
+            cached.parent.mkdir(parents=True, exist_ok=True)
+            tmp = cached.with_name(f".{cached.stem}.{os.getpid()}.tmp")
+            tmp.write_text(json.dumps({"host": host or "this machine", "start": start,
+                                       "end": end, "lines": lines}, indent=2) + "\n",
+                           encoding="utf-8")
+            os.replace(tmp, cached)
+        except OSError:
+            pass
     return lines
+
+
+#: What the engine's stderr says when the host killed its encode for memory:
+#: the kernel's `Killed` keeps its case, so a sentence about a killed job is
+#: not read as one.
+OUT_OF_MEMORY = re.compile(r"(?i:out of memory)|\bKilled\b|\bOOM\b")
+
+#: How long the gate waits before gating a round again when the host, not the
+#: author, lost its frames: a saturated still host clears in minutes, and a
+#: paid revision for it is money for nothing (throughput.md, run 2).
+INFRA_WAIT = 120.0
+
+#: The line engine_render_still writes for a render that died saying nothing.
+NO_FINDING = "error: the engine could not render the frame"
+
+
+#: What a still stopped at the deadline says: the ssh side's timeout, the
+#: host's `timeout` wrapper (exit 124) or sdkkit.frame's own line.
+STILL_TIMEOUT = re.compile(r"timed out after|ran past|\(exit 124\)")
+
+#: What a still the host killed for memory says: exit 137, the kernel's word
+#: (-9 when the signal reached a local engine).
+STILL_KILLED = re.compile(r"\(exit 137\)|\(exit -9\)|\bKilled\b")
+
+
+def cost_failure(message: str) -> bool:
+    """Whether a still that rendered nothing was stopped for its cost: it ran
+    past the still deadline, or the host killed it for memory. The other host
+    gets one try; a world both hosts lose this way is the author's to
+    lighten, as sdkkit.frame rules, never the host's failure."""
+    if any(m in message for m in sdkkit.UNREACHABLE):
+        return False
+    lines = message.splitlines()
+    said = "\n".join(lines[:1] + [l for l in lines[1:] if l.startswith(NO_FINDING)])
+    return bool(STILL_TIMEOUT.search(said) or STILL_KILLED.search(said))
+
+
+def infra_failure(message: str) -> bool:
+    """Whether a still that rendered nothing failed for the host's reasons
+    and not the document's: the host did not answer (sdkkit.UNREACHABLE),
+    no engine was reachable, or the engine died naming no finding. A still
+    stopped for its cost (`cost_failure`) is not the host's; a document the
+    engine refused with a diagnostic, or one blocked on a file it names, is
+    the author's."""
+    head, _, rest = message.partition("\n")
+    if any(m in message for m in sdkkit.UNREACHABLE):
+        return True
+    if cost_failure(message):
+        return False
+    if head.startswith(("render host unreachable", "no engine reachable")):
+        return True
+    if head.startswith("error:"):
+        return False
+    return not any(l.strip() and not l.startswith(NO_FINDING) for l in rest.splitlines())
+
+
+def fallback_host(host: str) -> str:
+    """The other host a still is retried on once `host` lost it: where an
+    encode would go when that is another machine, else the first configured
+    host that is not `host`; "" when there is none."""
+    other = render.remote_host(None, "encode")
+    if other and other != host:
+        return other
+    return next((h for h in render.host_names() if h and h != host), "")
+
+
+def _encode_cache(files: dict[str, bytes], doc_path: str, *, start: float, end: float,
+                  quality: str, host: str) -> Path | None:
+    """Where one proof window's lines are cached: beside the still cache, under
+    the still fingerprint of the bundle, the engine, the window and the
+    quality. None when the engine on `host` is not known, since then the
+    lines cannot be keyed to the engine that produced them."""
+    cache = render.still_cache_dir()
+    ident = render.engine_identity(host, cache)
+    if not ident or doc_path not in files:
+        return None
+    shipped = {rel: data for rel, data in files.items() if rel != doc_path}
+    key = render.still_fingerprint(files[doc_path], shipped, doc_path, start, quality, ident,
+                                   options=f"encode:{start:g}-{end:g}")
+    return cache.parent / "encodes" / f"{key}.json"
 
 
 def frame_times(duration: float) -> list[float]:
@@ -1945,8 +2071,13 @@ class Workspace:
                   f"`python3 sr.py frame {doc}`: it renders a proof frame at each shot's "
                   "midpoint (from shots.json) plus the symbol's start and end, the way "
                   "the build includes it, writes frames/*.png and reports what the "
-                  "engine says: flat, black, clipped or too-dark frames, and every "
-                  "object3D the camera never frames. Read every PNG. A black, flat, "
+                  "engine says: flat, black, clipped or too-dark frames, and the "
+                  "checklist's mechanical items (framing, tonal steps, haze, labels "
+                  "that overlap; `kit.py build` warns of a label in the caption band, "
+                  "`rule:band`). It renders stills only, in seconds; "
+                  "the gate then encodes each shot once a round, on the encode host, "
+                  "and reports every object3D the camera never frames, so keep the "
+                  "hero in view in every frame you look at. Read every PNG. A black, flat, "
                   "empty or wrong frame, a hero out of view, or a hero that changes "
                   "between frames means the document is not done: fix the camera, the "
                   "lights, the materials or the geometry in the program, build and render "
@@ -1965,8 +2096,8 @@ class Workspace:
 
     def frames(self, name: str, *, symbol: str | None = None,
                times: list[float] | None = None, frame: tuple[int, int] | None = None,
-               jobs: int = 3, shots: dict[str, list[dict]] | None = None
-               ) -> list[tuple[Path | None, list[str]]]:
+               jobs: int = 3, shots: dict[str, list[dict]] | None = None,
+               encode: bool = True) -> list[tuple[Path | None, list[str]]]:
         """Render each symbol of a document as `yt build` includes it, at the
         midpoint of each shot it holds (`shots`, else shots.json, else the
         symbol's start, middle and end).
@@ -1978,7 +2109,11 @@ class Workspace:
         frame -- a camera pointing at nothing). The camera verdicts come from
         one short draft encode per shot (`encode_findings`), since only an
         encode computes them; each shot's verdict lands on its midpoint frame.
-        The author looks at the PNGs; this only catches what needs no eyes.
+        The encodes are the gate's (`validate`, once a round): an author's own
+        `sr.py frame` passes `encode=False` and gets stills alone, so a look
+        costs seconds, not the 20-40 minutes a whole-world encode took
+        (docs/throughput.md, run 2). The author looks at the PNGs; this only
+        catches what needs no eyes.
         """
         path = self.dir / name
         if not path.is_file():
@@ -1996,39 +2131,100 @@ class Workspace:
         objects = {f["id"]: framecheck.symbol_objects(text, f["id"]) for f in facts}
         jobs_list = [(f, t) for f in facts
                      for t in (times or shot_times(shots.get(f["id"], []), f["duration"]))]
+        # The document's own labels are judged once per symbol, on its first frame.
+        first_at = {}
+        for f, t in jobs_list:
+            first_at.setdefault(f["id"], t)
 
         def one(fact: dict, t: float) -> tuple[Path | None, list[str], list[str]]:
             proof = proof_document(name, text, fact["id"], frame, fact["duration"],
                                    fact["background"])
             files = dict(extra)
             files[f"{self.rel}/{name}"] = text.encode("utf-8")
+            doc_path = f"{self.rel}/.proof-{stem}.scene.xml"
+
+            def still(where: str) -> tuple[bytes | None, str]:
+                # The local engine path raises at the deadline; that is the
+                # world's cost, filed as sdkkit.frame files it, not a crash.
+                try:
+                    return render.engine_render_still(
+                        proof.encode("utf-8"), t, host=where, files=files, doc_path=doc_path,
+                        timeout=sdkkit.STILL_DEADLINE)
+                except subprocess.TimeoutExpired:
+                    return None, f"error: the render ran past {sdkkit.STILL_DEADLINE:g} s"
             # A path-traced or volumetric world goes to the host with the memory
             # for it, one kit render per host at a time (sdkkit.frame's rule).
             host = sdkkit.frame_host(text)
             with sdkkit.host_lock(host):
-                png, message = render.engine_render_still(
-                    proof.encode("utf-8"), t, host=host, files=files,
-                    doc_path=f"{self.rel}/.proof-{stem}.scene.xml")
+                png, message = still(host)
+            where = f"frame at {t:g}s of {fact['id']}"
+            retried, ran = "", host
+            if png is None and (infra_failure(message) or cost_failure(message)):
+                # The host lost the frame, or stopped it for its cost: render
+                # once more on the other host before the author is charged
+                # with anything. A host that did not answer is forgotten, so
+                # the next frame probes it afresh; one that stopped the still
+                # answered fine and stays known.
+                if infra_failure(message):
+                    getattr(render, "_HOSTS", {}).pop(host, None)
+                other = fallback_host(host)
+                if other:
+                    first = message.partition("\n")[0]
+                    with sdkkit.host_lock(other):
+                        png, message = still(other)
+                    retried = (f"{host or 'this machine'} answered: {first}; "
+                               f"retried on {other}")
+                    ran = other
             lines = message.splitlines()
             off = framecheck.never_in_view(lines)
             findings = [l for l in lines[1:] if not l.startswith("warning[E12]")
                         and not framecheck.OFF_CAMERA.search(l)]
-            findings = [f"{l.split(':', 1)[0]}: frame at {t:g}s of {fact['id']}: "
+            findings = [f"{l.split(':', 1)[0]}: {where}: "
                         f"{l.split(':', 1)[1].strip()}" if ":" in l else l for l in findings]
             findings += framecheck.view_findings(off, objects[fact["id"]],
                                                  symbol=fact["id"], at=t)
             if png is None:
+                if cost_failure(message):
+                    # No host holds the world as written: the author's error,
+                    # naming what makes it heavy, as sdkkit.frame rules.
+                    # An exit 137 at the deadline is the host's `timeout -k`
+                    # kill: render names the deadline then, and time is said.
+                    how = (f"stopped at the {sdkkit.STILL_DEADLINE} s still deadline"
+                           if STILL_TIMEOUT.search(message) else "killed for memory")
+                    findings = [f for f in findings if not f.startswith("error")]
+                    return None, [f"error: {where} not rendered: {how} on "
+                                  f"{ran or 'this machine'}"
+                                  + (f" ({retried})" if retried else "")
+                                  + ": no host can render this world as written. Cost "
+                                  f"drivers of this document: {sdkkit.render_settings(text)}. "
+                                  "Lower them (fewer blobs or cells, fewer pathSamples or "
+                                  "maxBounces, no medium) and judge composition at a "
+                                  "setting that renders quickly"] + findings, off
+                if infra_failure(message):
+                    # Filed as the host's, never as the author's error: the
+                    # gate waits and looks again instead of paying a revision.
+                    return None, [f"infra: {where} was not rendered: {lines[0]}"
+                                  + (f" ({retried})" if retried else "")] + findings, off
                 if not any(f.startswith("error") for f in findings):
-                    findings.insert(0, f"error: frame at {t:g}s of {fact['id']} was not rendered: {lines[0]}")
+                    findings.insert(0, f"error: {where} was not rendered: {lines[0]}")
                 return None, findings, off
+            if retried:
+                findings.append(f"note: {where} rendered after a host failed it: {retried}")
             target = out_dir / f"{stem}__{fact['id']}__{t:g}s.png"
             target.write_bytes(png)
-            return target, judge_frame(png, t, fact["id"]) + findings, off
+            judged = judge_frame(png, t, fact["id"])
+            # The checklist's mechanical items (framing, tonal steps, haze, and
+            # the labels once per symbol), as kit.py frame runs them: the
+            # author answers them in its own round, not in a paid review.
+            if not any(f.startswith("error") for f in judged):
+                judged += framecheck.precheck(png, t, fact["id"],
+                                              text if first_at.get(fact["id"]) == t else "")
+            return target, judged + findings, off
 
         # One encode window per shot of each 3D symbol (the whole symbol when
         # it has no shots): the only render that reports what the camera
-        # never frames.
-        windows = [(f, s) for f in facts if objects[f["id"]]
+        # never frames. None when the caller wants stills alone.
+        windows = [(f, s) for f in facts if encode and objects[f["id"]]
                    for s in (shots.get(f["id"]) or
                              [{"label": "", "at": 0.0, "seconds": f["duration"]}])]
 
@@ -2716,19 +2912,43 @@ class VfxPlanner:
                 symbols, findings = self.ws.validate(name, shots=shots, props=True)
                 findings = built + findings
             errors = [f for f in findings if f.startswith("error")]
+            # A frame the host lost is the host's failure, not the author's:
+            # when it is all that blocks the round, wait a bounded time and
+            # gate again without a session. What the first pass lost is
+            # recorded on the round either way (vfx.json shows the host's part).
+            lost = [f for f in findings if f.startswith("infra")]
+            if lost and not errors:
+                self._say(f"    [{n}] {name} round {round_no}: the host lost {len(lost)} "
+                          f"frame(s); gating again in {INFRA_WAIT:g} s, no session")
+                time.sleep(INFRA_WAIT)
+                symbols, findings = self.ws.validate(name, shots=shots, props=True)
+                findings = built + findings
+                errors = [f for f in findings if f.startswith("error")]
+            still_lost = [f for f in findings if f.startswith("infra")]
+            if still_lost and not errors:
+                # Lost twice: the gate never saw the world rendered, so it
+                # does not pass. The error keeps it out of the film and
+                # behind an earlier reviewed version; the section is the
+                # host's to stop, not the author's to revise.
+                findings.append(f"error: the host lost {len(still_lost)} frame(s) in two "
+                                f"passes: {still_lost[0]}; author it again "
+                                f"(yt vfx --sections {n})")
+                errors = [f for f in findings if f.startswith("error")]
+                self.spend.stopped[n] = "host"
             paid = reviewer.usage.cost_usd
-            review = (None if errors or not self.review
+            review = (None if errors or still_lost or not self.review
                       else self._review(reviewer, n, name, section, worlds, round_no))
-            if not errors and self.review:
+            if not errors and not still_lost and self.review:
                 review_costs.append(reviewer.usage.cost_usd - paid)
             score = float(review["score"]) if review and review.get("score") is not None else None
             rounds.append({"round": round_no, "symbols": symbols, "errors": len(errors),
                            "score": score, "fidelity": (review or {}).get("fidelity"),
-                           "review": review, "timed_out": False,
+                           "review": review, "timed_out": False, "infra": lost,
                            "findings": [f for f in findings if not f.startswith("note")]})
             self.ws.keep_round(name, round_no)
             self._say(f"    [{n}] {name} round {round_no}: {len(symbols)} symbol(s), "
                       f"{len(errors)} error(s)"
+                      + (f", {len(still_lost)} frame(s) lost to the host" if still_lost else "")
                       + (f", review {score:g}/10" if score is not None else ", no review")
                       + f", {tools_used} tool call(s)")
             return symbols, findings, review
@@ -2740,6 +2960,10 @@ class VfxPlanner:
             score = rounds[-1]["score"]
             short = score is not None and score < self.author_bar
             if not errors and not short:
+                break
+            # A round the host lost twice is stopped, not revised: the author
+            # has nothing to answer for.
+            if self.spend.stopped.get(n) == "host":
                 break
             # The section's and the stage's budgets decide whether another session
             # (and the review after it) can be paid; if not, the section ends here,
@@ -2757,7 +2981,8 @@ class VfxPlanner:
             revisions += 1
             why = errors[0][:100] if errors else f"review {score:g}/10 under the bar {self.author_bar:g}"
             self._say(f"    [{n}] revision {revisions}: {why}")
-            listing = "\n".join(f"- {f}" for f in findings if not f.startswith("note"))
+            # The host's failures are not the author's to answer.
+            listing = "\n".join(f"- {f}" for f in findings if not f.startswith(("note", "infra")))
             prompt = (f"{name} is not done."
                       + (f" The gate reports:\n{listing}\n\n" if listing else "\n\n")
                       + (self._review_listing(review) + "\n\n" if review else "")
@@ -3496,6 +3721,7 @@ def write_vfx(dossier: Dossier, data: dict) -> list[Path]:
                + (f", review {doc['score']:g}/10" if doc.get("score") is not None else "")
                + f", ${doc.get('cost_usd', 0)}; preview: `yt render --scene {doc['file']}`"]
         md += [f"  - round {r.get('round')}: {r.get('errors', 0)} error(s)"
+               + (f", {len(r['infra'])} frame(s) lost to the host" if r.get("infra") else "")
                + (f", {r['score']:g}/10 — {str((r.get('review') or {}).get('summary', ''))[:140]}"
                   if r.get("score") is not None else ", no review")
                for r in rounds]

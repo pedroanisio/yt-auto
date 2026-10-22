@@ -288,13 +288,17 @@ def _num(value: str | None, default: float | None = None) -> float | None:
 def label_overlaps(doc_text: str, symbol: str) -> list[str]:
     """Text boxes of one parent that overlap. A box is x, y, width, height; the
     anchor is not assumed, so a pair counts only when it overlaps whether (x, y)
-    is the corner or the centre."""
+    is the corner or the centre. When `symbol` names a symbol of the document,
+    only its labels are judged, so a section cut into several worlds names each
+    pair once; a name that is no symbol (a document's stem) judges them all."""
     from xml.etree import ElementTree
     try:
         root = ElementTree.fromstring(doc_text)
     except ElementTree.ParseError:
         return []
     local = lambda el: el.tag.rsplit("}", 1)[-1]           # noqa: E731
+    root = next((el for el in root.iter() if local(el) == "symbol" and el.get("id") == symbol),
+                root)
 
     def boxes(el, centred: bool):
         x, y, w, h = (_num(el.get("x"), 0.0), _num(el.get("y"), 0.0),

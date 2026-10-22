@@ -67,7 +67,11 @@ midpoint of every shot the symbol holds, the way the build includes it;
 `ytstudio/framecheck.py` runs the checks that need no eyes (flat, black,
 clipped, too dark, a `hero-` object the camera never frames, a set mostly out
 of view) over each frame and over one short draft encode per shot, which is
-the only thing that computes the engine's camera analysis; then the model
+the only thing that computes the engine's camera analysis. The author's own
+`sr.py frame` renders stills only; the encodes run once a round at the
+stage's gate, on the encode host, one per host at a time, cached by the
+world's fingerprint, and an encode the host killed for memory is the
+author's error (the world is too heavy for any host). Then the model
 reviews the frames against the publication bar and scores them 0-10. Under
 `--bar` (7) the findings go back to the author, up to `--rounds`
 rounds (2). Each round of authoring lands in a new `vfx/vNN/`; nothing
@@ -541,13 +545,26 @@ The author names the object the camera must never lose with an id starting
 shot the world holds (plus the symbol's start, middle and end where no
 midpoint is within a second), and `framecheck` judges each without eyes:
 black is an error, nearly flat, clipped or too dark a warning; one short
-draft encode per shot of a 3D symbol asks the engine which objects it never
+draft encode per shot of a 3D symbol (the gate's, once a round on the
+encode host; the author's `sr.py frame` renders stills alone) asks the
+engine which objects it never
 framed, a `hero-` object out of view is an error on that shot's frame, set
 objects out of view are counted, and a set mostly out of view across the
 frames is a camera pointing at nothing. The model then reviews the frames
 against the publication bar and scores them. An error, or a score under
 `--bar` (7), sends the findings back to the author for up to
 `--rounds` rounds (2); every round and its score are kept in `vfx.json`.
+A frame the host could not render is the host's failure, not the author's:
+it is retried once on the other host, else filed as `infra:`, and a round
+blocked only by such frames is gated again after a bounded wait with no
+session and no revision paid (`rounds[].infra` in `vfx.json` says what the
+host lost). A round the host loses twice does not pass: it ends on an
+`error:` naming the host and `yt vfx --sections N` (`stopped: host` in the
+section's budget row), so the world the gate never saw rendered stays out
+of the film and an earlier reviewed version of the section is kept over
+it. A frame both hosts stop at the still deadline or kill for
+memory is the author's error, naming the document's cost drivers: no host
+holds that world as written.
 
 Authoring is versioned. Each run lands in the next `vfx/vNN/`, `vfx.json`
 names the active version, and `--fresh` replans and opens a new version;

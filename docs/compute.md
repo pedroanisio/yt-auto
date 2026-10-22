@@ -33,10 +33,13 @@ So:
 - **`yt gate` → where an encode would go,** because the delivery gate needs
   ffprobe and the engine, and this workstation has neither.
 - **Frame proofs, short blocks, `--still`, `--frames A..B` → .13.** The
-  vfx frame gate's proof frames and its one short draft encode per shot,
-  `yt build`'s frames against those proof frames, and `yt qa`'s frame
-  windows (one `--frames A..B` job per sample), are this kind of job. A
-  still of a path-traced document or one with a medium is the exception:
+  vfx frame gate's proof frames, `yt build`'s frames against those proof
+  frames, and `yt qa`'s frame windows (one `--frames A..B` job per sample)
+  are this kind of job. The gate's one short draft encode per shot is not:
+  it encodes the whole world and goes where an encode goes (.7), once a
+  round, one at a time per host, cached by the world's fingerprint; the
+  8 GB still host ran it at 20-40 min a look (docs/throughput.md, run 2).
+  A still of a path-traced document or one with a medium is the exception:
   it goes where an encode would, for the memory, one per host at a time.
 - **Manim stubs, many small jobs → .13**: better GPU, and they do not
   accumulate RAM.

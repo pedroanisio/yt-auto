@@ -13,9 +13,13 @@ a stub that returns a varied PNG.
 """
 
 import argparse
+import contextlib
+import importlib.util
 import io
 import json
+import os
 import re
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -706,6 +710,348 @@ class Frames(unittest.TestCase):
         results = self.go(still,lambda *a, **k: None, shots=self.shots)
         self.assertFalse([f for _, fs in results for f in fs if f.startswith("error")])
         self.assertEqual(len(results), len(calls))
+
+    # AUTO-67: the author's frame renders stills only; the encode is the gate's
+    def test_an_authors_frame_renders_stills_and_no_encode(self):
+        calls, still = self.still()
+        windows, encode = self.encode(lambda s, e: ["hero-ball"])
+        with patch.object(vfx.render, "engine_render_still", still), \
+                patch.object(vfx, "encode_findings", encode):
+            results = self.ws.frames(self.name, times=[5.0], shots=self.shots, encode=False)
+        self.assertEqual([c["at"] for c in calls], [5.0])
+        self.assertEqual(windows, [])                      # no draft encode was paid for
+        self.assertEqual(len(results), 1)
+        self.assertIsNotNone(results[0][0])
+        self.assertFalse([f for _, fs in results for f in fs if f.startswith("error")])
+
+    def test_sr_frame_renders_stills_only_and_says_the_gate_encodes(self):
+        self.ws.prepare(tokens={"ink": "#FFFFFF"}, frame=(1920, 1080))
+        self.ws.write_shots(self.shots)
+        spec = importlib.util.spec_from_file_location("sr_under_test", self.ws.dir / "sr.py")
+        sr = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(sr)
+        calls, still = self.still()
+        windows, encode = self.encode(lambda s, e: ["hero-ball"])
+        out = io.StringIO()
+        with patch.object(vfx.render, "engine_render_still", still), \
+                patch.object(vfx, "encode_findings", encode), contextlib.redirect_stdout(out):
+            code = sr.frame([str(self.ws.dir / self.name)])
+        self.assertEqual(code, 0)
+        self.assertEqual(sorted(c["at"] for c in calls), vfx.shot_times(SECTION["shots"], 15))
+        self.assertEqual(windows, [])
+        self.assertIn("gate", out.getvalue())             # the author is told where the camera check runs
+
+    def test_the_gate_runs_the_encode_once_per_shot_per_round(self):
+        calls, still = self.still()
+        windows, encode = self.encode(lambda s, e: [])
+        with patch.object(vfx.render, "engine_validate", lambda data, **kw: []), \
+                patch.object(vfx.render, "engine_render_still", still), \
+                patch.object(vfx, "encode_findings", encode), \
+                patch.object(self.ws, "geometry", lambda *a, **k: []):
+            symbols, findings = self.ws.validate(self.name, shots=self.shots)
+        self.assertEqual(symbols, ["world-open"])
+        self.assertEqual(sorted((w["start"], w["end"]) for w in windows),
+                         [(0.0, 3.0), (3.0, 7.0), (7.0, 11.0), (11.0, 15.0)])
+        self.assertEqual(len(calls), len(vfx.shot_times(SECTION["shots"], 15)))
+        self.assertFalse([f for f in findings if f.startswith("error")])
+
+
+class LostStills(unittest.TestCase):
+    """AUTO-68: a still the host could not render is the host's failure, not
+    the author's: it is retried once on the other host, and otherwise filed
+    as `infra:`, never `error:`."""
+
+    UNREACHABLE = "render host unreachable: ssh: connect to host root@small port 22: Connection refused"
+    TIMED_OUT = ("render host unreachable: Command '['ssh', 'root@small', 'sh']' timed out "
+                 "after 600.0 seconds")
+    KILLED = "render failed\nerror: the engine could not render the frame: Killed"
+    ROUTES = {"still": "root@small", "encode": "root@big"}
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.ws = vfx.Workspace(self.root, version="v01")
+        self.name = self.ws.doc_name(1, SECTION)
+        (self.ws.dir / self.name).write_text(WORLD_DOC, encoding="utf-8")
+        self.shots = {"world-open": SECTION["shots"]}
+        self.attempts: list[str] = []
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def still(self, answers: dict[str, tuple]):
+        def fake(xml, at, **kw):
+            self.attempts.append(kw.get("host"))
+            return answers[kw.get("host")]
+        return fake
+
+    def go(self, still, **kw):
+        with patch.object(vfx.render, "remote_host", lambda args, job="encode": self.ROUTES[job]), \
+                patch.object(vfx.render, "engine_render_still", still), \
+                patch.object(vfx, "encode_findings", lambda *a, **k: []):
+            return self.ws.frames(self.name, times=[5.0], shots=self.shots, **kw)
+
+    def test_an_unreachable_host_is_dropped_and_the_still_rendered_on_the_other(self):
+        with patch.dict(vfx.render._HOSTS, {"root@small": vfx.render.Host(addr="root@small", engine="/e")}):
+            results = self.go(self.still({"root@small": (None, self.UNREACHABLE),
+                                          "root@big": (varied_png(), "rendered on root@big")}))
+            self.assertNotIn("root@small", vfx.render._HOSTS)       # probed afresh next time
+        self.assertEqual(self.attempts, ["root@small", "root@big"])
+        png, findings = results[0]
+        self.assertIsNotNone(png)
+        self.assertFalse([f for f in findings if f.startswith(("error", "infra"))], findings)
+        self.assertTrue(any(f.startswith("note") and "root@big" in f and "root@small" in f
+                            for f in findings), findings)
+
+    def test_an_engine_that_died_naming_no_finding_is_retried_too(self):
+        died = "render failed\nerror: the engine could not render the frame (exit 255)"
+        results = self.go(self.still({"root@small": (None, died),
+                                      "root@big": (varied_png(), "rendered on root@big")}))
+        self.assertEqual(self.attempts, ["root@small", "root@big"])
+        self.assertIsNotNone(results[0][0])
+
+    def test_a_still_both_hosts_lost_is_an_infra_finding_not_an_error(self):
+        results = self.go(self.still({"root@small": (None, self.UNREACHABLE),
+                                      "root@big": (None, "render host unreachable: Connection timed out")}))
+        self.assertEqual(self.attempts, ["root@small", "root@big"])
+        png, findings = results[0]
+        self.assertIsNone(png)
+        self.assertTrue(findings[0].startswith("infra: frame at 5s of world-open"), findings)
+        self.assertIn("root@small", findings[0])
+        self.assertIn("root@big", findings[0])
+        self.assertFalse([f for f in findings if f.startswith("error")], findings)
+
+    def test_a_document_the_engine_refused_is_the_authors_error_with_no_retry(self):
+        refused = "render failed\nerror[E7]: the camera frames nothing"
+        results = self.go(self.still({"root@small": (None, refused),
+                                      "root@big": (varied_png(), "rendered on root@big")}))
+        self.assertEqual(self.attempts, ["root@small"])
+        self.assertTrue(any(f.startswith("error") for f in results[0][1]))
+        self.assertFalse(any(f.startswith("infra") for f in results[0][1]))
+
+    def test_with_no_other_host_the_lost_still_is_infra_after_one_attempt(self):
+        self.ROUTES = {"still": "root@small", "encode": "root@small"}
+        with patch.object(vfx.render, "host_names", lambda args=None: ["root@small"]):
+            results = self.go(self.still({"root@small": (None, self.UNREACHABLE)}))
+        self.assertEqual(self.attempts, ["root@small"])
+        self.assertTrue(results[0][1][0].startswith("infra:"), results[0][1])
+
+    def test_what_is_the_hosts_failure(self):
+        self.assertTrue(vfx.infra_failure(self.UNREACHABLE))
+        self.assertTrue(vfx.infra_failure("no engine reachable"))
+        self.assertTrue(vfx.infra_failure("render failed\nerror: the engine could not render the frame (exit 255)"))
+        # A kill for memory is the world's cost, not the host's failure (below).
+        self.assertFalse(vfx.infra_failure("render failed\nerror: the engine could not render the frame: Killed"))
+        self.assertFalse(vfx.infra_failure(self.TIMED_OUT))
+        self.assertFalse(vfx.infra_failure("render failed\nerror[E7]: the camera frames nothing"))
+        self.assertFalse(vfx.infra_failure("render failed\nerror: solver refused its grid"))
+        self.assertFalse(vfx.infra_failure("error: blocked on missing inputs: props/x.hdr"))
+
+    def test_what_is_the_worlds_cost(self):
+        # A still stopped at the deadline or killed for memory, however the
+        # render reports it: the ssh side's timeout, the host's `timeout`
+        # wrapper, the kernel's word, sdkkit.frame's own line.
+        self.assertTrue(vfx.cost_failure(self.TIMED_OUT))
+        self.assertTrue(vfx.cost_failure(self.KILLED))
+        self.assertTrue(vfx.cost_failure("render failed\nerror: the engine could not render the frame (exit 137)"))
+        self.assertTrue(vfx.cost_failure("render failed\nerror: the engine could not render the frame (exit 124)"))
+        self.assertTrue(vfx.cost_failure("error: the render ran past 420 s"))
+        # a local engine the signal killed exits -9, not 137
+        self.assertTrue(vfx.cost_failure("render failed\nerror: the engine could not render the frame (exit -9)"))
+        self.assertTrue(vfx.cost_failure(vfx.render._still_message(137, "", "cuda: alloc failed", "ok")))
+        self.assertFalse(vfx.cost_failure(self.UNREACHABLE))
+        self.assertFalse(vfx.cost_failure("render host unreachable: Connection timed out"))
+        self.assertFalse(vfx.cost_failure("render failed\nerror: the engine could not render the frame (exit 255)"))
+        self.assertFalse(vfx.cost_failure("render failed\nerror[E7]: the camera frames nothing"))
+        self.assertFalse(vfx.cost_failure("rendered on root@big"))
+
+    def test_a_still_one_host_stopped_for_its_cost_is_retried_on_the_other(self):
+        results = self.go(self.still({"root@small": (None, self.TIMED_OUT),
+                                      "root@big": (varied_png(), "rendered on root@big")}))
+        self.assertEqual(self.attempts, ["root@small", "root@big"])
+        png, findings = results[0]
+        self.assertIsNotNone(png)
+        self.assertFalse([f for f in findings if f.startswith(("error", "infra"))], findings)
+
+    def test_a_still_both_hosts_stopped_for_its_cost_is_the_authors_error_naming_the_cost(self):
+        results = self.go(self.still({"root@small": (None, self.TIMED_OUT),
+                                      "root@big": (None, self.TIMED_OUT)}))
+        self.assertEqual(self.attempts, ["root@small", "root@big"])
+        png, findings = results[0]
+        self.assertIsNone(png)
+        self.assertTrue(findings[0].startswith("error: frame at 5s of world-open not rendered: "
+                                               "stopped at the"), findings)
+        self.assertIn("root@small", findings[0])
+        self.assertIn("root@big", findings[0])
+        self.assertIn("Cost drivers of this document: raster", findings[0])
+        self.assertFalse([f for f in findings if f.startswith("infra")], findings)
+
+    def test_a_host_that_stopped_a_still_for_its_cost_stays_known(self):
+        # The host answered; only a host that did not is probed again.
+        with patch.dict(vfx.render._HOSTS, {"root@small": vfx.render.Host(addr="root@small", engine="/e")}):
+            results = self.go(self.still({"root@small": (None, self.TIMED_OUT),
+                                          "root@big": (varied_png(), "rendered on root@big")}))
+            self.assertIn("root@small", vfx.render._HOSTS)
+        self.assertEqual(self.attempts, ["root@small", "root@big"])
+        self.assertIsNotNone(results[0][0])
+
+    def test_a_local_still_that_ran_past_the_deadline_is_the_worlds_cost_not_a_crash(self):
+        # The local engine path raises on the deadline (sdkkit.frame catches
+        # it the same way); the gate files the cost, it does not fall over.
+        def still(xml, at, **kw):
+            self.attempts.append(kw.get("host"))
+            raise subprocess.TimeoutExpired(["sr"], kw.get("timeout", 600))
+        results = self.go(still)
+        self.assertEqual(self.attempts, ["root@small", "root@big"])
+        png, findings = results[0]
+        self.assertIsNone(png)
+        self.assertTrue(findings[0].startswith("error: frame at 5s of world-open not rendered: "
+                                               "stopped at the"), findings)
+        self.assertIn("Cost drivers of this document", findings[0])
+
+    def test_an_exit_137_at_the_deadline_is_the_deadline_not_memory(self):
+        # render names the deadline when it judged the 137 a `timeout -k` kill;
+        # the author is told time, not memory.
+        at_deadline = ("render failed\nerror: the engine could not render the frame (exit 137) "
+                       "after the still ran past 600 s on root@small")
+        results = self.go(self.still({"root@small": (None, at_deadline),
+                                      "root@big": (None, at_deadline)}))
+        findings = results[0][1]
+        self.assertIn("stopped at the", findings[0])
+        self.assertNotIn("killed for memory", findings[0])
+
+    def test_a_still_both_hosts_killed_for_memory_says_so(self):
+        results = self.go(self.still({"root@small": (None, self.KILLED),
+                                      "root@big": (None, self.KILLED)}))
+        png, findings = results[0]
+        self.assertIsNone(png)
+        self.assertTrue(findings[0].startswith("error: frame at 5s of world-open not rendered: "
+                                               "killed for memory"), findings)
+        self.assertIn("Cost drivers of this document: raster", findings[0])
+
+    def test_a_still_stopped_on_one_host_and_lost_on_the_other_is_infra(self):
+        results = self.go(self.still({"root@small": (None, self.TIMED_OUT),
+                                      "root@big": (None, self.UNREACHABLE)}))
+        self.assertEqual(self.attempts, ["root@small", "root@big"])
+        self.assertTrue(results[0][1][0].startswith("infra:"), results[0][1])
+
+    def test_with_no_other_host_a_still_stopped_for_its_cost_is_the_authors_error(self):
+        self.ROUTES = {"still": "root@small", "encode": "root@small"}
+        with patch.object(vfx.render, "host_names", lambda args=None: ["root@small"]):
+            results = self.go(self.still({"root@small": (None, self.TIMED_OUT)}))
+        self.assertEqual(self.attempts, ["root@small"])
+        self.assertTrue(results[0][1][0].startswith("error:"), results[0][1])
+        self.assertIn("Cost drivers", results[0][1][0])
+
+
+class EncodeCache(unittest.TestCase):
+    """AUTO-67: the proof encode runs on the encode host, one per host at a
+    time, and its lines are served from the cache the second time."""
+
+    FILES = {"vfx/v01/a.scene.xml": b"<scene/>", "vfx/v01/.proof-a.scene.xml": b"<scene>p</scene>"}
+    DOC = "vfx/v01/.proof-a.scene.xml"
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.cache = Path(self._tmp.name) / "stills"
+        self.cache.mkdir()
+        (self.cache / "engines.json").write_text(json.dumps(
+            {"root@big": {"version": "1.0", "sha256": "abc", "path": "x"}}))
+        self.jobs: list[str] = []
+        self.locks: list[str] = []
+        tests = self
+
+        class Lock:
+            def __init__(self, host):
+                tests.locks.append(host)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return None
+        self.lock = Lock
+        self.envelope = {"result": {"outputs": [{"findings": [
+            {"code": "X-rs-scene-render-3D-OFF-CAMERA", "severity": "warning",
+             "message": OFF_CAMERA.format(id="desk")[len("warning: "):]}]}]}}
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def run_job(self, returncode=0, stderr=""):
+        def fake(cmd, root, host, *, job, verbose=False, **kw):
+            self.jobs.append(host)
+            return SimpleNamespace(returncode=returncode,
+                                   stdout=json.dumps(self.envelope) if returncode == 0 else "",
+                                   stderr=stderr)
+        return fake
+
+    def encode(self, run_job, **kw):
+        routes = {"encode": "root@big", "still": "root@small"}
+        with patch.dict(os.environ, {"YT_STILL_CACHE": str(self.cache)}), \
+                patch.object(vfx.render, "run_job", run_job), \
+                patch.object(vfx.render, "remote_host", lambda args, job="encode": routes[job]), \
+                patch.object(vfx.sdkkit, "host_lock", self.lock):
+            return vfx.encode_findings(self.FILES, self.DOC, **kw)
+
+    def test_the_window_runs_on_the_encode_host_under_its_lock(self):
+        lines = self.encode(self.run_job(), start=3, end=7)
+        self.assertEqual(self.jobs, ["root@big"])
+        self.assertEqual(self.locks, ["root@big"])
+        self.assertEqual(vfx.framecheck.never_in_view(lines), ["desk"])
+
+    def test_the_same_window_is_served_from_the_cache(self):
+        first = self.encode(self.run_job(), start=3, end=7)
+        second = self.encode(self.run_job(), start=3, end=7)
+        self.assertEqual(self.jobs, ["root@big"])                  # one encode, two answers
+        self.assertEqual(first, second)
+        self.encode(self.run_job(), start=7, end=11)              # another window is another encode
+        self.assertEqual(self.jobs, ["root@big", "root@big"])
+        self.FILES = dict(self.FILES, **{"vfx/v01/a.scene.xml": b"<scene>changed</scene>"})
+        self.encode(self.run_job(), start=3, end=7)               # a changed world too
+        self.assertEqual(len(self.jobs), 3)
+
+    def test_an_encode_the_host_could_not_hold_is_the_authors_error_and_is_not_cached(self):
+        killed = self.run_job(returncode=137, stderr="scene-render: Killed\n")
+        lines = self.encode(killed, start=3, end=7)
+        self.assertTrue(lines[0].startswith("error:"), lines)
+        self.assertIn("memory", lines[0])
+        self.assertIn("3-7s", lines[0])
+        self.encode(killed, start=3, end=7)
+        self.assertEqual(len(self.jobs), 2)                       # a failure is run again next round
+
+    def test_a_proof_encode_that_failed_for_another_reason_stays_a_warning(self):
+        lines = self.encode(self.run_job(returncode=1, stderr="boom\n"), start=3, end=7)
+        self.assertTrue(lines[0].startswith("warning:"), lines)
+
+    def test_the_cache_is_written_whole_as_the_still_cache_is(self):
+        # A reader in another process sees the file complete or not at all:
+        # written beside its name and renamed into place, never partially.
+        moves: list[tuple[str, str]] = []
+        real = os.replace
+
+        def replace(src, dst, *a, **kw):
+            moves.append((Path(src).name, Path(dst).name))
+            return real(src, dst, *a, **kw)
+        with patch.object(vfx.os, "replace", replace):
+            self.encode(self.run_job(), start=3, end=7)
+        self.assertEqual(len(moves), 1, moves)
+        tmp, final = moves[0]
+        self.assertTrue(tmp.startswith(".") and tmp.endswith(f".{os.getpid()}.tmp"), tmp)
+        self.assertTrue(final.endswith(".json"), final)
+        self.assertEqual(sorted(p.name for p in self.cache.rglob("*.tmp")), [])
+
+    def test_a_job_the_host_lost_is_not_the_authors_memory_error(self):
+        # render._read_job's note on a lost job says "engine killed": the
+        # host's failure, not the kernel's `Killed`, so no revision is paid.
+        lost = ("remote job lost: its process is gone and it wrote no status "
+                "(host rebooted or engine killed)\n")
+        lines = self.encode(self.run_job(returncode=1, stderr=lost), start=3, end=7)
+        self.assertTrue(lines[0].startswith("warning:"), lines)
+        self.assertNotIn("memory", lines[0])
+        self.assertFalse(vfx.OUT_OF_MEMORY.search(lost))
+        self.assertTrue(vfx.OUT_OF_MEMORY.search("scene-render: Killed"))
+        self.assertTrue(vfx.OUT_OF_MEMORY.search("CUDA error: Out of memory"))
 
 
 class Review(unittest.TestCase):

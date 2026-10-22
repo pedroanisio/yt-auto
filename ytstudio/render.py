@@ -1214,6 +1214,13 @@ def _engine_id(host: str, cache: Path) -> tuple[str, dict]:
     return (f"local|{info['sha256']}" if info["sha256"] else ""), info
 
 
+def engine_identity(host: str = "", cache_dir: Path | str | None = None) -> str:
+    """The identity a cache keys a job on `host` by (see _engine_id), found
+    without ssh; "" when it is not known, and then nothing may be cached."""
+    cache = Path(cache_dir) if cache_dir else still_cache_dir()
+    return _engine_id(host, cache)[0]
+
+
 def _remember_engine(cache: Path, host: str, info: dict) -> None:
     if not (info.get("version") or info.get("sha256")):
         return
@@ -1403,6 +1410,12 @@ def engine_render_still(xml_bytes: bytes, at: float, *, host: str = "",
         report("rendered", envelope=_envelope(engine_json))
     elif proc.returncode == 124 or (proc.returncode == 137 and
                                     time.monotonic() - started >= timeout - 10):
+        # A 137 this close to the deadline is the host's `timeout -k` kill,
+        # not a kill for memory: the message says so beside the exit code,
+        # so a reader of it is told time.
+        if proc.returncode == 137:
+            message = message.replace(
+                "(exit 137)", f"(exit 137) after the still ran past {timeout:g} s on {host}", 1)
         report("timeout", f"the still ran past {timeout:g} s on {host}", timeout_seconds=timeout,
                exit_code=proc.returncode)
     else:
@@ -1445,9 +1458,12 @@ def _still_message(code: int, report: str, messages: str, ok_text: str) -> str:
     if rep.get("error"):
         lines.insert(0, f"error: {rep['error'] if isinstance(rep['error'], str) else json.dumps(rep['error'])[:300]}")
     if code != 0 and not any(l.startswith("error") for l in lines):
+        # The exit code stays beside the tail: 124 and 137 say what the
+        # engine's last words may not (the deadline, a kill for memory).
         tail = messages.strip().splitlines()[-3:] if messages.strip() else []
         lines.insert(0, "error: the engine could not render the frame" +
-                     (": " + " | ".join(t.strip()[:160] for t in tail) if tail else f" (exit {code})"))
+                     (": " + " | ".join(t.strip()[:160] for t in tail) if tail else "")
+                     + f" (exit {code})")
     head = ok_text if code == 0 else "render failed"
     return "\n".join([head] + lines)
 
