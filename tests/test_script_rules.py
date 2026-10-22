@@ -119,7 +119,8 @@ class Shape(unittest.TestCase):
                          {"rule:filler", "rule:sentence"})
         self.assertEqual({k for k, v in tiers.items() if v == "important"},
                          {"rule:unspoken-number", "rule:legibility", "rule:numbers",
-                          "rule:hook-subject", "rule:hook-answer", "rule:payoff-last"})
+                          "rule:hook-subject", "rule:hook-answer", "rule:payoff-last",
+                          "rule:wall-of-text"})
         self.assertEqual({k for k, v in tiers.items() if v == "minor"}, {"rule:last-line"})
         self.assertEqual({k for k, v in tiers.items() if v == "house"},
                          {"rule:clause", "rule:passive", "rule:person", "rule:pace",

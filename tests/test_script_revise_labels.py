@@ -337,6 +337,30 @@ class ReviseLabels(unittest.TestCase):
         self.assertEqual(shot["narration"], LINES[1][1][0][1])
         self.assertIn("yt voice --redo 1.3 ", self.said)     # the take of 2.1 still holds
 
+    def test_a_changed_shots_picture_flags_stop_binding(self):
+        # The picture-check's standing flags (AUTO-98) speak of the text the
+        # check read; once that shot's line or supers change they are stale,
+        # kept under `picture.stale` and out of `picture.flags`, which vfx
+        # binds. An unchanged shot's flag stands as it was recorded.
+        data = screenplay()
+        old = {"n": 3, "section": 1, "kind": "picture:bare-number", "severity": "important",
+               "problem": "picture:bare-number: shot 1.3: thirty years, bare", "fix": "f"}
+        other = {"n": 5, "section": 2, "kind": "picture:unshown-claim",
+                 "severity": "important",
+                 "problem": "picture:unshown-claim: shot 2.2: the bolt never holds", "fix": "f"}
+        data["picture"] = {"model": "opus", "sections": [], "flags": [old, other],
+                           "revisions": [], "kept": []}
+        data["findings"] += [f"warning: {old['problem']}; still standing after the revision",
+                             f"warning: {other['problem']}; still standing after the revision"]
+        write_json(self.film / "script.json", data)
+        self.assertEqual(self.run_stage("--revise", "1.3"), 0, self.said)
+        record = self.record()
+        self.assertEqual([f["n"] for f in record["picture"]["flags"]], [5])
+        self.assertEqual([f["n"] for f in record["picture"]["stale"]], [3])
+        self.assertFalse([f for f in record["findings"] if "thirty years, bare" in f],
+                         record["findings"])
+        self.assertTrue([f for f in record["findings"] if "the bolt never holds" in f])
+
     def test_a_fix_that_returns_the_line_unchanged_is_kept_as_written(self):
         self.fixes = {4: LINES[1][1][0][1]}
         self.research()

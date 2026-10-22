@@ -31,7 +31,9 @@ the writer's prompt (`rubric_text("writer")`, the top level of each
 criterion) and into the reviewer's role (`reviewer_role()`, every level with
 its strength), so a round is never spent finding out what will be looked at.
 `yt script --review` wires the plan's role (`reviewer_role(plan=True)`),
-PLAN_REVIEW_SCHEMA and `check_plan_review` into the plan review (AUTO-92);
+PLAN_REVIEW_SCHEMA and `check_plan_review` into the plan review (AUTO-92),
+and `picture_role()` and PICTURE_SCHEMA into the picture-check that reads
+the drafted screenplay's pictures with the narration taken away (AUTO-98);
 the story review is not wired yet (AUTO-93). Nothing here decides a
 verdict: it is schema and prompt text, and `check_review` and
 `check_plan_review` only name what the caller asks the model again about
@@ -550,3 +552,103 @@ def check_review(review: Any) -> list[str]:
                      f"{'is' if len(unknown) == 1 else 'are'} no rubric criterion "
                      f"(the rubric has {', '.join(KEYS)})")
     return found
+
+
+# --------------------------------------------------------------------------- #
+# the picture-check (AUTO-98)
+# --------------------------------------------------------------------------- #
+#
+# Say it, show it. The fact-check and the narration rules read the words;
+# this reads what the screenplay puts on screen, with the words taken away.
+# Vox's picture-off test (direction 4): a reviewer given only the shot
+# descriptions must reconstruct each section's claim. Beside it, three
+# things only a reader can see in a picture: a large number left bare
+# (attention 15), a mechanism a shot says it demonstrates that its picture
+# does not (direction 4's narrated mechanism no shot depicts), and a list
+# the pictures present with nothing to tell its parts apart (attention 22).
+# What a count can find, a super that prints the line, is
+# `rule:wall-of-text` in script.RULES (direction 2); motion is measured from
+# frames at vfx and qa, never here.
+
+#: The corpus rules the picture-check reads by, in the corpus's spelling.
+PICTURE_RULES = ("direction 4", "direction 2", "attention 15", "attention 22",
+                 "attention 23")
+
+
+def picture_role() -> str:
+    """The picture-check's role: the reviewer reads the screen and never the
+    narration, reconstructs before it compares, and judges what is shown,
+    never how it looks (invariant 2)."""
+    return "\n\n".join([
+        "You are the film's picture reviewer. You read only what the screenplay puts on "
+        "screen: each shot's picture (`visual`), what that picture must demonstrate of its "
+        "line (`shows`) and the words printed on screen (`on_screen_text`). You are given "
+        "the pictures and never the narration, and you do not guess it: a viewer with the "
+        "sound off sees what you see.",
+        "For each section, first write the claim a viewer would take from its pictures "
+        "alone, as if the plan were not in front of you; then read the beat the plan gave "
+        "that section and say whether the pictures carry it, what of it they leave out, "
+        "and the shot numbers where the pictures lose the thread.",
+        "Then report the shots that show one of three faults, and only those: a figure of "
+        "1,000 or more put on screen or asked of the picture with no comparison at human "
+        "scale and no picture of the quantity (a bare number); a mechanism or claim the "
+        "shot says its picture demonstrates that the picture as described does not show "
+        "(an unshown claim); and a list or set of parts the pictures present with no count "
+        "and no label telling the viewer which part is which, or which one is being "
+        "spoken of (an unsignposted list).",
+        "Judge what is shown, never how it looks: the treatment decides the look, so a "
+        "report names no colour, typeface, layout or style. Say what the viewer cannot "
+        "see or follow; the writer decides how to show it.",
+        LONGER,
+    ])
+
+
+#: What the picture-check answers: per section the claim read from the
+#: pictures, whether it is the plan's beat and where the thread is lost;
+#: per shot, only the shots with a fault, each fault "" when absent. The
+#: shot numbers are the screenplay's, as the prompt lists them.
+PICTURE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "sections": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "section": {"type": "integer", "description": "the section's number"},
+                    "claim": {"type": "string", "description": (
+                        "the claim a viewer takes from this section's pictures alone, "
+                        "written before comparing it with the beat")},
+                    "carries_beat": {"type": "boolean", "description": (
+                        "true when that claim is the beat the plan gave the section")},
+                    "missing": {"type": "string", "description": (
+                        "what of the beat the pictures do not carry; empty when they do")},
+                    "confused_at": {"type": "array", "items": {"type": "integer"},
+                                    "description": "the shot numbers where the pictures "
+                                                   "lose the thread"},
+                },
+                "required": ["section", "claim", "carries_beat", "missing", "confused_at"],
+            },
+        },
+        "reports": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "n": {"type": "integer", "description": "the shot number"},
+                    "bare_number": {"type": "string", "description": (
+                        "the figure of 1,000 or more shown with no comparison at human "
+                        "scale and no picture of the quantity, and where; empty when none")},
+                    "unshown_claim": {"type": "string", "description": (
+                        "the mechanism or claim the shot says it demonstrates that its "
+                        "picture does not show; empty when none")},
+                    "unsignposted_list": {"type": "string", "description": (
+                        "the list or set of parts shown with no count and no label for "
+                        "which is which; empty when none")},
+                },
+                "required": ["n", "bare_number", "unshown_claim", "unsignposted_list"],
+            },
+        },
+    },
+    "required": ["sections", "reports"],
+}
