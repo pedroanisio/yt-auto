@@ -53,8 +53,20 @@ runtime:
 | 6 | Voiceover | intelligibility, naturalness, emphasis, sync |
 | 7 | Sound design | effects, ambience, impacts, spatial balance, dynamics |
 | 8 | Music / score | progression, emotional fit, transitions, repetition |
-| 9 | Narrative clarity | hook, stakes, open questions closed, escalation, payoff on the promise, visual support for each claim |
+| 9 | Narrative clarity | hook, stakes, re-hooks, open questions closed, escalation, payoff on the promise, visual support for each claim |
 | 10 | Overall production | does it read as a documentary, or as a slideshow |
+
+Narrative clarity and editing / pacing are read against the narrative
+rubric's rows for the hook, the stakes, open loops, reveal setup and the
+ending, rendered into the reviewer's role from `ytstudio/narrative.py`
+(`qa.STORY_RUBRIC`), with the narration beside the frames in each pass
+(`narration.txt`) and the screenplay's story as the writer's declaration.
+The scorecard's `story` block restates the premise as the film made it,
+says what the viewer has at the end of each section, and predicts a
+viewer's satisfaction, which scores nothing and is listed as not evidenced
+until the channel's `retention.json` exists (§12). A finding on the story
+belongs to `script`, whose duty names the same story as row 9 (hook,
+stakes, re-hooks, open questions, payoff).
 
 **READY TO PUBLISH requires all of:**
 
@@ -475,7 +487,10 @@ An honest spec says where it is blind, so nobody mistakes silence for a pass:
   from audience data, until the retention loop exists.** No published
   film's retention curve reaches the pipeline yet, so the score rests on
   the plan, the narration and what the frames show, and the craft defaults
-  in §6 stay priors rather than measured bounds.
+  in §6 stay priors rather than measured bounds. The reviewer's predicted
+  satisfaction (`story.satisfaction` in the scorecard) is a ranking proxy
+  (judging 4): `yt qa` records it and names it under `not_evidenced` until
+  the work directory holds the channel's `retention.json`.
 
 ---
 

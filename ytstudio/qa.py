@@ -39,6 +39,19 @@ frame, and files the scorecard under a schema. What stills cannot evidence
 and names in `not_evidenced`; a film with no audio track at all scores
 `SILENT_SCORE` on sound_design and music_score by rule, never a neutral 5.
 
+The story is judged from the film too (AUTO-99). The role carries the
+narrative rubric's sentences for narrative_clarity and editing_pacing,
+rendered from `narrative.rubric_text` rather than typed again here; the
+prompt carries the screenplay's story (train, promise, stakes, payoff line,
+the question ledger with where each opens and closes, the re-hook shots) as
+the writer's declaration, and the whole narration is written into the pass
+as `narration.txt` beside the frames, so it is evidence the inspection's
+digest covers. The scorecard's `story` block restates the premise as the
+film made it, says what the viewer has at the end of each section, and
+predicts a viewer's satisfaction, which is a ranking proxy nothing
+validates until the channel's `retention.json` exists: until then it is
+recorded and named under not_evidenced, and it scores nothing.
+
 Each pass keeps its frames, `scorecard.json` and `findings.md` (timestamp ->
 problem -> root cause -> owner stage -> fix), so "measurably improved" is a
 comparison with the pass before and a regression is a category that dropped.
@@ -58,14 +71,14 @@ import sys
 from pathlib import Path
 
 from . import geometry as geo
-from . import framecheck, house, reach, spend, workspace
+from . import framecheck, house, narrative, reach, spend, workspace
 from .proofframes import (PROOF_DIFF, PROOF_LIMIT, mismatch_text,  # noqa: F401
                           proof_diff, proof_plan, ungraded)
 from . import render as render_stage
 from .build import EVEN_SHOTS, shots_from_scene  # noqa: F401  (standalone sampling)
 from .core import read_json, timecode, write_json
 from .harness import Harness, HarnessError, brief
-from .script import Shot, visible_text
+from .script import SILENT as SILENT_LINE, Shot, spoken, visible_text
 
 QA_DIR = "qa"
 READY, NOT_READY = "READY TO PUBLISH", "NOT READY"
@@ -111,6 +124,38 @@ ROLE = (
     "from the fact that a track exists."
 )
 
+#: The rubric rows narrative_clarity and editing_pacing are read against: the
+#: ones a viewer of the finished film can judge (docs/production.md §2 row 9:
+#: hook, stakes, open questions closed, the payoff on the promise). `train` is
+#: the plan's sentence and `honesty` a claim against the sources, which the
+#: frames cannot settle; escalation and visual support have no row of their
+#: own, so they reach the reviewer through the story brief (each section's
+#: `escalation`) and the frames (each shot's `shows`).
+STORY_RUBRIC = ("hook", "stakes", "open_loops", "reveal_setup", "ending")
+
+ROLE += (
+    "\n\nnarrative_clarity and editing_pacing are judged on the story the film "
+    "tells, heard in the narration and seen in the frames, never on what the "
+    "screenplay declares. A 9 there shows what each of these criteria of the "
+    "narrative rubric aims for; the further a film falls short of them, the lower:\n"
+    + narrative.rubric_text("writer", keys=STORY_RUBRIC))
+
+#: What the screenplay owns of the story, named in DUTIES so a story finding
+#: has an owner; docs/production.md §2 row 9 names the same (test_doc_production).
+STORY_DUTY = ("hook", "stakes", "re-hooks", "open questions", "payoff")
+
+#: A viewer's predicted satisfaction, on the five labelled points of a survey
+#: (judging 4: a ranking proxy, not a measure of the film).
+SATISFACTION = ("1 very dissatisfied", "2 dissatisfied",
+                "3 neither satisfied nor dissatisfied", "4 satisfied", "5 very satisfied")
+
+#: The channel's measured retention, under the work directory. Until it
+#: exists a predicted satisfaction is recorded and not evidenced.
+RETENTION = "retention.json"
+
+#: The narration, written into each pass beside its frames.
+NARRATION = "narration.txt"
+
 #: Who can own a finding: a pipeline stage, or a human route. Improve routes by
 #: this word alone; `external` carries the reason in the finding's `fix`.
 OWNERS = (tuple(stage for stage, _ in workspace.STAGES)
@@ -121,7 +166,8 @@ OWNERS = (tuple(stage for stage, _ in workspace.STAGES)
 DUTIES = {
     "research": "the dossier: claims, sources, licensed assets",
     "styles": "the treatment: palette roles, typography, motion language, the look",
-    "script": "the screenplay: shots, narration, supers, timing plan",
+    "script": f"the screenplay: the story ({', '.join(STORY_DUTY)}), shots, narration, "
+              "supers, timing plan",
     "props": "the CC0 models, HDRIs and texture maps fetched for the authors",
     "keyframe": "the look-lock frame every authored world inherits",
     "voice": "the narration takes, their timing, and the captions file",
@@ -168,9 +214,37 @@ SCORECARD_SCHEMA = {
         "blocking": {"type": "array", "items": {"type": "string"}},
         "not_evidenced": {"type": "array", "items": {"type": "string"}},
         "rationale": {"type": "string"},
+        # The story as the film told it (AUTO-99). Required of a new pass;
+        # compare() reads scores only, so an older scorecard without it
+        # still compares.
+        "story": {
+            "type": "object",
+            "properties": {
+                "premise_restated": {"type": "string", "description": (
+                    "the film's premise in one sentence, as the narration and the "
+                    "frames made it, not as the screenplay declares it")},
+                "sections": {"type": "array", "items": {
+                    "type": "object",
+                    "properties": {
+                        "section": {"type": "integer", "description": "section number"},
+                        "viewer_has_at_end": {"type": "string", "description": (
+                            "the fact, reversal or image the viewer has at the end of "
+                            "this section that they lacked at its start, or that "
+                            "they have nothing new (structure 20)")}},
+                    "required": ["section", "viewer_has_at_end"]}},
+                "satisfaction": {"type": "string", "enum": list(SATISFACTION),
+                                 "description": (
+                    "how satisfied a viewer who watched to the end would say they "
+                    "were; a prediction recorded for calibration that scores "
+                    "nothing (judging 4)")},
+                "satisfaction_why": {"type": "string"},
+            },
+            "required": ["premise_restated", "sections", "satisfaction",
+                         "satisfaction_why"],
+        },
     },
     "required": ["scores", "overall", "verdict", "findings", "blocking",
-                 "not_evidenced", "rationale"],
+                 "not_evidenced", "rationale", "story"],
 }
 
 
@@ -924,6 +998,17 @@ def findings_md(name: str, card: dict, samples: list[dict], diff: dict, *,
                   f"- why: {row.get('why', '')}",
                   f"- root cause: {row.get('root_cause', '')}",
                   f"- owner: **{row.get('owner', '?')}** — fix: {row.get('fix', '')}", ""]
+    story = card.get("story")
+    if isinstance(story, dict):
+        lines += ["## Story", "", "As the film told it, not as the screenplay declares it.", "",
+                  f"- premise: {story.get('premise_restated', '')}"]
+        for row in story.get("sections") or []:
+            if isinstance(row, dict):
+                lines.append(f"- at the end of section {row.get('section', '?')}: "
+                             f"{row.get('viewer_has_at_end', '')}")
+        lines += [f"- predicted satisfaction: {story.get('satisfaction', '?')} -- "
+                  f"{story.get('satisfaction_why', '')} (a ranking proxy, scoring nothing)",
+                  ""]
     if card.get("blocking"):
         lines += ["## Blocking", *[f"- {b}" for b in card["blocking"]], ""]
     if card.get("not_evidenced"):
@@ -1057,6 +1142,101 @@ def narration_measurements(voice: dict) -> dict:
     return out
 
 
+def _placed(script: dict, build: dict) -> dict[str, float | None]:
+    """Each screenplay shot's start on the film: where build.json placed it,
+    else where the screenplay timed it, else None."""
+    placed = {str(s.get("label")): s.get("at") for s in (build or {}).get("shots") or []
+              if isinstance(s, dict)}
+    out: dict[str, float | None] = {}
+    for sec in (script or {}).get("sections") or []:
+        for shot in sec.get("shots") or []:
+            label = str(shot.get("label", ""))
+            at = placed.get(label, shot.get("at"))
+            try:
+                out[label] = round(float(at), 3) if at is not None else None
+            except (TypeError, ValueError):
+                out[label] = None
+    return out
+
+
+def story_brief(script: dict, build: dict) -> dict | None:
+    """The screenplay's story as the plan declared it (AUTO-90), placed on
+    the film's timeline: the train, the promise and its payoff line, the
+    stakes, the question ledger with the time each question's section opens
+    and the time its answering section does, the re-hook shots and each
+    section's escalation. It is the writer's self-report, which the
+    reviewer checks against the narration and the frames; a screenplay
+    written before the story fields has none, and None says so."""
+    script = script or {}
+    ending = script.get("ending") if isinstance(script.get("ending"), dict) else {}
+    if not (any(script.get(k) for k in ("train", "promise", "payoff", "stakes", "questions"))
+            or any(ending.values())):
+        return None
+    at = _placed(script, build)
+    sections = [s for s in script.get("sections") or [] if isinstance(s, dict)]
+    starts = {}
+    for n, sec in enumerate(sections, 1):
+        times = [at.get(str(shot.get("label", ""))) for shot in sec.get("shots") or []]
+        starts[n] = next((t for t in times if t is not None), None)
+
+    def start(n):
+        return starts.get(n) if isinstance(n, int) and n > 0 else None
+
+    questions = [{"id": q.get("id", ""), "text": q.get("text", ""),
+                  "opened_in": q.get("opened_in"), "opened_at": start(q.get("opened_in")),
+                  "closed_in": q.get("closed_in"), "closed_at": start(q.get("closed_in")),
+                  "left_open_why": q.get("left_open_why", "")}
+                 for q in script.get("questions") or [] if isinstance(q, dict)]
+    rehooks = [{"shot": shot.get("label", ""), "at": at.get(str(shot.get("label", ""))),
+                "section": n, "question": sec.get("rehook", ""),
+                "narration": " ".join(str(shot.get("narration", "")).split())[:300]}
+               for n, sec in enumerate(sections, 1) for shot in sec.get("shots") or []
+               if shot.get("function") == "rehook"]
+    return {
+        "train": script.get("train", ""), "promise": script.get("promise", ""),
+        "payoff": script.get("payoff", ""), "stakes": script.get("stakes", ""),
+        "viewer_stake": script.get("viewer_stake", ""),
+        "payoff_line": ending.get("payoff_line", ""), "callback": ending.get("callback", ""),
+        "questions": questions, "rehooks": rehooks,
+        "sections": [{"section": n, "heading": sec.get("heading", ""), "starts_at": starts[n],
+                      "opens": sec.get("opens", []), "closes": sec.get("closes", []),
+                      "rehook": sec.get("rehook", ""), "escalation": sec.get("escalation", "")}
+                     for n, sec in enumerate(sections, 1)],
+    }
+
+
+def narration_text(script: dict, build: dict) -> str:
+    """The film's whole narration, one shot a line with its label and its
+    time on the film, for `narration.txt` in the pass: what the film says,
+    read apart from what it shows (attention 23). "" for a screenplay with
+    no shots."""
+    at = _placed(script, build)
+    lines = []
+    for sec in (script or {}).get("sections") or []:
+        for shot in sec.get("shots") or []:
+            label = str(shot.get("label", ""))
+            line = spoken(shot.get("narration", "")) or SILENT_LINE
+            lines.append(f"{label}  {_stamp(at.get(label))}  {line}")
+    if not lines:
+        return ""
+    return ("# The narration, shot by shot: label, time on the film, the line\n"
+            + "\n".join(lines) + "\n")
+
+
+def unproven_satisfaction(card: dict, *, retention: bool) -> dict:
+    """A predicted satisfaction is a ranking proxy (judging 4): until the
+    channel's RETENTION exists nothing validates it, so it stays recorded in
+    `story` and is named under not_evidenced with the reason."""
+    if retention or not isinstance(card.get("story"), dict):
+        return card
+    card = dict(card)
+    card["not_evidenced"] = list(card.get("not_evidenced") or []) + [
+        f"story.satisfaction: a predicted satisfaction is a ranking proxy (judging 4) "
+        f"that nothing validates until the work directory's {RETENTION} holds the "
+        "channel's measured retention; recorded, scoring nothing"]
+    return card
+
+
 def register(sub, parents=()) -> argparse.ArgumentParser:
     p = sub.add_parser(
         "qa", parents=list(parents),
@@ -1127,6 +1307,15 @@ def run(args) -> int:
         problems = render_frames(args, project, scene, samples, pass_dir / "frames")
         for problem in problems:
             print(f"warning: {problem}", file=sys.stderr)
+    # The narration beside the frames, as evidence: in the pass directory the
+    # inspection's digest covers it, so a changed line is a new review and an
+    # unchanged one is served from the cache. A reused pass keeps the
+    # narration its frames were sampled with.
+    narration_file = pass_dir / NARRATION
+    if not (args.reuse and narration_file.is_file()):
+        said = narration_text(script, build)
+        if said:
+            narration_file.write_text(said, encoding="utf-8")
     frames_dir = pass_dir / "frames"
     have = {p.name for p in frames_dir.glob("*.png")} if frames_dir.is_dir() else set()
     if not have:
@@ -1179,6 +1368,9 @@ def run(args) -> int:
             "timestamp": row["t"], "why_sampled": row["why"],
             "shot": row["label"], "section": row["section"],
             "visual": str(shot.get("visual", ""))[:300],
+            # Its role in the story and what its picture must demonstrate of
+            # its line (AUTO-90): the visual support narrative_clarity reads.
+            **{k: str(shot[k])[:300] for k in ("function", "shows") if shot.get(k)},
             **super_fields(shot),
             "narration": str(shot.get("narration", ""))[:300],
             "drawn_by": row.get("asset", ""),
@@ -1224,6 +1416,8 @@ def run(args) -> int:
             if previous:
                 break
 
+    story = story_brief(script, build)
+
     # -- the review ------------------------------------------------------------
     rules, digest = house.for_args(args, project, "qa")
     reviewer = Harness(project.root, "qa", model=args.model, role=ROLE,
@@ -1248,6 +1442,23 @@ def run(args) -> int:
         "mechanical findings are measured, not judged: do not repeat them as "
         "your own, but score as if they stand, because they do. Blocking items "
         "already proven by the manifests are listed; add what the frames show.",
+        (f"Read `{NARRATION}` too: the whole narration, one shot a line with its "
+         "time on the film. Judge narrative_clarity and editing_pacing on the film "
+         "as told: can the explanation be followed by ear alone, from the "
+         "narration, and by eye alone, from the frames (attention 23)? "
+         if narration_file.is_file() else
+         "There is no narration to read; judge the story from the frames. ")
+        + "The screenplay's story below is what the writer declared, context and "
+        "not evidence: judge whether the film delivers it. Then fill `story`: "
+        "restate the premise in one sentence as the film made it, say for each "
+        "section what the viewer has at its end that they lacked at its start "
+        "(structure 20), and predict how satisfied a viewer who watched to the "
+        "end would say they were, with why. That prediction is recorded for "
+        "calibration and scores nothing (judging 4). A finding on the story "
+        f"itself ({', '.join(STORY_DUTY)}) is owned by `script`; a picture that "
+        "does not show what its line says is owned by whoever draws it.",
+        brief("The screenplay's story, as the plan declared it", story)
+        if story else "The screenplay declares no story fields (written before them).",
         brief("Frames and what each should show", evidence),
         brief("Mechanical findings, measured before this review (a blocking one "
               f"caps {' and '.join(CAPPED)} at {MECHANICAL_CAP:g})", mechanical),
@@ -1272,6 +1483,8 @@ def run(args) -> int:
     # silent film scores no sound, and a blocking mechanical finding caps
     # the categories the frames measure.
     card = score_silence(dict(card), build)
+    work = Path(args.work) if getattr(args, "work", None) else Path(project.root).parent
+    card = unproven_satisfaction(card, retention=(work / RETENTION).is_file())
     scores, overall, capped = cap_scores(card.get("scores", {}), card.get("overall", 0),
                                          mechanical)
     card["scores"], card["overall"] = scores, overall

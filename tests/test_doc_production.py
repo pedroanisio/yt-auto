@@ -53,6 +53,19 @@ class ProductionDoc(unittest.TestCase):
                       "payoff on the promise", "visual support"):
             self.assertIn(words, row)
 
+    def test_narrative_clarity_and_the_screenplays_duty_name_the_same_story(self):
+        # AUTO-99: QA scores the story under row 9 and places a story finding
+        # with script by DUTIES; the two say the same thing or a finding has
+        # no owner.
+        from ytstudio import qa
+        row = next(line for line in _section("## 2. The publication bar").splitlines()
+                   if "Narrative clarity" in line)
+        duty = qa.DUTIES["script"]
+        self.assertTrue(qa.STORY_DUTY)
+        for term in qa.STORY_DUTY:
+            self.assertIn(term, row)
+            self.assertIn(term, duty)
+
     def test_the_story_criteria_are_house_priors_with_rule_numbers(self):
         text = _section("## 6. Craft criteria")
         self.assertIn("**Story.**", text)
