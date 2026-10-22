@@ -733,6 +733,13 @@ class QuestionLedger:
         q = self._questions.get(qid) or {}
         return q.get("closed_in") == 0 and not self._closes.get(qid)
 
+    def raises(self, index: int) -> bool:
+        """Whether section `index` opens or answers any question, by the
+        plan's questions or its own entry: the ledger its writer is briefed
+        from, so the brief and the flag agree."""
+        return any(index in at for store in (self._opens, self._closes)
+                   for at in store.values())
+
     def text(self, qid: str) -> str:
         said = " ".join(str((self._questions.get(qid) or {}).get("text") or "").split())
         return f"{qid} ({said})" if said else qid
@@ -812,11 +819,13 @@ def question_findings(plan: dict, sections: list[Section],
     - `rule:closed-unopened`: a shot answering a question no shot raised
       before it, or, where no writer named the raising shot, that the plan
       opens only later, or one the plan does not have (structure 8);
-    - `rule:raises-nothing`: a section whose plan entry opens and closes no
-      question (structure 14, 19), minor;
-    - `rule:unanswered-by-reader`: a question the plan answers that the cold
-      reader, shown the questions after the narration alone, did not find
-      answered (`answered[]`), when there is such a reading.
+    - `rule:raises-nothing`: a section the plan's ledger (its questions'
+      opened_in and closed_in, and the section's opens and closes) has open
+      and close no question (structure 14, 19), minor;
+    - `rule:unanswered-by-reader`: a question the plan answers and a shot
+      says it answers that the cold reader, shown the questions after the
+      narration alone, did not find answered (`answered[]`), when there is
+      such a reading; one no shot answers is an open loop only.
 
     The writer's mark is its own report and the reader's is a reader's, so
     the ledger is measured against both; neither is second-guessed here. A
@@ -841,7 +850,7 @@ def question_findings(plan: dict, sections: list[Section],
 
     out: list[dict] = []
     for index, sec in enumerate(sections, 1):
-        if not sec.opens and not sec.closes:
+        if not ledger.raises(index):
             out.append(_flag(
                 "rule:raises-nothing", None,
                 f"section {index} (\"{sec.heading}\") opens and closes no question",
@@ -881,9 +890,11 @@ def question_findings(plan: dict, sections: list[Section],
         heard = {str(a.get("question_id")) for a in cold["answered"] if isinstance(a, dict)}
         for qid in ledger.ids():
             where = ledger.closer(qid)
-            if where is None or qid in heard:
+            # A question no shot says it answers is already an open loop:
+            # the reader's report is weighed against a writer's mark only.
+            if where is None or qid in heard or qid not in closed:
                 continue
-            target = closed.get(qid) or last_of(where)
+            target = closed[qid]
             out.append(_flag(
                 "rule:unanswered-by-reader", target,
                 f"{ledger.text(qid)}: a first-time reader of the narration alone did "
@@ -3425,7 +3436,7 @@ BOUNDS: dict[str, dict] = {
         "note": "where no writer named the raising shot, the plan's opening section "
                 "stands for it"},
     "raises_nothing": {
-        "value": 0, "unit": "questions a section's plan entry opens or closes",
+        "value": 0, "unit": "questions the plan's ledger has a section open or close",
         "corpus": ("structure 14", "structure 19"), "strength": "practitioner",
         "note": "the open-then-close form is practitioner craft; the prequestion "
                 "evidence on authentic lectures is small or absent (Toftness et al. "

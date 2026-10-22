@@ -456,6 +456,26 @@ class QuestionFindings(unittest.TestCase):
                          ("minor", "minor", 5))
         self.assertNotIn(flags[0]["severity"], script.REVISABLE)
 
+    def test_a_section_the_plans_questions_place_a_question_in_raises_something(self):
+        # Q4 is opened in section 2 by the question alone, not by the
+        # section's own `opens`; the writer is briefed so, and the section is
+        # measured from the same ledger
+        plan = copy.deepcopy(QPLAN)
+        plan["questions"].append({"id": "Q4", "text": "Who paid?", "opened_in": 5,
+                                  "closed_in": 5})
+        plan["sections"].append({"heading": "Five", "seconds": 10, "beats": ["b"],
+                                 "opens": [], "closes": []})
+        marks = dict(BALANCED, Five={"opens": [{"id": "Q4", "opens_at": 1}],
+                                     "closes": [{"id": "Q4", "closes_at": 2}]})
+        self.assertIn("You open Q4", script.QuestionLedger.from_plan(plan).brief_for(5))
+        self.assertEqual(script.question_findings(plan, drafted(marks, plan=plan)), [])
+
+    def test_a_question_no_writer_answered_is_one_open_loop_not_also_the_readers(self):
+        marks = dict(BALANCED, Four={"opens": [{"id": "Q3", "opens_at": 1}]})
+        cold = {"answered": [{"question_id": "Q1", "shot_index": 6}]}
+        flags = script.question_findings(QPLAN, drafted(marks), cold)
+        self.assertEqual(rule_ids(flags), ["rule:open-loop"])
+
     def test_a_closed_question_the_cold_reader_did_not_hear_is_unanswered_by_reader(self):
         cold = {"answered": [{"question_id": "Q1", "shot_index": 6}], "unanswered": ["Q2"]}
         flags = script.question_findings(QPLAN, drafted(), cold)
