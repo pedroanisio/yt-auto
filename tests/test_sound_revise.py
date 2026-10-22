@@ -24,8 +24,10 @@ def designer():
 def cues():
     out = [sound.Cue(kind="music", name="bed", at=0, seconds=30, purpose="p",
                      file="sound/a.mp3", licence="CC0", credit="x", level="loud"),
-           sound.Cue(kind="sfx", name="hit", at=10, seconds=2, purpose="q"),
-           sound.Cue(kind="ambience", name="room", at=0, seconds=60, purpose="r")]
+           sound.Cue(kind="sfx", name="hit", at=10, seconds=2, purpose="q",
+                     level="-18 dBFS peak"),
+           sound.Cue(kind="ambience", name="room", at=0, seconds=60, purpose="r",
+                     level="-40 dBFS")]
     return sound.number_cues(out)
 
 
@@ -43,12 +45,13 @@ def is_review(schema):
 
 def rig(reviews, fixes):
     d = designer()
-    calls = {"review": [], "revise": []}
+    calls = {"review": [], "revise": [], "order": []}
     reviews, fixes = list(reviews), list(fixes)
 
     def ask(name, prompt, schema):
         which = "review" if is_review(schema) else "revise"
         calls[which].append(prompt)
+        calls["order"].append(name)
         queue = reviews if which == "review" else fixes
         if not queue:
             raise AssertionError(f"unexpected {which} call")
@@ -194,6 +197,103 @@ class ReviewThenRevise(unittest.TestCase):
         d._ask = ask
         data = d.run(do_review=True, fix=False)
         self.assertEqual(len(data["review"]["flags"]), 1)
+
+
+class RuleFindings(unittest.TestCase):
+    """The sheet's own rules (sound.rule_findings) are answered by `revise`
+    before the model is asked to listen back; a rule kept is unresolved."""
+
+    def sheet(self):
+        c = cues()
+        c.append(sound.Cue(kind="music", name="second bed", at=20, seconds=20,
+                           purpose="s", level="-30 dBFS"))
+        return sound.number_cues(c)
+
+    def test_rule_flags_are_revised_before_the_first_review(self):
+        c = self.sheet()
+        d, calls = rig([{"flags": [], "verdict": "ok"}],
+                       [{"action": "fix", "at": 30, "why": "after the first bed"}])
+        out = d.review_and_revise(c, stats(c))
+        self.assertEqual(calls["order"][:2], ["revise-M2", "review"])
+        self.assertIn("rule:overlap", calls["revise"][0])
+        self.assertEqual([x.at for x in c if x.cue_id == "M2"], [30])
+        self.assertEqual(out["revisions"][0]["cue"], "M2")
+        self.assertEqual(out["revisions"][0]["rule"], "rule:overlap")
+        self.assertEqual(out["unresolved"], [])
+        self.assertEqual(out["flags"], [])
+
+    def test_the_review_sees_the_sheet_after_the_rules_were_answered(self):
+        c = self.sheet()
+        d, calls = rig([{"flags": [], "verdict": "ok"}],
+                       [{"action": "fix", "at": 30, "why": "after the first bed"}])
+        d.review_and_revise(c, stats(c))
+        self.assertIn("0:30-0:50", calls["review"][0])
+
+    def test_a_kept_rule_flag_is_unresolved_with_its_reason(self):
+        c = self.sheet()
+        d, calls = rig([{"flags": [], "verdict": "ok"}],
+                       [fix(action="keep", why="the overlap is the handover")])
+        out = d.review_and_revise(c, stats(c))
+        self.assertEqual(len(calls["review"]), 1)
+        self.assertEqual([(f["cue"], f["rule"], f["kept"]) for f in out["unresolved"]],
+                         [("M2", "rule:overlap", "the overlap is the handover")])
+        self.assertEqual([f["cue"] for f in out["flags"]], ["M2"])
+        self.assertEqual(out["kept"], [{"cue": "M2", "why": "the overlap is the handover",
+                                        "rule": "rule:overlap"}])
+
+    def test_a_fix_that_still_breaks_the_rule_stays_unresolved(self):
+        c = self.sheet()
+        d, _ = rig([{"flags": [], "verdict": "ok"}],
+                   [{"action": "fix", "at": 25, "why": "nudged"}])
+        out = d.review_and_revise(c, stats(c))
+        self.assertEqual(len(out["revisions"]), 1)
+        self.assertEqual([f["rule"] for f in out["unresolved"]], ["rule:overlap"])
+        self.assertIn("still", out["unresolved"][0]["kept"])
+
+    def test_a_kept_rule_does_not_stop_the_models_own_flag_on_that_cue(self):
+        c = self.sheet()
+        d, calls = rig([{"flags": [flag("M2")], "verdict": "no"},
+                        {"flags": [], "verdict": "ok"}],
+                       [fix(action="keep", why="handover"), fix("quiet")])
+        out = d.review_and_revise(c, stats(c))
+        self.assertEqual(len(calls["revise"]), 2)
+        self.assertEqual([x.level for x in c if x.cue_id == "M2"], ["quiet"])
+        self.assertEqual([f["rule"] for f in out["unresolved"]], ["rule:overlap"])
+
+    def test_report_only_lists_the_rule_flags_and_revises_nothing(self):
+        c = self.sheet()
+        d, calls = rig([{"flags": [flag("M1")], "verdict": "no"}], [])
+        out = d.review_and_revise(c, stats(c), fix=False)
+        self.assertEqual(calls["revise"], [])
+        self.assertEqual([(f["cue"], f.get("rule")) for f in out["flags"]],
+                         [("M1", None), ("M2", "rule:overlap")])
+
+    def test_a_failed_review_still_reports_what_the_rules_changed(self):
+        c = self.sheet()
+        d = designer()
+
+        def ask(name, prompt, schema):
+            if is_review(schema):
+                raise sound.ClaudeError("down")
+            return {"action": "fix", "at": 30, "why": "moved"}
+        d._ask = ask
+        out = d.review_and_revise(c, stats(c))
+        self.assertEqual(out["revisions"][0]["cue"], "M2")
+        self.assertEqual(out["unresolved"], [])
+
+    def test_run_carries_rule_results_into_the_record(self):
+        d = designer()
+        d.plan = lambda: {}
+        d.spot_whole = self.sheet
+
+        def ask(name, prompt, schema):
+            if is_review(schema):
+                return {"flags": [], "verdict": "ok"}
+            return {"action": "keep", "why": "handover"}
+        d._ask = ask
+        data = d.run(do_review=True)
+        self.assertEqual([f["rule"] for f in data["review"]["unresolved"]],
+                         ["rule:overlap"])
 
     def test_the_cli_has_report_only(self):
         import argparse

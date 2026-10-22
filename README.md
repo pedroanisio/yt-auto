@@ -570,7 +570,15 @@ Coverage is computed, not asked for — merged music intervals, share of runtime
 scored, longest unbroken run, unscored stretches — and `--review` hands those
 numbers back for a listen-back pass that flags wall-to-wall music, cues that
 fight the narration, effects with no sync point and sourcing that will not
-survive a claim. Unless `--report-only` is given the review then revises: each
+survive a claim. What the timecodes say outright is not asked of the model:
+`sound.rule_findings` flags two cues of one kind sounding at once
+(`rule:overlap`), a cue with no level (`rule:level`), a cue past the film's
+end (`rule:clock`) and a short effect with no bed under it (`rule:no-bed`,
+the build's own transient classification), and each goes to the same revise
+call before the first listen-back; a rule flag the model keeps, or answers
+with a change that still breaks the rule, stands in `unresolved` with its
+`rule` and reason, and `yt build` records it as a `warning:` naming the cues.
+Unless `--report-only` is given the review then revises: each
 important or blocking flag gets one revise call that may edit only the cue's
 design fields (never `file`, `licence`, `credit`, `gain_db`, fades or `loop`),
 only the revised cues are checked again, for at most two rounds, a flag that

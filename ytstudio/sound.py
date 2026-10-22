@@ -339,6 +339,74 @@ def coverage(cues: list[Cue], runtime: int) -> dict:
     }
 
 
+#: The rules a cue sheet is checked against before the model listens back:
+#: what the timecodes say outright, which the listen-back used to be asked to
+#: find and then kept (Run 2: 15 of 15 flags kept, verdict still not ready).
+RULES = ("rule:overlap", "rule:level", "rule:clock", "rule:no-bed")
+
+
+def _is_transient(cue: Cue) -> bool:
+    """`build.transient_shift`'s classification: a short effect, which the
+    limiter takes after the lift when nothing sustained plays under it."""
+    from . import build
+    return cue.kind in build.TRANSIENT_KINDS and cue.seconds <= build.TRANSIENT_SECONDS
+
+
+def rule_findings(cues: list[Cue], runtime: int) -> list[dict]:
+    """Flags, shaped as the review's, for what the sheet gets wrong on its
+    face: two cues of one kind sounding at once, a cue with no level, a cue
+    past the end of the film, a short effect with no bed under it. Each
+    carries `rule`, and its `problem` opens with it. The model still chooses
+    the change, through `revise`."""
+    def flag(cue: Cue, rule: str, severity: str, problem: str, fix: str) -> dict:
+        return {"cue": cue.cue_id, "rule": rule, "severity": severity,
+                "problem": f"{rule}: {problem}", "fix": fix}
+
+    out: list[dict] = []
+    ordered = sorted(cues, key=lambda c: (c.at, c.cue_id))
+    for n, cue in enumerate(ordered):
+        # Overlap: the later cue is the one asked to move, naming the earlier.
+        for other in ordered[:n]:
+            if other.kind == cue.kind and other.out > cue.at:
+                out.append(flag(
+                    cue, "rule:overlap", "important",
+                    f"{cue.kind} {cue.cue_id} starts at {timecode(cue.at)} while "
+                    f"{other.cue_id} ({timecode(other.at)}-{timecode(other.out)}) "
+                    "is still sounding",
+                    f"start it at or after {timecode(other.out)}, end {other.cue_id} "
+                    "before it starts, or merge the two"))
+                break
+        if not cue.level.strip():
+            out.append(flag(
+                cue, "rule:level", "important",
+                f"{cue.cue_id} states no level",
+                "give its level relative to the narration (for a silence, how "
+                "far the drop goes and what stays)"))
+        if cue.at >= runtime:
+            out.append(flag(
+                cue, "rule:clock", "blocker",
+                f"{cue.cue_id} starts at {timecode(cue.at)}, after the film ends "
+                f"at {timecode(runtime)}",
+                "move it inside the film or drop it"))
+        elif cue.out > runtime:
+            out.append(flag(
+                cue, "rule:clock", "important",
+                f"{cue.cue_id} runs to {timecode(cue.out)}, past the film's end "
+                f"at {timecode(runtime)}",
+                f"shorten it to end by {timecode(runtime)}"))
+        if _is_transient(cue) and not any(
+                o is not cue and o.kind != "silence" and not _is_transient(o)
+                and o.at <= cue.at < o.out for o in ordered):
+            out.append(flag(
+                cue, "rule:no-bed", "important",
+                f"{cue.cue_id} hits at {timecode(cue.at)} with no music, ambience "
+                "or sustained effect under it; the limiter, which runs after "
+                "normalisation, takes the loudness and the integrated target is missed",
+                "bring its level down to sit within the master's headroom, or "
+                "say which bed carries it and keep it with that reason"))
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # inputs
 # --------------------------------------------------------------------------- #
@@ -700,9 +768,10 @@ class SoundDesigner:
             f"({c.seconds}s) {c.name} -- {c.purpose} | level: {c.level or '?'} "
             f"| source: {c.source}" for c in cues)
         now = {k: getattr(cue, k) for k in REVISE_TEXT}
+        who = "A rule of the sheet" if flag.get("rule") else "The listen-back"
         parts = [self._brief(), self._palette_recap(),
                  f"The cue sheet:\n\n{sheet}",
-                 f"The listen-back flagged {cue.cue_id} "
+                 f"{who} flagged {cue.cue_id} "
                  f"({flag.get('severity', '')}): {flag.get('problem', '')} "
                  f"(suggested: {flag.get('fix', '')}).\n"
                  f"Its fields now: {now}",
@@ -752,16 +821,46 @@ class SoundDesigner:
         is the review, with `revisions` (what changed), `kept` (cues left as
         written, with the reason, and still flagged) and `unresolved` (flags
         still standing after the last round, each kept with that reason).
+
+        The sheet's own rules (`rule_findings`) go to `revise` first, before
+        the model listens back: a rule flag it keeps, or answers with a change
+        that still breaks the rule, stands in `flags` and `unresolved` with
+        its `rule`, and `yt build` names it.
         """
-        review = self.review(cues, stats)
-        if not review or not fix:
+        rules = rule_findings(cues, self.runtime)
+        if not fix:
+            review = self.review(cues, stats)
+            if review:
+                review["flags"] = list(review.get("flags", [])) + rules
             return review
+
+        revisions: list[dict] = []
+        rule_kept: dict[tuple[str, str], str] = {}
+        for f in rules:
+            result = self.revise(cues, f)
+            if result["applied"]:
+                revisions.append(result["applied"] | {"rule": f["rule"]})
+            else:
+                rule_kept[(f["cue"], f["rule"])] = result["why"]
+        if revisions:
+            stats = coverage(cues, self.runtime)
+        standing = rule_findings(cues, self.runtime)
+        for f in standing:
+            f["kept"] = rule_kept.get((f["cue"], f["rule"])) or (
+                f"still breaks {f['rule']} after the revision; left as it is")
+        if standing:
+            self._say(f"[rules] {len(rules)} finding(s), {len(standing)} standing")
+
+        review = self.review(cues, stats)
+        if not review:
+            if not rules:
+                return review
+            review = {"flags": [], "verdict": ""}
 
         def binding(flags, skip=()):
             return [f for f in flags if f.get("severity") in REVISABLE
                     and f.get("cue") not in skip]
 
-        revisions: list[dict] = []
         kept: dict[str, str] = {}
         used = 0
         for _ in range(max(0, rounds)):
@@ -796,11 +895,14 @@ class SoundDesigner:
         for f in left:
             f["kept"] = (f"still flagged after {used} round(s) of revision; "
                          "left as it is")
+        review["flags"] = list(review.get("flags", [])) + standing
         review["revisions"] = revisions
-        review["kept"] = [{"cue": c, "why": why} for c, why in kept.items()]
-        review["unresolved"] = left
-        self._say(f"[revise] changed {len(revisions)}, kept {len(kept)}, "
-                  f"{len(left)} still flagged")
+        review["kept"] = ([{"cue": c, "why": why, "rule": rule}
+                           for (c, rule), why in rule_kept.items()]
+                          + [{"cue": c, "why": why} for c, why in kept.items()])
+        review["unresolved"] = left + standing
+        self._say(f"[revise] changed {len(revisions)}, kept {len(kept) + len(rule_kept)}, "
+                  f"{len(left) + len(standing)} still flagged")
         return review
 
     # -- run ---------------------------------------------------------------

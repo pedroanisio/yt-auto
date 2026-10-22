@@ -887,6 +887,11 @@ class SceneBuilder:
         self.normalize = normalize
         self.normalize_reason = normalize_reason
         self.sound_normalize = (sound or {}).get("normalize")
+        # The listen-back's rule findings left standing (sound.rule_findings),
+        # each kept with a reason: the mix inherits them as warnings.
+        left = ((sound or {}).get("review") or {}).get("unresolved")
+        self.sound_rules_kept = [f for f in (left if isinstance(left, list) else [])
+                                 if isinstance(f, dict) and f.get("rule")]
         self.limiter = limiter
         self.bitrate, self.max_bitrate = bitrate, max_bitrate
         self.buffer_size, self.preset = buffer_size, preset
@@ -1134,6 +1139,14 @@ class SceneBuilder:
         if not self.audio:
             return report
         findings = report["findings"]
+        if self.sound_rules_kept:
+            # A rule the sheet broke and the designer kept, with the reason:
+            # the build does not fix it, it names it.
+            findings.append(
+                f"warning: the sound design kept {len(self.sound_rules_kept)} rule "
+                "finding(s) the listen-back left standing: " + "; ".join(
+                    f"{f.get('cue', '?')} {f.get('rule')} ({f.get('kept') or 'no reason'})"
+                    for f in self.sound_rules_kept))
         roles = enum_of("audioTrack", "role")
         role_of = {"narration": pick(roles, "voiceover", "dialogue"),
                    "music": pick(roles, "music"),
