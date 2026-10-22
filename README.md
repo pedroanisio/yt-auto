@@ -408,9 +408,12 @@ sheet for a human.
 
 `yt keyframe --approve` records the approval against the section document's
 digest. `yt vfx` then carries the section forward at $0 and every other
-author's brief and review name its program (`keyframe/look.py`) as the look
-to copy (palette and type constants, the helpers that build labels, formulas
-and recurring objects, the camera language). A look approved after the
+author's brief and review name its program (`keyframe/look.py`, copied into
+every section workspace as an importable `look.py`; a later look pass's own
+workspace gets none, it makes the next look) as the look to build on
+(`from look import ...` its palette and type constants, the helpers that build
+labels, formulas and recurring objects, the camera language; the build records
+its hash in the document's provenance). A look approved after the
 animation exists goes in with `yt vfx --relook`: the section is carried and
 the others are authored again on the same plan. `--reject "notes"` records the rejection and
 the next run puts the notes at the top of the lead section's brief. `yt run`

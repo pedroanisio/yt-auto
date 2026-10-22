@@ -145,6 +145,25 @@ class LeadPass(Case):
         self.assertIn("- the labels are too small", brief)
         self.assertNotIn("## The approved look", brief)
 
+    def test_the_look_pass_builds_on_no_look_so_its_workspace_has_no_module(self):
+        # A look pass after an approval (`--section 2`, `--fresh`) makes the next
+        # look; the old one is not `look.py` in its workspace. Were it there, a
+        # lead program importing it would be kept as keyframe/look.py and, once
+        # approved, install as a look.py that imports `look`: every build of the
+        # next version fails on it.
+        lead = self.author(self.planner(lead=1))[0]
+        self.look_record(lead, "approved")
+        FakeEngine.stream_calls, FakeEngine.docs = [], [TWO_DOC]
+        self.author(self.planner(lead=2))
+        self.assertTrue((self.root / "vfx" / "v02" / "srkit.py").is_file())
+        self.assertFalse((self.root / "vfx" / "v02" / "look.py").exists())
+        FakeEngine.stream_calls, FakeEngine.docs = [], [WORLD_DOC]
+        self.author(self.planner(lead=1, fresh=True))
+        self.assertFalse((self.root / "vfx" / "v03" / "look.py").exists())
+        # keyframe/look.py stays the approved bytes until the new look is approved
+        self.assertEqual((self.root / "keyframe" / "look.py").read_bytes(),
+                         (self.root / lead["program"]).read_bytes())
+
 
 class CarryTheLook(Case):
     """Once approved, `yt vfx` carries the lead section and authors the rest against it."""
@@ -173,10 +192,35 @@ class CarryTheLook(Case):
         # the approved bytes, where the author may read: never another version
         self.assertIn("Read its program `../../keyframe/look.py`", brief)
         self.assertNotIn("../v01/", brief)
-        self.assertIn("copy into your program its palette and type constants", brief)
+        # the same bytes are `look.py` in the workspace, to import rather than copy
+        self.assertIn("`from look import ...` its palette and type constants", brief)
+        self.assertEqual((self.root / "vfx" / "v02" / "look.py").read_bytes(),
+                         (self.root / "keyframe" / "look.py").read_bytes())
         review = self.reviews()[0]["prompt"]
         self.assertIn("approved section 1", review)
         self.assertIn(str(self.root / "keyframe" / "look.py"), review)
+        # a departure's fix is the module's construct, imported, not a copy of it
+        self.assertIn("construct from `look.py` (import it", review)
+        self.assertNotIn("copy the approved", review)
+
+    def test_a_look_without_a_program_is_reviewed_without_a_module_to_import(self):
+        # an approval recorded before the program was kept: the brief falls
+        # back to the constructions, and the review names no `look.py` to import
+        lead = self.lead()
+        self.look_record(lead, "approved")
+        record = json.loads((self.root / "keyframe.json").read_text())
+        record["look_program"] = ""
+        (self.root / "keyframe.json").write_text(json.dumps(record))
+        (self.root / "keyframe" / "look.py").unlink()
+        FakeEngine.docs = [TWO_DOC]
+        self.author(self.planner(revisions=1))
+        brief = (self.root / "vfx" / "v02" / "brief-02.md").read_text()
+        self.assertIn("Reuse its constructions", brief)
+        self.assertNotIn("look.py", brief)
+        review = self.reviews()[0]["prompt"]
+        self.assertIn("approved section 1", review)
+        self.assertIn("the approved section's construct", review)
+        self.assertNotIn("look.py", review)
 
     def test_a_pending_or_rejected_look_is_not_carried(self):
         for state in ("pending", "rejected"):
@@ -332,6 +376,22 @@ class Provenance(Case):
         self.assertEqual(len(self.authors()), 1)
         self.write_vfx_json(relooked)
         self.assertTrue(keyframe.film_carries_look(self.root))
+
+    def test_a_relook_and_the_first_animation_carry_the_module_into_the_new_version(self):
+        # AUTO-77: the approved look is `look.py` in every version made after the approval
+        lead = self.author(self.planner(lead=1))[0]
+        self.assertFalse((self.root / "vfx" / "v01" / "look.py").exists())   # nothing approved yet
+        self.look_record(lead, "pending")
+        self.vfx_run([WORLD_DOC.replace("#AAAAAA", "#CCCCCC"), TWO_DOC])
+        self.assertFalse((self.root / "vfx" / "v02" / "look.py").exists())   # still pending
+        keyframe.approve(self.root)
+        FakeEngine.stream_calls = []
+        self.vfx_run([TWO_DOC], relook=True)
+        approved = (self.root / "keyframe" / "look.py").read_bytes()
+        self.assertEqual((self.root / "vfx" / "v03" / "look.py").read_bytes(), approved)
+        self.assertEqual((self.root / lead["program"]).read_bytes(), approved)
+        brief = (self.root / "vfx" / "v03" / "brief-02.md").read_text()
+        self.assertIn("from look import", brief)
 
     def test_relook_keeps_a_sound_section_over_a_broken_attempt(self):
         self.lead_approved()

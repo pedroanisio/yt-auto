@@ -1609,7 +1609,8 @@ class Workspace:
         data = read_json(self.dir / "shots.json", warn=False)
         return data if isinstance(data, dict) else {}
 
-    def prepare(self, *, tokens: dict[str, str], frame: tuple[int, int]) -> None:
+    def prepare(self, *, tokens: dict[str, str], frame: tuple[int, int],
+                look: bool = True) -> None:
         sr_root = str(Path(sdk().__file__).resolve().parents[2])
         automation_root = str(Path(__file__).resolve().parent.parent)
         (self.dir / "sr.py").write_text(
@@ -1628,8 +1629,24 @@ class Workspace:
             json.dumps({"width": frame[0], "height": frame[1], "fps": 30}), encoding="utf-8")
         # The author composes by program: srkit.py, kit.py and kit/ (the SDK's
         # guide, what the engine does per renderer, proven example programs).
+        # A section author's workspace (a version) also gets the approved look's
+        # program as `look.py`, importable; the keyframe and assess workspaces
+        # inherit no look. Every new version copies it again, --relook included,
+        # except the look pass's own (`look=False`): it makes the look and
+        # builds on none, or its program could import the old one and, once
+        # approved, install as a look.py that imports `look`.
         from .probes import latest_measured
-        sdkkit.install(self.dir, measured=latest_measured(self.root.parent) or None)
+        sdkkit.install(self.dir, measured=latest_measured(self.root.parent) or None,
+                       look=self.look_program() if self.version and look else None)
+
+    def look_program(self) -> Path | None:
+        """The approved look's program (`keyframe/look.py`, the approved bytes)
+        when the look came from the film and the file is there; else None."""
+        look = approved_look(self.root)
+        if not look or look.get("source") != "section" or not look.get("look_program"):
+            return None
+        program = self.root / look["look_program"]
+        return program if program.is_file() else None
 
     @staticmethod
     def program_name(doc: str) -> str:
@@ -1859,7 +1876,8 @@ class Workspace:
             if look.get("sheet"):
                 shown.append(f"`{rel('sheet')}` (all its proof frames)")
             # The author may read its own directory and keyframe/, never another
-            # version's; keyframe/look.py is the approved program, byte for byte.
+            # version's; keyframe/look.py is the approved program, byte for byte,
+            # and prepare() copied it into the workspace as look.py to import.
             program_ref = rel("look_program") if look.get("look_program") else ""
             lines += [f"## The approved look (section {look.get('section')} of this film, "
                       f"approved {look.get('approved_at', '')})", "",
@@ -1868,12 +1886,12 @@ class Workspace:
                       + (f"Read its program `{program_ref}` first, " if program_ref
                          else "")
                       + (f"look at {' and '.join(shown)}. " if shown else "")
-                      + "Reuse its constructions: copy into your program its palette and type "
-                      "constants, the helper functions that build its labels, formulas, "
-                      "cards, materials, lights and recurring objects, and its camera "
-                      "language, and change only what your shots require. Do not import or "
-                      "run that program; copy what you need. The review scores fidelity "
-                      "to it.", ""]
+                      + (sdkkit.LOOK_BRIEF + " " if program_ref
+                         else "Reuse its constructions -- its palette and type constants, "
+                         "the helper functions that build its labels, formulas, cards, "
+                         "materials, lights and recurring objects, and its camera language "
+                         "-- and change only what your shots require. ")
+                      + "The review scores fidelity to it.", ""]
         elif look:
             doc_rel = os.path.relpath(self.root / look["document"], self.dir)
             png_rel = os.path.relpath(self.root / look["frame"], self.dir)
@@ -2560,8 +2578,11 @@ class VfxPlanner:
                 "proof frames read as the same film -- its palette, type, construction of "
                 "labels and formulas, materials, lights and camera language. A section that "
                 "departs from the approved look is wrong, whatever else it does well: name "
-                "every departure as a finding with the fix being to copy the approved "
-                "section's construct, and do not score the section above its fidelity."])
+                "every departure as a finding with the fix being to use the approved "
+                "section's construct"
+                + (" from `look.py` (import it; do not re-derive it)"
+                   if look.get("look_program") else "")
+                + ", and do not score the section above its fidelity."])
         elif look:
             prompt += "\n\n" + "\n\n".join([
                 harness.brief("The approved look (the operator approved this keyframe as the "
@@ -2859,7 +2880,7 @@ class VfxPlanner:
 
         def work() -> list[dict]:
             version = self.ws.new_version()
-            self.ws.prepare(tokens=tokens, frame=self.frame)
+            self.ws.prepare(tokens=tokens, frame=self.frame, look=not lead_mode)
             jobs = [(n, s, by_heading.get(s.get("heading", ""), {}))
                     for n, s in enumerate(sections, 1)]
             jobs = [j for j in jobs if j[2].get("effects")]
