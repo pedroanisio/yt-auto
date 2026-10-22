@@ -71,9 +71,11 @@ class _Project(unittest.TestCase):
         return path
 
     def still(self, data, at, *, host, files, **kw):
+        graded = b"<colorManagement" in data
         self.renders.append({"at": at, "host": host, "files": sorted(files),
-                             "graded": b"<colorManagement" in data})
-        return _frame(self.film_x), "rendered"
+                             "graded": graded})
+        # a look shifts the whole band: a graded frame never matches a proof frame
+        return _frame(self.film_x + (300 if graded else 0)), "rendered"
 
 
 class ProofCheck(_Project):
@@ -122,6 +124,18 @@ class ProofCheck(_Project):
         self.check(data, manifest)
         self.assertEqual(self.renders[0]["host"], "h")
         self.assertIn("vfx/open.include.scene.xml", self.renders[0]["files"])
+
+    def test_an_applied_look_is_rendered_ungraded_and_is_no_mismatch(self):
+        # AUTO-72: the proof frame has no colour pipeline, so neither has the
+        # frame compared with it.
+        from tests.test_colour_look import LOOK
+        self.proof(x=50)
+        data, manifest = self.built(look=build.clean_look(LOOK))
+        self.assertIn(b"<colorManagement", data)
+        record = self.check(data, manifest)
+        self.assertEqual(record["status"], "ok", manifest["findings"])
+        self.assertEqual([r["graded"] for r in self.renders], [False])
+        self.assertIs(record["worlds"][0]["graded"], False)
 
     def test_no_render_host_is_not_checked_and_said(self):
         self.proof()

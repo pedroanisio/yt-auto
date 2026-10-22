@@ -60,7 +60,7 @@ from pathlib import Path
 from . import geometry as geo
 from . import framecheck, house, reach, spend, workspace
 from .proofframes import (PROOF_DIFF, PROOF_LIMIT, mismatch_text,  # noqa: F401
-                          proof_diff, proof_plan)
+                          proof_diff, proof_plan, ungraded)
 from . import render as render_stage
 from .build import EVEN_SHOTS, shots_from_scene  # noqa: F401  (standalone sampling)
 from .core import read_json, timecode, write_json
@@ -468,15 +468,30 @@ def proof_frame_findings(args, project, scene: str, vfx: dict | None, home: Path
                          shots: list[dict], out_dir: Path) -> tuple[list[dict], str]:
     """The film at each world's proof-frame time against the proof frame.
     Returns the `proof-mismatch` findings and a note for the scorecard (empty
-    when every world was compared). A film with no proof frames files nothing."""
+    when every world was compared). A film with no proof frames files nothing.
+
+    The film is rendered ungraded, from a copy of the scene beside it with
+    the `<colorManagement>` removed, as the proof frame was (AUTO-72); the
+    copy lives only for the render. Each row is recorded under
+    `out_dir/proof/plan.json` with `graded: false`."""
     plan = proof_plan(vfx, home, shots)
     skipped = max(0, len(plan) - PROOF_LIMIT)
     plan = plan[:PROOF_LIMIT]
     if not plan:
         return [], ("no proof frames to compare the film with (no vfx, or an older "
                     "version layout): film-versus-proof check skipped")
+    for row in plan:
+        row["graded"] = False
     frames = Path(out_dir) / "proof"
-    problems = render_frames(args, project, scene, plan, frames)
+    frames.mkdir(parents=True, exist_ok=True)
+    write_json(frames / "plan.json", plan)
+    film = Path(scene)
+    copy = film.with_name(f"{film.stem}.proof{film.suffix}")
+    copy.write_bytes(ungraded(film.read_bytes()))
+    try:
+        problems = render_frames(args, project, str(copy), plan, frames)
+    finally:
+        copy.unlink(missing_ok=True)
     found: list[dict] = []
     unread = []
     for row in plan:
@@ -491,6 +506,7 @@ def proof_frame_findings(args, project, scene: str, vfx: dict | None, home: Path
             "timestamp": row["t"], "frame": f"proof/{row['frame']}", "shot": row["label"],
             "owner": "build", "kind": "proof-mismatch", "severity": "blocking",
             "world": row["world"], "shots": row["shots"], "difference": round(diff, 2),
+            "graded": False,
             "problem": mismatch_text(row, diff),
             "why": "the composed film does not show what the author built and the vfx gate "
                    "reviewed; measured mechanically from the two frames",

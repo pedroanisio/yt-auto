@@ -379,7 +379,11 @@ blocking editorial note. It is not a delivery verdict. The order is:
    frames (as `yt build` did on the built document before the encode):
    for each world's latest proof frame it renders the film at the
    build's placement of the world's first shot plus the frame's time in the
-   world and compares the stage bands (rows 230..820 of 1080). A difference
+   world and compares the stage bands (rows 230..820 of 1080). Both frames
+   are ungraded: the film's is rendered from a copy of the scene with its
+   `<colorManagement>` removed, as the proof frame was, so an applied look
+   is not a mismatch (each row under `qa/pass-NN/proof/plan.json` says
+   `graded: false`; `yt build`'s check renders the same way). A difference
    above `qa.PROOF_DIFF` (4; measured: 0.12 for a matching pair, 7.9 for a
    sparse world's opening state against 24 s on, 24.6 for another world) is a
    `proof-mismatch`, owned by `build` and always blocking: it caps

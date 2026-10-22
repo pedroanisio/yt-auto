@@ -386,7 +386,8 @@ jump, the objects `render.json` says the camera never framed — each
 with an owner and a fix, blocking on the hook, the ending or when repeated
 across shots; and `proof-mismatch`, owned by `build` and always blocking: the
 film at a world's proof-frame time differs from the author's proof frame by
-more than `qa.PROOF_DIFF` in the stage band, which is what a world split into
+more than `qa.PROOF_DIFF` in the stage band, both frames rendered ungraded
+so an applied look is no mismatch, which is what a world split into
 includes that restart at t=0 looks like; the other mechanical findings on
 that world's shots are re-owned to `build`), has the model read the frames and the contact sheet as images
 and file the scorecard, applies the bar of section 2 mechanically (a blocking

@@ -9,6 +9,7 @@ the two stage bands differ. The images are synthetic PNGs; render_frames is
 patched: no engine, no ssh.
 """
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -37,6 +38,10 @@ def _vfx(*worlds):
 
 
 WORLD = {"id": "fx-open", "start": 10.0, "seconds": 8.0, "shots": ["1.1", "1.2"]}
+SCENE = ('<scene version="1.3"><project width="640" height="360" fps="30" duration="20"/>'
+         '<colorManagement workingSpace="acescg" toneMapping="aces" looks="film-look">'
+         '<look id="film-look" space="acescct" mix="0.8"/></colorManagement>'
+         '<composition/></scene>')
 SHOTS = [{"label": "1.1", "at": 10.0, "seconds": 4.0, "section": "Open", "asset": "effect"},
          {"label": "1.2", "at": 14.0, "seconds": 4.0, "section": "Open", "asset": "effect"}]
 
@@ -46,8 +51,11 @@ class ProofFrames(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.home = Path(self._tmp.name)
         self.out = self.home / "qa" / "pass-01"
+        self.scene = self.home / "scene.xml"
+        self.scene.write_text(SCENE)
         self.film_x = 50
         self.asked = []
+        self.rendered_from = []
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -56,6 +64,7 @@ class ProofFrames(unittest.TestCase):
         return _png(self.home / "vfx" / "v02" / "frames" / name, x)
 
     def fake_render(self, args, project, scene, samples, frames_dir, *, render=None):
+        self.rendered_from.append(Path(scene).read_text())
         for row in samples:
             self.asked.append(row["t"])
             _png(frames_dir / row["frame"], self.film_x)
@@ -63,7 +72,7 @@ class ProofFrames(unittest.TestCase):
 
     def run_check(self, vfx):
         with mock.patch.object(qa, "render_frames", self.fake_render):
-            return qa.proof_frame_findings(None, None, "scene.xml", vfx, self.home,
+            return qa.proof_frame_findings(None, None, str(self.scene), vfx, self.home,
                                            SHOTS, self.out)
 
     def test_a_film_that_differs_from_the_proof_frame_is_a_blocking_build_finding(self):
@@ -104,7 +113,7 @@ class ProofFrames(unittest.TestCase):
         self.film_x = 400
         placed = [dict(SHOTS[0], at=11.0), dict(SHOTS[1], at=15.0)]   # build: 1.0 s later
         with mock.patch.object(qa, "render_frames", self.fake_render):
-            found, _ = qa.proof_frame_findings(None, None, "scene.xml", _vfx(WORLD),
+            found, _ = qa.proof_frame_findings(None, None, str(self.scene), _vfx(WORLD),
                                                self.home, placed, self.out)
         self.assertEqual(self.asked, [13.0])             # 11 + 2, not 10 + 2
         self.assertEqual(found[0]["timestamp"], 13.0)
@@ -147,6 +156,37 @@ class ProofFrames(unittest.TestCase):
         self.assertEqual(capped, list(qa.CAPPED))
         self.assertIn("proof-mismatch", qa.findings_md(
             "pass-01", {"mechanical": found}, [], {"deltas": {}}, reasons=[]))
+
+    def test_the_film_is_rendered_ungraded_so_an_applied_look_is_no_mismatch(self):
+        # AUTO-72: the proof frame has no colour pipeline; the film's frame is
+        # rendered from a copy of the scene without one, or every look would
+        # read as a mismatch of every world.
+        self.proof("open__fx-open__2s.png", x=50)
+
+        def looked(args, project, scene, samples, frames_dir, *, render=None):
+            text = Path(scene).read_text()
+            self.rendered_from.append(text)
+            for row in samples:
+                _png(frames_dir / row["frame"], 400 if "<colorManagement" in text else 50)
+            return []
+        with mock.patch.object(qa, "render_frames", looked):
+            found, note = qa.proof_frame_findings(None, None, str(self.scene), _vfx(WORLD),
+                                                  self.home, SHOTS, self.out)
+        self.assertEqual(found, [])
+        self.assertEqual(note, "")
+        self.assertEqual(len(self.rendered_from), 1)
+        self.assertNotIn("<colorManagement", self.rendered_from[0])
+        self.assertIn("<composition/>", self.rendered_from[0])
+        self.assertIn("<colorManagement", self.scene.read_text())     # untouched
+        self.assertEqual([p.name for p in self.home.glob("scene*")], ["scene.xml"])
+
+    def test_each_proof_row_is_recorded_as_ungraded(self):
+        self.proof("open__fx-open__2s.png", x=50)
+        self.film_x = 400
+        found, _ = self.run_check(_vfx(WORLD))
+        self.assertIs(found[0]["graded"], False)
+        rows = json.loads((self.out / "proof" / "plan.json").read_text())
+        self.assertEqual([(r["world"], r["graded"]) for r in rows], [("fx-open", False)])
 
     def test_the_stage_band_only_is_compared(self):
         # a difference in the super band (top 21%) is not a film-vs-proof mismatch
@@ -206,6 +246,17 @@ class Shared(unittest.TestCase):
         self.assertIs(qa.proof_diff, proofframes.proof_diff)
         self.assertEqual(qa.PROOF_DIFF, proofframes.PROOF_DIFF)
         self.assertEqual(qa.PROOF_LIMIT, proofframes.PROOF_LIMIT)
+
+    def test_ungraded_drops_the_colour_pipeline_and_nothing_else(self):
+        paired = SCENE.encode()
+        self.assertNotIn(b"colorManagement", proofframes.ungraded(paired))
+        self.assertEqual(proofframes.ungraded(paired),
+                         SCENE.replace(SCENE[SCENE.index("<colorManagement"):
+                                             SCENE.index("</colorManagement>") + 18], "").encode())
+        empty = b'<scene><colorManagement toneMapping="aces"/><composition/></scene>'
+        self.assertEqual(proofframes.ungraded(empty), b"<scene><composition/></scene>")
+        plain = b"<scene><composition/></scene>"
+        self.assertEqual(proofframes.ungraded(plain), plain)
 
     def test_a_plan_row_names_the_worlds_shots(self):
         _png(self.home / "vfx" / "v02" / "frames" / "open__fx-open__2s.png", 50)

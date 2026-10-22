@@ -51,7 +51,8 @@ from . import fonts, house, workspace
 from .core import Idea, _key, read_json, timecode
 from . import design as designer
 from .harness import Harness, HarnessError, brief
-from .proofframes import PROOF_DIFF, PROOF_LIMIT, mismatch_text, proof_diff, proof_plan
+from .proofframes import (PROOF_DIFF, PROOF_LIMIT, mismatch_text, proof_diff, proof_plan,
+                          ungraded)
 from .scene_sdk import enum_of, sdk
 from .script import Section, Shot, legibility, load_script
 
@@ -334,15 +335,18 @@ def proof_check(data: bytes, manifest: dict, vfx: dict | None, root: Path, *,
                 "worlds": [{"world": row["world"], "t": row["t"], "status": "not checked"}
                            for row in plan]}
     render_still = render_still or render.engine_render_still
-    files = shipped_with(data.decode("utf-8", "replace"), root)
+    # The proof frame has no colour pipeline, so neither has the frame
+    # compared with it (AUTO-72): the look is not a mismatch.
+    document = ungraded(data)
+    files = shipped_with(document.decode("utf-8", "replace"), root)
     frames = Path(root) / PROOF_DIR
     rows: list[dict] = []
     mismatched: list[str] = []
     unread = 0
     for row in plan:
         record = {"world": row["world"], "t": row["t"], "shots": row["shots"],
-                  "proof": row["proof"], "frame": row["frame"]}
-        png, note = render_still(data, row["t"], host=host, files=files)
+                  "proof": row["proof"], "frame": row["frame"], "graded": False}
+        png, note = render_still(document, row["t"], host=host, files=files)
         diff = proof_diff(row["proof"], png) if png is not None else None
         if diff is None:
             unread += 1

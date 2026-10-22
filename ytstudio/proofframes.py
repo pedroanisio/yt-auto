@@ -6,6 +6,12 @@ compare the composed film at the same moment with that frame: build before
 the encode is paid for (`build.proof_check`), qa on the rendered film
 (`qa.proof_frame_findings`). This is the one place that says which frame,
 at which film time, and how far apart two frames may be.
+
+Both compare ungraded frames (AUTO-72): a proof frame is rendered from the
+authored document, which has no colour pipeline, so the film's frame is
+rendered from the scene with its `<colorManagement>` removed (`ungraded`),
+or every applied look would shift the whole band and read as a mismatch of
+every world.
 """
 
 from __future__ import annotations
@@ -32,6 +38,14 @@ PROOF_WIDTH = 240                 # the greyscale both frames are reduced to
 PROOF_DRIFT = 0.05                # plan and build starts further apart are reported
 PROOF_LIMIT = 24                 # the most proof frames rendered from the film
 _PROOF_NAME = re.compile(r"^(?P<t>\d+(?:\.\d+)?)s\.png$")
+_COLOUR = re.compile(rb"<colorManagement\b[^>]*/>|<colorManagement\b[^>]*>.*?</colorManagement>",
+                     re.S)
+
+
+def ungraded(document: bytes) -> bytes:
+    """The scene with its `<colorManagement>` removed: the frame as authored,
+    which is what a proof frame shows. The bytes are otherwise untouched."""
+    return _COLOUR.sub(b"", document)
 
 
 def proof_diff(proof, film) -> float | None:
