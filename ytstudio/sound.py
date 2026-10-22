@@ -53,6 +53,7 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 from claude_engine import ClaudeError, EngineConfig, Usage
+from .build import NORMALIZE_MODES
 from .core import (Idea, read_json, slugify, timecode, wrap,
                    write_json)
 from .ideas import CHANNEL_STYLES, style_brief
@@ -119,8 +120,23 @@ PALETTE_SCHEMA = {
                 "music_bed": {"type": "string"},
                 "effects": {"type": "string"},
                 "master": {"type": "string"},
+                # The numbers the pipeline reads, beside the prose: the fetch
+                # levels against narration_lufs, the build takes normalize.
+                "narration_lufs": {"type": "number"},
+                "bed_below_narration_db": {"type": "number"},
+                "effects_peak_dbtp": {"type": "number"},
+                "normalize": {
+                    "type": "object",
+                    "properties": {
+                        "mode": {"type": "string", "enum": list(NORMALIZE_MODES)},
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["mode", "reason"],
+                },
             },
-            "required": ["narration", "music_bed", "effects", "master"],
+            "required": ["narration", "music_bed", "effects", "master",
+                         "narration_lufs", "bed_below_narration_db",
+                         "effects_peak_dbtp", "normalize"],
         },
         "references": {"type": "array", "items": {"type": "string"}},
     },
@@ -638,7 +654,18 @@ class SoundDesigner:
             "treatment, how far the music bed sits under it in dB and which "
             "frequencies it leaves alone, how loud impacts and effects peak, "
             f"and the master target (YouTube normalises to about "
-            f"{TARGET_LUFS} LUFS integrated, with true peak at -1 dBTP).\n\n"
+            f"{TARGET_LUFS} LUFS integrated, with true peak at -1 dBTP). "
+            "Give the figures as numbers too: `narration_lufs`, "
+            "`bed_below_narration_db` and `effects_peak_dbtp`; the fetch "
+            "levels every file against the first.\n\n"
+            "Then decide how the master is normalised, in `normalize`: "
+            "`integrated` is one gain to the target over the whole programme, "
+            "`dynamic` rides it on 3-second loudness, `none` leaves it. The "
+            "measured trade-off: on a voice-led film with designed silences, "
+            "integrated came in 3 dB under the target with an LRA of 19 LU, "
+            "and dynamic reached it with an LRA of 6 but lifts the beds "
+            "between sentences. Give the mode and its reason in one "
+            "sentence; the build honours the mode with that reason.\n\n"
             "Finally, name a few reference tracks or scores as direction for "
             "the composer -- what to listen to for the feel, not what to use.")
         self.palette = self._ask("palette", "\n\n".join(parts), PALETTE_SCHEMA)
@@ -654,6 +681,11 @@ class SoundDesigner:
             f"{m.get('instrumentation', '')}, {m.get('character', '')}"
             for m in self.palette.get("motifs", []))
         mix = self.palette.get("mix", {})
+        numbers = "; ".join(
+            f"{label} {mix[key]}" for key, label in
+            (("narration_lufs", "narration at"), ("bed_below_narration_db", "bed dB under it"),
+             ("effects_peak_dbtp", "effects peak dBTP")) if mix.get(key) is not None)
+        decided = mix.get("normalize") if isinstance(mix.get("normalize"), dict) else {}
         return (f"The sound design you already committed to:\n"
                 f"Approach: {self.palette.get('approach', '')}\n"
                 f"Score: {self.palette.get('instrumentation', '')}\n"
@@ -662,7 +694,10 @@ class SoundDesigner:
                 f"Never: {self.palette.get('avoid', '')}\n"
                 f"Motifs:\n{motifs}\n"
                 f"Mix: narration {mix.get('narration', '')}; bed "
-                f"{mix.get('music_bed', '')}; effects {mix.get('effects', '')}")
+                f"{mix.get('music_bed', '')}; effects {mix.get('effects', '')}"
+                + (f"\nMix numbers: {numbers}" if numbers else "")
+                + (f"\nMaster normalised {decided.get('mode', '')}: "
+                   f"{decided.get('reason', '')}" if decided.get("mode") else ""))
 
     def spot_section(self, section: Section, *, index: int, total: int,
                      placed: list[Cue]) -> list[Cue]:
@@ -973,7 +1008,7 @@ class SoundDesigner:
                   if do_review and cues else {})
         if review.get("revisions"):
             stats = coverage(cues, self.runtime)
-        return {
+        data = {
             "idea": asdict(self.idea),
             "runtime": self.runtime,
             "palette": palette,
@@ -985,6 +1020,14 @@ class SoundDesigner:
             "usage": asdict(self.usage),
             "engine": self.harness.report(),
         }
+        # The master's normalise mode is the designer's decision, written
+        # where `yt build` reads it. A palette without one leaves the build
+        # to its own default, which it records.
+        decided = (palette.get("mix") or {}).get("normalize")
+        if isinstance(decided, dict) and decided.get("mode") in NORMALIZE_MODES:
+            data["normalize"] = {"mode": decided["mode"],
+                                 "reason": str(decided.get("reason") or "")}
+        return data
 
 
 # --------------------------------------------------------------------------- #
@@ -1234,11 +1277,15 @@ def add_spectral(got: Levels, facts: str, png: str) -> None:
 
 
 def narration_level(data: dict) -> tuple[float, str]:
-    """(dB, where it came from): the narration level the sheet's mix states,
-    else the programme target."""
+    """(dB, where it came from): the sheet's `narration_lufs`, else the
+    figure in its narration prose, else the programme target."""
     from . import build
-    said = ((data.get("palette") or {}).get("mix") or {}).get("narration")
-    level = build.level_db(str(said or ""))
+    mix = (data.get("palette") or {}).get("mix") or {}
+    stated = _finite(mix.get("narration_lufs")) \
+        if isinstance(mix.get("narration_lufs"), (int, float)) else None
+    if stated is not None:
+        return stated, "the sheet's narration_lufs"
+    level = build.level_db(str(mix.get("narration") or ""))
     return (level, "the sheet's narration level") if level is not None \
         else (TARGET_LUFS, "programme target")
 
@@ -1968,6 +2015,14 @@ def print_sound(idea: Idea, data: dict, cues: list[Cue]) -> None:
         for key in ("narration", "music_bed", "effects", "master"):
             if mix.get(key):
                 print(wrap(f"{key}: {mix[key]}", "    "))
+        numbers = [f"{key} {mix[key]:g}" for key in
+                   ("narration_lufs", "bed_below_narration_db", "effects_peak_dbtp")
+                   if isinstance(mix.get(key), (int, float))]
+        if numbers:
+            print(wrap("numbers: " + ", ".join(numbers), "    "))
+    decided = data.get("normalize") or {}
+    if decided.get("mode"):
+        print(wrap(f"normalize: {decided['mode']} — {decided.get('reason', '')}", "    "))
     if palette.get("references"):
         print(wrap("listen to: " + ", ".join(palette["references"]), "  "))
 
@@ -2052,7 +2107,12 @@ def write_md(path: str, idea: Idea, data: dict, cues: list[Cue]) -> None:
     mix = palette.get("mix") or {}
     if mix:
         md += ["## Mix", ""]
-        md += [f"- **{k.replace('_', ' ')}.** {v}" for k, v in mix.items() if v]
+        md += [f"- **{k.replace('_', ' ')}.** {v}" for k, v in mix.items()
+               if v and k != "normalize"]
+        decided = data.get("normalize") or {}
+        if decided.get("mode"):
+            md.append(f"- **Master normalised `{decided['mode']}`.** "
+                      f"{decided.get('reason', '')}")
         md.append("")
     if palette.get("references"):
         md += ["*Listen to, as direction only: "

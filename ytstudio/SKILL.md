@@ -631,8 +631,10 @@ hand-authored world showed the cost.
 - **The sound is Freesound previews, not masters.** `yt sound --fetch`
   fills each cue with the best CC0/CC-BY hit's high-quality mp3 preview and
   `yt build` places it on a bus per role, every non-narration bus ducked under the narration and the
-  master normalised once (`integrated`; `dynamic` only with `--normalize-reason`
-  or a reason in sound.json's `normalize`). The fetch measures each file on a render host, by
+  master normalised once, in the mode the sound designer decided on the
+  palette (sound.json's `normalize`: `integrated`, `dynamic` with its reason,
+  or `none`; `--normalize` overrides, `integrated` when nobody decided, and
+  `build.json` records `normalize_from`). The fetch measures each file on a render host, by
   loudness for beds and peak for effects, writes the cue's `gain_db`, and refuses a source the
   track's gain cannot reach or whose noise floor the lift would put within 12 dB of the
   narration, trying the next-ranked hit; with no host it says `NOT LEVELLED`. A cue

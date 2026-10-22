@@ -562,9 +562,14 @@ a still (as at 80% of its time) rather than being cut off with exit 1.
 Spots audio against the screenplay: where music enters and what it is doing
 there, which effect lands on which word or frame, what the room sounds like
 underneath, and where everything drops out. Produces a sonic palette with named
-motifs, mix targets in real numbers (bed dB under narration, −14 LUFS master,
-−1 dBTP), and a numbered cue sheet. `silence` is a cue kind, because scored
-silence is a decision. Every cue carries `fade_in` and `fade_out` in seconds
+motifs, mix targets in real numbers (`narration_lufs`,
+`bed_below_narration_db`, `effects_peak_dbtp` beside the prose; the fetch
+levels every file against the first, with the prose figure as fallback),
+the master's normalise mode with its reason (`normalize` in `sound.json`,
+decided against the measured trade-off: integrated under-reaches a voice-led
+film with designed silences, dynamic lifts the beds between sentences), and a
+numbered cue sheet. `silence` is a cue kind, because scored silence is a
+decision. Every cue carries `fade_in` and `fade_out` in seconds
 beside its `entry` and `exit` prose, required for music and ambience
 (`rule:fade` flags a bed with no fade out) and optional for the rest; `yt
 build` sets the track's `fadeIn`/`fadeOut` from them.
@@ -738,11 +743,14 @@ blocks the build; the explicit alias table (Helvetica, Arial, `serif`,
 Captions are a sidecar track by default (the platform takes it and the viewer
 turns it on; `yt gate` checks `narration.vtt` either way), because burned in
 they share the lower band with the authored type; `--burn-captions` burns them
-into the picture. The master is normalised to integrated loudness;
-`--normalize dynamic` is honoured only with `--normalize-reason` (or
-`normalize.reason` in `sound.json`), else it falls back to integrated with a
-finding, and `none` leaves the master unnormalised. Every bus but the
-narration ducks under it.
+into the picture. The master's normalise mode is the sound designer's
+decision: `sound.json`'s `normalize` (`mode`, `reason`) is read, and
+`integrated` is the fallback when no stage decided; `--normalize` is the
+operator's override. `dynamic` is honoured only with a reason (the flag's
+`--normalize-reason`, or the design's), else it falls back to integrated with
+a finding, and `none` leaves the master unnormalised. `build.json` records the
+mode and `normalize_from` (`sound.json`, `the --normalize flag` or
+`default`). Every bus but the narration ducks under it.
 
 `--width` · `--height` · `--fps` · `--codec` (checked against the schema's own
 list) · `--bitrate` and friends (never `crf`) · `--loudness` · `--true-peak`
