@@ -169,6 +169,7 @@ class Decide(HarnessCase):
         retry = FakeEngine.json_calls[1]["prompt"]
         self.assertIn("mix.mode", retry)
         self.assertIn("loud", retry)
+        self.assertIn("one of its listed values", retry)
 
     def test_a_second_value_outside_the_enum_goes_to_the_stages_fallback(self):
         FakeEngine.answers = [{"mix": {"mode": "loud"}}, {"mix": {"mode": "louder"}}]

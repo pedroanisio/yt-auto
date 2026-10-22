@@ -775,7 +775,8 @@ class SoundDesigner:
     # -- stage three: listen back ------------------------------------------
 
     def review(self, cues: list[Cue], stats: dict, *,
-               only: list[str] | None = None, name: str = "review") -> dict:
+               only: list[str] | None = None, name: str = "review",
+               answered: dict[tuple[str, str], str] | None = None) -> dict:
         self._say(f"[review] {len(only) if only else len(cues)} cues, "
                   f"{stats['music_share']}% of the runtime scored")
         sheet = "\n".join(
@@ -803,12 +804,19 @@ class SoundDesigner:
                  "excuse, levels that cannot coexist, and anything whose "
                  "sourcing will not survive a copyright claim. The in and "
                  "out timecodes on each line are where a cue starts and "
-                 "stops; its `exit` text says how it leaves, never when, so "
-                 "judge overlaps and what is still sounding by the "
-                 "timecodes alone. Give the cue "
-                 "id, the problem, how severe it is, and the smallest fix. "
-                 "Then one sentence on whether this is ready to hand to an "
-                 "editor."]
+                 "stops; its `exit` text says how it leaves, never when. The "
+                 "sheet's own rules have already checked two cues of one kind "
+                 "sounding at once, a missing level, the clock and a bare "
+                 "transient, and what they found was answered before this "
+                 "pass. Give the cue id, the problem, how severe it is, and "
+                 "the smallest fix. Then one sentence on whether this is "
+                 "ready to hand to an editor."]
+        if answered:
+            parts.append(
+                "These rule findings were kept as written, with the reason; "
+                "do not raise them again:\n"
+                + "\n".join(f"- {cue} {rule}: {why}"
+                            for (cue, rule), why in answered.items()))
         if only:
             parts.append(
                 "These cues were just revised. Judge only " + ", ".join(only)
@@ -905,8 +913,11 @@ class SoundDesigner:
         the model listens back: a rule flag it keeps, or answers with a change
         that still breaks the rule, stands in `flags` and `unresolved` with
         its `rule`, and `yt build` names it. The rules are read again after
-        the model's own loop, which moves cues too: a kept rule that loop
-        cleared is resolved, and one it broke is unresolved, unanswered.
+        each change, so a second rule on the same cue that the change answered
+        is not asked, and after the model's own loop, which moves cues too: a
+        kept rule that loop cleared is resolved and leaves `kept`, and one it
+        broke is unresolved, unanswered. The review is told what the rules
+        kept, and why, so it does not raise it again.
         """
         rules = rule_findings(cues, self.runtime)
         if not fix:
@@ -919,16 +930,23 @@ class SoundDesigner:
 
         revisions: list[dict] = []
         rule_kept: dict[tuple[str, str], str] = {}
-        for f in rules:
+        queue = list(rules)
+        while queue:
+            f = queue.pop(0)
             result = self.revise(cues, f)
-            if result["applied"]:
-                revisions.append(result["applied"] | {"rule": f["rule"]})
-            else:
+            if not result["applied"]:
                 rule_kept[(f["cue"], f["rule"])] = result["why"]
+                continue
+            revisions.append(result["applied"] | {"rule": f["rule"]})
+            # One change often answers two rules (a bed with no level has no
+            # fade either): the rest of the queue is read off the sheet as it
+            # is now, so a problem the change removed is not asked about.
+            fresh = {(g["cue"], g["rule"]): g for g in rule_findings(cues, self.runtime)}
+            queue = [fresh[k] for k in ((g["cue"], g["rule"]) for g in queue) if k in fresh]
         if revisions:
             stats = coverage(cues, self.runtime)
 
-        review = self.review(cues, stats)
+        review = self.review(cues, stats, answered=rule_kept)
         if not review:
             if not rules:
                 return review
@@ -985,8 +1003,10 @@ class SoundDesigner:
                          "left as it is")
         review["flags"] = list(review.get("flags", [])) + standing
         review["revisions"] = revisions
-        review["kept"] = ([{"cue": c, "why": why, "rule": rule}
-                           for (c, rule), why in rule_kept.items()]
+        # a rule keep whose problem the model's own loop then removed is not
+        # reported: `kept` is what is left as written and still flagged
+        review["kept"] = ([{"cue": f["cue"], "why": f["kept"], "rule": f["rule"]}
+                           for f in standing if (f["cue"], f["rule"]) in rule_kept]
                           + [{"cue": c, "why": why} for c, why in kept.items()])
         review["unresolved"] = left + standing
         self._say(f"[revise] changed {len(revisions)}, kept {len(kept) + len(rule_kept)}, "
@@ -1297,7 +1317,7 @@ def narration_level(data: dict) -> tuple[float, str]:
     from . import build
     mix = (data.get("palette") or {}).get("mix") or {}
     stated = _finite(mix.get("narration_lufs")) \
-        if isinstance(mix.get("narration_lufs"), (int, float)) else None
+        if _is_number(mix.get("narration_lufs")) else None
     if stated is not None:
         return stated, "the sheet's narration_lufs"
     level = build.level_db(str(mix.get("narration") or ""))
@@ -1308,6 +1328,11 @@ def narration_level(data: dict) -> tuple[float, str]:
 def noise_ceiling(narration: float) -> float:
     """The loudest a lifted source's noise floor may sit."""
     return narration - NOISE_BELOW_NARRATION_DB
+
+
+def _is_number(value) -> bool:
+    """A number the model gave as one: `true` is an int to Python, not a level."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def _finite(value: float) -> float | None:
@@ -2032,7 +2057,7 @@ def print_sound(idea: Idea, data: dict, cues: list[Cue]) -> None:
                 print(wrap(f"{key}: {mix[key]}", "    "))
         numbers = [f"{key} {mix[key]:g}" for key in
                    ("narration_lufs", "bed_below_narration_db", "effects_peak_dbtp")
-                   if isinstance(mix.get(key), (int, float))]
+                   if _is_number(mix.get(key))]
         if numbers:
             print(wrap("numbers: " + ", ".join(numbers), "    "))
     decided = data.get("normalize") or {}

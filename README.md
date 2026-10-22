@@ -583,7 +583,9 @@ survive a claim. What the timecodes say outright is not asked of the model:
 (`rule:overlap`), a cue with no level (`rule:level`), a cue past the film's
 end (`rule:clock`) and a short effect with no bed under it (`rule:no-bed`,
 the build's own transient classification), and each goes to the same revise
-call before the first listen-back; a rule flag the model keeps, or answers
+call before the first listen-back, read off the sheet again after every change
+so a second rule on a cue the change already answered is not asked; a rule
+flag the model keeps, or answers
 with a change that still breaks the rule, stands in `unresolved` with its
 `rule` and reason, and `yt build` records it as a `warning:` naming the cues.
 Unless `--report-only` is given the review then revises: each

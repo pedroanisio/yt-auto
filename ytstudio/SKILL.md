@@ -643,7 +643,9 @@ hand-authored world showed the cost.
   build unpublishable. `yt sound --review` checks the sheet's own rules
   before the model listens back (`rule:overlap`, `rule:level`, `rule:clock`,
   `rule:no-bed`, and `rule:fade` for a bed with no fade out); the model
-  answers each through `revise`, and a rule flag it keeps stands in
+  answers each still standing through `revise` (one change often clears a
+  cue's second rule, which is then not asked), the listen-back is told what
+  it kept and why, and a rule flag it keeps stands in
   `review.unresolved` with its reason, which `yt build` records as a
   `warning:` naming the cues. `yt sound --synth` realises every cue still without
   a file as original procedural sound: an agent writes and runs

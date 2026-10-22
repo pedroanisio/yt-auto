@@ -251,6 +251,43 @@ class RuleFindings(unittest.TestCase):
         self.assertEqual([f["rule"] for f in out["unresolved"]], ["rule:overlap"])
         self.assertIn("still", out["unresolved"][0]["kept"])
 
+    def bare_bed(self):
+        # a bed with no level usually has no fade either: two rules on M1
+        c = cues()
+        m1(c).level, m1(c).fade_out = "", 0.0
+        return c
+
+    def test_two_rules_on_one_cue_cleared_by_one_change_are_asked_once(self):
+        c = self.bare_bed()
+        d, calls = rig([{"flags": [], "verdict": "ok"}],
+                       [{"action": "fix", "level": "-24 dBFS", "fade_out": 2.0,
+                         "why": "levelled and faded"}])
+        out = d.review_and_revise(c, stats(c))
+        self.assertEqual(calls["order"], ["revise-M1", "review"])
+        self.assertEqual([r["rule"] for r in out["revisions"]], ["rule:level"])
+        self.assertEqual(out["kept"], [])
+        self.assertEqual(out["unresolved"], [])
+
+    def test_a_rule_the_change_left_standing_is_still_asked_on_the_sheet_as_it_is(self):
+        c = self.bare_bed()
+        d, calls = rig([{"flags": [], "verdict": "ok"}],
+                       [{"action": "fix", "level": "-24 dBFS", "why": "levelled"},
+                        {"action": "fix", "fade_out": 2.0, "why": "faded"}])
+        out = d.review_and_revise(c, stats(c))
+        self.assertEqual(calls["order"], ["revise-M1", "revise-M1", "review"])
+        self.assertIn("rule:fade", calls["revise"][1])
+        self.assertIn("'level': '-24 dBFS'", calls["revise"][1])
+        self.assertEqual([r["rule"] for r in out["revisions"]], ["rule:level", "rule:fade"])
+        self.assertEqual(out["unresolved"], [])
+
+    def test_the_review_is_told_what_the_rules_kept_and_why(self):
+        c = self.sheet()
+        d, calls = rig([{"flags": [], "verdict": "ok"}],
+                       [fix(action="keep", why="the overlap is the handover")])
+        d.review_and_revise(c, stats(c))
+        self.assertIn("M2 rule:overlap: the overlap is the handover", calls["review"][0])
+        self.assertNotIn("by the timecodes alone", calls["review"][0])
+
     def test_a_kept_rule_does_not_stop_the_models_own_flag_on_that_cue(self):
         c = self.sheet()
         d, calls = rig([{"flags": [flag("M2")], "verdict": "no"},
@@ -274,6 +311,7 @@ class RuleFindings(unittest.TestCase):
         self.assertEqual([x.at for x in c if x.cue_id == "M2"], [30])
         self.assertEqual(out["unresolved"], [])
         self.assertEqual(out["flags"], [])
+        self.assertEqual(out["kept"], [])     # the keep's problem is gone with it
 
     def test_a_models_revision_that_breaks_a_rule_is_unresolved_and_named(self):
         # no rule broken on the sheet, then the model's own fix for M2 moves it

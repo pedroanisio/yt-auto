@@ -131,6 +131,13 @@ class NarrationLevel(unittest.TestCase):
                          -18.0)
         self.assertEqual(sound.narration_level({}), (sound.TARGET_LUFS, "programme target"))
 
+    def test_a_boolean_is_not_a_level(self):
+        # a model answer of true for a number field would level every file
+        # against 1.0 LUFS and call it the sheet's narration_lufs
+        self.assertEqual(sound.narration_level({"palette": {"mix": {"narration_lufs": True,
+                                                                    "narration": "-18 LUFS"}}}),
+                         (-18.0, "the sheet's narration level"))
+
 
 class Output(unittest.TestCase):
     def test_the_sheet_and_the_markdown_show_the_mode(self):

@@ -202,7 +202,8 @@ def type_errors(result: Any, schema: dict, path: str = "") -> list[str]:
 #: Appended to the question when the first answer did not hold to the schema.
 RETRY_INSTRUCTION = (
     "\n\nYour previous answer did not hold to the schema: %s. Answer the same "
-    "question again, with every required field present and of the declared type.")
+    "question again, with every required field present and of the declared type, "
+    "and every enumerated field holding one of its listed values.")
 
 
 def enum_violations(result: Any, schema: dict, path: str = "") -> list[str]:
