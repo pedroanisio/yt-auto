@@ -587,6 +587,38 @@ class Entry(Hermetic):
         report = json.loads((self.work / "calibration" / "calibration.json").read_text())
         self.assertEqual((report["agreed"], report["labelled"]), (5, 20))
 
+    def test_the_report_on_disk_has_a_stable_shape(self):
+        code, _, _ = self.main()
+        self.assertEqual(code, 0)
+        path = self.work / "calibration" / "calibration.json"
+        self.assertTrue(path.is_file())
+        report = json.loads(path.read_text())
+        self.assertEqual(set(report), {"directory", "model", "reviewer_model", "cases",
+                                       "audit", "passed", "verdicts", "labelled", "agreed",
+                                       "cost_usd"})
+        self.assertEqual(set(report["audit"]), {"pairs", "longer", "shorter", "ties",
+                                                "ceiling", "passed"})
+        base = {"name", "criterion", "story", "expected", "got", "plan_review",
+                "cold_read", "ran", "passed", "failures", "grades", "samples"}
+        for row in report["cases"]:
+            with self.subTest(case=row["name"]):
+                padded = (FIXTURES / row["name"] / "padded.json").is_file()
+                self.assertEqual(set(row), base | ({"padded"} if padded else set()))
+
+    def test_a_missing_directory_exits_2(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            code = narrative.main(["calibrate", str(self.work / "nowhere"),
+                                   "--work", str(self.work), "--quiet"])
+        self.assertEqual(code, 2)
+        self.assertIn("no calibration cases", err.getvalue())
+
+    def test_a_reviewer_in_the_writer_s_family_exits_2(self):
+        code, out, err = self.main("--model", "opus", "--reviewer-model", "opus")
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertTrue(err.strip())
+
     def test_the_module_runs_as_a_program(self):
         source = (ROOT / "ytstudio" / "narrative.py").read_text(encoding="utf-8")
         self.assertIn('if __name__ == "__main__":', source)
