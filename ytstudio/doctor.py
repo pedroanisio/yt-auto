@@ -735,6 +735,23 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
         if unsourced:
             report.add("warn", "script", f"{len(unsourced)} shot(s) are marked "
                        "UNSOURCED", "cut the line or source it")
+        # The narration rules' findings (AUTO-94), in sdkkit's prefixes: an
+        # `error:` stopped the stage (or was recorded with --report-only), a
+        # `warning:` did not, and a rule the film's language has no evidence
+        # for is a note. The stage's own `note:` lines were printed when it ran.
+        for finding in script.get("findings") or []:
+            finding = str(finding)
+            level, _, text = finding.partition(": ")
+            if level == "error":
+                report.add("fail", "script", _clip(text),
+                           _cmd("script", project, "--notes",
+                                '"<how to clear the rule>"')
+                           + " (or --report-only to record it and go on)")
+            elif level == "warning":
+                report.add("warn", "script", _clip(text),
+                           "read the Findings section of script.md")
+            elif level == "not_evidenced":
+                report.add("note", "script", f"not checked: {text}")
         if dossier and not flags and not check:
             report.add("note", "script", "written without --verify; no fact-check "
                        "against the research", _cmd("script", project, "--verify"))

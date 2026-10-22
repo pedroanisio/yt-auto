@@ -471,5 +471,53 @@ class Lines(unittest.TestCase):
         self.assertIn("not_evidenced: rule:passive (pt-BR)", lines)
 
 
+FINDINGS = ["error: rule:filler: shot 1.1: \"Welcome back.\" (welcome) comes before the "
+            "first sentence about the subject; kept: the show opens so",
+            "warning: rule:numbers: shot 1.2: 2 numerals in one sentence (1969, 1970)",
+            "warning: house:rule:person: shot 2.1: section \"S2\" never addresses the viewer",
+            "not_evidenced: rule:passive (pt-BR)"]
+
+
+class Doctor(unittest.TestCase):
+    """`yt doctor` reads script.json's findings: an `error:` fails under
+    `script` with the command that fixes it, a `warning:` warns, and what was
+    not evidenced is a note."""
+
+    def setUp(self):
+        import json
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name) / "film"
+        self.root.mkdir()
+        (self.root / "idea.json").write_text(json.dumps(
+            {"title": TITLE, "genre": "g", "description": "d"}))
+        (self.root / "script.json").write_text(json.dumps({
+            "target_seconds": 10, "findings": FINDINGS, "sections": [
+                {"heading": "S1", "shots": [{"label": "1.1", "narration": "x",
+                                             "seconds": 10}]}]}))
+
+    def report(self):
+        from ytstudio import doctor, workspace
+        return [f for f in doctor.check_project(workspace.Project(self.root)).findings
+                if f.area == "script"]
+
+    def test_an_error_finding_fails_with_the_fixing_command(self):
+        fails = [f for f in self.report() if f.level == "fail"]
+        self.assertEqual(len(fails), 1, fails)
+        self.assertIn("rule:filler", fails[0].message)
+        self.assertIn("yt script --project", fails[0].fix)
+        self.assertIn("--notes", fails[0].fix)
+
+    def test_a_warning_warns_and_a_house_one_too(self):
+        warns = [f.message for f in self.report() if f.level == "warn"]
+        self.assertTrue(any("rule:numbers" in m for m in warns), warns)
+        self.assertTrue(any("house:rule:person" in m for m in warns), warns)
+
+    def test_not_evidenced_is_a_note(self):
+        notes = [f.message for f in self.report() if f.level == "note"]
+        self.assertTrue(any("rule:passive (pt-BR)" in m for m in notes), notes)
+
+
 if __name__ == "__main__":
     unittest.main()
