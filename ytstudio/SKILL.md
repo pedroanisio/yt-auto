@@ -371,19 +371,26 @@ it into build.json's findings, where `yt qa` lifts it as a blocker. A
 
 **A line goes back without the screenplay (AUTO-95).** `yt script --revise
 LABELS` asks one `revise-labels` decision over the named shots only, each
-with its reason, and writes nothing else into the screenplay: every other
-shot is written back as it was read, byte for byte. The labels are given
+with its reason (the whole screenplay is shown with its supers, so a
+rewrite reads against the lines around it), and writes nothing else into
+the screenplay: every other shot is written back as it was read, byte for
+byte. The labels are given
 (`1.3,2.1`, with `--why` the reason), or read: `retime` takes every shot
 `retime.json` sends back as `rewrite`, with the read it measured and the
 editor's note; `feedback` takes the shots `feedback/script.json` names (the
 `.json` twin `yt improve` writes, never its prose; a finding that names no
 shot is noted and left to a full run). The revision fixes the line, as
 direction 29 asks of a read that stumbles, runs out of breath or buries its
-point, or keeps it with a reason, which the run prints and records. Then
-the narration rules read the changed shots only (their old flags and
-findings go, what the new text breaks comes in, every other flag stands as
-recorded), and with research the changed lines are fact-checked again
-(`verify-labels`; a check that fails writes nothing). script.json gains a
+point, changes its supers when the reason is about what the screen shows
+(the take still holds, so no `--redo` for that), or keeps it with a reason,
+which the run prints and records; an answer that returns the line as it
+was is kept the same way. Then the narration rules read the changed shots
+only (their old flags and findings go, what the new text breaks comes in,
+every other flag stands as recorded), and with research the changed lines
+are fact-checked again as the stage's own loop does: `verify-labels`, a
+flagged line to `revise-labels-facts-1` and checked again
+(`verify-labels-1`), two rounds at most, the check's old flags and keep
+reasons for those lines replaced (a check that fails writes nothing). script.json gains a
 `revised` entry (where the lines came from, what changed, what was kept),
 the changed shot its `revised` reason, `usage` what this run spent, and the
 four files are written with `script.json.bak` kept; a standing `error:`

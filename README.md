@@ -475,10 +475,13 @@ the reason), `--revise retime` (every shot `retime.json` sent back as
 `rewrite`, with the read it measured and the editor's note) or `--revise
 feedback` (the shots `feedback/script.json` names, the `.json` twin `yt
 improve` writes beside the brief) asks one `revise-labels` decision over
-those shots only: fix the line or keep it with a reason. Nothing is planned
-or drafted again and every other shot is written back byte for byte. The
-rules then read the changed shots only, and with research the changed lines
-are fact-checked again (`verify-labels`); the four files are rewritten with
+those shots only, the whole screenplay shown around them: fix the line,
+change its supers when the reason is about the screen, or keep it with a
+reason. Nothing is planned or drafted again and every other shot is written
+back byte for byte. The rules then read the changed shots only, and with
+research the changed lines are fact-checked again (`verify-labels`), a
+flagged one revised and checked once more as in the stage's own loop
+(`revise-labels-facts-1`, `verify-labels-1`); the four files are rewritten with
 `script.json.bak` kept, script.json records the round under `revised`, and
 the run prints `yt voice --redo <labels>` for the takes the change made
 stale.

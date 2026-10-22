@@ -71,6 +71,21 @@ def shots_of(data: dict) -> dict[str, dict]:
     return {s["label"]: s for sec in data["sections"] for s in sec["shots"]}
 
 
+#: Where a revise prompt lists the lines it sends back, one `n. reason` each.
+SENT = ("each with the reason:\n\n", "flagged by the fact-check:\n\n")
+
+
+def sent_back(prompt: str) -> list[int]:
+    """The shot numbers a revise prompt asks about, read from its list of
+    reasons (the listing above it may show every shot, to read them in)."""
+    for marker in SENT:
+        if marker in prompt:
+            block = prompt.split(marker, 1)[1].split("\n\n", 1)[0]
+            return [int(line.split(".", 1)[0]) for line in block.splitlines()
+                    if line[:1].isdigit()]
+    raise AssertionError("the revise prompt lists no lines")
+
+
 class ReviseLabels(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -86,22 +101,40 @@ class ReviseLabels(unittest.TestCase):
         self.calls: list[tuple[str, str, dict]] = []
         #: n -> the fix the fake hands back; a number not here is kept
         self.fixes = {3: FIXED}
-        self.check_flags: list[dict] = []
+        #: n -> the on-screen strings the fake hands back with its fix
+        self.supers: dict[int, list[str]] = {}
+        #: n -> the fact-check revision's fix (revise-labels-facts-N)
+        self.fact_fixes: dict[int, str] = {}
+        #: what each fact-check answers, in order; [] once they run out
+        self.checks: list[list[dict]] = []
+        #: numbers the fake answers for although nobody asked
+        self.rogue: dict[int, str] = {}
+        self.down = False
 
     def fake(self, writer, name, prompt, schema):
         self.calls.append((name, prompt, schema))
         props = schema["properties"]
         if "fixes" in props:
-            asked = [int(line.split(".", 1)[0]) for line in
-                     prompt.split("The lines as written:", 1)[-1].split("\n\n", 2)[1].splitlines()
-                     if line[:1].isdigit()]
-            return {"fixes": [
-                {"n": n, "action": "fix", "narration": self.fixes[n], "why": "one breath"}
-                if n in self.fixes else
-                {"n": n, "action": "keep", "narration": "", "why": "the inspector is the point"}
-                for n in asked]}
+            if self.down:
+                raise script.ClaudeError("the model is down")
+            fixes = self.fixes if name == "revise-labels" else self.fact_fixes
+            out = []
+            for n in sent_back(prompt):
+                if n not in fixes and n not in self.supers:
+                    out.append({"n": n, "action": "keep", "narration": "",
+                                "why": "the inspector is the point"})
+                    continue
+                row = {"n": n, "action": "fix", "narration": fixes.get(n, ""),
+                       "why": "one breath"}
+                if n in self.supers:
+                    row["on_screen_text"] = self.supers[n]
+                out.append(row)
+            out += [{"n": n, "action": "fix", "narration": line, "why": "unasked"}
+                    for n, line in self.rogue.items()]
+            return {"fixes": out}
         if "flags" in props:
-            return {"flags": list(self.check_flags), "verdict": "defensible"}
+            return {"flags": self.checks.pop(0) if self.checks else [],
+                    "verdict": "defensible"}
         raise AssertionError(f"unexpected decision {name}")
 
     def run_stage(self, *flags):
@@ -124,14 +157,17 @@ class ReviseLabels(unittest.TestCase):
 
     # -- named labels -------------------------------------------------------
 
-    def test_one_revise_labels_decision_carries_only_the_named_shots(self):
+    def test_one_revise_labels_decision_sends_back_only_the_named_shots(self):
+        self.rogue = {1: "A line nobody asked for."}
         self.assertEqual(self.run_stage("--revise", "1.3,2.1"), 0, self.said)
         self.assertEqual([c[0] for c in self.calls], ["revise-labels"])
         prompt = self.calls[0][1]
-        self.assertIn(LONG, prompt)
-        self.assertIn("The paint hid the rust", prompt)
-        for label, line, _ in LINES[0][1][:2] + LINES[1][1][1:]:
-            self.assertNotIn(line, prompt, f"shot {label} was not named")
+        self.assertEqual(sent_back(prompt), [3, 4])
+        # Every line is there to read the named ones in, so a rewrite keeps
+        # the pronoun or connective that ties it to its neighbour.
+        for label, line, _ in LINES[0][1] + LINES[1][1]:
+            self.assertIn(line, prompt, label)
+        self.assertEqual(shots_of(self.record())["1.1"]["narration"], LINES[0][1][0][1])
 
     def test_the_fix_is_applied_and_every_other_shot_is_unchanged(self):
         self.run_stage("--revise", "1.3,2.1", "--why", "it runs out of breath")
@@ -180,19 +216,57 @@ class ReviseLabels(unittest.TestCase):
 
     # -- the fact-check -----------------------------------------------------
 
-    def test_with_research_the_changed_lines_are_checked_again(self):
+    def research(self):
         write_json(self.film / "dossier.json", {"claims": [
             {"id": "C1", "claim": "the bolt was painted over", "confidence": "high"}]})
-        self.check_flags = [{"n": 3, "problem": "years is not in the research",
-                             "severity": "important", "fix": "say a long time"}]
+
+    YEARS = {"n": 3, "problem": "years is not in the research", "severity": "important",
+             "fix": "say a long time"}
+
+    def test_with_research_the_changed_lines_are_checked_again(self):
+        self.research()
         self.assertEqual(self.run_stage("--revise", "1.3,2.1"), 0, self.said)
         self.assertEqual([c[0] for c in self.calls], ["revise-labels", "verify-labels"])
         verify = self.calls[1][1]
         self.assertIn(FIXED, verify)
         self.assertNotIn("The paint hid the rust", verify)    # kept, so not changed
+
+    def test_a_fact_flag_on_a_changed_line_is_revised_and_checked_again(self):
+        # As the stage's own fact loop does: the flagged line goes to the
+        # fact revision, and the line it writes is checked once more.
+        self.research()
+        self.checks = [[self.YEARS], []]
+        self.fact_fixes = {3: "The crack grew under the paint, out of sight."}
+        self.assertEqual(self.run_stage("--revise", "1.3,2.1"), 0, self.said)
+        self.assertEqual([c[0] for c in self.calls], [
+            "revise-labels", "verify-labels", "revise-labels-facts-1", "verify-labels-1"])
+        self.assertEqual(sent_back(self.calls[2][1]), [3])
+        self.assertEqual(shots_of(self.record())["1.3"]["narration"],
+                         "The crack grew under the paint, out of sight.")
+        check = self.record()["check"]
+        self.assertEqual(check["flags"], [])
+        self.assertEqual(check["unresolved"], [])
+        self.assertIn("yt voice --redo 1.3", self.said)
+
+    def test_a_fact_flag_the_revision_keeps_stands_with_its_reason(self):
+        self.research()
+        self.checks = [[self.YEARS]]
+        self.assertEqual(self.run_stage("--revise", "1.3,2.1"), 0, self.said)
         check = self.record()["check"]
         self.assertEqual([f["n"] for f in check["flags"]], [3])
+        self.assertEqual(check["flags"][0]["kept"], "the inspector is the point")
         self.assertIn("years is not in the research", self.said)
+
+    def test_the_check_forgets_why_an_old_line_was_kept(self):
+        data = screenplay()
+        data["check"] = {"flags": [{"n": 3, "problem": "old", "severity": "important",
+                                    "kept": "the old line hedged"}],
+                         "kept": [{"n": 3, "why": "the old line hedged"},
+                                  {"n": 5, "why": "the bolt is in C1"}]}
+        write_json(self.film / "script.json", data)
+        self.research()
+        self.assertEqual(self.run_stage("--revise", "1.3,2.1"), 0, self.said)
+        self.assertEqual(self.record()["check"]["kept"], [{"n": 5, "why": "the bolt is in C1"}])
 
     def test_a_fact_check_that_fails_writes_nothing(self):
         write_json(self.film / "dossier.json", {"claims": [{"id": "C1", "claim": "c"}]})
@@ -216,7 +290,7 @@ class ReviseLabels(unittest.TestCase):
         self.assertIn("the line is twice its shot", prompt)
         self.assertIn("too short for the push-in", prompt)
         self.assertIn("10.6", prompt)
-        self.assertNotIn(LINES[0][1][0][1], prompt)          # 1.1 was accepted
+        self.assertEqual(sent_back(prompt), [3, 4])          # 1.1 was accepted
         self.assertEqual(self.record()["revised"][-1]["from"], "retime")
 
     def test_feedback_takes_the_shots_the_json_twin_names(self):
@@ -235,10 +309,60 @@ class ReviseLabels(unittest.TestCase):
         self.assertEqual([c[0] for c in self.calls], ["revise-labels"])
         prompt = self.calls[0][1]
         self.assertIn("the line buries the rust", prompt)
-        self.assertNotIn(LINES[0][1][0][1], prompt)
+        self.assertEqual(sent_back(prompt), [4])
         self.assertEqual(shots_of(self.record())["2.1"]["narration"],
                          "Rust, hidden by paint, from every inspector who looked.")
         self.assertIn("yt voice --redo 2.1", self.said)
+
+    def test_a_finding_about_the_super_changes_the_super(self):
+        # QA's script owner answers for the supers too: a finding pinned to a
+        # shot's on-screen text is something this revision can fix.
+        data = screenplay()
+        data["sections"][1]["shots"][0]["on_screen_text"] = ["4 lanes"]
+        write_json(self.film / "script.json", data)
+        fb = self.film / "feedback"
+        fb.mkdir()
+        write_json(fb / "script.json", {"stage": "script", "findings": [
+            {"id": "F1", "shot": "1.3", "problem": "runs out of breath", "fix": "cut it"},
+            {"id": "F2", "shot": "2.1", "problem": "the super shows the wrong figure",
+             "fix": "show the one bolt"}], "must_change": [], "check": "-"})
+        self.supers = {4: ["1 bolt"]}
+        self.assertEqual(self.run_stage("--revise", "feedback"), 0, self.said)
+        prompt, schema = self.calls[0][1], self.calls[0][2]
+        self.assertIn("[on screen: 4 lanes]", prompt)
+        self.assertIn("on_screen_text",
+                      schema["properties"]["fixes"]["items"]["properties"])
+        shot = shots_of(self.record())["2.1"]
+        self.assertEqual(shot["on_screen_text"], ["1 bolt"])
+        self.assertEqual(shot["narration"], LINES[1][1][0][1])
+        self.assertIn("yt voice --redo 1.3 ", self.said)     # the take of 2.1 still holds
+
+    def test_a_fix_that_returns_the_line_unchanged_is_kept_as_written(self):
+        self.fixes = {4: LINES[1][1][0][1]}
+        self.research()
+        self.assertEqual(self.run_stage("--revise", "2.1", "--report-only"), 0, self.said)
+        self.assertEqual([c[0] for c in self.calls], ["revise-labels"])
+        self.assertIn("kept 2.1: the revision left it as written", self.said)
+        self.assertNotIn("yt voice --redo", self.said)
+        self.assertEqual(json.dumps(shots_of(self.record())["2.1"]),
+                         json.dumps(shots_of(json.loads(self.before))["2.1"]))
+
+    def test_a_revision_that_fails_writes_nothing(self):
+        self.down = True
+        self.assertEqual(self.run_stage("--revise", "1.3"), 1)
+        self.assertIn("nothing was written", self.said)
+        self.assertEqual((self.film / "script.json").read_bytes(), self.before)
+
+    def test_a_finding_with_no_fix_is_not_handed_another_shots_change(self):
+        fb = self.film / "feedback"
+        fb.mkdir()
+        write_json(fb / "script.json", {"stage": "script", "findings": [
+            {"id": "F2", "shot": "2.1", "problem": "the line buries the rust"}],
+            "must_change": ["cut the bridge's age from 1.1"], "check": "-"})
+        self.run_stage("--revise", "feedback")
+        prompt = self.calls[0][1]
+        self.assertNotIn("cut the bridge's age", prompt)
+        self.assertIn("the change the reason asks for", prompt)
 
     def test_feedback_without_its_json_twin_is_refused(self):
         (self.film / "feedback").mkdir()

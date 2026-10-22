@@ -313,6 +313,31 @@ RULE_REVISE_SCHEMA = {
     "required": ["fixes"],
 }
 
+#: `revise` over lines sent back (`yt script --revise`): QA's script owner
+#: answers for the supers too, so a reason about the screen may change them.
+BACK_REVISE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "fixes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    **REVISE_SCHEMA["properties"]["fixes"]["items"]["properties"],
+                    "on_screen_text": {"type": "array", "items": {"type": "string"},
+                                       "description": (
+                                           "the shot's on-screen strings after the fix, "
+                                           "only when its reason is about what the "
+                                           "screen shows; omit to leave them as they "
+                                           "are")},
+                },
+                "required": ["n", "action", "narration", "why"],
+            },
+        }
+    },
+    "required": ["fixes"],
+}
+
 CHECK_SCHEMA = {
     "type": "object",
     "properties": {
@@ -1245,13 +1270,17 @@ class Screenwriter:
                name: str = "revise", rules: bool = False, back: str = "") -> dict:
         """The smallest fix for each flagged line, or a reason to keep it.
 
-        Returns the `applied` rewrites and the lines `kept`; a failed call
-        changes nothing. `rules` says the flags are the narration rules'
+        Returns the `applied` rewrites (a row only where the text changed)
+        and the lines `kept`; a failed call changes nothing and says so in
+        `failed`. `rules` says the flags are the narration rules'
         (rule_findings), not the fact-check's: the prompt says so, shows
         what each shot puts on screen, and the fix may change that text.
         `back` names who sent the lines back (`yt script --revise`: the
         operator, retime's editor, QA through the feedback), and the prompt
-        asks for the change each reason names instead of a fact fix.
+        asks for the change each reason names instead of a fact fix, to the
+        narration or, when the reason is about the screen, to the supers.
+        Only the flagged numbers are answered: every other shot passed in is
+        there to read them in.
         """
         by_n = {s.n: s for s in shots}
         todo: dict[int, list[dict]] = {}
@@ -1259,7 +1288,7 @@ class Screenwriter:
             n = int(f.get("n", 0) or 0)
             if n in by_n and f.get("severity") in REVISABLE:
                 todo.setdefault(n, []).append(f)
-        result = {"applied": [], "kept": []}
+        result = {"applied": [], "kept": [], "failed": False}
         if not todo:
             return result
         self._say(f"[revise] {len(todo)} flagged line(s)")
@@ -1285,18 +1314,24 @@ class Screenwriter:
             # Direction 29: after the read, rewrite the line that stumbles,
             # runs out of breath or buries its point. Judging 15: that pass
             # fixes the surface, so the line keeps its job in the story.
+            # Every shot is listed, so a rewrite keeps the pronoun or the
+            # connective that ties its line to the one before and after.
             parts = [self._brief(), *([self.research] if self.research else []),
-                     "The lines as written:\n\n" + shot_listing(shots, cite=True),
+                     "The screenplay as written, with what each shot puts on "
+                     "screen:\n\n" + shot_listing(shots, cite=True, supers=True),
                      f"These lines were sent back to the screenplay by {back}, each "
                      "with the reason:\n\n" + problems,
-                     "For each listed line make the change its reason asks for, to "
-                     "its narration only: rewrite a line that stumbles when said "
-                     "aloud, runs out of breath before its end or buries its key "
-                     "term behind a clause, and fit a line the read measured too "
-                     "long or too short to its shot. Keep every fact the research "
-                     "supports, the voice and the line's job in the story. Never add "
-                     "a fact. When the line is right as written, answer keep and say "
-                     "why in one clause. Answer for every listed number and no other."]
+                     "For each listed line make the change its reason asks for: to "
+                     "its narration, or to its on-screen text (on_screen_text, every "
+                     "string it should show) when the reason is about what the "
+                     "screen shows. Rewrite a line that stumbles when said aloud, "
+                     "runs out of breath before its end or buries its key term "
+                     "behind a clause, and fit a line the read measured too long or "
+                     "too short to its shot. Keep every fact the research supports, "
+                     "the voice and the line's job in the story, read against the "
+                     "lines around it. Never add a fact. When the line is right as "
+                     "written, answer keep and say why in one clause. Answer for "
+                     "every listed number and no other."]
         else:
             parts = [self._brief(), *([self.research] if self.research else []),
                      "The script as written:\n\n" + shot_listing(shots, cite=True),
@@ -1310,9 +1345,11 @@ class Screenwriter:
                      "Answer for every flagged number and no other."]
         try:
             data = self._ask(name, "\n\n".join(parts),
-                             RULE_REVISE_SCHEMA if rules else REVISE_SCHEMA)
+                             RULE_REVISE_SCHEMA if rules
+                             else BACK_REVISE_SCHEMA if back else REVISE_SCHEMA)
         except ClaudeError as exc:
             self._say(f"[revise] failed ({exc}); keeping the lines as written")
+            result["failed"] = True
             return result
 
         for fix in data.get("fixes", []):
@@ -1329,13 +1366,17 @@ class Screenwriter:
             if line and line != shot.narration:
                 row |= {"before": shot.narration, "after": line}
                 shot.narration, shot.revised = line, why
-            # The screen is changed only where a rule measured it: an
+            # The screen is changed only where a rule measured it, or where
+            # the line was sent back and the answer names new supers: an
             # optional `[]` beside a narration fix is the field left empty,
             # not an order to clear the shot's supers.
             given = fix.get("on_screen_text")
-            if rules and isinstance(given, list) \
-                    and any(f.get("rule") in SCREEN_RULES for f in todo[n]):
-                text = [" ".join(str(t).split()) for t in given if str(t).strip()]
+            text = ([" ".join(str(t).split()) for t in given if str(t).strip()]
+                    if isinstance(given, list) else [])
+            screen = (rules and isinstance(given, list)
+                      and any(f.get("rule") in SCREEN_RULES for f in todo[n])) \
+                or (bool(back) and bool(text))
+            if screen:
                 if text != list(shot.on_screen_text or []):
                     row |= {"on_screen_before": list(shot.on_screen_text or []),
                             "on_screen_after": text}
@@ -1347,14 +1388,18 @@ class Screenwriter:
         return result
 
     def verify_and_revise(self, shots: list[Shot], *, rounds: int = 2,
-                          fix: bool = True) -> dict:
+                          fix: bool = True, tag: str = "") -> dict:
         """Fact-check, fix the important and blocking lines, re-check just those.
 
         Stops when nothing binding is left or the rounds run out. The result
         is the check, with `revisions` (what changed), `kept` (lines left as
-        written, with the reason, and still flagged) and `unresolved`.
+        written, with the reason, and still flagged) and `unresolved`. A
+        `tag` names the decisions apart from the stage's own (`labels`:
+        verify-labels, revise-labels-facts-1, verify-labels-1).
         """
-        check = self.verify(shots)
+        names = ((f"verify-{tag}", f"revise-{tag}-facts-{{}}", f"verify-{tag}-{{}}")
+                 if tag else ("verify", "revise-{}", "verify-{}"))
+        check = self.verify(shots, name=names[0])
         if not check or not fix:
             return check
         revisions: list[dict] = []
@@ -1362,14 +1407,14 @@ class Screenwriter:
         for round_no in range(1, max(0, rounds) + 1):
             todo = [f for f in check.get("flags", [])
                     if int(f.get("n", 0) or 0) not in kept]
-            result = self.revise(shots, todo, name=f"revise-{round_no}")
+            result = self.revise(shots, todo, name=names[1].format(round_no))
             kept.update({k["n"]: k["why"] for k in result["kept"]})
             revisions += result["applied"]
             changed = {r["n"] for r in result["applied"]}
             if not changed:
                 break
             again = self.verify([s for s in shots if s.n in changed],
-                                name=f"verify-{round_no}")
+                                name=names[2].format(round_no))
             if not again:
                 break
             check["flags"] = (
@@ -2623,7 +2668,6 @@ def sent_back(spec: str, root: Path, why: str = "") -> tuple[str, list[dict], li
         if not isinstance(twin, dict):
             raise ValueError(f"no {harness.FEEDBACK_DIR}/script.json: `yt improve` writes "
                              "it beside the brief; name the shots instead")
-        must = "; ".join(str(m) for m in twin.get("must_change") or [])
         for f in twin.get("findings") or []:
             if not isinstance(f, dict):
                 continue
@@ -2635,8 +2679,11 @@ def sent_back(spec: str, root: Path, why: str = "") -> tuple[str, list[dict], li
             problem = str(f.get("problem") or "").strip()
             if f.get("why"):
                 problem += f" (why: {str(f['why']).strip()})"
+            # A finding with no fix of its own is not handed the brief's
+            # whole must-change list: that names changes to other shots.
             rows.append({"label": label, "problem": problem,
-                         "fix": str(f.get("fix") or "").strip() or must})
+                         "fix": str(f.get("fix") or "").strip()
+                         or "the change the reason asks for"})
     else:
         for label in (p.strip() for p in spec.split(",")):
             if label:
@@ -2708,22 +2755,30 @@ def run_revise(args, idea: Idea, project) -> int:
         minutes=float(data.get("target_seconds") or 60) / 60, wpm=wpm, lang=lang,
         research=research_block(dossier) if dossier else "", verbose=not args.quiet)
 
-    result = writer.revise(targets, flags, name="revise-labels", back=SENT_BY[source])
-    if not result["applied"] and not result["kept"]:
+    # Every shot goes in, to read the named lines in; only the flagged
+    # numbers are answered, and only they can change.
+    result = writer.revise(shots, flags, name="revise-labels", back=SENT_BY[source])
+    if result.get("failed"):
         print("error: the revision gave no answer; nothing was written", file=sys.stderr)
         return 1
     answered = {r["n"] for r in result["applied"]} | {k["n"] for k in result["kept"]}
     kept = result["kept"] + [{"n": s.n, "label": s.label,
                               "why": "the revision left it as written"}
                              for s in targets if s.n not in answered]
+    # `applied` holds only rows whose text changed: the narration (its take
+    # is stale and the fact-check reads it) or the supers (the rules
+    # measure them, the take still holds).
     changed = {r["n"] for r in result["applied"]}
-    moved = [s for s in targets if s.n in changed]
+    moved = [s for s in targets if s.n in {r["n"] for r in result["applied"]
+                                            if "before" in r}]
 
     # The fact-check is never skipped on a changed line when there is
-    # research to hold it to; a check that failed leaves everything as it was.
+    # research to hold it to, and what it flags goes to the fact revision
+    # and is checked again, as in the stage's own loop. A check that failed
+    # leaves everything as it was.
     again: dict = {}
     if moved and writer.research:
-        again = writer.verify(moved, name="verify-labels")
+        again = writer.verify_and_revise(moved, tag="labels")
         if not again:
             print("error: the fact-check of the changed lines failed; nothing was "
                   "written", file=sys.stderr)
@@ -2732,9 +2787,13 @@ def run_revise(args, idea: Idea, project) -> int:
     # Only the changed shots are written into the record as read: every
     # other shot stays the dict it was, byte for byte.
     raw = {shot.get("label"): shot for sec in data["sections"] for shot in sec["shots"]}
-    for s in moved:
-        raw[s.label]["narration"] = s.narration
-        raw[s.label]["revised"] = s.revised
+    screen = {r["n"] for r in result["applied"] if "on_screen_before" in r}
+    for s in targets:
+        if s.n in changed:
+            raw[s.label]["narration"] = s.narration
+            raw[s.label]["revised"] = s.revised
+        if s.n in screen:
+            raw[s.label]["on_screen_text"] = list(s.on_screen_text or [])
 
     # The rules on the changed shots only: their old flags go, what the
     # new text breaks comes in; every other flag stands as it was recorded.
@@ -2750,12 +2809,20 @@ def run_revise(args, idea: Idea, project) -> int:
                      "kept": [k for k in ruled.get("kept") or []
                               if isinstance(k, dict) and k.get("n") not in changed]}
     if again:
+        # The changed lines' flags, and the reasons an older line was kept,
+        # are the new check's: they spoke of text that is gone.
+        renewed = {s.n for s in moved}
         check = dict(data.get("check") or {})
         check["flags"] = ([f for f in check.get("flags") or []
-                           if int(f.get("n", 0) or 0) not in changed]
+                           if int(f.get("n", 0) or 0) not in renewed]
                           + [f for f in again.get("flags") or []
-                             if int(f.get("n", 0) or 0) in changed])
-        check["recheck"] = again.get("verdict", "")
+                             if int(f.get("n", 0) or 0) in renewed])
+        check["kept"] = ([k for k in check.get("kept") or []
+                          if isinstance(k, dict) and int(k.get("n", 0) or 0) not in renewed]
+                         + list(again.get("kept") or []))
+        check["revisions"] = list(check.get("revisions") or []) + list(
+            again.get("revisions") or [])
+        check["recheck"] = again.get("recheck") or again.get("verdict", "")
         check["unresolved"] = [f for f in check["flags"]
                                if f.get("severity") in REVISABLE and not f.get("kept")]
         data["check"] = check
@@ -2781,13 +2848,19 @@ def run_revise(args, idea: Idea, project) -> int:
         if "before" in row:
             print(wrap(f"was: {row['before']}", "      "))
             print(wrap(f"now: {row['after']}", "      "))
+        if "on_screen_before" in row:
+            print(wrap(f"on screen was: {' | '.join(row['on_screen_before'])}", "      "))
+            print(wrap(f"on screen now: {' | '.join(row['on_screen_after'])}", "      "))
     for row in kept:
         print(wrap(f"kept {row['label']}: {row['why']}", "  "))
+    for row in (again.get("revisions") or []) if again else []:
+        print(wrap(f"fact-check changed {row['label']}: {row['why']}", "  "))
     labels = {s.n: s.label for s in shots}
     for f in (again.get("flags") or []) if again else []:
-        if int(f.get("n", 0) or 0) in changed:
+        if int(f.get("n", 0) or 0) in labels:
+            kept_why = f" (kept: {f['kept']})" if f.get("kept") else ""
             print(wrap(f"fact-check {labels[int(f['n'])]} ({f.get('severity', '?')}): "
-                       f"{f.get('problem', '')}", "  "))
+                       f"{f.get('problem', '')}{kept_why}", "  "))
     for line in rule_lines(fresh):
         if not line.startswith("not_evidenced:"):
             print(wrap(line, "  "))
