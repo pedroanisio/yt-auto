@@ -487,7 +487,11 @@ hand-authored world showed the cost.
   validated and rendered on the engine. Their values are placeholders.
   `kit.py precheck <doc or frame.png>` runs the mechanical part of the
   reviewers' checklist (`framecheck.CHECKLIST`) before a frame is paid for,
-  and `kit.py frame` stops a still at 420 s (`sdkkit.STILL_BUDGET`) rather
+  over the author's own previews in `frames/kit/` and the gate's proof
+  frames in `frames/` alike; `sr.py frame` and the vfx gate run the same
+  items on every proof frame they render (`framecheck.precheck`), so what
+  the reviewer is told the author was handed, the author was handed. `kit.py
+  frame` stops a still at 420 s (`sdkkit.STILL_BUDGET`) rather
   than wait on a render that will not finish; `kit.py` prints the time left.
   `AUTHOR_SYSTEM`, `AUTHOR_TOOLS` and `BRIEF` are what a stage hands such an
   author.
@@ -495,7 +499,10 @@ hand-authored world showed the cost.
   in fresh interpreters. A document whose bytes differ between the runs is
   refused: seed every random choice. Every document it saved then goes
   through the SDK's checks, the harness's rules (`rule:shadow`: a 3D world
-  in which no light casts a shadow) and the engine's validation, and gets
+  in which no light casts a shadow; `rule:band`: a 2D text or formula node
+  whose box enters the caption band, rows from `design.CAPTION_FRACTION` of
+  the frame height, where `yt build` burns the captions, with the move
+  named) and the engine's validation, and gets
   `<doc>.provenance.json` (program and document hashes, schema release).
   `sdkkit.provenance_of(doc)` lapses the moment the document is edited by
   hand.

@@ -2019,8 +2019,10 @@ class Workspace:
                   f"`python3 sr.py frame {doc}`: it renders a proof frame at each shot's "
                   "midpoint (from shots.json) plus the symbol's start and end, the way "
                   "the build includes it, writes frames/*.png and reports what the "
-                  "engine says: flat, black, clipped or too-dark frames. It renders "
-                  "stills only, in seconds; "
+                  "engine says: flat, black, clipped or too-dark frames, and the "
+                  "checklist's mechanical items (framing, tonal steps, haze, labels "
+                  "that overlap; `kit.py build` warns of a label in the caption band, "
+                  "`rule:band`). It renders stills only, in seconds; "
                   "the gate then encodes each shot once a round, on the encode host, "
                   "and reports every object3D the camera never frames, so keep the "
                   "hero in view in every frame you look at. Read every PNG. A black, flat, "
@@ -2077,6 +2079,10 @@ class Workspace:
         objects = {f["id"]: framecheck.symbol_objects(text, f["id"]) for f in facts}
         jobs_list = [(f, t) for f in facts
                      for t in (times or shot_times(shots.get(f["id"], []), f["duration"]))]
+        # The document's own labels are judged once per symbol, on its first frame.
+        first_at = {}
+        for f, t in jobs_list:
+            first_at.setdefault(f["id"], t)
 
         def one(fact: dict, t: float) -> tuple[Path | None, list[str], list[str]]:
             proof = proof_document(name, text, fact["id"], frame, fact["duration"],
@@ -2126,7 +2132,14 @@ class Workspace:
                 findings.append(f"note: {where} rendered after a host failed it: {retried}")
             target = out_dir / f"{stem}__{fact['id']}__{t:g}s.png"
             target.write_bytes(png)
-            return target, judge_frame(png, t, fact["id"]) + findings, off
+            judged = judge_frame(png, t, fact["id"])
+            # The checklist's mechanical items (framing, tonal steps, haze, and
+            # the labels once per symbol), as kit.py frame runs them: the
+            # author answers them in its own round, not in a paid review.
+            if not any(f.startswith("error") for f in judged):
+                judged += framecheck.precheck(png, t, fact["id"],
+                                              text if first_at.get(fact["id"]) == t else "")
+            return target, judged + findings, off
 
         # One encode window per shot of each 3D symbol (the whole symbol when
         # it has no shots): the only render that reports what the camera

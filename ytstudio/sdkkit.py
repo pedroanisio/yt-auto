@@ -806,6 +806,60 @@ def _font_findings(nodes, local) -> list[str]:
     return out
 
 
+def _band_findings(root, local, height: float) -> list[str]:
+    """One warning per 2D text or formula node whose box enters the caption
+    band, where `yt build` burns the captions (measured on the Euler draft:
+    a letter row under the captions). A layer drawing a text or formula
+    asset, or a text node placed by its own y, is judged from its y, its
+    anchor and its height (the asset's, else one row of its size); what the
+    engine places -- a layout group's child, alignY, a relative length, a
+    3D layer -- is left to the engine and a rendered frame."""
+    from . import design
+    nodes = list(root.iter())
+    assets = {el.get("id"): el for el in nodes
+              if local(el) in ("text", "formula") and el.get("id")}
+    parents = {child: parent for parent in nodes for child in parent}
+    top = height * design.CAPTION_FRACTION
+
+    def laid_out(el) -> bool:
+        while el in parents:
+            el = parents[el]
+            if local(el) == "group" and (el.get("layout") or "none") != "none":
+                return True
+        return False
+
+    def rows(el, asset) -> float | None:
+        if _number(el.get("boxHeight")) and (el.get("fit") or "none") != "none":
+            return float(el.get("boxHeight"))
+        if _number(asset.get("height")):
+            return float(asset.get("height"))
+        if not _number(asset.get("size")):
+            return None
+        line = asset.get("lineHeight") if local(asset) == "text" else None
+        return float(asset.get("size")) * (float(line) if _number(line) else 1.2)
+    out = []
+    for el in nodes:
+        kind = local(el)
+        if kind == "layer":
+            asset = assets.get(el.get("asset") or "")
+        elif kind in ("text", "formula"):
+            asset = el
+        else:
+            continue
+        if asset is None or not _number(el.get("y")) or el.get("alignY") \
+                or (el.get("threeD") or "").strip() in ("true", "1") or laid_out(el):
+            continue
+        y = float(el.get("y")) - (float(el.get("anchorY")) if _number(el.get("anchorY")) else 0.0)
+        h = rows(el, asset)
+        if h is None or y + h <= top:
+            continue
+        out.append(f"warning: rule:band: {kind} `{el.get('id') or '?'}` at y={y:g} (its box "
+                   f"ends at y={y + h:g}) enters the caption band, rows {top:.0f}-{height:.0f} "
+                   f"of the frame (design.CAPTION_FRACTION), where `yt build` burns the "
+                   f"captions; move it up so its box ends above y={top:.0f}, or shrink it")
+    return out
+
+
 def rule_findings(data: bytes) -> list[str]:
     """The harness's rules on a document, beyond what the schema can say."""
     from xml.etree import ElementTree
@@ -835,6 +889,7 @@ def rule_findings(data: bytes) -> list[str]:
                        + (" ..." if len(small) > 12 else "")
                        + "; enlarge every word that is part of the film (a style sheet's own "
                          "notes may stay small)")
+        out += _band_findings(root, local, height)
     out += _font_findings(nodes, local)
     if solids and casters and not any((el.get("castShadow") or "").strip() in ("true", "1")
                                       for el in casters):
@@ -1222,7 +1277,8 @@ def _print_time_left() -> None:
 
 def _precheck(path: Path) -> int:
     """`kit.py precheck`: the checklist's mechanical items on a document (its labels
-    and every frame already rendered into frames/kit/) or on one PNG."""
+    and every frame already rendered of it: the author's own in frames/kit/ and the
+    gate's proof frames in frames/, named <doc>__<symbol>__<t>s.png) or on one PNG."""
     found: list[str] = []
     if path.suffix.lower() == ".png":
         found = framecheck.precheck(path.read_bytes(), 0.0, path.stem)
@@ -1230,12 +1286,16 @@ def _precheck(path: Path) -> int:
         text = path.read_text(encoding="utf-8", errors="replace")
         stem = path.name.replace(".scene.xml", "")
         found = framecheck.label_overlaps(text, stem)
-        for png in sorted((path.parent / "frames" / "kit").glob(f"{stem}__*s.png")):
+        frames = path.parent / "frames"
+        rendered = [(png, stem) for png in sorted((frames / "kit").glob(f"{stem}__*s.png"))]
+        rendered += [(png, png.stem[len(stem) + 2:].rsplit("__", 1)[0])
+                     for png in sorted(frames.glob(f"{stem}__*__*s.png"))]
+        for png, symbol in rendered:
             try:
                 at = float(png.stem.rsplit("__", 1)[1].rstrip("s"))
             except ValueError:
                 at = 0.0
-            found += framecheck.precheck(png.read_bytes(), at, stem)
+            found += framecheck.precheck(png.read_bytes(), at, symbol)
     for f in found:
         print(f"  {f}")
     print(f"precheck: {len(found)} finding(s)" if found else "precheck: clean")
