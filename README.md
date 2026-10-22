@@ -523,11 +523,13 @@ were opened, and names the shot of its own that raises or answers each
 (`opens_at`, `closes_at`, its number inside the section). After drafting,
 the ledger is measured: `rule:open-loop` (a plan question no shot answers,
 unless it is left open on purpose), `rule:closed-unopened` (an answer
-before the question was raised), `rule:raises-nothing` (a section that
-opens and closes nothing, minor) and, with `--review`,
-`rule:unanswered-by-reader` (an answer the cold reader did not hear). The
-important ones go back to the writer with the figures said twice
-(`revise-ledger`; the reader's in `revise-ledger-2`), what stands is a
+before the question was raised), `rule:raises-nothing` (a section the
+ledger has open and close nothing, minor) and, with `--review`,
+`rule:unanswered-by-reader` (an answer a writer marked that the cold reader
+did not hear). The important ones go back to the writer with the figures
+said twice (`revise-ledger`; the reader's in `revise-ledger-2`), and the
+writer names the questions each flagged line answers as it leaves it
+(`closes`): a line that changed is no answer by itself. What stands is a
 warning, and script.json's `questions` names each question's `opened_at`
 and `closed_at` shot labels.
 
