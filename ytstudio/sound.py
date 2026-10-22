@@ -1347,6 +1347,7 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
 
     levels: dict[str, Levels | None] = {}
     taken: set[str] = set()          # files a cue now uses
+    drawn: set[int] = set()          # hits whose spectrogram this run wrote
 
     def tell(job: _Job, line: str) -> None:
         """A progress line for the job, said by `said` in cue order: the jobs
@@ -1439,16 +1440,20 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
         """The judge's verdict on the candidate under test, with the evidence
         it was shown. A judge that fails leaves the file `unjudged`: the
         fetch does not die for a model outage, and the record says so.
-        Runs on a pool thread; it writes only the job and its own image."""
+        Runs on a pool thread; it writes only the job and the hit's image,
+        under the lock and once: a second cue on the same hit may be reading
+        it, and a write truncates first."""
         hit = job.hit
         evidence = judge_facts(hit, got)
         image = None
         if got.spectrogram:
             image = root / SOUND_DIR / "judge" / str(hit.id) / "spectrogram.png"
-            image.parent.mkdir(parents=True, exist_ok=True)
-            image.write_bytes(got.spectrogram)
             evidence["spectrogram"] = image.relative_to(root).as_posix()
         with book:
+            if image is not None and hit.id not in drawn:
+                image.parent.mkdir(parents=True, exist_ok=True)
+                image.write_bytes(got.spectrogram)
+                drawn.add(hit.id)
             summary["judged"] = summary.get("judged", 0) + 1
         try:
             answer = judge(job.cue, {"hit": {k: evidence[k] for k in (

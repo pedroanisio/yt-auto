@@ -147,6 +147,34 @@ class Overlap(FetchCase):
         self.assertEqual(data["fetch"]["filled"], 2)
         self.assertEqual(data["fetch"]["cached"], 1)
 
+    def test_two_cues_on_one_hit_write_its_spectrogram_once(self):
+        # The image is shared by id; a second write would truncate it while
+        # the other cue's judge may be reading it.
+        self.catalogue["hum"] = [row(7, "Hum.wav", 20.0)]
+        self.cues = (cue("ambience", "A1", "Room tone", 15, query="hum"),
+                     cue("ambience", "A2", "Hall tone", 15, query="hum"))
+        png, wait = b"\x89PNG spectrogram", self.meeting("judge")
+        writes: list[Path] = []
+        inner = Path.write_bytes
+
+        def counted(path, blob):
+            if path.name == "spectrogram.png":
+                writes.append(path)
+            return inner(path, blob)
+
+        def judge(c, evidence):
+            wait()
+            self.assertEqual(evidence["spectrogram"].read_bytes(), png)
+            return {"verdict": "accept", "reason": "fits", "confidence": 0.9}
+        with mock.patch.object(Path, "write_bytes", counted):
+            data = self.fetch(judge=judge, measure=lambda paths: [
+                sound.Levels(lufs=-10.0, true_peak=-6.0, floor=-45.0, host="h",
+                             spectrogram=png) for _ in paths])
+        self.assertEqual(self.alone, [])
+        self.assertEqual(len(writes), 1)
+        self.assertEqual([c["judgement"]["verdict"] for c in data["cues"]],
+                         ["accept", "accept"])
+
     def test_a_rounds_judgements_overlap(self):
         wait = self.meeting("judge")
 
