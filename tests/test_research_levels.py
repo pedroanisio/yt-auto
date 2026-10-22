@@ -190,6 +190,29 @@ class Misconceptions(_Researched):
         self.assertEqual(data["misconceptions"], [{"belief": "Tails trail.", "source": ""}])
         self.assertEqual(data["identifiable_case"], {"who": "", "source": ""})
 
+    def test_the_styles_prompt_prints_the_belief_old_or_new(self):
+        from ytstudio import styles
+        for rows, belief in (([self.BELIEF], self.BELIEF["belief"]),
+                             (["Tails trail."], "Tails trail.")):
+            (self.root / "dossier.json").write_text(json.dumps(
+                {"idea": {"title": "Comets"}, "misconceptions": rows}))
+            text = styles.dossier_context(str(self.root), self.idea)
+            self.assertIn(f"- {belief}", text)
+            self.assertNotIn("{", text)
+
+    def test_the_dossier_readme_prints_each_beliefs_source_and_the_case(self):
+        dossier = research.Dossier(self.root, self.idea, at=self.root)
+        data = {"premise": "p", "questions": [], "claims": [], "sources": [],
+                "assets": [], "gaps": [], "urls_opened": [], "notes": [],
+                "usage": {}, "misconceptions": [self.BELIEF, "An older bare belief."],
+                "identifiable_case": self.CASE}
+        research.write_dossier(dossier, data, [])
+        md = (self.root / "README.md").read_text(encoding="utf-8")
+        self.assertIn("- The tail trails behind the comet. — https://example.org/survey", md)
+        self.assertIn("- An older bare belief.\n", md)
+        case = md.split("## A case to follow", 1)[1]
+        self.assertIn("- Comet NEOWISE, July 2020 — https://example.org/neowise", case)
+
     def test_the_explainer_plan_asks_for_the_belief_and_the_case(self):
         text = research.SCOPES["explainer"]["plan"]
         self.assertIn("wrongly believe", text)
