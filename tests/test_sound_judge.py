@@ -200,7 +200,7 @@ class Remote(unittest.TestCase):
         render._HOSTS.clear()
         render._HOSTS["gpu"] = render.Host(addr="gpu", engine="/e/scene-render",
                                            ffprobe="/opt/af/bin/ffprobe")
-        patch = mock.patch.object(render, "ssh_alive", return_value=True)
+        patch = mock.patch.object(render, "host_health", return_value=render.Health(alive=True))
         patch.start()
         self.addCleanup(patch.stop)
         self.addCleanup(render._HOSTS.clear)

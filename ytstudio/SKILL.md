@@ -273,7 +273,11 @@ lists the ssh targets; `yt render` probes each once and routes by memory,
 not GPU, as `docs/compute.md` measured: a full encode and the audio mix go
 to the host with the most RAM (192.168.199.7, 125 GB, RTX 3050), stills,
 frame ranges and validation to the one with the least (192.168.199.13,
-15 GB, RTX 3070 Ti, the faster GPU). `--host` pins one, `--local` is for a
+15 GB, RTX 3070 Ti, the faster GPU), unless its live reading says it is
+saturated (`render.host_health`: a one-minute load over its cores, or under
+`render.GPU_FREE_FLOOR_MB` free on its GPU) while the other is quiet, in
+which case the light jobs go there too; an encode follows the memory
+whatever the load. `--host` pins one, `--local` is for a
 machine that has the engine, `--slices N` splits a long encode across both
 hosts with the mix rendered once (more slices, and slices even without `--slices`, when the GPU memory rate an encode measured into its report's `gpu_memory` needs them; a still's peak is not a rate and is ignored; with no encode measured, the count stays and the output says so); give every `<layer>` of a long world a start/end or the vfx gate warns, since unbounded layers stay loaded. A pull-back never overwrites a newer local file and a still brings back only its own output; slices live in `.slices/<key>/` (not mirrored, reused after a failed run, removed after the join) and `--slices` honours `--output` and `--keep-remote`.
 
@@ -314,10 +318,19 @@ hosts with the mix rendered once (more slices, and slices even without `--slices
   `yt render` attaches again (bounded), a job whose pid is gone is reported
   lost, and when the polls run out the job directory stays and the output
   says where. Never pull back or remove under a live job. A host's ssh is
-  checked again before routing and a refusing host is skipped for the next;
+  checked again before routing (the same round trip reads its load) and a
+  refusing host is skipped for the next; every ssh and rsync carries
+  `ConnectTimeout=10`, so a host that takes TCP but never answers ssh holds
+  nothing for long, and a sync the host does not take (a lost connection,
+  not a partial transfer) marks it dead for `render.ALIVE_TTL` and sends
+  the job to the other host, once (never the slices' mix: the join happens
+  on its host). A slice that moves waits for its turn there, one slice per
+  host at a time, since `plan_slices` sized it for the GPU alone, and the
+  slices after it pass the marked host over while the mark is fresh.
   `yt doctor` warns `accepts TCP on the ssh port but not SSH` for a host
-  that answers the port and not the login: restart sshd there or take it
-  out of `RS_RENDER_HOSTS`.
+  that answers the port and not the login, and `answered the probe but not
+  ssh now` for a usable one the live reading cannot reach: restart sshd
+  there or take it out of `RS_RENDER_HOSTS`.
 - **Mix once.** `--audio-only` builds the whole mix and tells you whether
   the audio graph fits in memory. A `--start/--end` range does not make it
   cheaper; the mix is assembled entire either way.

@@ -33,14 +33,14 @@ def exit_marker(code):
 class Routing(unittest.TestCase):
     def setUp(self):
         render._HOSTS.clear()
-        render._ALIVE.clear()
+        render._HEALTH.clear()
         render._HOSTS["a"] = render.Host("a", engine="/e", ram_gb=16, cores=8)
         render._HOSTS["b"] = render.Host("b", engine="/e", ram_gb=64, cores=16)
         self.env = mock.patch.dict("os.environ", {"RS_RENDER_HOSTS": "a,b"})
         self.env.start()
         self.addCleanup(self.env.stop)
         self.addCleanup(render._HOSTS.clear)
-        self.addCleanup(render._ALIVE.clear)
+        self.addCleanup(render._HEALTH.clear)
 
     def ssh_down(self, *dead):
         calls = []
@@ -66,11 +66,13 @@ class Routing(unittest.TestCase):
         self.assertLessEqual(kw["timeout"], 15)
 
     def test_a_healthy_check_is_cached_for_a_moment(self):
+        # AUTO-69: every candidate is read once (its load decides the routing),
+        # and the next moments' jobs reuse the readings.
         patch, calls = self.ssh_down()
         with patch:
             render.remote_host(None, "still")
             render.remote_host(None, "still")
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(sorted(argv[-2] for argv, _ in calls), ["a", "b"])
 
     def test_an_encode_skips_a_dead_host_too(self):
         patch, _ = self.ssh_down("b")                 # b is the big host
@@ -110,6 +112,64 @@ class Doctor(unittest.TestCase):
         self.assertFalse(any("TCP" in f.message and "not SSH" in f.message for f in found))
         self.assertTrue(found)
 
+    def test_load_and_gpu_used_are_printed_beside_the_routing(self):
+        small = render.Host("root@small", engine="/e", version="sr 0.6", ram_gb=8, cores=8,
+                            gpu="3070", gpu_mem_mb=8192)
+        big = render.Host("root@big", engine="/e", version="sr 0.6", ram_gb=125, cores=12, gpu="3050")
+        health = {"root@small": render.Health(alive=True, load1=29.4, gpu_used_mb=7812),
+                  "root@big": render.Health(alive=True, load1=1.2)}
+        rep = doctor.Report("t")
+        doctor.check_hosts(rep, [small, big], health)
+        lines = {f.message.split(" on ")[1].split(" ")[0]: f.message for f in rep.findings if f.level == "ok"}
+        self.assertIn("load 29.4", lines["root@small"])
+        self.assertIn("GPU 7812/8192 MB used", lines["root@small"])
+        self.assertIn("load 1.2", lines["root@big"])
+        # the saturated host does not get the stills; the big one takes everything
+        self.assertNotIn("stills", lines["root@small"])
+        self.assertIn("stills", lines["root@big"])
+        warn = [f for f in rep.findings if f.level == "warn" and "root@small" in f.message]
+        self.assertEqual(len(warn), 1, [f.message for f in rep.findings])
+        self.assertIn("saturated", warn[0].message)
+
+    def test_an_idle_gpu_is_printed_as_zero_used_not_left_out(self):
+        # 0 used is a reading like any other: the line says so rather than
+        # looking like a host whose GPU was never read.
+        host = render.Host("root@h", engine="/e", version="sr 0.6", ram_gb=8, cores=8,
+                           gpu="3070", gpu_mem_mb=8192)
+        rep = doctor.Report("t")
+        doctor.check_hosts(rep, [host], {"root@h": render.Health(alive=True, load1=0.3)})
+        ok = [f.message for f in rep.findings if f.level == "ok"]
+        self.assertIn("GPU 0/8192 MB used", ok[0])
+        # a host that did not answer has no reading to print
+        rep = doctor.Report("t")
+        doctor.check_hosts(rep, [host], {"root@h": render.Health(alive=False, error="timed out")})
+        self.assertNotIn("GPU 0/8192", " ".join(f.message for f in rep.findings))
+
+    def test_a_usable_host_that_stopped_answering_is_routed_around_and_named(self):
+        # the probe cached it as usable; the live reading says it is gone now, so
+        # the routing shown is the one remote_host takes, and the line says why
+        small = render.Host("root@small", engine="/e", version="sr 0.6", ram_gb=8, cores=8)
+        big = render.Host("root@big", engine="/e", version="sr 0.6", ram_gb=125, cores=12)
+        health = {"root@small": render.Health(alive=False, error="timed out"),
+                  "root@big": render.Health(alive=True, load1=1.0)}
+        rep = doctor.Report("t")
+        doctor.check_hosts(rep, [small, big], health)
+        lines = {f.message.split(" on ")[1].split(" ")[0]: f.message for f in rep.findings if f.level == "ok"}
+        self.assertNotIn("stills", lines["root@small"])
+        self.assertIn("stills", lines["root@big"])
+        warn = [f for f in rep.findings if f.level == "warn" and "root@small" in f.message]
+        self.assertEqual(len(warn), 1, [f.message for f in rep.findings])
+        self.assertIn("not ssh now", warn[0].message)
+        self.assertIn("timed out", warn[0].message)
+
+    def test_without_readings_the_line_is_as_before(self):
+        host = render.Host("root@h", engine="/e", version="sr 0.6", ram_gb=8, cores=8)
+        rep = doctor.Report("t")
+        doctor.check_hosts(rep, [host])
+        ok = [f.message for f in rep.findings if f.level == "ok"]
+        self.assertEqual(len(ok), 1)
+        self.assertNotIn("load", ok[0])
+
     def test_tcp_open_reads_the_host_out_of_user_at_host(self):
         with mock.patch("socket.create_connection") as conn:
             self.assertTrue(render.tcp_open("root@10.0.0.9"))
@@ -147,6 +207,26 @@ class Detached(unittest.TestCase):
             else:
                 self.assertTrue(any("ServerAliveInterval" in t for t in argv), argv)
         self.assertIn("ServerAliveInterval=15", render.probe_argv("h", "true"))
+
+    def test_every_ssh_and_rsync_carries_a_connect_timeout(self):
+        # AUTO-69: a host that takes TCP but never answers ssh hung every sync,
+        # launch, poll and removal for good; the probe was the only bounded call.
+        _, seen = self.run_job([])
+        self.assertTrue(seen)
+        for argv in seen:
+            if argv[0] == "ssh":
+                self.assertIn("ConnectTimeout=10", argv)
+            else:
+                self.assertTrue(any("ConnectTimeout=10" in t for t in argv), argv)
+        self.assertIn("ConnectTimeout=10", render.ssh_argv("h", "true"))
+        self.assertIn("ConnectTimeout=10", render.SSH_COMMAND)
+
+    def test_a_probe_keeps_its_own_shorter_timeout_and_names_it_once(self):
+        # ssh takes the first value of a repeated option, so the probe's must be
+        # the only one on its argv.
+        argv = render.probe_argv("h", "true", 4)
+        self.assertEqual([t for t in argv if t.startswith("ConnectTimeout=")], ["ConnectTimeout=4"])
+        self.assertEqual(render.CONNECT_TIMEOUT, 10)
 
     def test_the_engine_runs_detached_with_a_status_file(self):
         _, seen = self.run_job([])

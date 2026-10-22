@@ -75,7 +75,17 @@ Rendering runs on other machines: `RS_RENDER_HOSTS=user@a,user@b` in `.env`.
 `yt render` probes each host once (engine, RAM, GPU) and routes by
 docs/compute.md's rule -- memory, not GPU: a full encode and the audio mix go
 to the host with the most RAM, stills and frames to the one with the least,
-which is the faster GPU. `--slices N` splits a long encode across every host
+which is the faster GPU. Before each job one short ssh per host reads its
+one-minute load and GPU memory in use (cached 20 s); a host whose load is
+over its cores, or whose GPU has under 1 GB free, is passed over for stills,
+frames and validation while another is quiet, and a sync the host does not
+take (a lost connection, not a partial transfer) sends the job to the other
+host once and marks the first dead for the next moments. A slice that moves
+waits for its turn on the other host (one slice per host at a time: a slice
+was sized for the GPU alone) and the slices after it pass the marked host
+over; the slices' audio mix stays on its host, since the join happens there.
+Every job ssh and rsync gives up on a connection after 10 s (the short
+pre-routing checks sooner). `--slices N` splits a long encode across every host
 (one `--start/--end` range each, the audio mixed once, joined by stream copy; a job on a GPU host samples the engine's own processes every 0.2 s (`nvidia-smi pmon`, graphics included; accounting mode, then a memory.used delta, as fallbacks) into the report's `gpu_memory`; a still records a peak only, an encode a peak over the range it rendered, and only an encode's rate counts: the count rises, and an unsliced encode slices on its own, until a slice fits the smallest host's GPU memory; with no encode measured, the count stays and the output says so (a still's peak is named and ignored). The vfx gate warns of layers with no start/end).
 A job pulls back only the files its own `-o` and `--report` name, with `--update` so an older remote copy never replaces a newer local file; sliced encodes keep their slices in `.slices/<key>/` (never mirrored, reused after a failed run, removed once the film is joined), and honour `--output` (NAME.mp4, render-NAME.json) and `--keep-remote`.
 Each host keeps one mirror of the project, refreshed incrementally; every

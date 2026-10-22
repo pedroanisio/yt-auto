@@ -50,6 +50,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -155,9 +156,21 @@ PULL_BACK = ("*.mp4", "*.png", "*.wav", "render.json", "render-*.json", "pilot*.
              ".estimate-*.json")
 
 
-#: Every ssh this module runs: no prompts, and a dead link is noticed in about a
-#: minute instead of never, so a session that drops is seen as dropped.
-SSH_OPTS = ("-o", "BatchMode=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4")
+#: Seconds a connection may take before it is a no. A host that accepts TCP but
+#: never answers ssh (a hung sshd) otherwise holds every sync, launch, poll and
+#: removal for good: docs/throughput.md's ~45 min of hung stills.
+CONNECT_TIMEOUT = 10
+
+
+def ssh_opts(connect_timeout: int = CONNECT_TIMEOUT) -> tuple[str, ...]:
+    """Every ssh this module runs: no prompts, a bounded connect, and a dead link
+    noticed in about a minute instead of never, so a session that drops is seen
+    as dropped."""
+    return ("-o", "BatchMode=yes", "-o", f"ConnectTimeout={connect_timeout}",
+            "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4")
+
+
+SSH_OPTS = ssh_opts()
 SSH_COMMAND = "ssh " + " ".join(SSH_OPTS)      # rsync -e
 
 
@@ -176,14 +189,15 @@ def refuse_remote(what: str = "ssh") -> None:
         raise RemoteRefused(f"{what} refused: {NO_REMOTE_ENV} is set (tests never reach a render host)")
 
 
-def ssh_argv(host: str, script: str, *extra: str) -> list[str]:
-    """argv for one ssh call: the keepalive options, `extra` (-o ...), the host, the script."""
-    return ["ssh", *SSH_OPTS, *extra, host, script]
+def ssh_argv(host: str, script: str, *extra: str, connect_timeout: int = CONNECT_TIMEOUT) -> list[str]:
+    """argv for one ssh call: `extra` (-o ...) first, so a caller's option wins over
+    the module's (ssh takes the first value), then the options, the host, the script."""
+    return ["ssh", *extra, *ssh_opts(connect_timeout), host, script]
 
 
 def probe_argv(host: str, script: str, timeout: int = 4) -> list[str]:
     """ssh argv for a short check: a connection not made in `timeout` s is a no."""
-    return ssh_argv(host, script, "-o", f"ConnectTimeout={timeout}")
+    return ssh_argv(host, script, connect_timeout=timeout)
 
 
 def job_tag() -> str:
@@ -505,41 +519,111 @@ def hosts(args=None) -> list[Host]:
     return [probe(a) for a in host_names(args)]
 
 
-def pick_host(candidates: list[Host], job: str) -> Host | None:
+@dataclass
+class Health:
+    """What one short ssh round trip said about a host just now."""
+    alive: bool = False
+    load1: float = 0.0      # the one-minute load average; 0 when it did not say
+    gpu_used_mb: int = 0    # GPU memory in use (nvidia-smi, the fullest GPU); 0 when none or it did not say
+    error: str = ""
+    at: float = 0.0         # monotonic time of the reading
+
+
+#: Under this much free GPU memory a still of any heavy world fails (the 8 GB
+#: still host at 7.8/8 GB in docs/throughput.md): a floor, not a measurement.
+GPU_FREE_FLOOR_MB = 1024
+
+
+def saturated(host: Host, health: Health | None) -> str:
+    """Why `host` should not take a light job right now, or "" when it may: a
+    one-minute load over its cores, or less than GPU_FREE_FLOOR_MB free on its GPU."""
+    if health is None or not health.alive:
+        return ""
+    if host.cores and health.load1 > host.cores:
+        return f"load {health.load1:g} over {host.cores} cores"
+    if host.gpu_mem_mb and health.gpu_used_mb and host.gpu_mem_mb - health.gpu_used_mb < GPU_FREE_FLOOR_MB:
+        return f"GPU {health.gpu_used_mb}/{host.gpu_mem_mb} MB used"
+    return ""
+
+
+def pick_host(candidates: list[Host], job: str, health: dict[str, Health] | None = None) -> Host | None:
     """docs/compute.md's rule: memory, not GPU.
 
     `encode` and `audio` want the most RAM (a mix is assembled whole, and a
     long programme is RAM-bound); `still`, `frames`, `validate` and a short
-    block want the least, which on this network is the faster GPU.
+    block want the least, which on this network is the faster GPU. With
+    `health` (addr -> the live reading) a saturated host is passed over for
+    the light jobs while another is not; an encode follows the memory whatever
+    the load, since the small host cannot hold it however idle it is.
     """
     usable = [h for h in candidates if h.usable]
     if not usable:
         return None
     if job in ("encode", "audio"):
         return max(usable, key=lambda h: (h.ram_gb, h.cores))
-    return min(usable, key=lambda h: (h.ram_gb, -h.cores))
+    quiet = [h for h in usable if not saturated(h, (health or {}).get(h.addr))]
+    return min(quiet or usable, key=lambda h: (h.ram_gb, -h.cores))
 
 
-#: addr -> (monotonic time, answered): one recheck serves the jobs of the next moments.
-_ALIVE: dict[str, tuple[float, bool]] = {}
+#: addr -> the last reading: one round trip serves the jobs of the next moments.
+_HEALTH: dict[str, Health] = {}
 ALIVE_TTL = 20.0
+#: The round trip: the one-minute load, and the memory in use on the fullest GPU.
+HEALTH_SCRIPT = ("echo \"LOAD=$(cut -d' ' -f1 /proc/loadavg)\"; "
+                 "echo \"GPUUSED=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits"
+                 " 2>/dev/null | sort -n | tail -1)\"")
+
+
+def host_health(addr: str, *, timeout: int = 4) -> Health:
+    """Does the host answer ssh right now, and how busy is it? One short round
+    trip, remembered for ALIVE_TTL seconds; the process-wide probe cache never
+    learns a host went away or filled up."""
+    now = time.monotonic()
+    seen = _HEALTH.get(addr)
+    if seen and now - seen.at < ALIVE_TTL:
+        return seen
+    health = Health(at=now)
+    refuse_remote()
+    try:
+        proc = subprocess.run(probe_argv(addr, HEALTH_SCRIPT, timeout), capture_output=True,
+                              text=True, timeout=timeout + 6)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        health.error = str(exc)[:120]
+        _HEALTH[addr] = health
+        return health
+    health.alive = proc.returncode == 0
+    if not health.alive:
+        health.error = (proc.stderr or proc.stdout).strip()[:160] or f"ssh exited {proc.returncode}"
+    for line in proc.stdout.splitlines():
+        key, _, value = line.partition("=")
+        if key == "LOAD":
+            try:
+                health.load1 = float(value.strip() or 0)
+            except ValueError:
+                health.load1 = 0.0
+        elif key == "GPUUSED":
+            health.gpu_used_mb = parse_mb(value)
+    _HEALTH[addr] = health
+    return health
+
+
+def mark_dead(addr: str, why: str) -> None:
+    """Remember that a job could not reach `addr`: routing passes it over for
+    the next ALIVE_TTL seconds, then reads it again."""
+    _HEALTH[addr] = Health(alive=False, error=why[:160], at=time.monotonic())
+
+
+def marked_dead(addr: str) -> bool:
+    """Is `addr` under a dead reading younger than ALIVE_TTL? Reads nothing: a
+    caller choosing among hosts it already holds (the slices) passes the host
+    over while the mark is fresh and tries it again once it is old."""
+    seen = _HEALTH.get(addr)
+    return seen is not None and not seen.alive and time.monotonic() - seen.at < ALIVE_TTL
 
 
 def ssh_alive(addr: str, *, timeout: int = 4) -> bool:
-    """Does the host answer ssh right now? One short round trip, remembered for
-    ALIVE_TTL seconds; the process-wide probe cache never learns a host went away."""
-    now = time.monotonic()
-    seen = _ALIVE.get(addr)
-    if seen and now - seen[0] < ALIVE_TTL:
-        return seen[1]
-    refuse_remote()
-    try:
-        ok = subprocess.run(probe_argv(addr, "true", timeout), capture_output=True, text=True,
-                            timeout=timeout + 6).returncode == 0
-    except (subprocess.TimeoutExpired, OSError):
-        ok = False
-    _ALIVE[addr] = (now, ok)
-    return ok
+    """Does the host answer ssh right now? The same reading as `host_health`."""
+    return host_health(addr, timeout=timeout).alive
 
 
 def tcp_open(addr: str, *, port: int = 22, timeout: float = 3.0) -> bool:
@@ -553,18 +637,16 @@ def tcp_open(addr: str, *, port: int = 22, timeout: float = 3.0) -> bool:
 
 def remote_host(args, job: str = "encode") -> str:
     """The ssh target to use for `job`, or "" to render here. Each candidate is
-    rechecked with a short ssh first, so a host that stopped answering after
-    this process probed it is passed over instead of hung on."""
+    read with a short ssh first (`host_health`), so a host that stopped answering
+    after this process probed it is passed over instead of hung on, and a
+    saturated one is passed over for a light job while another is quiet."""
     if args is not None and getattr(args, "local", False):
         return ""
     candidates = [h for h in hosts(args) if h.usable]
-    while candidates:
-        chosen = pick_host(candidates, job)
-        if chosen is None:
-            break
-        if ssh_alive(chosen.addr):
-            return chosen.addr
-        candidates = [h for h in candidates if h is not chosen]
+    health = {h.addr: host_health(h.addr) for h in candidates}
+    chosen = pick_host([h for h in candidates if health[h.addr].alive], job, health)
+    if chosen is not None:
+        return chosen.addr
     names = host_names(args)
     return names[0] if names else ""
 
@@ -594,7 +676,9 @@ def run_job(cmd: list[str], project_root: Path, host: str, *, job: str,
     back into `project_root`, and the job directory is removed. `job` names
     the directory (`still`, `encode`, `window`...); `remote` fixes it when
     the caller needs it afterwards (to localise a report); `keep_remote`
-    leaves it for debugging. The mirror stays until --prune-remote.
+    leaves it for debugging. The mirror stays until --prune-remote. A sync
+    that fails marks the host dead and sends the job to the host routing
+    picks next, once; a second failure is raised.
     """
     return _run_remote(cmd, project_root, host, verbose=verbose, job=job,
                        remote=remote, keep_remote=keep_remote)
@@ -693,15 +777,40 @@ def _run_detached(host: str, script: str, remote: str, *, verbose: bool = False
 
 def _run_remote(cmd: list[str], project_root: Path, host: str, *, verbose: bool,
                 job: str = "encode", remote: str | None = None,
-                keep_remote: bool = False) -> subprocess.CompletedProcess:
-    """run_job's body: mirror, link, run, pull back, remove."""
+                keep_remote: bool = False, retry: bool = True) -> subprocess.CompletedProcess:
+    """run_job's body: mirror, link, run, pull back, remove. With `retry`, a
+    sync a host does not take sends the job to the host routing picks next,
+    once; the result's `host` names where it ran. A caller whose later steps
+    name this host (the slices' mix: the join happens there), or that moves
+    the job itself (a slice, which waits for its turn on the other host),
+    passes `retry=False` and gets the failure instead."""
     remote = remote or remote_dir(project_root.name, job, job_tag())
     mirror = mirror_dir(project_root.name)
     if verbose:
         print(f"  sync -> {host}:{mirror}", file=sys.stderr)
     refuse_remote()
-    subprocess.run(sync_up_args(project_root, host, mirror), check=True,
-                   capture_output=True, text=True)
+    try:
+        subprocess.run(sync_up_args(project_root, host, mirror), check=True,
+                       capture_output=True, text=True)
+    except subprocess.CalledProcessError as exc:
+        # The host took no sync: dead for the next moments, and the job goes
+        # to the host routing picks instead, once. Only a connection that
+        # failed says so (rsync's 255, or ssh naming itself); a partial
+        # transfer or a full disk is this side's or the job's problem, and the
+        # host keeps its reading.
+        why = (exc.stderr or exc.stdout or "").strip()
+        if exc.returncode != 255 and "ssh:" not in why:
+            raise
+        mark_dead(host, f"sync failed: {why[:120]}")
+        other = remote_host(None, job) if retry else ""
+        # with no live candidate the routing falls back to the first host
+        # configured; under a fresh mark that one costs only another timeout
+        if not other or other == host or marked_dead(other):
+            raise
+        if verbose:
+            print(f"  sync to {host} failed; {job} goes to {other}", file=sys.stderr)
+        return _run_remote(cmd, project_root, other, verbose=verbose, job=job, remote=remote,
+                           keep_remote=keep_remote, retry=False)
     settled = False
     try:
         known = _HOSTS.get(host)
@@ -714,6 +823,7 @@ def _run_remote(cmd: list[str], project_root: Path, host: str, *, verbose: bool,
         if verbose:
             print(f"  ssh {host} {script}", file=sys.stderr)
         proc, settled = _run_detached(host, script, remote, verbose=verbose)
+        proc.host = host                # where it ran: the retry may have moved it
         proc.gpu_peak_mb = take_gpu_peak(proc)
         if not settled:
             return proc                 # outcome unknown: no pull-back, no removal
@@ -1590,8 +1700,12 @@ def encode_sliced(scene: str, project_root: Path, *, slices: int, quality: str |
     rel_dir = f".slices/{key}"
     slice_dir = project_root / rel_dir
 
+    # One slice at a time per host: plan_slices sized a slice for the smallest
+    # GPU alone, so a slice that moves waits for its turn there rather than
+    # render beside the one already running.
+    turns = {h.addr: threading.Lock() for h in usable}
+
     def one(i: int, rng: tuple[float, float]) -> tuple[int, int, str, dict]:
-        host = usable[i % len(usable)]
         out = f"{rel_dir}/slice-{i:02d}.mp4"
         done = project_root / out
         kept = done.with_suffix(".json")             # the slice's own report, written once it succeeded
@@ -1609,7 +1723,26 @@ def encode_sliced(scene: str, project_root: Path, *, slices: int, quality: str |
             cmd.append("--strict")
         if parallel is not None:
             cmd += ["--parallel", str(parallel)]
-        proc = _run_remote(cmd, project_root, host.addr, verbose=verbose)
+        # A slice has no host affinity (its file comes back here), so a sync
+        # its host does not take moves it to a host not marked dead, and the
+        # slices after it pass the marked host over while the mark is fresh;
+        # the measurement names where it ran.
+        tried: set[str] = set()
+        while True:
+            rest = [h for h in usable if h.addr not in tried]
+            live = [h for h in rest if not marked_dead(h.addr)] or rest
+            host = live[i % len(live)]
+            with turns[host.addr]:
+                try:
+                    proc = _run_remote(cmd, project_root, host.addr, verbose=verbose, retry=False)
+                except subprocess.CalledProcessError:
+                    tried.add(host.addr)
+                    if not marked_dead(host.addr) or len(tried) == len(usable):
+                        raise               # not a lost connection, or no host left
+                    if verbose:
+                        print(f"  sync to {host.addr} failed; slice {i} moves", file=sys.stderr)
+                    continue
+            break
         measured = gpu_measurement(getattr(proc, "gpu_peak_mb", None), rng[1] - rng[0],
                                    host.addr, host.gpu_mem_mb, getattr(proc, "gpu_source", ""))
         if measured:
@@ -1631,10 +1764,12 @@ def encode_sliced(scene: str, project_root: Path, *, slices: int, quality: str |
 
     # The mix runs in a directory that is kept until the join; the slices, which
     # the mirror leaves out, are sent there once, and the join happens there.
+    # So the mix never moves: a sync big does not take fails the run, rather
+    # than render the mix on the host that cannot hold it and join nowhere.
     remote = remote_dir(project_root.name, "audio", job_tag())
     mix = _run_remote(["scene-render", "encode", rel_scene, "-o", "mix.wav", "--no-upload", "--json",
                        "--start", str(start), "--end", str(end)], project_root, big.addr,
-                      verbose=verbose, remote=remote, keep_remote=True)
+                      verbose=verbose, remote=remote, keep_remote=True, retry=False)
     try:
         if mix.returncode == 0:
             refuse_remote()
