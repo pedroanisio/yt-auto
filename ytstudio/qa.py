@@ -1273,14 +1273,18 @@ def story_gaps(card: dict, script: dict) -> list[str]:
 def unproven_satisfaction(card: dict, *, retention: bool) -> dict:
     """A predicted satisfaction is a ranking proxy (judging 4): until the
     channel's RETENTION exists nothing validates it, so it stays recorded in
-    `story` and is named under not_evidenced with the reason."""
+    `story` and is named under not_evidenced with the reason. The channel's
+    is the one in the work directory itself; the per-film one `yt
+    retention` writes in a project (AUTO-101) measures one cut, not the
+    channel, and does not count."""
     if retention or not isinstance(card.get("story"), dict):
         return card
     card = dict(card)
     card["not_evidenced"] = list(card.get("not_evidenced") or []) + [
         f"story.satisfaction: a predicted satisfaction is a ranking proxy (judging 4) "
-        f"that nothing validates until the work directory's {RETENTION} holds the "
-        "channel's measured retention; recorded, scoring nothing"]
+        f"that nothing validates until the work directory's own {RETENTION} "
+        f"(work/{RETENTION}, not a film's own from `yt retention`) holds the channel's "
+        "measured retention; recorded, scoring nothing"]
     return card
 
 

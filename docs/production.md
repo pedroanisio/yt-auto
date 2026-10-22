@@ -66,7 +66,8 @@ both the narration and the frames (attention 23). The scorecard's `story`
 block restates the premise as the film made it, says what the viewer has at
 the end of each section, one non-blank line per section, and predicts a
 viewer's satisfaction, which scores nothing and is listed as not evidenced
-until the channel's `retention.json` exists (§12). A finding on the story
+until the channel-level `work/retention.json` exists (§12); the per-film
+`work/<slug>/retention.json` that `yt retention` writes does not count. A finding on the story
 belongs to `script`, whose duty names the same story as row 9 (hook,
 stakes, re-hooks, open questions, payoff).
 
@@ -497,7 +498,8 @@ An honest spec says where it is blind, so nobody mistakes silence for a pass:
   tagged `sanity_bound`. The reviewer's predicted
   satisfaction (`story.satisfaction` in the scorecard) is a ranking proxy
   (judging 4): `yt qa` records it and names it under `not_evidenced` until
-  the work directory holds the channel's `retention.json`.
+  the work directory holds the channel's own `work/retention.json`, which a
+  film's `work/<slug>/retention.json` from `yt retention` is not.
 
 ---
 

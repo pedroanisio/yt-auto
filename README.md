@@ -1261,8 +1261,9 @@ the end of each section (one non-blank line per screenplay section; an
 answer that skips or blanks one is asked again once, and what is still
 missing is named under `not_evidenced`), and predicts a viewer's
 satisfaction. That prediction scores nothing and is listed under
-`not_evidenced` until the work directory holds the channel's
-`retention.json`. A pass written before this has no `story` and still
+`not_evidenced` until the work directory holds the channel's own
+`work/retention.json`; the per-film `work/<slug>/retention.json` that `yt
+retention` writes does not count. A pass written before this has no `story` and still
 compares, since the comparison reads the scores only.
 
 The bar is applied mechanically on top: READY TO PUBLISH needs an overall of
