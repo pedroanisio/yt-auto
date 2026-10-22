@@ -186,12 +186,24 @@ class ScriptTest(DecisionCase):
 
         def answer(prompt, schema, system=None):
             FakeEngine.json_calls.append({"prompt": prompt, "schema": schema, "system": system})
+            # A whole story brief (AUTO-90): the plan's story fields are
+            # required, and a plan without them is asked again, then refused.
             if "sections" in schema.get("required", []):
-                return {"logline": "l", "promise": "p", "payoff": "p", "sections": [
-                    {"heading": "One", "purpose": "p", "seconds": 10, "beats": ["b"]}]}
+                return {"logline": "l", "promise": "p", "payoff": "p",
+                        "train": "Someone must learn whether it moves before it falls?",
+                        "stakes": "s", "viewer_stake": "v", "audience": "lay",
+                        "reveal": {"section": 1, "constraint_section": 1},
+                        "questions": [{"id": "Q1", "text": "Does it move?",
+                                       "opened_in": 1, "closed_in": 1}],
+                        "ending": {"payoff_line": "It moves.", "callback": "c",
+                                   "next_film": "n"},
+                        "sections": [{"heading": "One", "purpose": "p", "seconds": 10,
+                                      "beats": ["b"], "opens": ["Q1"], "closes": ["Q1"],
+                                      "connective": "open", "anchor_visual": "a drawing"}]}
             if "shots" in schema.get("required", []):
                 return {"shots": [{"visual": "a drawing", "narration": "It moves.",
-                                   "seconds": 4, "asset": "", "style": ""}]}
+                                   "seconds": 4, "asset": "", "style": "",
+                                   "function": "payoff", "shows": "the drawing moving"}]}
             return blank(schema)
 
         film, work = self.root / "a-film", self.root / "work"
