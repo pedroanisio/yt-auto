@@ -1344,12 +1344,20 @@ class Improver:
             self._log(f"\n[improve] {name}: {', '.join(stages)} from {evidence['pass']} "
                       f"(estimated ${guess:.2f})")
             failed = None
+            rejected = ""
             for stage, argv in zip(stages, argvs):
                 entry["argv"].append(argv)
                 code = self._run(argv)
                 entry["exit"][stage] = code
                 if code:
                     failed = f"{stage} exited {code}"
+                    break
+                rejected = story_rejected(self.root, stage, argv)
+                if rejected:
+                    # AUTO-93: the screenplay the pass wrote was read and
+                    # rejected; voicing and authoring it would spend the
+                    # pass on a story the reviewer would not voice.
+                    failed = rejected
                     break
             new = None
             if failed is None:
@@ -1380,8 +1388,10 @@ class Improver:
                 # diagnosis; the project goes back to the best pass.
                 snapshot(self.root, stages + ["gate", "qa"], pdir / "attempt")
                 restore(self.root, snap)
-                entry.update(decision="failed", reasons=[failed], attempt=str(pdir / "attempt"))
-                record["stop"] = {"reason": "stage-failed", "detail": f"{failed}; the "
+                entry.update(decision="stopped" if rejected else "failed", reasons=[failed],
+                             attempt=str(pdir / "attempt"))
+                record["stop"] = {"reason": "story-review" if rejected else "stage-failed",
+                                  "detail": f"{failed}; the "
                                   "snapshot was restored (the attempt's files are in "
                                   f"{IMPROVE_DIR}/{name}/attempt/) and the notes left open"}
                 self._save_pass(pdir, entry)
@@ -1527,6 +1537,23 @@ class Improver:
 # --------------------------------------------------------------------------- #
 # the report, in the shape of docs/production.md §11
 # --------------------------------------------------------------------------- #
+
+def story_rejected(root: Path, stage: str, argv: list[str]) -> str:
+    """Why a pass stops after its script ran with `--review`: the story
+    review rejected the screenplay it wrote (AUTO-93). The stage exits 0 on
+    a reject unless it was given --gate, which the loop does not pass; the
+    loop reads the verdict instead, so a pass is not spent voicing and
+    authoring a story its reviewer would not voice. Empty otherwise."""
+    if stage != "script" or "--review" not in argv:
+        return ""
+    review = (read_json(Path(root) / "script.json", warn=False) or {}).get("review")
+    if not isinstance(review, dict) or review.get("verdict") != "reject":
+        return ""
+    weak = ", ".join(f"{k} {v}" for k, v in (review.get("grades") or {}).items()
+                     if v in ("Poor", "Fair"))
+    return (f"the script's story review: reject ({weak or 'see script.md'}); the "
+            "screenplay this pass wrote was not voiced")
+
 
 def report_md(record: dict, root: Path) -> str:
     stamp = qa._stamp

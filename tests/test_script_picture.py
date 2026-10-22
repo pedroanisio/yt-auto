@@ -504,9 +504,10 @@ class OnlyThePictureRevisionChangesThePicture(unittest.TestCase):
 class Spend(unittest.TestCase):
     def test_the_review_flag_prices_the_picture_check_too(self):
         from ytstudio import spend
-        increment, decision = spend.FLAG_USD["script"]["--review"]
-        self.assertEqual(decision, "plan-review")
-        self.assertEqual(increment, spend.PLAN_REVIEW_USD + spend.PICTURE_CHECK_USD)
+        # one part of --review's price, beside the plan and story reviews
+        parts = dict((decision, cost) for cost, decision in spend.FLAG_USD["script"]["--review"])
+        self.assertEqual(parts["picture-check"], spend.PICTURE_CHECK_USD)
+        self.assertEqual(parts["plan-review"], spend.PLAN_REVIEW_USD)
         self.assertGreater(spend.PICTURE_CHECK_USD, 0)
 
 

@@ -411,8 +411,10 @@ class Reviewer(unittest.TestCase):
         self.assertTrue(pictures)
         self.assertEqual({(c["model"], c["cap"]) for c in pictures}, {("opus", 1.5)})
         self.assertIn(narrative.picture_role(), pictures[0]["system"])
+        # Everything the author writes is the author's model; the story
+        # review that follows the draft (AUTO-93) is the reviewer's too.
         others = {c["model"] for c in ByModel.seen
-                  if c["kind"] not in ("plan-review", "picture-check")}
+                  if c["kind"] in ("plan", "plan-fields", "shots", "edits", "fixes")}
         self.assertEqual(others, {"sonnet"})
         kept = json.loads((self.root / "decisions" / "script" / "plan-review.json").read_text())
         self.assertEqual(kept["model"], "opus")

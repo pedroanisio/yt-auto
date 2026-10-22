@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -236,7 +237,36 @@ def check_environment(work: Path) -> Report:
     for name in (work / "house.md",):
         if name.is_file():
             report.add("ok", "house", f"channel standards at {name}")
+    review_log(report, work)
     return report
+
+
+#: The story review's verdicts (AUTO-93), as `yt script --review` appends them.
+REVIEW_LOG = "review-log.jsonl"
+
+
+def review_log(report: Report, work: Path) -> None:
+    """How many story-review verdicts work/review-log.jsonl holds and how
+    many a person has labelled. It is the calibration set's raw material
+    (judging 10: --gate waits for 20 labelled scripts), and work/ is
+    disposable, so the note says to copy it out."""
+    path = Path(work) / REVIEW_LOG
+    if not path.is_file():
+        return
+    rows, labelled = 0, 0
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows += 1
+            labelled += row.get("label") is not None
+    report.metrics["review_log"] = {"verdicts": rows, "labelled": labelled}
+    report.add("note", "review log", f"{rows} verdict(s) in {path}, {labelled} labelled "
+               "by a person; it is evidence, and work/ is disposable",
+               f"copy {path} out of work/ before clearing it; label a row by reading "
+               "its script and setting `label` to reject, consider or recommend")
 
 
 # --------------------------------------------------------------------------- #
@@ -742,7 +772,14 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
         for finding in script.get("findings") or []:
             finding = str(finding)
             level, _, text = finding.partition(": ")
-            if level == "error":
+            if level == "error" and text.startswith("story review:"):
+                # AUTO-93: the story review rejected the script. Lines are
+                # not where a reject is fixed: the plan is, read again.
+                report.add("fail", "script", _clip(text),
+                           _cmd("script", project, "--fresh", "--review", "--notes",
+                                '"<what the Story review in script.md asks>"')
+                           + " (the verdict stops voice only under --gate)")
+            elif level == "error":
                 report.add("fail", "script", _clip(text),
                            _cmd("script", project, "--notes",
                                 '"<how to clear the rule>"')

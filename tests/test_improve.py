@@ -1271,5 +1271,55 @@ class DoctorNote(ImproveCase):
         self.assertFalse([f for f in report.findings if "yt improve" in f.fix])
 
 
+class StoryReview(ImproveCase):
+    """AUTO-93: a script the loop writes again is read by the story review;
+    a reject stops the pass before voice is paid for, and improve.md says
+    so with the verdict."""
+
+    class Runner(FakeRunner):
+        def __init__(self, root, cards=(), *, verdict="reject", **kw):
+            super().__init__(root, cards, **kw)
+            self.verdict = verdict
+
+        def __call__(self, argv):
+            code = super().__call__(argv)
+            if argv[0] == "script":
+                write_json(self.root / "script.json", {
+                    "target_seconds": 15, "sections": [], "written_by": "the pass",
+                    "findings": ["error: story review: reject (train Poor)"]
+                    if self.verdict == "reject" else [],
+                    "review": {"verdict": self.verdict, "grades": {"train": "Poor"},
+                               "unresolved": []}})
+            return code
+
+    def test_a_rejected_script_stops_the_pass_with_the_verdict_in_improve_md(self):
+        self.start_pass(card(5.0, findings=[prose("the story never pays off", owner="script")]))
+        FakeEngine.route = route_all_to("script")
+        runner = self.Runner(self.root, [card(6.0)])
+        record = self.improver(runner, max_passes=2, budget_usd=100).run()
+        self.assertEqual(runner.stages(), ["script"])
+        self.assertIn("--review", runner.calls[0])
+        self.assertEqual(record["stop"]["reason"], "story-review")
+        self.assertIn("reject", record["stop"]["detail"])
+        self.assertEqual(record["passes"][0]["decision"], "stopped")
+        # the project goes back to the best pass; the attempt is kept
+        self.assertNotIn("written_by", read_json(self.root / "script.json"))
+        attempt = self.root / "improve" / "pass-01" / "attempt" / "script.json"
+        self.assertEqual(read_json(attempt)["review"]["verdict"], "reject")
+        md = (self.root / improve.REPORT_MD).read_text()
+        self.assertIn("story-review", md)
+        self.assertIn("story review", md)
+        self.assertIn("reject", md)
+
+    def test_a_script_the_story_review_did_not_reject_goes_on(self):
+        self.start_pass(card(5.0, findings=[prose("the story never pays off", owner="script")]))
+        FakeEngine.route = route_all_to("script")
+        runner = self.Runner(self.root, [card(6.0)], verdict="consider")
+        record = self.improver(runner, max_passes=1, budget_usd=100).run()
+        self.assertEqual(runner.stages()[0], "script")
+        self.assertIn("qa", runner.stages())
+        self.assertNotEqual(record["stop"]["reason"], "story-review")
+
+
 if __name__ == "__main__":
     unittest.main()

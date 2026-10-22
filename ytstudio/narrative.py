@@ -33,11 +33,12 @@ its strength), so a round is never spent finding out what will be looked at.
 `yt script --review` wires the plan's role (`reviewer_role(plan=True)`),
 PLAN_REVIEW_SCHEMA and `check_plan_review` into the plan review (AUTO-92),
 and `picture_role()` and PICTURE_SCHEMA into the picture-check that reads
-the drafted screenplay's pictures with the narration taken away (AUTO-98);
-the story review is not wired yet (AUTO-93). Nothing here decides a
-verdict: it is schema and prompt text, and `check_review` and
+the drafted screenplay's pictures with the narration taken away (AUTO-98),
+and the script's role (`reviewer_role(seed=k)`), `review_schema` and
+`check_review` into the story review's three samples (AUTO-93). Nothing
+here decides a verdict: it is schema and prompt text, `check_review` and
 `check_plan_review` only name what the caller asks the model again about
-(invariant 3).
+(invariant 3), and `median` only reads the samples' own labels.
 
 A known gap: a criterion's strength is the README's word for its lead rule,
 and today none comes out `house`: six lead with a practitioner rule and the
@@ -60,6 +61,9 @@ LEVELS = ("Excellent", "Good", "Fair", "Poor")
 
 #: The three verdicts, worst first. `reject` is coverage's Pass.
 VERDICTS = ("reject", "consider", "recommend")
+
+#: A revision against the round before, worst first (`previous.verdict`).
+PREVIOUS = ("worse", "same", "better")
 
 #: How much a flag stands in the way of voicing.
 SEVERITIES = ("blocker", "important", "minor")
@@ -247,6 +251,32 @@ def grade_levels(seed: int) -> tuple[str, ...]:
     (judging 8: shuffle option order across evaluations)."""
     every = list(permutations(LEVELS))
     return every[(seed * 7) % len(every)]
+
+
+def median(values: Iterable[str], order: Iterable[str], *,
+           borderline: str | None = None) -> str | None:
+    """The middle label of `values` on the scale `order` (judging 11: the
+    majority of several runs, not one).
+
+    LEVELS runs best first; VERDICTS and PREVIOUS run worst first. Three
+    labels give the middle one, so a single outlier on either side is out
+    voted. An even count whose middle two differ is `borderline` when the
+    caller names one (two samples that disagree on the verdict are a
+    consider), else the worse of the two: a grade is never rounded up.
+    A label off the scale is not counted; nothing counted is None."""
+    scale = list(order)
+    worst_first = tuple(scale) in (VERDICTS, PREVIOUS)
+    ranked = sorted((scale.index(v) for v in values if v in scale),
+                    reverse=not worst_first)          # worst first
+    if not ranked:
+        return None
+    mid = len(ranked) // 2
+    if len(ranked) % 2:
+        return scale[ranked[mid]]
+    lo, hi = ranked[mid - 1], ranked[mid]
+    if lo == hi:
+        return scale[lo]
+    return borderline if borderline is not None else scale[lo]
 
 
 def _filled(text: str, window: str) -> str:

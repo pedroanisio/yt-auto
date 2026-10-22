@@ -26,7 +26,7 @@ CONCEPTS = {
     "bar": ("--bar", {"--author-bar": "vfx"}, ("keyframe", "vfx", "probe")),
     "budget": ("--budget-usd", {"--budget": "research"},
                ("keyframe", "vfx", "probe", "research", "assess", "improve", "run")),
-    "fresh": ("--fresh", {}, ("research", "keyframe", "vfx", "props")),
+    "fresh": ("--fresh", {}, ("research", "keyframe", "vfx", "props", "script")),
     "jobs": ("--jobs", {}, ("ideas", "research", "styles", "script", "keyframe", "vfx",
                             "probe", "sound")),
     # the shots sent back to the screenplay for one revision (AUTO-95)

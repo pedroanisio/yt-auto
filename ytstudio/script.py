@@ -29,7 +29,9 @@ script looking for lines the dossier does not back.
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
+import json
 import re
 import shutil
 import sys
@@ -47,6 +49,8 @@ from . import flags, harness, house, narrative, spend, workspace
 
 #: Narration pace. 150 wpm is an unhurried documentary read; 180 is brisk.
 DEFAULT_WPM = 150
+#: The runtime asked when `--minutes` is not given.
+DEFAULT_MINUTES = 10.0
 
 SYSTEM = (
     "You are a screenwriter for factual YouTube: documentary, explainer and "
@@ -1126,6 +1130,206 @@ def problem_lines(problems) -> list[str]:
     return out
 
 
+# --------------------------------------------------------------------------- #
+# the story review: the script read before voice is paid for (AUTO-93)
+# --------------------------------------------------------------------------- #
+
+#: Samples of the story review a round (judging 11: the majority of at least
+#: three runs, never one). Each is its own decision, `review-r<round>-s<k>`,
+#: shown the rubric's levels in its own order (judging 8).
+STORY_SAMPLES = 3
+
+#: Every story-review verdict, one JSON line each, under the work directory:
+#: the calibration set's raw material (judging 10). `label` is null until a
+#: person reads the script and labels it; work/ is disposable, so the file
+#: is evidence to copy out.
+REVIEW_LOG = "review-log.jsonl"
+
+#: What fixes a flag on the plan itself (the train, the reveal's setup, the
+#: whole script): a new plan, read again. A revision of lines cannot reach it.
+REPLAN_FIX = "yt script --fresh --review"
+
+#: When `--gate` is to be turned on: the review is a prior until it has been
+#: measured against people (judging 9, N10).
+GATE_WHEN = ("turn on once work/review-log.jsonl holds 20 labelled scripts and the "
+             "seeded-bad fixtures fail under the live reviewer")
+
+#: Judging 14: the cold reader knows nothing but the words. Its system holds
+#: the mission and this role only: no house, no feedback notes. Its first
+#: reading (`cold-read`) holds the narration alone; the plan's question
+#: texts, never their answers, come in a second (`cold-read-answers`), so
+#: the premise it restates is not primed by the questions the film was
+#: planned to raise.
+COLD_ROLE = (
+    "You are hearing a film's narration for the first time, the way a viewer "
+    "does: the words below are everything you know about it. You did not write "
+    "it and have read nothing behind it. Say what you understood from the words, "
+    "not what you guess the writer meant. Where the narration never says why "
+    "something matters, say so rather than supplying a reason of your own.")
+
+COLD_READ_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "premise": {"type": "string", "description": (
+            "what the film is about and what it asks, in one or two sentences of "
+            "your own, as the narration gave it to you")},
+        "unexplained_terms": {"type": "array", "items": {"type": "string"},
+                              "description": "words a viewer needs and is never told"},
+        "claims": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "claim": {"type": "string", "description": "a major claim the film makes"},
+                    "why_care": {"type": "string", "description": (
+                        "why a viewer should care about it, as the narration says; "
+                        "empty when it never says")},
+                },
+                "required": ["claim", "why_care"],
+            },
+        },
+    },
+    "required": ["premise", "unexplained_terms", "claims"],
+}
+
+#: The cold reader's second reading: where the narration answers each of
+#: the questions it is shown.
+ANSWERS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "answered": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"question_id": {"type": "string"},
+                               "shot_index": {"type": "integer", "description": (
+                                   "the number of the shot where the narration answers it")}},
+                "required": ["question_id", "shot_index"],
+            },
+        },
+    },
+    "required": ["answered"],
+}
+
+#: Whether the premise a cold reader restated is the film's train.
+MATCH_ROLE = (
+    "You compare two statements of what a film is about: the one it was planned "
+    "on and the one a first-time viewer gave after hearing only its narration. "
+    "You judge only whether they name the same question and the same obstacle.")
+
+MATCH_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string", "enum": ["match", "mismatch"], "description": (
+            "match: the viewer's premise names the train's question and obstacle, "
+            "in any words; mismatch: it names another question, only a topic, or "
+            "no obstacle")},
+        "difference": {"type": "string", "description": (
+            "what the viewer missed or heard instead; empty on a match")},
+    },
+    "required": ["verdict", "difference"],
+}
+
+#: A story-review sample's decision name, and the sample (seed) it is.
+_STORY_NAME = re.compile(r"^review-r\d+-s(\d+)(?:-again)?$")
+#: The cold reader's decisions (`cold-read`, `cold-read-answers`, and
+#: `-r<round>` when the draft that stands is read again) and the match's.
+_COLD_NAME = re.compile(r"^cold-read(?:-answers)?(?:-r\d+)?$")
+_MATCH_NAME = re.compile(r"^cold-read-match(?:-r\d+)?$")
+
+
+def merge_flags(samples: list[dict]) -> list[dict]:
+    """The valid samples' flags, one per shot, section and criterion: the
+    most severe wording kept, with how many samples raised it."""
+    rank = {s: i for i, s in enumerate(narrative.SEVERITIES)}
+    merged: dict[tuple, dict] = {}
+    for sample in samples:
+        for f in sample.get("flags") or []:
+            if not isinstance(f, dict):
+                continue
+            key = (int(f.get("n", 0) or 0), int(f.get("section", 0) or 0),
+                   str(f.get("criterion", "")))
+            have = merged.get(key)
+            if have is None:
+                merged[key] = dict(f, n=key[0], section=key[1], samples=1)
+                continue
+            have["samples"] += 1
+            if rank.get(f.get("severity"), 9) < rank.get(have.get("severity"), 9):
+                merged[key] = dict(f, n=key[0], section=key[1], samples=have["samples"])
+    return [merged[k] for k in sorted(merged)]
+
+
+def story_flag_line(f: dict) -> str:
+    """One review flag as the writer and the operator read it."""
+    where = (f"shot {f['n']}" if f.get("n") else
+             f"section {f['section']}" if f.get("section") else "the whole script")
+    fix = str(f.get("fix") or "").strip()
+    return (f"{where} [{f.get('criterion', '')}, {f.get('severity', '')}]: "
+            f"{str(f.get('problem') or '').strip()}" + (f" (fix: {fix})" if fix else ""))
+
+
+def story_review_lines(record) -> list[str]:
+    """The story review for script.md, beside the plan review and the
+    fact-check: the verdict and its samples, the grades, the cold read, what
+    was revised and redrafted, and what no revision can reach."""
+    if not isinstance(record, dict) or not record:
+        return []
+    out = ["## Story review", ""]
+    samples = record.get("samples") or []
+    valid = [s for s in samples if s.get("valid")]
+    rounds = len(record.get("rounds") or [])
+    out.append(f"**{record.get('verdict', '?')}** -- the median of {len(valid)} valid "
+               f"sample(s) of {len(samples)}, read by {record.get('model') or 'the reviewer'}"
+               + (f", over {rounds} rounds" if rounds > 1 else "") + ".")
+    if record.get("verdict") == "reject":
+        out.append("A reject stops voice only under `--gate`.")
+    out.append("")
+    grades = record.get("grades") or {}
+    if grades:
+        out += ["| Criterion | Grade |", "|---|---|"]
+        out += [f"| {k} | {grades[k]} |" for k in narrative.KEYS if grades.get(k)]
+        out.append("")
+    for s in samples:
+        state = ("failed: " + str(s["failed"]) if s.get("failed") else
+                 "valid" if s.get("valid") else
+                 "not valid: " + "; ".join(s.get("unsettled") or []))
+        out.append(f"- {s.get('name')}: {s.get('verdict') or '-'}"
+                   + (" (asked again)" if s.get("again") else "") + f", {state}")
+    if samples:
+        out.append("")
+    flagged = record.get("flags") or []
+    if flagged:
+        out += ["Flags:", ""] + [f"- {story_flag_line(f)}" for f in flagged] + [""]
+    cold = record.get("cold_read") or {}
+    if cold.get("premise"):
+        read = (f" of the draft revised in round {cold['round']}"
+                if (cold.get("round") or 1) > 1 else "")
+        out.append(f"Cold read{read}, from the narration alone: \"{cold['premise']}\" -- "
+                   f"{cold.get('match') or 'not matched'} against the train"
+                   + (f": {cold['difference']}" if cold.get("difference") else "") + ".")
+        if cold.get("unexplained_terms"):
+            out.append("Unexplained terms: " + ", ".join(cold["unexplained_terms"]) + ".")
+        if cold.get("unanswered"):
+            out.append("Questions the reader never heard answered: "
+                       + ", ".join(cold["unanswered"]) + ".")
+        out.append("")
+    elif cold.get("failed"):
+        out += [f"Cold read failed: {cold['failed']}", ""]
+    for r in record.get("revisions") or []:
+        out.append(f"- revised {r.get('label')}: \"{r.get('before', '')}\" -> "
+                   f"\"{r.get('after', '')}\" ({r.get('why', '')})")
+    for r in record.get("redrafts") or []:
+        out.append(f"- redrafted section {r.get('section')} ({r.get('name')}): "
+                   f"{r.get('shots_before')} shot(s) became {r.get('shots_after')}")
+    if record.get("previous_verdicts"):
+        out.append("Read again after revising: " + ", ".join(record["previous_verdicts"])
+                   + (" (the revision was put back)" if record.get("reverted") else ""))
+    for f in record.get("unresolved") or []:
+        out.append(f"- unresolved: {story_flag_line(f)} -- `{f.get('command', REPLAN_FIX)}`")
+    out.append("")
+    return out
+
+
 class Screenwriter:
     """Plans the beat sheet, writes each section, then polishes and checks."""
 
@@ -1138,6 +1342,8 @@ class Screenwriter:
                  jobs: int = 4, draft_effort: str | None = "medium",
                  reviewer_model: str | None = None,
                  review_budget_usd: float | None = None, rounds: int = 2,
+                 samples: int = STORY_SAMPLES, fresh: bool = False,
+                 review_log: Path | str | None = None,
                  verbose: bool = True, root: Path | str | None = None) -> None:
         self.idea = idea
         self.root = root            # the project, for its open revision notes
@@ -1155,8 +1361,14 @@ class Screenwriter:
         self.house_digest = house_digest or {}
         self.verbose = verbose
         self.jobs = max(1, jobs)
-        #: The fact-check's revision rounds (`--rounds`).
+        #: The revision rounds (`--rounds`) of the fact-check and of the
+        #: story review, each counted on its own.
         self.rounds = max(0, rounds)
+        #: The story review's samples a round, and where each verdict is
+        #: appended for the calibration set (none: not logged).
+        self.samples = max(1, samples)
+        self.review_log = Path(review_log) if review_log else None
+        self.fresh = fresh
         #: The plan review's record when it stopped the stage, for the
         #: command to keep where `yt run` does not read it as done.
         self.plan_review_stop: dict | None = None
@@ -1166,7 +1378,7 @@ class Screenwriter:
         #: The stage's one door to the model; each question is a named decision.
         self.harness = harness.Harness(
             root or ".", "script", model=model, role=SYSTEM,
-            house_digest=self.house_digest, verbose=verbose)
+            house_digest=self.house_digest, fresh=fresh, verbose=verbose)
         self.usage = self.harness.usage
         #: What the stage recorded instead of deciding: a value the model gave
         #: outside a schema list, kept as written and read as no role.
@@ -1174,7 +1386,7 @@ class Screenwriter:
         #: Drafting at its own effort, on the same books as the fact-check.
         self._drafter = harness.Harness(
             root or ".", "script", model=model, role=SYSTEM, effort=draft_effort,
-            house_digest=self.house_digest, verbose=verbose, usage=self.usage,
+            house_digest=self.house_digest, fresh=fresh, verbose=verbose, usage=self.usage,
             decisions=self.harness.decisions, lock=self.harness.lock)
         #: The plan's reader (AUTO-92): another model family (the command
         #: refuses the author's own), its own cap a review, the plan's
@@ -1183,7 +1395,7 @@ class Screenwriter:
         self.reviewer = harness.Harness(
             root or ".", "script", model=reviewer_model, role=narrative.reviewer_role(plan=True),
             house=house, house_digest=self.house_digest, budget_usd=review_budget_usd,
-            verbose=verbose, usage=self.usage, decisions=self.harness.decisions,
+            fresh=fresh, verbose=verbose, usage=self.usage, decisions=self.harness.decisions,
             lock=self.harness.lock) if reviewer_model else None
         #: The same reviewer's model reading the drafted screenplay's pictures
         #: with the narration taken away (AUTO-98), under a role of its own:
@@ -1191,8 +1403,15 @@ class Screenwriter:
         self.picture_reviewer = harness.Harness(
             root or ".", "script", model=reviewer_model, role=narrative.picture_role(),
             house=house, house_digest=self.house_digest, budget_usd=review_budget_usd,
-            verbose=verbose, usage=self.usage, decisions=self.harness.decisions,
+            fresh=fresh, verbose=verbose, usage=self.usage, decisions=self.harness.decisions,
             lock=self.harness.lock) if reviewer_model else None
+        self.reviewer_model = reviewer_model
+        self.review_budget_usd = review_budget_usd
+        #: The story review's readers (AUTO-93), made when first asked: one
+        #: per sample, each with the rubric's levels in its own order; the
+        #: cold reader, with nothing in its system but the mission and its
+        #: role; and the reader that matches its premise to the train.
+        self._readers: dict[object, harness.Harness] = {}
 
     # -- plumbing ----------------------------------------------------------
 
@@ -1200,11 +1419,37 @@ class Screenwriter:
         if self.verbose:
             print(msg, file=sys.stderr)
 
+    def _reader(self, which: object) -> harness.Harness:
+        """The story review's harness for sample `which` (an int seed),
+        `cold` or `match`: the reviewer's model and books, its own role.
+        The cold reader alone has no house and no feedback notes (judging
+        14: it knows the words and nothing else)."""
+        if which not in self._readers:
+            cold = which == "cold"
+            role = (COLD_ROLE if cold else MATCH_ROLE if which == "match"
+                    else narrative.reviewer_role(seed=int(which)))
+            self._readers[which] = harness.Harness(
+                self.root or ".", "script", model=self.reviewer_model or self.model,
+                role=role, house="" if cold else self.house,
+                house_digest=self.house_digest, feedback=not cold,
+                budget_usd=self.review_budget_usd, fresh=self.fresh,
+                verbose=self.verbose, usage=self.usage,
+                decisions=self.harness.decisions, lock=self.harness.lock)
+        return self._readers[which]
+
     def _ask(self, name: str, prompt: str, schema: dict) -> dict:
         if schema is narrative.PLAN_REVIEW_SCHEMA:
             return self.reviewer.decide(name, prompt, schema)
         if schema is narrative.PICTURE_SCHEMA:
             return self.picture_reviewer.decide(name, prompt, schema)
+        # The story review is routed by its decision's name, so a test that
+        # answers in place of `_ask` sees every question the stage asks.
+        story = _STORY_NAME.match(name)
+        if story:
+            return self._reader(int(story.group(1))).decide(name, prompt, schema)
+        if _COLD_NAME.match(name) or _MATCH_NAME.match(name):
+            return self._reader("cold" if _COLD_NAME.match(name) else "match").decide(
+                name, prompt, schema)
         drafting = ("shots" in schema.get("properties", {}) and self.draft_effort
                     and not claude_engine.default_for("effort"))
         return (self._drafter if drafting else self.harness).decide(name, prompt, schema)
@@ -1472,7 +1717,14 @@ class Screenwriter:
                       plan: dict, written: list[Shot],
                       next_heading: str, sourced: bool,
                       previous: dict | None = None,
-                      ledger: Ledger | None = None) -> list[Shot]:
+                      ledger: Ledger | None = None, name: str = "",
+                      redraft: list[str] | None = None,
+                      after: list[Shot] | None = None) -> list[Shot]:
+        """One section's shots, asked as `write-NN`. A `redraft` is the
+        story review sending a section back (`name` is `redraft-NN`): its
+        flags are in the prompt, with how the section before ends (`written`)
+        and how the one after opens (`after`), so the new section still
+        joins both: it picks up from the one and hands over to the other."""
         seconds = int(spec.get("seconds", 0) or 30)
         budget = words_for(seconds, self.wpm)
         self._say(f"[{index}/{total}] {spec.get('heading', '')} "
@@ -1523,6 +1775,17 @@ class Screenwriter:
             parts.append(f"The next section is \"{next_heading}\". End this "
                          "one so that it is the obvious next thing, without "
                          "announcing it.")
+        if after:
+            head = "\n\n".join(f'{s.label}: "{s.narration}"' for s in after[:2])
+            parts.append("The section after this one stays as written and opens "
+                         "with these shots; end this one so they follow without "
+                         f"restating them:\n\n{head}")
+        if redraft:
+            parts.append("This section was written before, and a story reviewer of "
+                         "another model sent it back with these problems. Write it "
+                         "again so that each is fixed. You may restructure the "
+                         "section; never add a fact:\n"
+                         + "\n".join(f"- {line}" for line in redraft))
 
         parts.append(
             f"Break the section into shots of 4-15 seconds, {seconds} seconds "
@@ -1556,7 +1819,7 @@ class Screenwriter:
                          "a line states something the research does not cover, "
                          "rather than attaching a source that does not say it.")
 
-        data = self._ask(f"write-{index:02d}", "\n\n".join(parts),
+        data = self._ask(name or f"write-{index:02d}", "\n\n".join(parts),
                          section_schema(sourced))
         return [Shot.from_raw(raw) for raw in data.get("shots", [])]
 
@@ -1625,7 +1888,8 @@ class Screenwriter:
     # -- stage five: fix what the check found ------------------------------
 
     def revise(self, shots: list[Shot], flags: list[dict], *,
-               name: str = "revise", rules: bool = False, back: str = "") -> dict:
+               name: str = "revise", rules: bool = False, back: str = "",
+               flagged_by: str = "the fact-check") -> dict:
         """The smallest fix for each flagged line, or a reason to keep it.
 
         Returns the `applied` rewrites (a row only where the text changed)
@@ -1638,7 +1902,10 @@ class Screenwriter:
         asks for the change each reason names instead of a fact fix, to the
         narration or, when the reason is about the screen, to the supers.
         Only the flagged numbers are answered: every other shot passed in is
-        there to read them in.
+        there to read them in. `flagged_by` names who flagged the lines
+        otherwise: the fact-check asks for the smallest defensible change,
+        the story review (`revise-story-N`) lets the line be restructured,
+        and neither lets a fact be added.
 
         A decision named `revise-picture` answers the picture-check's flags
         (AUTO-98): the writer sees each shot's picture beside its line, every
@@ -1723,10 +1990,22 @@ class Screenwriter:
                      "lines around it. Never add a fact. When the line is right as "
                      "written, answer keep and say why in one clause. Answer for "
                      "every listed number and no other."]
+        elif flagged_by != "the fact-check":
+            parts = [self._brief(), *([self.research] if self.research else []),
+                     "The script as written, with what each shot puts on screen:\n\n"
+                     + shot_listing(shots, cite=True, supers=True),
+                     f"These lines were flagged by {flagged_by}:\n\n" + problems,
+                     "For each flagged line make the change its flag asks for to its "
+                     "narration: you may restructure the line, never add a fact. Keep "
+                     "the voice, every fact the research supports and the line's job "
+                     "in the story, read against the lines around it, and keep it "
+                     "near its shot's length. When the line is right as written, "
+                     "answer keep and say why in one clause. Answer for every flagged "
+                     "number and no other."]
         else:
             parts = [self._brief(), *([self.research] if self.research else []),
                      "The script as written:\n\n" + shot_listing(shots, cite=True),
-                     "These lines were flagged by the fact-check:\n\n" + problems,
+                     f"These lines were flagged by {flagged_by}:\n\n" + problems,
                      "For each flagged line make the smallest change to its "
                      "narration that removes the problem: cut or soften the claim, "
                      "or state only what the research supports. Keep its length "
@@ -1828,6 +2107,425 @@ class Screenwriter:
         check["unresolved"] = [f for f in check.get("flags", [])
                                if f.get("severity") in REVISABLE and not f.get("kept")]
         return check
+
+    # -- the story review: read before voice is paid for (AUTO-93) ---------
+
+    def _story_prompt(self, sections: list[Section], plan: dict,
+                      previous: dict | None = None) -> str:
+        """What every sample of one round is shown: the brief, the plan, the
+        script section by section with what each shot puts on screen, and in
+        a revision round the review it revises. The rubric, with its levels
+        in the sample's own order, is in each sample's role."""
+        listing = "\n\n".join(
+            f"Section {i}: {sec.heading}\n"
+            + shot_listing(sec.shots, supers=True) for i, sec in enumerate(sections, 1))
+        parts = [self._brief(), harness.brief("The plan", plan_view(plan)),
+                 "The script, section by section; each shot is numbered first:\n\n"
+                 + listing,
+                 "Review this script as your role says. Tie every flag to its shot "
+                 "number and its section number: a problem of one line is that "
+                 "shot's; a problem of a whole section is shot 0 with that "
+                 "section's number; a problem of the plan or the whole script is "
+                 "shot 0 and section 0. A fix says what the writer changes, in the "
+                 "script's own words; it may restructure a line or a section, "
+                 "never ask for a fact the script does not have."]
+        if previous:
+            parts.append(
+                f"The previous review of the draft this one revises (verdict "
+                f"{previous.get('verdict')}; grades "
+                + ", ".join(f"{k} {v}" for k, v in (previous.get("grades") or {}).items())
+                + "). Its problems:\n"
+                + "\n".join(f"- {story_flag_line(f)}" for f in previous.get("flags") or [])
+                + "\n\nFill `previous`: whether this draft is better, the same or worse, "
+                "and for each problem above whether it is resolved, persists or regressed.")
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _sample_problems(review: dict, schema: dict, shots: set[int] | None = None,
+                         sections: int = 0) -> list[str]:
+        """What one sample says that its rubric or its schema forbids: the
+        rubric's own contradictions (narrative.check_review), a verdict or a
+        grade off its list, a revision round's missing `previous`, and a
+        flag on a shot (`shots`, the script's numbers) or a section (1 to
+        `sections`) the script does not have. A stray number is a broken
+        answer: read as given it would send a whole section or the plan
+        back for one sample's slip."""
+        if not isinstance(review, dict):
+            return ["the answer is not a review"]
+        found = narrative.check_review(review)
+        if review.get("verdict") not in narrative.VERDICTS:
+            found.append(f"the verdict {review.get('verdict')!r} is not one of "
+                         f"{', '.join(narrative.VERDICTS)}")
+        grades = review.get("grades") if isinstance(review.get("grades"), dict) else {}
+        off = [k for k in narrative.KEYS if grades.get(k) not in narrative.LEVELS]
+        if off:
+            found.append(f"{', '.join(off)} carry no grade from "
+                         f"{', '.join(narrative.LEVELS)}")
+        if "previous" in schema.get("required", []) and \
+                (review.get("previous") or {}).get("verdict") not in narrative.PREVIOUS:
+            found.append("a revision round says whether this draft is better, the same "
+                         "or worse than the one it revises: `previous` is missing")
+        for f in review.get("flags") or []:
+            if not isinstance(f, dict):
+                continue
+            try:
+                n, section = int(f.get("n", 0) or 0), int(f.get("section", 0) or 0)
+            except (TypeError, ValueError):
+                found.append(f"a flag's shot or section is not a number: {f}")
+                continue
+            if shots is not None and n and n not in shots:
+                found.append(f"a flag names shot {n}; the script's shots are numbered "
+                             f"1 to {max(shots, default=0)}")
+            elif sections and not 0 <= section <= sections:
+                found.append(f"a flag names section {section}; the script has "
+                             f"{sections} sections")
+        return found
+
+    def story_sample(self, name: str, prompt: str, schema: dict,
+                     shots: set[int] | None = None, sections: int = 0) -> dict:
+        """One sample of the story review, as a row. A sample whose answer
+        breaks its rubric is asked once more as `<name>-again` with what it
+        broke; still broken, it is not valid. A sample whose call fails is
+        not valid either, and its failed row is in the engine's report: a
+        failure is never read as a verdict."""
+        row: dict = {"name": name, "valid": False, "again": False}
+        try:
+            review = self._ask(name, prompt, schema)
+            problems = self._sample_problems(review, schema, shots, sections)
+            if problems:
+                self._say(f"[review] {name}: asking again ({'; '.join(problems)})")
+                row["again"] = True
+                review = self._ask(
+                    f"{name}-again", prompt + "\n\nYour previous answer broke the "
+                    "rubric it was graded on:\n" + "\n".join(f"- {p}" for p in problems)
+                    + "\nGrade again, keeping your verdict, grades and flags consistent.",
+                    schema)
+                problems = self._sample_problems(review, schema, shots, sections)
+        except ClaudeError as exc:
+            self._say(f"[review] {name} failed ({exc})")
+            row["failed"] = str(exc)
+            return row
+        grades = review.get("grades") if isinstance(review.get("grades"), dict) else {}
+        row.update(verdict=review.get("verdict"), grades=dict(grades),
+                   flags=[f for f in review.get("flags") or [] if isinstance(f, dict)],
+                   logline=review.get("logline", ""), synopsis=review.get("synopsis", ""),
+                   first_minute=review.get("first_minute") or {})
+        if isinstance(review.get("previous"), dict):
+            row["previous"] = review["previous"].get("verdict")
+            row["findings"] = review["previous"].get("findings") or []
+        if problems:
+            row["unsettled"] = problems
+        else:
+            row["valid"] = True
+        return row
+
+    def review_round(self, sections: list[Section], plan: dict, round_no: int,
+                     previous: dict | None = None) -> dict:
+        """One round of the story review: `self.samples` samples on the same
+        prompt, `review-r<round>-s1..`, each with its own level order. The
+        grade per criterion and the verdict are the medians of the valid
+        samples (narrative.median); fewer than two valid samples is
+        `not_evidenced`, never a verdict."""
+        prompt = self._story_prompt(sections, plan, previous)
+        numbers = {s.n for sec in sections for s in sec.shots}
+
+        def one(k: int) -> dict:
+            schema = narrative.review_schema(delta=previous is not None, seed=k)
+            return self.story_sample(f"review-r{round_no}-s{k}", prompt, schema,
+                                     shots=numbers, sections=len(sections))
+        seeds = range(1, self.samples + 1)
+        if self.jobs > 1 and self.samples > 1:
+            # The samples are independent readings; the books are shared
+            # under the harness's lock, and the rows keep the seeds' order.
+            with ThreadPoolExecutor(max_workers=min(self.jobs, self.samples)) as pool:
+                samples = list(pool.map(one, seeds))
+        else:
+            samples = [one(k) for k in seeds]
+        valid = [s for s in samples if s["valid"]]
+        grades = {k: narrative.median([s["grades"].get(k) for s in valid], narrative.LEVELS)
+                  for k in narrative.KEYS} if valid else {}
+        verdict = (narrative.median([s["verdict"] for s in valid], narrative.VERDICTS,
+                                    borderline="consider")
+                   if len(valid) >= 2 else "not_evidenced")
+        out = {"round": round_no, "grades": grades, "verdict": verdict,
+               "samples": samples, "flags": merge_flags(valid)}
+        if previous is not None:
+            out["previous"] = narrative.median([s.get("previous") for s in valid],
+                                               narrative.PREVIOUS, borderline="same") \
+                if len(valid) >= 2 else None
+        self._say(f"[review] round {round_no}: {verdict} "
+                  f"({len(valid)} of {len(samples)} sample(s) valid)")
+        self._log_verdict(out)
+        return out
+
+    def _log_verdict(self, rnd: dict) -> None:
+        """Append the round's verdict to the review log, for the calibration
+        set (judging 10). A round served whole from the cache is the same
+        verdict again and is not appended twice: whole means every decision
+        a sample used, its first answer and its `-again` when it was asked
+        again, since an again asked afresh can change the sample's verdict."""
+        if self.review_log is None:
+            return
+        used = [n for s in rnd["samples"]
+                for n in (s["name"], *((f"{s['name']}-again",) if s.get("again") else ()))]
+        cached = {d.name for d in self.harness.decisions if d.cached}
+        if all(n in cached for n in used):
+            return
+        row = {"slug": Path(self.root).name if self.root else "",
+               "when": time.strftime("%Y-%m-%dT%H:%M:%S"), "round": rnd["round"],
+               "grades": rnd["grades"], "verdict": rnd["verdict"],
+               "samples": [{k: s.get(k) for k in ("name", "verdict", "grades", "valid",
+                                                  "again", "failed")}
+                           for s in rnd["samples"]],
+               "model": self.reviewer_model or self.model, "label": None}
+        try:
+            self.review_log.parent.mkdir(parents=True, exist_ok=True)
+            with self.review_log.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+        except OSError as exc:
+            self.findings.append(f"warning: story review: the verdict could not be "
+                                 f"appended to {self.review_log} ({exc})")
+
+    def cold_read(self, shots: list[Shot], plan: dict, round_no: int = 1) -> dict:
+        """Judging 14: a reader who sees the narration and nothing else (no
+        research, no plan, no house) restates the premise, names the terms
+        it was never told and says why each major claim should matter
+        (`cold-read`). Only then is the same reader shown the plan's
+        question texts, without where the plan meant to answer them, and
+        asked where the narration answers each (`cold-read-answers`): shown
+        first, they would prime the premise. The premise is matched against
+        the train (`cold-read-match`). A draft read again after a revision
+        stood carries `-r<round>`. A failed call is recorded; the review's
+        samples still stand."""
+        tag = "" if round_no == 1 else f"-r{round_no}"
+        questions = [q for q in plan.get("questions") or [] if isinstance(q, dict)]
+        narration = ("The narration, shot by shot, each with its number:\n\n"
+                     + "\n".join(f"{s.n}. {s.narration or SILENT}" for s in shots))
+        try:
+            read = self._ask(
+                f"cold-read{tag}",
+                narration + "\n\nRestate the film's premise in your own words, list the "
+                "terms a viewer needs and is never told, and for each major claim say "
+                "why a viewer should care about it as the narration puts it.",
+                COLD_READ_SCHEMA)
+        except ClaudeError as exc:
+            self._say(f"[review] cold-read{tag} failed ({exc})")
+            return {"round": round_no, "failed": str(exc)}
+        out = {"round": round_no, "premise": str(read.get("premise", "")),
+               "unexplained_terms": list(read.get("unexplained_terms") or []),
+               "claims": list(read.get("claims") or []), "answered": [],
+               "unanswered": [], "match": "", "difference": ""}
+        if questions:
+            try:
+                got = self._ask(
+                    f"cold-read-answers{tag}",
+                    narration + "\n\nQuestions a viewer may be left asking. For each one "
+                    "this narration answers, give its id and the number of the shot that "
+                    "answers it; leave out any it never answers:\n"
+                    + "\n".join(f"- {q.get('id')}: {q.get('text')}" for q in questions),
+                    ANSWERS_SCHEMA)
+                answered = [a for a in got.get("answered") or [] if isinstance(a, dict)]
+                heard = {str(a.get("question_id")) for a in answered}
+                out["answered"] = answered
+                out["unanswered"] = [str(q.get("id")) for q in questions
+                                     if str(q.get("id")) not in heard]
+            except ClaudeError as exc:
+                self._say(f"[review] cold-read-answers{tag} failed ({exc})")
+                out["answers_failed"] = str(exc)
+        train = str(plan.get("train") or "").strip()
+        if not train or not out["premise"]:
+            return out
+        try:
+            match = self._ask(
+                f"cold-read-match{tag}",
+                f"The train the film was planned on:\n{train}\n\nWhat a first-time viewer "
+                f"took the film to be, from its narration alone:\n{out['premise']}\n\n"
+                "Do they name the same question and the same obstacle?", MATCH_SCHEMA)
+        except ClaudeError as exc:
+            self._say(f"[review] cold-read-match{tag} failed ({exc})")
+            out["match_failed"] = str(exc)
+            return out
+        out["match"] = str(match.get("verdict", ""))
+        out["difference"] = str(match.get("difference", ""))
+        return out
+
+    def _renumber(self, sections: list[Section]) -> list[Shot]:
+        """Number every shot again after a section was redrafted: its place
+        in the film, its label within its section and where it starts."""
+        shots, at = [], 0
+        for index, section in enumerate(sections, 1):
+            for i, shot in enumerate(section.shots, 1):
+                shot.n, shot.label = len(shots) + 1, f"{index}.{i}"
+                shot.at, at = at, at + shot.seconds
+                shots.append(shot)
+        return shots
+
+    def _redraft(self, sections: list[Section], specs: list[dict], plan: dict,
+                 index: int, flags: list[dict], name: str) -> dict | None:
+        """Write section `index` again with the review's flags on it, as
+        `name` (`redraft-NN`). The section keeps its old shots when the
+        call fails or comes back empty."""
+        before = [s for sec in sections[:index - 1] for s in sec.shots]
+        after = sections[index].shots if index < len(sections) else []
+        old = sections[index - 1].shots
+        try:
+            shots = self.write_section(
+                specs[index - 1], index=index, total=len(specs), plan=plan,
+                written=before, sourced=bool(self.research),
+                previous=specs[index - 2] if index > 1 else None,
+                ledger=Ledger.from_plan(specs),
+                next_heading=str(specs[index].get("heading", "")) if index < len(specs) else "",
+                name=name, redraft=[story_flag_line(f) for f in flags], after=after)
+        except ClaudeError as exc:
+            self._say(f"[review] {name} failed ({exc}); the section stays as written")
+            return None
+        if not shots:
+            return None
+        sections[index - 1].shots = shots
+        return {"section": index, "name": name, "shots_before": len(old),
+                "shots_after": len(shots),
+                "flags": [story_flag_line(f) for f in flags]}
+
+    def review_and_revise(self, sections: list[Section], plan: dict, *,
+                          fix: bool = True) -> dict:
+        """Read the drafted script before voice is paid for, and send back
+        what a consider names.
+
+        Round 1 is `self.samples` samples (`review-r1-s1..`) and the cold
+        read. On a consider (and with `fix`), each binding flag goes where
+        it can be fixed: a shot's to `revise-story-<round>`, a section's to
+        `redraft-NN`, and one on the plan or the whole script (shot 0,
+        section 0) is left unresolved with REPLAN_FIX, since a revision of
+        lines cannot reach it. The revised script is read again with the
+        review it revises (`review-r<round+1>-s..`, `previous` required);
+        it stands only when the samples call it better, else it is put back
+        and the rounds stop. When a revision stood, the cold reader reads the
+        draft that stands (`cold-read-r<round>`), and what is unresolved is
+        read from that draft's review and cold read only. Nothing here edits
+        a line: every change is the writer's answer (invariant 3). A
+        recommend, a reject and not_evidenced are recorded as they are."""
+        specs = plan.get("sections") or []
+        shots = [s for sec in sections for s in sec.shots]
+        current = self.review_round(sections, plan, 1)
+        cold = self.cold_read(shots, plan)
+        record: dict = {"model": self.reviewer_model or self.model, "rounds": [],
+                        "revisions": [], "redrafts": [], "kept": [], "unresolved": [],
+                        "cold_read": cold, "previous_verdicts": [], "reverted": False}
+        record["rounds"].append({k: current[k] for k in ("round", "verdict", "grades")})
+        round_no = 1
+        while current["verdict"] == "consider" and fix and round_no <= self.rounds:
+            binding = [f for f in current["flags"] if f.get("severity") in REVISABLE]
+            by_n = {s.n: s for s in shots}
+            to_shots, to_sections = [], {}
+            for f in binding:
+                n, section = int(f.get("n", 0) or 0), int(f.get("section", 0) or 0)
+                # A valid sample's flags name shots and sections the script
+                # has (_sample_problems); shot 0 with section 0 is the plan's,
+                # left for the record below.
+                if n in by_n:
+                    to_shots.append(f)
+                elif not n and 1 <= section <= min(len(sections), len(specs)):
+                    to_sections.setdefault(section, []).append(f)
+            # A section written again takes its shots' flags with it.
+            to_shots = [f for f in to_shots
+                        if by_n[int(f["n"])].label.split(".")[0]
+                        not in {str(i) for i in to_sections}]
+            if not to_shots and not to_sections:
+                break
+            kept_shots = copy.deepcopy([sec.shots for sec in sections])
+            result = self.revise(shots, to_shots, name=f"revise-story-{round_no}",
+                                 flagged_by="the story review")
+            redrafts = []
+            for index, flags_on in sorted(to_sections.items()):
+                done = self._redraft(sections, specs, plan, index, flags_on,
+                                     f"redraft-{index:02d}" if round_no == 1
+                                     else f"redraft-{index:02d}-r{round_no}")
+                if done:
+                    redrafts.append(done)
+            shots = self._renumber(sections)
+            if not result["applied"] and not redrafts:
+                # Nothing changed: the writer's reasons to keep speak of the
+                # draft that stands.
+                record["kept"] += result["kept"]
+                break
+            again = self.review_round(sections, plan, round_no + 1, previous=current)
+            judged = again.get("previous") or "not_evidenced"
+            record["previous_verdicts"].append(judged)
+            record["rounds"].append({"round": round_no + 1, "verdict": again["verdict"],
+                                     "grades": again["grades"], "previous": judged,
+                                     "revisions": result["applied"], "redrafts": redrafts,
+                                     "kept": result["kept"]})
+            if again["verdict"] == "not_evidenced" or judged != "better":
+                # The revision is not shown to be better: the draft it
+                # revised stands, with its review. Its round keeps what the
+                # writer kept; the record's `kept` speaks of the draft that
+                # stands, so it does not.
+                for sec, old in zip(sections, kept_shots):
+                    sec.shots = old
+                shots = self._renumber(sections)
+                record["reverted"] = True
+                record["rounds"][-1]["reverted"] = True
+                break
+            record["revisions"] += result["applied"]
+            record["redrafts"] += redrafts
+            record["kept"] += result["kept"]
+            current = again
+            round_no += 1
+        if round_no > 1:
+            # A revision stood: the cold reader reads the draft that stands,
+            # so its premise and its match speak of the narration voiced.
+            record["cold_read"] = cold = self.cold_read(shots, plan, round_no)
+        # What no revision of lines can reach, from the draft that stands:
+        # the plan flags of its own review (an earlier round's that a better
+        # draft no longer raises are gone) and its cold read's mismatch.
+        plan_flags: list[dict] = []
+        if cold.get("match") == "mismatch":
+            plan_flags.append({
+                "n": 0, "section": 0, "criterion": "train", "severity": "important",
+                "problem": f"a first-time reader took the film to be: {cold['premise']}"
+                           + (f" ({cold['difference']})" if cold.get("difference") else ""),
+                "fix": "make the train's question and obstacle heard in the narration",
+                "by": "cold-read-match"})
+        if current["verdict"] in ("consider", "reject"):
+            plan_flags += [f for f in current["flags"] if f.get("severity") in REVISABLE
+                           and not int(f.get("n", 0) or 0) and not int(f.get("section", 0) or 0)]
+        seen = set()
+        for f in plan_flags:
+            key = (f.get("criterion"), str(f.get("problem")))
+            if key not in seen:
+                seen.add(key)
+                record["unresolved"].append(dict(f, command=REPLAN_FIX))
+        record.update(grades=current["grades"], verdict=current["verdict"],
+                      samples=current["samples"], flags=current["flags"])
+        return record
+
+    def story_findings(self, record: dict) -> list[str]:
+        """The story review in the stage's findings: a reject is an `error:`
+        (doctor fails on it; it stops voice only under --gate), a review
+        with too few valid samples a `warning:`, and each flag no revision
+        can reach a `warning:` with the command that can."""
+        out = []
+        verdict = record.get("verdict")
+        grades = record.get("grades") or {}
+        weak = ", ".join(f"{k} {v}" for k, v in grades.items() if v in ("Poor", "Fair"))
+        if verdict == "reject":
+            out.append(f"error: story review: reject ({weak or 'see script.md'}); "
+                       f"`{REPLAN_FIX}` with --notes saying what the review asks")
+        elif verdict == "not_evidenced":
+            valid = sum(1 for s in record.get("samples") or [] if s.get("valid"))
+            out.append(f"warning: story review: not_evidenced ({valid} of "
+                       f"{len(record.get('samples') or [])} sample(s) valid); the script "
+                       "was not judged")
+        elif verdict == "consider":
+            out.append(f"note: story review: consider ({weak or 'no weak grade'}); its "
+                       "flags are in script.md")
+        for f in record.get("unresolved") or []:
+            out.append(f"warning: story review: {story_flag_line(f)}; a revision cannot "
+                       f"reach it: `{f.get('command', REPLAN_FIX)}`")
+        cold = record.get("cold_read") or {}
+        if cold.get("failed"):
+            out.append(f"warning: story review: the cold read failed ({cold['failed']})")
+        return out
 
     def _drop_repeats(self, sections: list[Section], shots: list[Shot]) -> int:
         """Reword the later mention of a figure two sections both said."""
@@ -2052,9 +2750,18 @@ class Screenwriter:
         if written:
             self._drop_repeats(sections, written)
         polished = self.polish(written) if do_polish and written else 0
+        # The story is read after the polish and before the rules and the
+        # fact-check (AUTO-93): a line it restructures is then measured and
+        # checked like any other, and a section it redrafts is numbered again.
+        story = (self.review_and_revise(sections, plan, fix=fix)
+                 if review and written else None)
+        if story is not None:
+            written[:] = [s for sec in sections for s in sec.shots]
+            self.findings += self.story_findings(story)
         # The pictures read without the words (AUTO-98), by the reviewer's
-        # model the plan review brought; before the rules and the
-        # fact-check, which then read whatever line revise-picture changed.
+        # model the plan review brought, on the draft the story review left;
+        # before the rules and the fact-check, which then read whatever line
+        # revise-picture changed.
         pictured = (self.picture_pass(sections, written, fix=fix)
                     if review and written else None)
         # The narration rules after the polish and before the fact-check, so
@@ -2090,6 +2797,8 @@ class Screenwriter:
             # The picture-check's reading and the flags still standing,
             # which bind the picture downstream (AUTO-98).
             **({"picture": pictured} if pictured is not None else {}),
+            # The story review's samples, verdict and revisions (AUTO-93).
+            **({"review": story} if story is not None else {}),
             "check": check,
             # The rules' flags still standing on the final text, what their
             # revision changed and what it kept, with the reason.
@@ -2914,6 +3623,11 @@ def print_script(idea: Idea, data: dict, sections: list[Section]) -> None:
     if review.get("verdict"):
         print(wrap(f"plan review: {review['verdict']}"
                    + (" (planned once more)" if review.get("retried") else ""), "  "))
+    story = data.get("review") if isinstance(data.get("review"), dict) else {}
+    if story.get("verdict"):
+        grades = ", ".join(f"{k} {v}" for k, v in (story.get("grades") or {}).items())
+        print(wrap(f"story review: {story['verdict']}"
+                   + (f" ({grades})" if grades else ""), "  "))
 
     for section in sections:
         print(f"\n\n{'=' * 78}\n{section.heading.upper()}  "
@@ -3064,6 +3778,7 @@ def write_md(path: str, idea: Idea, data: dict, sections: list[Section]) -> None
                f"- **Next film:** {ending.get('next_film', '')}", ""]
 
     md += plan_review_lines(data.get("plan_review"))
+    md += story_review_lines(data.get("review"))
     md += picture_lines(data.get("picture"))
 
     check = data.get("check") or {}
@@ -3135,8 +3850,8 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
     p = sub.add_parser(
         "script", parents=list(parents), help="write the full shooting script",
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--minutes", type=float, default=10.0,
-                   help="target runtime in minutes (default 10)")
+    p.add_argument("--minutes", type=float, default=DEFAULT_MINUTES,
+                   help=f"target runtime in minutes (default {DEFAULT_MINUTES:g})")
     p.add_argument("--wpm", type=int, default=DEFAULT_WPM,
                    help=f"narration pace (default {DEFAULT_WPM})")
     p.add_argument("--sections", type=int, default=0,
@@ -3174,15 +3889,26 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                    help="have a reviewer of another model family read the plan before "
                         "any section is drafted (plan-review): accept drafts, revise "
                         "plans once more with the problems, reject or a second revise "
-                        "stops the stage with exit 1")
+                        "stops the stage with exit 1; then read the drafted script "
+                        f"before voice: {STORY_SAMPLES} samples a round (review-r1-s1..), "
+                        "a cold read of the narration alone, and a consider's flags "
+                        "sent back (revise-story-N, redraft-NN). A reject is an error: "
+                        "finding; it stops the stage only with --gate")
+    p.add_argument("--gate", action="store_true",
+                   help="with --review: a story review that rejects, or that has too "
+                        "few valid samples to judge (not_evidenced), leaves "
+                        "narration.txt unwritten and exits 1; refused without --review "
+                        f"and with --revise. Off by default: {GATE_WHEN}")
+    flags.fresh(p, help="ask every decision again instead of reusing the ones on disk")
     flags.reviewer_model(p, default=REVIEWER_MODEL,
-                         help="the model that reviews the plan with --review, never the "
-                              f"author's own (default {REVIEWER_MODEL})")
+                         help="the model that reviews the plan and the story with "
+                              f"--review, never the author's own (default {REVIEWER_MODEL})")
     flags.review_budget(p, default=REVIEW_USD,
                         help=f"what one review may cost (default {REVIEW_USD:g})")
     flags.rounds(p, default=2,
-                 help="revision rounds of the fact-check with --verify (default 2); "
-                      "the plan review sends a plan back once whatever this says")
+                 help="revision rounds of the fact-check with --verify and of the story "
+                      "review with --review, each (default 2); the plan review sends a "
+                      "plan back once whatever this says")
     p.add_argument("--revise", default="", metavar="LABELS",
                    help="send these shots back for one revision instead of writing "
                         "the screenplay again: comma-separated labels (1.3,2.1), "
@@ -3216,6 +3942,14 @@ def run(args) -> int:
     if args.review and (own := flags.own_reviewer(args.model, args.reviewer_model)):
         print(own, file=sys.stderr)
         return 2
+    # --gate reads the verdict of the review this run makes. Without
+    # --review there is none, and --revise never reads the story again, so
+    # it would gate changed lines on a verdict about the old ones.
+    if getattr(args, "gate", False) and (not args.review or args.revise):
+        print("error: --gate stops voice on this run's story review: give it with "
+              "--review on a run that drafts the script, not with --revise",
+              file=sys.stderr)
+        return 2
 
     split = lambda s: [p.strip() for p in s.split(",") if p.strip()]  # noqa: E731
     idea, project = workspace.resolve(args, inputs=("dossier", "direction"))
@@ -3246,6 +3980,8 @@ def run(args) -> int:
         outline=(dossier or {}).get("outline") if args.outline else None,
         reviewer_model=args.reviewer_model if args.review else None,
         review_budget_usd=args.review_budget_usd, rounds=args.rounds,
+        fresh=getattr(args, "fresh", False),
+        review_log=review_log_path(args, project) if args.review else None,
         verbose=not args.quiet)
 
     stopped = Path(project.out("script", args.json_out)).with_name(PLAN_REVIEW_FILE)
@@ -3294,13 +4030,40 @@ def run(args) -> int:
         print(f"warning: {data['failed_sections']} section(s) failed and are "
               "empty", file=sys.stderr)
     print(f"{writer.usage}", file=sys.stderr)
+    gated = story_gate(args, data)
     if blocked:
-        print(f"error: {len(errors)} narration rule finding(s) of the error tier "
-              "stand; narration.txt was not written. Run `yt script` again with "
-              "--notes saying how to clear them, or --report-only to record them "
-              "and go on.", file=sys.stderr)
+        if errors:
+            print(f"error: {len(errors)} narration rule finding(s) of the error tier "
+                  "stand; narration.txt was not written. Run `yt script` again with "
+                  "--notes saying how to clear them, or --report-only to record them "
+                  "and go on.", file=sys.stderr)
+        if gated:
+            print(f"error: {gated}; narration.txt was not written (--gate). Run "
+                  f"`{REPLAN_FIX}` with --notes saying what the review asks, or "
+                  "drop --gate to record the verdict and go on.", file=sys.stderr)
         return 1
+    verdict = (data.get("review") or {}).get("verdict")
+    if verdict in ("reject", "not_evidenced"):
+        print(f"warning: story review: {verdict}; narration.txt was written, since "
+              f"--gate is off ({GATE_WHEN}). Doctor fails on a reject.", file=sys.stderr)
     return 1 if data["failed_sections"] else 0
+
+
+def review_log_path(args, project) -> Path:
+    """work/review-log.jsonl: the work directory named on the command line,
+    else the one the project sits in."""
+    work = getattr(args, "work", None)
+    return (Path(work) if work else Path(project.root).parent) / REVIEW_LOG
+
+
+def story_gate(args, data: dict) -> str:
+    """What stops voice under `--gate`: a story review that rejected, or one
+    that could not judge (not_evidenced). Empty without --gate, with
+    --report-only, or when the review passed."""
+    verdict = (data.get("review") or {}).get("verdict")
+    if not getattr(args, "gate", False) or getattr(args, "report_only", False):
+        return ""
+    return f"story review: {verdict}" if verdict in ("reject", "not_evidenced") else ""
 
 
 def write_outputs(args, project, idea: Idea, data: dict, sections: list[Section],
@@ -3310,10 +4073,13 @@ def write_outputs(args, project, idea: Idea, data: dict, sections: list[Section]
     A narration rule of the error tier still standing after its revision
     blocks the stage: the prompter a narrator reads from is not written (an
     older one is removed, so it cannot be read by mistake) and the caller
-    exits 1. --report-only records it and goes on. Returns the standing
-    errors and whether they blocked."""
-    errors = [f for f in data.get("findings", []) if str(f).startswith("error:")]
-    blocked = bool(errors) and not args.report_only
+    exits 1. --report-only records it and goes on. The story review's
+    reject is an `error:` too, but it blocks only under `--gate`
+    (story_gate): until the reviewer is calibrated it is evidence, not a
+    gate. Returns the standing rule errors and whether anything blocked."""
+    errors = [f for f in data.get("findings", []) if str(f).startswith("error:")
+              and not str(f).startswith("error: story review:")]
+    blocked = (bool(errors) and not args.report_only) or bool(story_gate(args, data))
     narration = project.out("narration", args.vo_out)
     for path, writer_fn in (
             (project.out("script_md", args.md_out),
@@ -3600,9 +4366,10 @@ def run_revise(args, idea: Idea, project) -> int:
               f"yt voice --redo {','.join(s.label for s in moved)} "
               f"--project {project.root}, then `yt retime`")
     if blocked:
-        print(f"error: {len(errors)} narration rule finding(s) of the error tier "
-              "stand; narration.txt was not written. Revise those shots again "
-              "(--revise with --why), or --report-only to record them and go on.",
-              file=sys.stderr)
+        if errors:
+            print(f"error: {len(errors)} narration rule finding(s) of the error tier "
+                  "stand; narration.txt was not written. Revise those shots again "
+                  "(--revise with --why), or --report-only to record them and go on.",
+                  file=sys.stderr)
         return 1
     return 0

@@ -438,12 +438,49 @@ instead, removed by the next run that gets past the plan.
 `--report-only` records a revise and drafts on; a reject still stops. No score
 is set as a bar here, as keyframe and vfx set one: the verdict is the bar. The review is capped by
 `--review-budget-usd` (2), adds about $0.50 (the picture-check below about
-$0.50 more, so `--review` is priced at about $1 before a record measures
-it), and is kept in `script.json`
+$0.50 more, and the story review is priced from the script's words), and is kept in `script.json`
 `plan_review` and the `## Plan review` section of `script.md`.
 
-The same reviewer reads the drafted screenplay with the sound off. After the
-polish, `picture-check` is shown each shot's picture (`visual`), what it must
+The same `--review` reads the drafted, polished script before the rules and
+the fact-check, so a story the reviewer would not voice is caught before any
+take is recorded. Three samples (`review-r1-s1`, `-s2`, `-s3`) are asked the
+same prompt, each with the rubric's four levels in its own order; a sample
+whose answer breaks its own rubric (`narrative.check_review`) is asked once
+more as `review-r1-sK-again`. The grade per criterion and the verdict are the
+median of the valid samples; two that disagree on the verdict are a
+consider; a failed call is a failed engine row, and fewer than two valid
+samples is `not_evidenced`, never a pass. A flag on a shot or a section the
+script does not have is a broken answer, asked again like any other. A cold
+reader (`cold-read`) hears the narration alone, with no research, plan or
+house in its prompt or its system, and restates the premise, names the terms
+it was never told and says why each major claim matters; only then is it
+shown the plan's questions and asked where they were answered
+(`cold-read-answers`), so they cannot prime the premise. `cold-read-match`
+checks that premise against the train. A consider sends its binding flags
+back: a shot's to `revise-story-1` (the line may be restructured, never given
+a new fact), a section's (shot 0) to `redraft-NN` (the section written again
+with the flags, how the section before it ends and how the one after it
+opens), and a flag on the plan itself stays unresolved with `yt script
+--fresh --review`. The revision is read again with the review it revises
+(`review-r2-s1`.., `previous` required) and stands only when the samples call
+it better, for at most `--rounds`; when it stands, the cold reader reads the
+draft that stands (`cold-read-r2`..), and what is unresolved is that draft's.
+It is priced from the script's words: about $0.74 for 10 minutes at opus. Every verdict is appended to
+`work/review-log.jsonl` with `label: null`, the raw material of the
+calibration set; copy it out, since `work/` is disposable.
+
+A reject is an `error: story review: reject` finding that `yt doctor` fails
+on; `narration.txt` is still written and the stage exits 0, because the
+reviewer is not calibrated yet. `--gate` makes a reject or `not_evidenced`
+leave `narration.txt` unwritten and exit 1; turn it on once
+work/review-log.jsonl holds 20 labelled scripts and the seeded-bad fixtures
+in `tests/fixtures/narrative/` fail under the live reviewer. `yt run` never
+passes it, and it is refused without `--review` or with `--revise`, which
+never reads the story again. The record is `script.json` `review` and the
+`## Story review` section of `script.md`.
+
+The same reviewer then reads the drafted screenplay with the sound off. After
+the story review, `picture-check` is shown each shot's picture (`visual`), what it must
 demonstrate (`shows`) and its on-screen text, with the plan's beat for each
 section, and never the narration. It writes the claim each section's
 pictures carry on their own and says whether that is the beat, then names
@@ -540,7 +577,7 @@ stale.
 
 `--minutes` · `--wpm` · `--sections` · `--outline` to use the dossier's own beat
 sheet · `--inspo` for voice · `--notes` which outrank everything else ·
-`--jobs` · `--report-only` · `--revise` · `--why`
+`--jobs` · `--report-only` · `--review` · `--gate` · `--fresh` · `--revise` · `--why`
 
 The runtime floor is 10 seconds (`yt sound` keeps the same floor), so a short
 film keeps its own length instead of being padded to half a minute.
@@ -1238,8 +1275,12 @@ the last failed pass again from the stage that failed, once its cause is fixed) 
 clean evidence, then keep or revert by the same rule). A prose finding that
 `build.json` contradicts (no audio, no narration, a placeholder) is routed nowhere
 and listed in `improve.md` as contradicted. The stages it reruns review with
-`opus` (the script's plan review, keyframe, vfx), so a `--model` of that
+`opus` (the script's plan and story review, keyframe, vfx), so a `--model` of that
 family is refused with exit 2 before any stage runs, as `yt run` refuses it.
+A script the pass writes again whose story review rejects it stops the pass
+(`story-review`): the snapshot is restored, the rejected screenplay is kept
+under `attempt/`, and `improve.md` gives the verdict, before any voice or
+authoring is paid for.
 
 ### `yt doctor`
 

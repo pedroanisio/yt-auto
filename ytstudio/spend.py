@@ -179,29 +179,110 @@ PLAN_REVIEW_USD = 0.5
 #: at most one `picture-check-again`) plus the author's one `revise-picture`.
 PICTURE_CHECK_USD = 0.5
 
-#: A flag that adds to what its stage costs: stage -> flag -> (the increment,
-#: the decision whose row in the stage's record shows the flag was on). The
-#: stage's DEFAULT_USD is the base. A record holding that decision (or a
-#: numbered one, `plan-review-2`) already counts it; one without it, or no
-#: record at all, gains the increment when the flag is asked.
-FLAG_USD = {"script": {"--review": (PLAN_REVIEW_USD + PICTURE_CHECK_USD,
-                                    "plan-review")}}
+#: The story review's reading of one whole script (AUTO-93), in tokens: what
+#: each sample is sent beyond the script (the mission, the role with every
+#: rubric level, the house, the brief and the plan), how many tokens a word
+#: of narration takes in the listing (the picture, the supers and the label
+#: ride beside each line), and what a sample writes back (the synopsis, the
+#: grades, the flags). The cold read is sent the narration alone, its
+#: answers reading the narration and the plan's questions; the match two
+#: sentences. Assumed until records measure them.
+REVIEW_OVERHEAD_TOKENS = 8000
+REVIEW_TOKENS_PER_WORD = 3.0
+REVIEW_OUTPUT_TOKENS = 2500
+COLD_READ_TOKENS = (1000, 1.5, 1500)          # overhead, per word, output
+ANSWERS_TOKENS = (1200, 1.5, 300)             # overhead, per word, output
+MATCH_TOKENS = (1200, 200)                    # input, output
 
 
-def _flag_increments(root: Path | None, stage: str, flags: Iterable[str]) -> list[tuple[str, float]]:
-    """The flags asked of `stage` whose cost the record under `root` does
-    not hold, each with its increment; with no `root`, every one asked."""
-    asked = [(f, *FLAG_USD[stage][f]) for f in dict.fromkeys(flags or ())
-             if f in FLAG_USD.get(stage, {})]
-    if not asked or root is None:
-        return [(f, usd) for f, usd, _ in asked]
-    rel = MANIFEST.get(stage)
-    doc = read_json(Path(root) / rel, warn=False) if rel else None
-    engine = doc.get("engine") if isinstance(doc, dict) else None
-    rows = engine.get("decisions") if isinstance(engine, dict) else None
-    names = {str(d.get("name")) for d in rows or [] if isinstance(d, dict)}
-    return [(f, usd) for f, usd, decision in asked
-            if not any(n == decision or n.startswith(decision + "-") for n in names)]
+def _argv_value(argv: Iterable[str], flag: str, default: Any) -> Any:
+    argv = list(argv or ())
+    if flag in argv and argv.index(flag) + 1 < len(argv):
+        return argv[argv.index(flag) + 1]
+    return default
+
+
+def _script_words(root: Path | None) -> int | None:
+    """The narration's words in the project's script.json, when it has one."""
+    doc = read_json(Path(root) / "script.json", warn=False) if root is not None else None
+    if not isinstance(doc, dict):
+        return None
+    words = sum(len(str(shot.get("narration") or "").split())
+                for sec in doc.get("sections") or [] if isinstance(sec, dict)
+                for shot in sec.get("shots") or [] if isinstance(shot, dict))
+    return words or None
+
+
+def story_review_usd(root: Path | None, argv: Iterable[str] = ()) -> float:
+    """What the story review adds to a script (AUTO-93): its samples
+    (script.STORY_SAMPLES a round) times the rounds (`--rounds`, default 2:
+    the reading and one re-reading on average), each a reading of the whole
+    script, plus the cold read, its answers and its match, once on the
+    first draft and, with a second round, once on the draft that stands,
+    priced at the reviewer's model (`--reviewer-model`, default opus). The
+    script's words are the project's own narration when script.json has
+    it, else what `--minutes` at `--wpm` would say (script.words_for, at
+    the script stage's own defaults). The writer's revisions are left to
+    the base."""
+    # script imports this module, so its constants are read here, when the
+    # estimate is made, not at import.
+    from .script import DEFAULT_MINUTES, DEFAULT_WPM, STORY_SAMPLES, words_for
+    try:
+        minutes = float(_argv_value(argv, "--minutes", DEFAULT_MINUTES))
+        wpm = int(_argv_value(argv, "--wpm", DEFAULT_WPM))
+        rounds = max(1, int(_argv_value(argv, "--rounds", 2)))
+    except (TypeError, ValueError):
+        minutes, wpm, rounds = DEFAULT_MINUTES, DEFAULT_WPM, 2
+    words = _script_words(root) or words_for(round(minutes * 60), wpm)
+    row = price_for(_argv_value(argv, "--reviewer-model", "opus")) or price_for("opus") or {}
+    per_in, per_out = row.get("input", 0.0) / 1e6, row.get("output", 0.0) / 1e6
+
+    def reading(overhead: float, per_word: float, out: float) -> float:
+        return (overhead + words * per_word) * per_in + out * per_out
+    sample = reading(REVIEW_OVERHEAD_TOKENS, REVIEW_TOKENS_PER_WORD, REVIEW_OUTPUT_TOKENS)
+    cold = (reading(*COLD_READ_TOKENS) + reading(*ANSWERS_TOKENS)
+            + MATCH_TOKENS[0] * per_in + MATCH_TOKENS[1] * per_out)
+    return round(STORY_SAMPLES * rounds * sample + min(rounds, 2) * cold, 2)
+
+
+#: A flag that adds to what its stage costs: stage -> flag -> its parts, each
+#: (the increment, the decision whose row in the stage's record shows that
+#: part was on). An increment is dollars, or a function of the project and
+#: the stage's argv when it scales with the work. The stage's DEFAULT_USD is
+#: the base. A record holding a part's decision (or a numbered one,
+#: `plan-review-2`, `review-r1-s1`) already counts it; one without it, or no
+#: record at all, gains the increment when the flag is asked. `--review` is
+#: the plan review (AUTO-92), the story review (AUTO-93) and the
+#: picture-check (AUTO-98), so a record written before one of them gains
+#: only what it lacks.
+FLAG_USD = {"script": {"--review": ((PLAN_REVIEW_USD, "plan-review"),
+                                    (story_review_usd, "review-r1"),
+                                    (PICTURE_CHECK_USD, "picture-check"))}}
+
+
+def flag_increments(root: Path | None, stage: str, argv: Iterable[str]) -> list[tuple[str, float]]:
+    """The flags asked of `stage` (in its `argv`) whose cost the record
+    under `root` does not hold, each with what its missing parts add; with
+    no `root`, every part of every flag asked."""
+    argv = list(argv or ())
+    names: set[str] = set()
+    if root is not None:
+        rel = MANIFEST.get(stage)
+        doc = read_json(Path(root) / rel, warn=False) if rel else None
+        engine = doc.get("engine") if isinstance(doc, dict) else None
+        rows = engine.get("decisions") if isinstance(engine, dict) else None
+        names = {str(d.get("name")) for d in rows or [] if isinstance(d, dict)}
+    out = []
+    for flag in dict.fromkeys(argv):
+        parts = FLAG_USD.get(stage, {}).get(flag)
+        if not parts:
+            continue
+        usd = sum((cost(root, argv) if callable(cost) else cost)
+                  for cost, decision in parts
+                  if not any(n == decision or n.startswith(decision + "-") for n in names))
+        if usd:
+            out.append((flag, round(usd, 2)))
+    return out
 
 
 def _with_flags(usd: float, source: str, added: list[tuple[str, float]]) -> tuple[float, str]:
@@ -261,7 +342,7 @@ def _like(root: Path, stage: str, flags: Iterable[str] = ()) -> tuple[float, str
         if other.is_dir() and other != root:
             cost = _reported(other, stage, None)
             if cost is not None:
-                added = _flag_increments(other, stage, flags)
+                added = flag_increments(other, stage, flags)
                 found.append((round(cost + sum(x for _, x in added), 2),
                               other.name + "".join(f" (with {f})" for f, _ in added)))
     if not found:
@@ -290,7 +371,7 @@ def stage_estimates(root: Path, stages: list[str],
             usd, source = _with_flags(
                 have, (MANIFEST.get(stage) or "qa.json")
                 + (f" sections {','.join(map(str, wanted))}" if wanted else ""),
-                _flag_increments(root, stage, flags))
+                flag_increments(root, stage, flags))
             row = {"stage": stage, "usd": usd, "basis": "measured", "source": source}
         elif like is not None:
             row = {"stage": stage, "usd": like[0], "basis": "like", "source": like[1]}
@@ -300,7 +381,7 @@ def stage_estimates(root: Path, stages: list[str],
         else:
             usd, source = _with_flags(
                 VFX_PASS_USD if stage == "vfx" else DEFAULT_USD.get(stage, 0.5),
-                "default, nothing reported", _flag_increments(None, stage, flags))
+                "default, nothing reported", flag_increments(None, stage, flags))
             row = {"stage": stage, "usd": usd, "basis": "assumed", "source": source}
         folded = folded or (stage == "vfx" and row["basis"] == "assumed")
         rows.append(row)
