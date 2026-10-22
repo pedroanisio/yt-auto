@@ -4,9 +4,9 @@ Every production stage decides through it, so what the tests pin is the
 contract the stages rely on: a decision is asked once per distinct input and
 served from the project afterwards; a changed input is asked again; `fresh`
 discards the cache; an agentic inspection that files no form is extracted
-from its own words; an answer that misses a required field or holds one of
-another type is asked again once, with the problem named; and a failure is
-an error, never a silent default.
+from its own words; an answer that misses a required field, holds one of
+another type or a value outside its enum is asked again once, with the
+problem named; and a failure is an error, never a silent default.
 """
 
 import json
@@ -21,6 +21,9 @@ SCHEMA = {"type": "object", "properties": {"answer": {"type": "string"}},
           "required": ["answer"]}
 NUMBER = {"type": "object", "properties": {"tail": {"type": "number"}},
           "required": ["tail"]}
+MODE = {"type": "object", "properties": {"mix": {
+    "type": "object", "properties": {"mode": {"type": "string", "enum": ["integrated", "dynamic"]}},
+    "required": ["mode"]}}, "required": ["mix"]}
 
 
 class FakeEngine:
@@ -155,6 +158,22 @@ class Decide(HarnessCase):
         FakeEngine.answers = [{"tail": "a beat"}, {"tail": "still a beat"}]
         got = self.make().decide("edit", "p", NUMBER)
         self.assertEqual(got, {"tail": "still a beat"})
+        self.assertEqual(len(FakeEngine.json_calls), 2)
+
+    def test_a_value_outside_the_enum_is_asked_again_once_and_the_good_answer_kept(self):
+        # AUTO-85: a nested mode outside the enum used to reach the stage unnamed
+        FakeEngine.answers = [{"mix": {"mode": "loud"}}, {"mix": {"mode": "dynamic"}}]
+        got = self.make().decide("edit", "p", MODE)
+        self.assertEqual(got, {"mix": {"mode": "dynamic"}})
+        self.assertEqual(len(FakeEngine.json_calls), 2)
+        retry = FakeEngine.json_calls[1]["prompt"]
+        self.assertIn("mix.mode", retry)
+        self.assertIn("loud", retry)
+
+    def test_a_second_value_outside_the_enum_goes_to_the_stages_fallback(self):
+        FakeEngine.answers = [{"mix": {"mode": "loud"}}, {"mix": {"mode": "louder"}}]
+        got = self.make().decide("edit", "p", MODE)
+        self.assertEqual(got, {"mix": {"mode": "louder"}})
         self.assertEqual(len(FakeEngine.json_calls), 2)
 
     def test_a_good_answer_is_asked_once(self):

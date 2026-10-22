@@ -100,6 +100,18 @@ class Record(unittest.TestCase):
         data = self.run_with(palette())
         self.assertEqual(data["normalize"], MIX["normalize"])
 
+    def test_a_mode_outside_the_set_is_discarded_and_said(self):
+        # the harness asked again once; what still came back is not a mode
+        # the build has, so the build's own default stands, and the stage says so
+        d = designer()
+        said = []
+        d._say = said.append
+        d.plan = lambda: palette(normalize={"mode": "loud", "reason": "r"})
+        d.spot_whole = cues
+        data = d.run()
+        self.assertNotIn("normalize", data)
+        self.assertEqual(len([s for s in said if "loud" in s and "normalize" in s]), 1)
+
     def test_a_palette_without_the_decision_writes_none(self):
         # an older palette, or a fake: the build then falls to its own default
         data = self.run_with({"mix": {"narration": "-16 LUFS"}})

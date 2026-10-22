@@ -24,6 +24,8 @@ ROOT = Path(__file__).resolve().parent.parent
 def blank(schema: dict):
     """An answer that satisfies `schema` and says nothing."""
     kind = schema.get("type")
+    if schema.get("enum"):         # a value outside the enum is asked again
+        return schema["enum"][0]
     if kind == "object":
         return {k: blank(v) for k, v in (schema.get("properties") or {}).items()
                 if k in schema.get("required", [])}

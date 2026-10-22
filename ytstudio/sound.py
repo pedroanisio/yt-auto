@@ -1037,6 +1037,11 @@ class SoundDesigner:
         if isinstance(decided, dict) and decided.get("mode") in NORMALIZE_MODES:
             data["normalize"] = {"mode": decided["mode"],
                                  "reason": str(decided.get("reason") or "")}
+        elif isinstance(decided, dict):
+            # asked again once by the harness already; the build's default
+            # stands and build.json records it as such
+            self._say(f"[palette] normalize mode {decided.get('mode')!r} is not one "
+                      f"of {', '.join(NORMALIZE_MODES)}; the build decides")
         return data
 
 
