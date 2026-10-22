@@ -8,7 +8,7 @@
   },
   "review": {
     "logline": "A comet's tail leads it away from the Sun because sunlight and a wind from the Sun push it, not because it trails behind.",
-    "synopsis": "A comet leaves the Sun tail first; sunlight is too weak to explain the gas tail; Biermann proposes a wind from the Sun and Mariner 2 measures it; the opening comet is seen again.",
+    "synopsis": "A comet leaves the Sun tail first; sunlight is too weak to explain the gas tail; Biermann proposes a wind from the Sun and Mariner 2 measures it; the opening comet is seen again and the film ends on \"And that's comets.\" with no answer stated.",
     "grades": {
       "train": "Excellent",
       "hook": "Excellent",
@@ -22,16 +22,16 @@
     "flags": [
       {
         "n": 0,
-        "section": 4,
+        "section": 0,
         "criterion": "ending",
-        "problem": "Nothing pays the promise: the payoff is empty and the last line is a sign-off.",
+        "problem": "The plan's payoff is empty and its last line, \"And that's comets.\", pays nothing the promise asked.",
         "severity": "blocker",
         "fix": "Write the payoff as the answer to why the comet flies tail first, and end on it."
       }
     ],
     "first_minute": {
-      "promise_match": "The comet and its tail are on screen and named at once.",
-      "question_and_stakes": "Why the tail leads; the same wind reached Quebec in 1989."
+      "promise_match": "From the plan (no script yet): section 1 opens on a comet leaving the Sun tail first, the subject the title promised.",
+      "question_and_stakes": "From the plan: why the tail leads, and section 1 says the same wind reaches Earth."
     }
   },
   "plan_review": {

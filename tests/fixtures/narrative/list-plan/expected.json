@@ -7,15 +7,15 @@
     "says": "and"
   },
   "review": {
-    "logline": "A comet's tail leads it away from the Sun because sunlight and a wind from the Sun push it, not because it trails behind.",
-    "synopsis": "A comet leaves the Sun tail first; sunlight is too weak to explain the gas tail; Biermann proposes a wind from the Sun and Mariner 2 measures it; the opening comet is seen again.",
+    "logline": "A tour of comets (what they are, famous ones, the two tails, a mission to come) that never asks why a comet leaving the Sun flies tail first.",
+    "synopsis": "Section 1 gives comet facts: ice and dust, an orbit round the Sun. Section 2 lists Halley, Hale-Bopp and NEOWISE. Section 3 names the dust and the gas tail. Section 4 looks ahead to Comet Interceptor. The plan's payoff line is about the wind, but no section carries the wind.",
     "grades": {
       "train": "Poor",
-      "hook": "Excellent",
-      "stakes": "Excellent",
-      "open_loops": "Excellent",
+      "hook": "Fair",
+      "stakes": "Poor",
+      "open_loops": "Fair",
       "reveal_setup": "Fair",
-      "ending": "Excellent",
+      "ending": "Poor",
       "honesty": "Excellent"
     },
     "verdict": "reject",
@@ -35,11 +35,43 @@
         "problem": "Future missions answers nothing the film asked.",
         "severity": "important",
         "fix": "Cut it; end on the opening comet."
+      },
+      {
+        "n": 0,
+        "section": 1,
+        "criterion": "hook",
+        "problem": "Section 1 opens on what comets are made of; the comet flying tail first, which the title promises, is not shown or asked about.",
+        "severity": "important",
+        "fix": "Open on a comet leaving the Sun with its tail ahead, and ask why."
+      },
+      {
+        "n": 0,
+        "section": 1,
+        "criterion": "stakes",
+        "problem": "No section says what is at risk: the plan's stakes (the wind reaching Earth) appear nowhere, and the film explains before it gives a reason to care.",
+        "severity": "blocker",
+        "fix": "Put the wind that reaches Earth into section 1, before any mechanism."
+      },
+      {
+        "n": 0,
+        "section": 3,
+        "criterion": "open_loops",
+        "problem": "Q1 is marked closed in Tail types, but naming two tails does not say why the tail leads.",
+        "severity": "important",
+        "fix": "Close Q1 with the answer: the tail is pushed outward, by sunlight and by the wind."
+      },
+      {
+        "n": 0,
+        "section": 4,
+        "criterion": "ending",
+        "problem": "The last section is about a future mission; the promise is not paid there.",
+        "severity": "blocker",
+        "fix": "End on the opening comet seen again, with the payoff line."
       }
     ],
     "first_minute": {
-      "promise_match": "The comet and its tail are on screen and named at once.",
-      "question_and_stakes": "Why the tail leads; the same wind reached Quebec in 1989."
+      "promise_match": "From the plan (no script yet): section 1 shows a comet nucleus and says comets are ice and dust; the comet is named, but its tail leading it, which the title promises, is not.",
+      "question_and_stakes": "From the plan: no question beyond what a comet is, and nothing at stake for the viewer."
     }
   },
   "plan_review": {

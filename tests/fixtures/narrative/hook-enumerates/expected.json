@@ -2,6 +2,7 @@
   "criterion": "hook",
   "verdict": "consider",
   "why": "The first line lists the conclusions, so no question is left open (structure 13).",
+  "judging_10": "judging 10 asks the calibration run for reject on every seeded case. This case's one fault is a Poor hook, and the hook is not one of the four criteria that decide a film, so by judging 12 it is a consider: a concrete problem to fix before voicing, not a film that fails in most areas. The calibration fails a reviewer that says recommend here, grades hook above Fair or leaves it without a flag.",
   "evidence": {
     "in": "script.sections.0.shots.0.narration",
     "says": "in this video"

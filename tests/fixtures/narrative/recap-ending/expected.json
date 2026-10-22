@@ -2,6 +2,7 @@
   "criterion": "ending",
   "verdict": "consider",
   "why": "The last line summarises and signs off instead of paying the promise in one short line (structure 27, 33).",
+  "judging_10": "judging 10 asks the calibration run for reject on every seeded case. This case's one fault is an ending graded Fair (the promise is paid, then buried under a recap), and judging 11 returns a borderline result as consider, never reject. The calibration fails a reviewer that says recommend here, grades ending above Fair or leaves it without a flag.",
   "evidence": {
     "in": "script.sections.3.shots.1.narration",
     "says": "to recap"

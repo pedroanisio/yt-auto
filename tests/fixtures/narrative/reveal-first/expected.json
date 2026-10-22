@@ -2,6 +2,7 @@
   "criterion": "reveal_setup",
   "verdict": "consider",
   "why": "Section 1 names the solar wind before section 2 shows why sunlight is not enough, so the reveal lands unearned (structure 22).",
+  "judging_10": "judging 10 asks the calibration run for reject on every seeded case. This case's fault is a Poor reveal_setup with a Fair on open_loops beside it; reveal_setup does not decide a film, so by judging 12 it is a consider: concrete problems to fix before voicing. The calibration fails a reviewer that says recommend here, grades reveal_setup above Fair or leaves it without a flag.",
   "evidence": {
     "in": "script.sections.0.shots.2.narration",
     "says": "solar wind"
