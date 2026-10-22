@@ -436,8 +436,15 @@ class Kept(unittest.TestCase):
         _, data = self.run_it()
         again = json.loads(json.dumps(data))
         for key in ("train", "stakes", "viewer_stake", "misconception",
-                    "misconception_why", "audience", "reveal", "questions", "ending"):
+                    "misconception_why", "audience", "reveal", "ending"):
             self.assertEqual(again[key], PLAN[key], key)
+        # the plan's ledger, each question with the shots that raise and
+        # answer it beside it (AUTO-96)
+        self.assertEqual([{k: v for k, v in q.items() if k not in ("opened_at", "closed_at")}
+                          for q in again["questions"]], PLAN["questions"])
+        for q in again["questions"]:
+            self.assertIn("opened_at", q)
+            self.assertIn("closed_at", q)
         sections = script.sections_of(again)
         self.assertEqual(sections[1].opens, ["Q2"])
         self.assertEqual(sections[1].connective, "but")

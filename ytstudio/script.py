@@ -239,6 +239,19 @@ def section_schema(sourced: bool) -> dict:
             "one clause: what the picture demonstrates of this line's claim")},
     }
     required = ["visual", "narration", "seconds", "asset", "style", "function", "shows"]
+
+    def marks(at: str, does: str) -> dict:
+        # The writer knows its own shots by their place in the section only:
+        # labels such as 3.2 are given after every section is drafted.
+        return {"type": "array", "description": (
+                    f"each question of the ledger this section's narration {does}, "
+                    "with the shot whose line does it"),
+                "items": {"type": "object",
+                          "properties": {"id": {"type": "string"},
+                                         at: {"type": "integer", "description": (
+                                             "the shot's number in this section, 1 "
+                                             "for its first shot")}},
+                          "required": ["id", at]}}
     return {
         "type": "object",
         "properties": {
@@ -246,7 +259,11 @@ def section_schema(sourced: bool) -> dict:
                 "type": "array",
                 "items": {"type": "object", "properties": props,
                           "required": required + (["source"] if sourced else [])},
-            }
+            },
+            # AUTO-96: optional, so a section that raises and answers nothing
+            # is not asked again; a question it leaves unnamed reads as open.
+            "opens": marks("opens_at", "raises"),
+            "closes": marks("closes_at", "answers"),
         },
         "required": ["shots"],
     }
@@ -435,6 +452,11 @@ class Shot:
     revised: str = ""   # why the polish pass rewrote this line
     function: str = ""  # its role in the story (FUNCTIONS); "" before AUTO-90
     shows: str = ""     # what the picture demonstrates of the line's claim
+    # The plan questions this shot's line raises and answers, as its writer
+    # named them (`opens_at`, `closes_at`; AUTO-96). Kept on the shot so the
+    # mark follows it through every revision, redraft and renumbering.
+    opens: list[str] = field(default_factory=list)
+    closes: list[str] = field(default_factory=list)
 
     @classmethod
     def from_raw(cls, raw: dict) -> Shot:
@@ -633,6 +655,260 @@ def repeated_figures(sections: list[Section]) -> list[dict]:
                     out.append({"figure": token, "n": shot.n, "label": shot.label,
                                 "first": first[key][1]})
     return out
+
+
+def _ids(values) -> list[str]:
+    return [str(q).strip() for q in values or [] if str(q).strip()]
+
+
+class QuestionLedger:
+    """Where the plan opens and answers each of its questions, shared by
+    sections drafted side by side (AUTO-96).
+
+    A section written at the same time as the one that raises its question,
+    or answers it, cannot read that section, so each writer is told up front
+    which questions it opens and which section answers them, and which it
+    answers and where they were opened (`brief_for`). The writer names the
+    shot that raises or answers each (`opens_at`, `closes_at`: the shot's
+    number inside its section, the only number it knows), and `mark` puts
+    the question on that shot, so the mark keeps to its line through every
+    revision, redraft and renumbering and becomes a label such as 3.2 once
+    the film is numbered. What counts as an answer is the writer's mark and
+    the cold reader's report, never a reading of the words in code
+    (invariant 3). Marking is safe from several drafting threads at once.
+    """
+
+    def __init__(self) -> None:
+        self._questions: dict[str, dict] = {}
+        self._opens: dict[str, list[int]] = {}
+        self._closes: dict[str, list[int]] = {}
+        #: `note:` lines for a mark naming a shot its section does not have.
+        self.notes: list[str] = []
+        self._lock = threading.Lock()
+
+    @classmethod
+    def from_plan(cls, plan: dict) -> QuestionLedger:
+        """From the plan's `questions` (opened_in, closed_in) and each
+        section's `opens` and `closes`; a question either names is counted
+        in both places."""
+        ledger = cls()
+        for q in (plan or {}).get("questions") or []:
+            if isinstance(q, dict) and str(q.get("id") or "").strip():
+                qid = str(q["id"]).strip()
+                ledger._questions[qid] = q
+                for key, store in (("opened_in", ledger._opens),
+                                   ("closed_in", ledger._closes)):
+                    at = q.get(key)
+                    if isinstance(at, int) and not isinstance(at, bool) and at > 0:
+                        store.setdefault(qid, []).append(at)
+        for index, spec in enumerate((plan or {}).get("sections") or [], 1):
+            if not isinstance(spec, dict):
+                continue
+            for key, store in (("opens", ledger._opens), ("closes", ledger._closes)):
+                for qid in _ids(spec.get(key)):
+                    store.setdefault(qid, []).append(index)
+        for store in (ledger._opens, ledger._closes):
+            for qid in store:
+                store[qid] = sorted(set(store[qid]))
+        return ledger
+
+    def known(self, qid: str) -> bool:
+        return qid in self._questions
+
+    def ids(self) -> list[str]:
+        return list(self._questions)
+
+    def opener(self, qid: str) -> int | None:
+        """The first section the plan raises the question in."""
+        return (self._opens.get(qid) or [None])[0]
+
+    def closer(self, qid: str) -> int | None:
+        """The first section the plan answers it in; None when no section
+        does (left open on purpose, or never placed)."""
+        return (self._closes.get(qid) or [None])[0]
+
+    def left_open(self, qid: str) -> bool:
+        """Left open on purpose: closed_in 0 and no section answers it
+        (structure 8 records the choice; `next_film` carries it on)."""
+        q = self._questions.get(qid) or {}
+        return q.get("closed_in") == 0 and not self._closes.get(qid)
+
+    def text(self, qid: str) -> str:
+        said = " ".join(str((self._questions.get(qid) or {}).get("text") or "").split())
+        return f"{qid} ({said})" if said else qid
+
+    def brief_for(self, index: int) -> str:
+        """Section `index`'s part of the ledger for its writer: each question
+        it opens and the section that answers it, each it answers and the
+        section that opened it, and how to name the shots that do."""
+        lines = []
+        for qid, at in self._opens.items():
+            if index not in at:
+                continue
+            later = [c for c in self._closes.get(qid, []) if c >= index]
+            if index in later:
+                tail = "you answer it in this section too"
+            elif self._closes.get(qid):
+                tail = f"section {(later or self._closes[qid])[0]} closes it"
+            elif self.left_open(qid):
+                why = " ".join(str(self._questions[qid].get("left_open_why") or "").split())
+                tail = "it is left open on purpose" + (f": {why}" if why else "")
+            else:
+                tail = "no section closes it"
+            lines.append(f"You open {self.text(qid)}; {tail}.")
+        for qid, at in self._closes.items():
+            if index not in at or index in self._opens.get(qid, []):
+                continue
+            opened = [o for o in self._opens.get(qid, []) if o < index]
+            lines.append(f"You close {self.text(qid)}, opened in section {opened[0]}."
+                         if opened else
+                         f"You close {self.text(qid)}; no section before this one opens it.")
+        if not lines:
+            return ""
+        return "\n".join(lines + [
+            "Say which shot does each: under opens, each question you raise with "
+            "opens_at, the number of the shot in this section whose line raises it "
+            "(1 for its first shot); under closes, each question you answer with "
+            "closes_at, the shot whose line answers it. Name only a line that "
+            "really raises or answers the question: one you do not name is read as "
+            "not answered."])
+
+    def mark(self, index: int, shots: list[Shot], answer: dict) -> None:
+        """Put the writer's `opens_at` and `closes_at` on section `index`'s
+        shots. A number past the section's shots marks nothing and is a
+        `note:`; a question the plan does not have is marked as written,
+        and the findings name it."""
+        for key, at in (("opens", "opens_at"), ("closes", "closes_at")):
+            for row in (answer or {}).get(key) or []:
+                if not isinstance(row, dict) or not str(row.get("id") or "").strip():
+                    continue
+                qid, i = str(row["id"]).strip(), _number(row.get(at))
+                if 1 <= i <= len(shots):
+                    marked = getattr(shots[i - 1], key)
+                    if qid not in marked:
+                        marked.append(qid)
+                    continue
+                with self._lock:
+                    self.notes.append(
+                        f"note: section {index}: {at} {row.get(at)} for {qid} names no "
+                        f"shot of its {len(shots)}; not counted as said")
+
+
+def _ledger_key(flag: dict) -> tuple:
+    """What a ledger flag is about, kept across renumbering: its rule and
+    its question, or its section for a section's flag."""
+    return (flag["rule"], flag.get("question") or flag.get("section", 0))
+
+
+def question_findings(plan: dict, sections: list[Section],
+                      cold_read: dict | None = None) -> list[dict]:
+    """The question ledger measured after drafting (AUTO-96), as rule flags
+    in CHECK_SCHEMA's shape (`rule`, `tier`, `n`, `severity`, `problem`,
+    `fix`) with the `question` or `section` they are about:
+
+    - `rule:open-loop`: a plan question, not left open on purpose, that no
+      shot says it answers (structure 8, 32); on the last shot of the
+      section the plan answers it in, where the answer belongs;
+    - `rule:closed-unopened`: a shot answering a question no shot raised
+      before it, or, where no writer named the raising shot, that the plan
+      opens only later, or one the plan does not have (structure 8);
+    - `rule:raises-nothing`: a section whose plan entry opens and closes no
+      question (structure 14, 19), minor;
+    - `rule:unanswered-by-reader`: a question the plan answers that the cold
+      reader, shown the questions after the narration alone, did not find
+      answered (`answered[]`), when there is such a reading.
+
+    The writer's mark is its own report and the reader's is a reader's, so
+    the ledger is measured against both; neither is second-guessed here. A
+    plan with no `questions` (one written before AUTO-90) is not measured."""
+    plan = plan or {}
+    if not isinstance(plan.get("questions"), list):
+        return []
+    ledger = QuestionLedger.from_plan(plan)
+    placed = [(index, shot) for index, sec in enumerate(sections, 1) for shot in sec.shots]
+    opened: dict[str, Shot] = {}
+    closed: dict[str, Shot] = {}
+    for _, shot in placed:
+        for qid in shot.opens:
+            opened.setdefault(qid, shot)
+        for qid in shot.closes:
+            closed.setdefault(qid, shot)
+
+    def last_of(index: int | None) -> Shot | None:
+        if index and 1 <= index <= len(sections) and sections[index - 1].shots:
+            return sections[index - 1].shots[-1]
+        return None
+
+    out: list[dict] = []
+    for index, sec in enumerate(sections, 1):
+        if not sec.opens and not sec.closes:
+            out.append(_flag(
+                "rule:raises-nothing", None,
+                f"section {index} (\"{sec.heading}\") opens and closes no question",
+                "open a specific question in its first line and answer it in the "
+                "section, or answer one an earlier section opened") | {"section": index})
+    for index, shot in placed:
+        for qid in shot.closes:
+            before, where = opened.get(qid), ledger.opener(qid)
+            if not ledger.known(qid):
+                why = f"answers {qid}, which is not in the plan's ledger"
+            elif before is not None and before.n > shot.n:
+                why = f"answers {ledger.text(qid)} before {before.label} raises it"
+            elif before is None and (where is None or where > index):
+                why = (f"answers {ledger.text(qid)}, "
+                       + (f"which the plan opens only in section {where}" if where
+                          else "which no section opens"))
+            else:
+                continue
+            out.append(_flag("rule:closed-unopened", shot, why,
+                             "raise the question before it is answered, or cut the answer")
+                       | {"question": qid, "section": index})
+    for qid in ledger.ids():
+        if qid in closed or ledger.left_open(qid):
+            continue
+        where = ledger.closer(qid)
+        target = last_of(where)
+        out.append(_flag(
+            "rule:open-loop", target,
+            f"{ledger.text(qid)} is never answered: "
+            + (f"the plan answers it in section {where}, and no shot of the film says "
+               "it does" if where else "the plan names no section that answers it"),
+            "answer the question in this line, or keep it and name the line that does")
+            | {"question": qid, "section": where or 0})
+    cold = cold_read if isinstance(cold_read, dict) else {}
+    if cold and isinstance(cold.get("answered"), list) and not cold.get("failed") \
+            and not cold.get("answers_failed"):
+        heard = {str(a.get("question_id")) for a in cold["answered"] if isinstance(a, dict)}
+        for qid in ledger.ids():
+            where = ledger.closer(qid)
+            if where is None or qid in heard:
+                continue
+            target = closed.get(qid) or last_of(where)
+            out.append(_flag(
+                "rule:unanswered-by-reader", target,
+                f"{ledger.text(qid)}: a first-time reader of the narration alone did "
+                "not find it answered",
+                "make the answer heard in the line that gives it")
+                | {"question": qid, "section": where})
+    return out
+
+
+def questions_record(plan: dict, sections: list[Section]) -> list[dict]:
+    """script.json's `questions`: the plan's ledger, each question with the
+    label of the first shot its writer said raises it (`opened_at`) and
+    answers it (`closed_at`), "" where none did; for qa and for mapping the
+    retention curve to the questions (AUTO-96)."""
+    opened: dict[str, str] = {}
+    closed: dict[str, str] = {}
+    for sec in sections:
+        for shot in sec.shots:
+            for qid in shot.opens:
+                opened.setdefault(qid, shot.label)
+            for qid in shot.closes:
+                closed.setdefault(qid, shot.label)
+    return [dict(q, opened_at=opened.get(str(q.get("id") or "").strip(), ""),
+                 closed_at=closed.get(str(q.get("id") or "").strip(), ""))
+            for q in (plan or {}).get("questions") or [] if isinstance(q, dict)]
 
 
 # --------------------------------------------------------------------------- #
@@ -924,15 +1200,12 @@ def _question(plan: dict, qid: str) -> str:
 
 
 def section_story_lines(spec: dict, plan: dict, *, index: int, total: int) -> list[str]:
-    """One section's part of the story: the questions it opens and answers,
-    how it joins the one before, what it re-opens, what escalates, the
-    picture it stands on, its place around the reveal and, for the last
-    section, the ending the plan locked."""
+    """One section's part of the story: how it joins the one before, what it
+    re-opens, what escalates, the picture it stands on, its place around the
+    reveal and, for the last section, the ending the plan locked. The
+    questions it opens and answers, with the sections that answer and opened
+    them, are the ledger's (`QuestionLedger.brief_for`, AUTO-96)."""
     bits = []
-    for key, verb in (("opens", "This section opens"), ("closes", "This section answers")):
-        ids = [str(q) for q in spec.get(key) or [] if str(q).strip()]
-        if ids:
-            bits.append(f"{verb}: " + "; ".join(_question(plan, q) for q in ids))
     if CONNECTIVE_BRIEF.get(str(spec.get("connective") or "")):
         bits.append(CONNECTIVE_BRIEF[str(spec["connective"])])
     if str(spec.get("rehook") or "").strip():
@@ -1412,6 +1685,11 @@ class Screenwriter:
         #: cold reader, with nothing in its system but the mission and its
         #: role; and the reader that matches its premise to the train.
         self._readers: dict[object, harness.Harness] = {}
+        #: The question ledger's flags a revision answered (a changed line)
+        #: and kept (with the writer's reason), by rule and question
+        #: (`_ledger_key`), so a renumbered draft keeps them (AUTO-96).
+        self._ledger_answered: set[tuple] = set()
+        self._ledger_kept: dict[tuple, str] = {}
 
     # -- plumbing ----------------------------------------------------------
 
@@ -1719,12 +1997,17 @@ class Screenwriter:
                       previous: dict | None = None,
                       ledger: Ledger | None = None, name: str = "",
                       redraft: list[str] | None = None,
-                      after: list[Shot] | None = None) -> list[Shot]:
+                      after: list[Shot] | None = None,
+                      questions: QuestionLedger | None = None) -> list[Shot]:
         """One section's shots, asked as `write-NN`. A `redraft` is the
         story review sending a section back (`name` is `redraft-NN`): its
         flags are in the prompt, with how the section before ends (`written`)
         and how the one after opens (`after`), so the new section still
-        joins both: it picks up from the one and hands over to the other."""
+        joins both: it picks up from the one and hands over to the other.
+        `questions` briefs the section's part of the question ledger and
+        puts the writer's `opens_at` and `closes_at` on the shots it names
+        (AUTO-96); without one it is read from the plan."""
+        questions = questions if questions is not None else QuestionLedger.from_plan(plan)
         seconds = int(spec.get("seconds", 0) or 30)
         budget = words_for(seconds, self.wpm)
         self._say(f"[{index}/{total}] {spec.get('heading', '')} "
@@ -1741,6 +2024,9 @@ class Screenwriter:
             f"Write section {index} of {total}: \"{spec.get('heading', '')}\".\n"
             f"Its job: {spec.get('purpose', 'as the beats require')}\n"
             f"Its beats, in order:\n{beats}")
+        brief = questions.brief_for(index)
+        if brief:
+            parts.append(brief)
         parts += section_story_lines(spec, plan, index=index, total=total)
         if spec.get("claims"):
             parts.append("The claims this section rests on:\n"
@@ -1821,7 +2107,9 @@ class Screenwriter:
 
         data = self._ask(name or f"write-{index:02d}", "\n\n".join(parts),
                          section_schema(sourced))
-        return [Shot.from_raw(raw) for raw in data.get("shots", [])]
+        shots = [Shot.from_raw(raw) for raw in data.get("shots", [])]
+        questions.mark(index, shots, data)
+        return shots
 
     # -- stage three: tighten ----------------------------------------------
 
@@ -2368,6 +2656,7 @@ class Screenwriter:
         before = [s for sec in sections[:index - 1] for s in sec.shots]
         after = sections[index].shots if index < len(sections) else []
         old = sections[index - 1].shots
+        questions = QuestionLedger.from_plan(plan)
         try:
             shots = self.write_section(
                 specs[index - 1], index=index, total=len(specs), plan=plan,
@@ -2375,10 +2664,12 @@ class Screenwriter:
                 previous=specs[index - 2] if index > 1 else None,
                 ledger=Ledger.from_plan(specs),
                 next_heading=str(specs[index].get("heading", "")) if index < len(specs) else "",
-                name=name, redraft=[story_flag_line(f) for f in flags], after=after)
+                name=name, redraft=[story_flag_line(f) for f in flags], after=after,
+                questions=questions)
         except ClaudeError as exc:
             self._say(f"[review] {name} failed ({exc}); the section stays as written")
             return None
+        self.findings += questions.notes
         if not shots:
             return None
         sections[index - 1].shots = shots
@@ -2527,17 +2818,71 @@ class Screenwriter:
             out.append(f"warning: story review: the cold read failed ({cold['failed']})")
         return out
 
-    def _drop_repeats(self, sections: list[Section], shots: list[Shot]) -> int:
-        """Reword the later mention of a figure two sections both said."""
-        rows = repeated_figures(sections)
-        if not rows:
-            return 0
-        flags = [{"n": r["n"], "severity": "important",
-                  "problem": f"states {r['figure']}, already said at {r['first']}; "
-                             "a figure is announced once",
-                  "fix": "refer back without the figure, or cut it"} for r in rows]
-        self._say(f"[ledger] {len(rows)} repeated figure(s)")
-        return len(self.revise(shots, flags, name="revise-ledger")["applied"])
+    def revise_ledger(self, sections: list[Section], shots: list[Shot], plan: dict, *,
+                      cold_read: dict | None = None, name: str = "revise-ledger",
+                      figures: bool = True, fix: bool = True) -> dict:
+        """Send what the sections drafted apart left unbalanced back to the
+        writer in one decision, `name`: the later mention of a figure two
+        sections both said (`figures`), and the question ledger's important
+        flags (`question_findings`, with the cold reader's answers when
+        `cold_read` is given; AUTO-96), each on the shot where it can be
+        fixed. Under `fix` False (`--report-only`) the ledger's flags are
+        only recorded; the figures are reworded as before.
+
+        A flagged line the writer changed counts as answered, as a picture
+        flag does: the line is not read again here, and an open loop's
+        rewritten line is then the shot that answers the question (the
+        writer's change is its report, as `closes_at` was). A line kept with
+        a reason keeps its flag, with the reason, in the findings. Both are
+        remembered by rule and question, across renumbering, for the next
+        call and for the stage's findings. Returns the `flags` still
+        standing, the rewrites `applied` and the lines `kept`."""
+        todo: list[dict] = []
+        if figures:
+            rows = repeated_figures(sections)
+            todo += [{"n": r["n"], "severity": "important",
+                      "problem": f"states {r['figure']}, already said at {r['first']}; "
+                                 "a figure is announced once",
+                      "fix": "refer back without the figure, or cut it"} for r in rows]
+            if rows:
+                self._say(f"[ledger] {len(rows)} repeated figure(s)")
+        asked = [f for f in question_findings(plan, sections, cold_read)
+                 if f["severity"] in REVISABLE and f["n"]
+                 and _ledger_key(f) not in self._ledger_kept
+                 and _ledger_key(f) not in self._ledger_answered] if fix else []
+        if asked:
+            self._say(f"[ledger] {len(asked)} question flag(s)")
+        result = ({"applied": [], "kept": []} if not todo + asked else
+                  self.revise(shots, todo + asked, name=name,
+                              flagged_by="the ledger of the film's questions and figures"))
+        changed = {row["n"] for row in result["applied"]}
+        why = {k["n"]: k["why"] for k in result["kept"]}
+        by_n = {s.n: s for s in shots}
+        for f in asked:
+            if f["n"] in changed:
+                self._ledger_answered.add(_ledger_key(f))
+                if f["rule"] == "rule:open-loop" and f["question"] not in by_n[f["n"]].closes:
+                    by_n[f["n"]].closes.append(f["question"])
+            elif f["n"] in why:
+                self._ledger_kept[_ledger_key(f)] = why[f["n"]]
+        return {"flags": self.ledger_flags(plan, sections, cold_read),
+                "applied": result["applied"], "kept": result["kept"]}
+
+    def ledger_flags(self, plan: dict, sections: list[Section],
+                     cold_read: dict | None = None) -> list[dict]:
+        """The ledger's flags on the draft as it stands, less those a
+        revision answered."""
+        return [f for f in question_findings(plan, sections, cold_read)
+                if _ledger_key(f) not in self._ledger_answered]
+
+    def ledger_lines(self, plan: dict, sections: list[Section],
+                     cold_read: dict | None = None, *, fix: bool = True) -> list[str]:
+        """The ledger's standing flags as findings, each kept one with the
+        writer's reason; `warning:` for every tier, so none blocks."""
+        flags = self.ledger_flags(plan, sections, cold_read)
+        kept = {(f["rule"], f["n"]): self._ledger_kept[_ledger_key(f)]
+                for f in flags if _ledger_key(f) in self._ledger_kept}
+        return flag_lines(flags, kept, revised=fix)
 
     def revise_rules(self, sections: list[Section], shots: list[Shot], plan: dict,
                      *, rounds: int = 2) -> dict:
@@ -2674,7 +3019,9 @@ class Screenwriter:
     # -- run ---------------------------------------------------------------
 
     def _draft(self, index: int, specs: list[dict], plan: dict, sourced: bool,
-               ledger: Ledger, written: list[Shot]) -> tuple[Section, list[Shot], bool]:
+               ledger: Ledger, written: list[Shot],
+               questions: QuestionLedger | None = None
+               ) -> tuple[Section, list[Shot], bool]:
         spec = specs[index - 1]
         section = Section.from_spec(spec, heading=f"Section {index}")
         try:
@@ -2682,7 +3029,7 @@ class Screenwriter:
                 spec, index=index, total=len(specs), plan=plan,
                 written=written, sourced=sourced,
                 previous=specs[index - 2] if index > 1 else None,
-                ledger=ledger,
+                ledger=ledger, questions=questions,
                 next_heading=str(specs[index].get("heading", ""))
                 if index < len(specs) else "")
             failed = False
@@ -2708,6 +3055,9 @@ class Screenwriter:
 
         sourced = bool(self.research)
         ledger = Ledger.from_plan(specs)
+        # Where each question is raised and answered, briefed to every
+        # writer and marked on the shots they name (AUTO-96).
+        questions = QuestionLedger.from_plan(plan)
         sections: list[Section] = []
         written: list[Shot] = []
         failures = 0
@@ -2725,7 +3075,7 @@ class Screenwriter:
                       "at a time")
             with ThreadPoolExecutor(max_workers=min(self.jobs, len(specs))) as pool:
                 drafts = list(pool.map(
-                    lambda i: self._draft(i, specs, plan, sourced, ledger, []),
+                    lambda i: self._draft(i, specs, plan, sourced, ledger, [], questions),
                     range(1, len(specs) + 1)))
             for index, (section, shots, failed) in enumerate(drafts, 1):
                 failures += failed
@@ -2733,7 +3083,7 @@ class Screenwriter:
         else:
             for index in range(1, len(specs) + 1):
                 section, shots, failed = self._draft(index, specs, plan, sourced,
-                                                     ledger, written)
+                                                     ledger, written, questions)
                 failures += failed
                 number(index, section, shots)
 
@@ -2747,8 +3097,11 @@ class Screenwriter:
                                      f"{shot.function!r} not in the schema; "
                                      "treated as body")
 
+        self.findings += questions.notes
+        # The figures said twice and the questions left unbalanced go back in
+        # one decision, before the polish reads the film end to end.
         if written:
-            self._drop_repeats(sections, written)
+            self.revise_ledger(sections, written, plan, fix=fix)
         polished = self.polish(written) if do_polish and written else 0
         # The story is read after the polish and before the rules and the
         # fact-check (AUTO-93): a line it restructures is then measured and
@@ -2758,6 +3111,13 @@ class Screenwriter:
         if story is not None:
             written[:] = [s for sec in sections for s in sec.shots]
             self.findings += self.story_findings(story)
+        # The cold reader's answers measure the ledger too: a question the
+        # writer says it answered and the reader did not hear answered goes
+        # back once (`revise-ledger-2`), on the draft the review left.
+        cold = (story or {}).get("cold_read")
+        if cold and fix and written:
+            self.revise_ledger(sections, written, plan, cold_read=cold,
+                               name="revise-ledger-2", figures=False)
         # The pictures read without the words (AUTO-98), by the reviewer's
         # model the plan review brought, on the draft the story review left;
         # before the rules and the fact-check, which then read whatever line
@@ -2774,6 +3134,7 @@ class Screenwriter:
         flags = (rule_findings({**plan, "idea": asdict(self.idea)}, sections,
                                self.wpm, self.lang) if written else [])
         kept = ruled["kept"]
+        self.findings += self.ledger_lines(plan, sections, cold, fix=fix)
         self.findings += rule_lines(flags, kept, self.lang, revised=fix)
 
         return {
@@ -2784,6 +3145,10 @@ class Screenwriter:
             # The story the plan locked (AUTO-90), as the model answered it.
             **{k: plan[k] for k in STORY_PROPERTIES
                if k in plan and k not in ("promise", "payoff")},
+            # The ledger with the shots that raise and answer each question,
+            # as labels (AUTO-96).
+            **({"questions": questions_record(plan, sections)}
+               if isinstance(plan.get("questions"), list) else {}),
             "findings": list(self.findings),
             "target_seconds": self.seconds,
             "wpm": self.wpm,
@@ -3039,6 +3404,33 @@ BOUNDS: dict[str, dict] = {
     "last_line": {
         "value": 20, "unit": "words in the film's last narrated sentence",
         "corpus": ("structure 33",), "strength": "practitioner"},
+    # The question ledger's (AUTO-96): counted from the plan, the writers'
+    # marks and the cold reader's answers, never from a line's words.
+    "open_loop": {
+        "value": 0, "unit": "plan questions, not left open on purpose, that no "
+                            "shot says it answers", "corpus": ("structure 8", "structure 32"),
+        "strength": "practitioner",
+        "note": "Klauk et al. 2016 define closure by the presiding questions being "
+                "answered, and amend that definition; the ledger form is McKee's "
+                "set-up and pay-off. A question left open on purpose (closed_in 0, "
+                "with why) is a choice, not a loop"},
+    "closed_unopened": {
+        "value": 0, "unit": "answers to a question no shot raised before them",
+        "corpus": ("structure 8",), "strength": "practitioner",
+        "note": "where no writer named the raising shot, the plan's opening section "
+                "stands for it"},
+    "raises_nothing": {
+        "value": 0, "unit": "questions a section's plan entry opens or closes",
+        "corpus": ("structure 14", "structure 19"), "strength": "practitioner",
+        "note": "the open-then-close form is practitioner craft; the prequestion "
+                "evidence on authentic lectures is small or absent (Toftness et al. "
+                "2018), so the flag is minor"},
+    "unanswered_by_reader": {
+        "value": 0, "unit": "plan questions answered in the film that the cold "
+                            "reader did not find answered",
+        "corpus": ("structure 8", "judging 14"), "strength": "practitioner",
+        "note": "the writer's mark is its own report; the reader's is a reader's, "
+                "and only one exists when the story review ran"},
 }
 
 
@@ -3079,7 +3471,18 @@ RULES: tuple[Rule, ...] = (
     Rule("rule:recap", "house", _LEXICAL, "recap"),
     Rule("rule:last-line", "minor", (), "last_line"),
 )
-_RULE = {r.id: r for r in RULES}
+
+#: The question ledger's rules (AUTO-96, `question_findings`), apart from
+#: RULES: they read the plan, the writers' marks and the cold reader, not
+#: the narration, so `rule_findings` does not run them and no language takes
+#: them out. Their flags go to `revise-ledger` with the figures said twice.
+LEDGER_RULES: tuple[Rule, ...] = (
+    Rule("rule:open-loop", "important", (), "open_loop"),
+    Rule("rule:closed-unopened", "important", (), "closed_unopened"),
+    Rule("rule:raises-nothing", "minor", (), "raises_nothing"),
+    Rule("rule:unanswered-by-reader", "important", (), "unanswered_by_reader"),
+)
+_RULE = {r.id: r for r in RULES + LEDGER_RULES}
 
 #: The rules that measure what the shot shows rather than what it says: only
 #: a flag of one of these lets `revise` change the shot's on_screen_text.
@@ -3478,6 +3881,13 @@ def rule_lines(flags: list[dict], kept: dict | None = None, lang: str = "",
     minor ones `warning: rule:x`, a house one `warning: house:rule:x`; a
     flag the revision kept carries its reason. Then a `not_evidenced:` line
     for each rule the language takes out."""
+    return flag_lines(flags, kept, revised=revised) + not_evidenced(lang)
+
+
+def flag_lines(flags: list[dict], kept: dict | None = None, *,
+               revised: bool = True) -> list[str]:
+    """`rule_lines` without the language's lines: the ledger's flags
+    (AUTO-96) are written the same way."""
     kept = kept or {}
     out = []
     for f in flags:
@@ -3495,7 +3905,7 @@ def rule_lines(flags: list[dict], kept: dict | None = None, lang: str = "",
             out.append(f"warning: house:{line}")
         else:
             out.append(f"warning: {line}")
-    return out + not_evidenced(lang)
+    return out
 
 
 def _number(value) -> int:
@@ -3678,10 +4088,21 @@ def print_script(idea: Idea, data: dict, sections: list[Section]) -> None:
 
 def question_ledger(questions) -> list[str]:
     """The plan's questions as a Markdown table: where each opens and where
-    it is answered, so an unanswered one is visible on the page."""
+    it is answered, so an unanswered one is visible on the page; with the
+    shots the writers said raise and answer each (AUTO-96) when script.json
+    has them, an empty cell where none did."""
     rows = [q for q in questions or [] if isinstance(q, dict)]
     if not rows:
         return []
+    if any("closed_at" in q or "opened_at" in q for q in rows):
+        plain = question_ledger([{k: v for k, v in q.items()
+                                  if k not in ("opened_at", "closed_at")} for q in rows])
+        cell = lambda v: " ".join(str(v if v is not None else "").split()).replace("|", "/")  # noqa: E731
+        return (["## Question ledger", "",
+                 "| id | question | opened in | answered in | raised at | answered at |",
+                 "|---|---|---|---|---|---|"]
+                + [f"{row} {cell(q.get('opened_at'))} | {cell(q.get('closed_at'))} |"
+                   for q, row in zip(rows, plain[4:])] + [""])
     cell = lambda v: " ".join(str(v if v is not None else "").split()).replace("|", "/")  # noqa: E731
 
     def answered(q: dict) -> str:
