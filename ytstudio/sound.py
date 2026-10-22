@@ -1290,7 +1290,9 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
     (`FETCH_JOBS`), none of it on this machine; the index and the counts
     change under one lock, each Freesound id is fetched under its own (two
     cues landing on one id share the file), and the verdicts are applied on
-    the calling thread in cue order, so the record reads as a serial run.
+    the calling thread in cue order, so the record reads as a serial run. An
+    interrupt drops the round's queued jobs and waits only for those in
+    flight.
     """
     root = Path(root)
     measure = measure or measure_remote
@@ -1495,60 +1497,67 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
         tell(job, f"  {job.cid} {rel} {how}{gain}")
 
     with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
-        while True:
-            active = [j for j in work if not j.done]
-            list(pool.map(advance, active))
-            said(active)
-            testing = [j for j in active if not j.done]
-            if not testing:
-                break
-            wanted = sorted({j.rel for j in testing} - set(levels))
-            if wanted and "measure_error" not in summary:
-                try:
-                    got = measure([root / rel for rel in wanted])
-                    levels.update(zip(wanted, got))
-                except MeasureError as exc:
-                    summary["measure_error"] = str(exc)
-            # The level checks are instant and run here; the judge is a
-            # session each, so the round's candidates are judged in the pool
-            # and the verdicts applied here, in cue order.
-            checked, asked = [], {}
-            for job in testing:
-                got = levels.get(job.rel)
-                fields, why = (level_to_design(job.cue, got, narration)
-                               if got is not None else (None, ""))
-                checked.append((job, got, fields, why))
-                if got is not None and not why and judge is not None and job.hit is not None:
-                    asked[job.n] = pool.submit(judged, job, got)
-            discard: set[str] = set()
-            for job, got, fields, why in checked:
-                if got is None:
-                    accept(job, None)
-                    continue
-                verdict: dict | None = None
-                if job.n in asked:
-                    verdict = asked[job.n].result()
-                    if verdict["verdict"] == "reject":
-                        why = f"judged not to fit the cue: {verdict['reason']}"
-                if why:
-                    discard.add(job.rel)
-                    if verdict is not None:
-                        job.rejected.append({
-                            "freesound_id": job.hit.id, "name": job.hit.name,
-                            "reason": verdict["reason"],
-                            "confidence": verdict.get("confidence"),
-                            "evidence": verdict["evidence"]})
-                    refuse(job, why)
-                else:
-                    accept(job, fields, verdict)
-            said(testing)
-            for rel in discard - taken - {j.rel for j in work if not j.done}:
-                (root / rel).unlink(missing_ok=True)
-                levels.pop(rel, None)
-                for key in [k for k, v in index.items() if v == rel]:
-                    index.pop(key)
-            if discard:
-                write_json(_index_path(root), index)
+        try:
+            while True:
+                active = [j for j in work if not j.done]
+                list(pool.map(advance, active))
+                said(active)
+                testing = [j for j in active if not j.done]
+                if not testing:
+                    break
+                wanted = sorted({j.rel for j in testing} - set(levels))
+                if wanted and "measure_error" not in summary:
+                    try:
+                        got = measure([root / rel for rel in wanted])
+                        levels.update(zip(wanted, got))
+                    except MeasureError as exc:
+                        summary["measure_error"] = str(exc)
+                # The level checks are instant and run here; the judge is a
+                # session each, so the round's candidates are judged in the pool
+                # and the verdicts applied here, in cue order.
+                checked, asked = [], {}
+                for job in testing:
+                    got = levels.get(job.rel)
+                    fields, why = (level_to_design(job.cue, got, narration)
+                                   if got is not None else (None, ""))
+                    checked.append((job, got, fields, why))
+                    if got is not None and not why and judge is not None and job.hit is not None:
+                        asked[job.n] = pool.submit(judged, job, got)
+                discard: set[str] = set()
+                for job, got, fields, why in checked:
+                    if got is None:
+                        accept(job, None)
+                        continue
+                    verdict: dict | None = None
+                    if job.n in asked:
+                        verdict = asked[job.n].result()
+                        if verdict["verdict"] == "reject":
+                            why = f"judged not to fit the cue: {verdict['reason']}"
+                    if why:
+                        discard.add(job.rel)
+                        if verdict is not None:
+                            job.rejected.append({
+                                "freesound_id": job.hit.id, "name": job.hit.name,
+                                "reason": verdict["reason"],
+                                "confidence": verdict.get("confidence"),
+                                "evidence": verdict["evidence"]})
+                        refuse(job, why)
+                    else:
+                        accept(job, fields, verdict)
+                said(testing)
+                for rel in discard - taken - {j.rel for j in work if not j.done}:
+                    (root / rel).unlink(missing_ok=True)
+                    levels.pop(rel, None)
+                    for key in [k for k, v in index.items() if v == rel]:
+                        index.pop(key)
+                if discard:
+                    write_json(_index_path(root), index)
+        except KeyboardInterrupt:
+            # The pool's exit waits for every queued job; an interrupt keeps
+            # only the ones in flight (a download, a judge session) and
+            # drops the rest of the round.
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
 
     if summary.get("unmeasured") or "measure_error" in summary:
         host = next((v.host for v in levels.values() if v), "")

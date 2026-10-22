@@ -14,6 +14,7 @@ however the threads interleave.
 import contextlib
 import io
 import json
+import signal
 import tempfile
 import threading
 import time
@@ -195,6 +196,31 @@ class Overlap(FetchCase):
         self.assertIn("search failed at https://freesound.org/apiv2/search/text/ (URLError)",
                       lines[0])
         self.assertEqual([m["cue_id"] for m in data["unfilled"]], ["A1"])
+
+    def test_an_interrupt_drops_the_rounds_queued_judgements(self):
+        # Ctrl-C while the first judge is out: the pool's exit would otherwise
+        # run every queued session before the interrupt reaches the operator.
+        # The judge sends the signal to the main thread from its own and stays
+        # out a while, so the queued cues are still pending when it lands.
+        self.catalogue["knock"] = [row(3, "Knock.wav", 1.0)]
+        self.cues += (cue("sfx", "S2", "Knock", 1, query="knock"),)
+        judged: list[str] = []
+
+        def judge(c, evidence):
+            judged.append(c["cue_id"])
+            if c["cue_id"] == "A1":
+                signal.pthread_kill(threading.main_thread().ident, signal.SIGINT)
+                time.sleep(0.2)
+            return {"verdict": "accept", "reason": "fits", "confidence": 0.9}
+        data = self.data(*self.cues)
+        before = signal.signal(signal.SIGINT, signal.default_int_handler)
+        try:
+            with self.assertRaises(KeyboardInterrupt):
+                sound.fetch(self.root, data, token="t", jobs=1, say=self.hush,
+                            measure=lambda paths: [levels() for _ in paths], judge=judge)
+        finally:
+            signal.signal(signal.SIGINT, before)
+        self.assertEqual(judged, ["A1"])
 
     def test_a_rounds_judgements_overlap(self):
         wait = self.meeting("judge")
