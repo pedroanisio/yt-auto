@@ -427,8 +427,8 @@ film with no rehook) and decides on its own. `accept` drafts; `revise`
 sends the plan back once with the problems (`plan-2`, read again as
 `plan-review-2`); `reject`, or a second `revise`, exits 1 before a section
 is written, and no `script.json` is left for `yt run` to take as done.
-`--report-only` records a revise and drafts on; a reject still stops. There
-is no `--bar`: the verdict is the bar. The review is capped by
+`--report-only` records a revise and drafts on; a reject still stops. No score
+is set as a bar here, as keyframe and vfx set one: the verdict is the bar. The review is capped by
 `--review-budget-usd` (2), adds about $0.50, and is kept in `script.json`
 `plan_review` and the `## Plan review` section of `script.md`.
 
