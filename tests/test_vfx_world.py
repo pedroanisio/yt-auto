@@ -446,26 +446,8 @@ class LookModule(Brief):
         self.assertIn("../../keyframe/look.py", text)         # where the bytes come from
         self.assertNotIn("Do not import", text)
         self.assertNotIn("copy into your program", text)
-
-    def test_a_relook_and_the_first_animation_carry_the_module_into_the_new_version(self):
-        from tests import test_look_section as look
-        base = look.Provenance("test_relook_needs_an_approved_look")
-        base.setUp()
-        self.addCleanup(base.tearDown)
-        lead = base.author(base.planner(lead=1))[0]
-        self.assertFalse((base.root / "vfx" / "v01" / "look.py").exists())   # nothing approved yet
-        base.look_record(lead, "pending")
-        base.vfx_run([look.WORLD_DOC.replace("#AAAAAA", "#CCCCCC"), look.TWO_DOC])
-        self.assertFalse((base.root / "vfx" / "v02" / "look.py").exists())   # still pending
-        from ytstudio import keyframe
-        keyframe.approve(base.root)
-        FakeEngine.stream_calls = []
-        base.vfx_run([look.TWO_DOC], relook=True)
-        approved = (base.root / "keyframe" / "look.py").read_bytes()
-        self.assertEqual((base.root / "vfx" / "v03" / "look.py").read_bytes(), approved)
-        self.assertEqual((base.root / lead["program"]).read_bytes(), approved)
-        brief = (base.root / "vfx" / "v03" / "brief-02.md").read_text()
-        self.assertIn("from look import", brief)
+        # `--relook` and the first animation after the approval carry the module
+        # too: tests.test_look_section.Provenance, which owns that fixture
 
 
 class PropsRule(unittest.TestCase):

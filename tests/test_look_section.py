@@ -339,6 +339,22 @@ class Provenance(Case):
         self.write_vfx_json(relooked)
         self.assertTrue(keyframe.film_carries_look(self.root))
 
+    def test_a_relook_and_the_first_animation_carry_the_module_into_the_new_version(self):
+        # AUTO-77: the approved look is `look.py` in every version made after the approval
+        lead = self.author(self.planner(lead=1))[0]
+        self.assertFalse((self.root / "vfx" / "v01" / "look.py").exists())   # nothing approved yet
+        self.look_record(lead, "pending")
+        self.vfx_run([WORLD_DOC.replace("#AAAAAA", "#CCCCCC"), TWO_DOC])
+        self.assertFalse((self.root / "vfx" / "v02" / "look.py").exists())   # still pending
+        keyframe.approve(self.root)
+        FakeEngine.stream_calls = []
+        self.vfx_run([TWO_DOC], relook=True)
+        approved = (self.root / "keyframe" / "look.py").read_bytes()
+        self.assertEqual((self.root / "vfx" / "v03" / "look.py").read_bytes(), approved)
+        self.assertEqual((self.root / lead["program"]).read_bytes(), approved)
+        brief = (self.root / "vfx" / "v03" / "brief-02.md").read_text()
+        self.assertIn("from look import", brief)
+
     def test_relook_keeps_a_sound_section_over_a_broken_attempt(self):
         self.lead_approved()
         made = self.vfx_run([TWO_DOC])
