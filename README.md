@@ -1166,8 +1166,10 @@ assumed, and a routed vfx pass re-authors only the sections its findings fall in
 (`--sections`), the whole film (`--fresh`) when a finding cannot be placed. A
 routed script pass whose findings all name a shot sends only those lines back
 (`yt script --revise feedback`, read from the brief's `.json` twin); one
-finding that names none runs the whole screenplay again (`--polish
---verify`).
+finding that names none, or one briefed before and still there, runs the
+whole screenplay again (`--polish --verify`). A finding that needs more than
+its own line (a hook that does not state its promise, a section with no
+payoff) has to be routed without a shot to get that full run.
 
 ```bash
 yt improve --title X --dry-run                      # the routing, the briefs, the estimate

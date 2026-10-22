@@ -555,22 +555,31 @@ def plan(routed: Iterable[str], root: Path) -> list[str]:
     return out
 
 
-def by_shot(findings: Iterable[dict] | None) -> bool:
+def by_shot(findings: Iterable[dict] | None, survived: dict | None = None) -> bool:
     """Does every finding name the shot it is about? Then the screenplay is
     sent those lines (`yt script --revise feedback`), not re-run from its
-    plan: judging 3 sends a dip back to the beat that dipped."""
+    plan: judging 3 sends a dip back to the beat that dipped.
+
+    Not when one of them was briefed before and is still there (`survived`,
+    finding id -> briefed passes): the line revision did not fix it, maybe
+    because it is about a shot's hold or a beat no single line carries, and
+    the brief says to change the approach, so the screenplay runs whole."""
     rows = list(findings or [])
+    if any((survived or {}).get(f.get("id")) for f in rows):
+        return False
     return bool(rows) and all(str(f.get("shot") or "").strip() for f in rows)
 
 
 def stage_argvs(stages: list[str], routed: Iterable[str], base: list[str], *,
                 quality: str, root: Path,
                 sections: Iterable[int] | None = None,
-                script_findings: Iterable[dict] | None = None) -> list[list[str]]:
+                script_findings: Iterable[dict] | None = None,
+                survived: dict | None = None) -> list[list[str]]:
     """Each stage's argv. A routed vfx pass names `sections` (the ones the
     findings fall in) instead of re-authoring the whole film with --fresh; a
-    routed script pass whose `script_findings` all name a shot revises those
-    lines from the feedback's `.json` twin instead of the whole screenplay."""
+    routed script pass whose `script_findings` all name a shot, none of them
+    `survived` from an earlier briefed pass, revises those lines from the
+    feedback's `.json` twin instead of the whole screenplay (by_shot)."""
     from .cli import stage_argv
     routed = set(routed)
     sound_data = read_json(Path(root) / "sound.json", warn=False) or {}
@@ -579,7 +588,7 @@ def stage_argvs(stages: list[str], routed: Iterable[str], base: list[str], *,
         flags = list((FORCE if stage in routed else REUSE).get(stage, []))
         if stage == "vfx" and stage in routed and sections:
             flags = ["--sections", ",".join(str(n) for n in sorted(set(sections)))]
-        if stage == "script" and stage in routed and by_shot(script_findings):
+        if stage == "script" and stage in routed and by_shot(script_findings, survived):
             out.append(stage_argv(stage, base, {stage: ["--revise", "feedback"]}))
             continue
         if stage == "script":
@@ -1072,7 +1081,8 @@ class Improver:
                             quality=self.quality, root=self.root,
                             sections=last.get("sections"),
                             script_findings=((last.get("routed") or {}).get("script")
-                                             or {}).get("findings"))
+                                             or {}).get("findings"),
+                            survived=last.get("survived"))
         start = stages.index(failed_at)
         attempt = pdir / "attempt"
         if (attempt / "snapshot.json").is_file():
@@ -1275,19 +1285,19 @@ class Improver:
             sections = routed_sections(self.root, [
                 by_id[fid] for fid in (routing["stages"].get("vfx") or {}).get("findings", [])
                 if fid in by_id]) if "vfx" in routing["stages"] else None
+            assigned = self.assigned.get(evidence["pass"], {})
+            survived = {fid: self.defects[did]["survived"] for fid, did in assigned.items()
+                        if self.defects[did]["survived"]}
             argvs = stage_argvs(stages, routing["stages"], self.base, quality=self.quality,
                                 root=self.root, sections=sections, script_findings=[
                                     by_id[fid] for fid in (routing["stages"].get("script")
                                                            or {}).get("findings", [])
-                                    if fid in by_id])
+                                    if fid in by_id], survived=survived)
             rows = stage_estimates(self.root, stages, sections)
             guess = total(rows)
             if last_cost and not any(r["basis"] != "assumed" for r in rows):
                 guess = estimate(stages, last_cost)
             name = self._next_name()
-            assigned = self.assigned.get(evidence["pass"], {})
-            survived = {fid: self.defects[did]["survived"] for fid, did in assigned.items()
-                        if self.defects[did]["survived"]}
 
             if not routing["stages"]:
                 record["stop"] = {"reason": "human" if routing["human"] else "nothing",
@@ -1324,7 +1334,7 @@ class Improver:
             entry = {"name": name, "from_pass": evidence["pass"],
                      "routed": self._routed(routing, findings), "routes": routing["routes"],
                      "stages": stages, "sections": sections, "argv": [], "exit": {},
-                     "estimate_usd": guess, "estimates": rows,
+                     "survived": survived, "estimate_usd": guess, "estimates": rows,
                      "overall_before": best.get("overall"), "scores_before": best.get("scores"),
                      "best_before": best.get("pass")}
             record["passes"].append(entry)

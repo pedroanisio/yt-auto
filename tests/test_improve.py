@@ -585,6 +585,49 @@ class Plan(ImproveCase):
         twin = read_json(self.root / "feedback" / "script.json")
         self.assertEqual([f["shot"] for f in twin["findings"]], ["1.3"])
 
+    def test_a_shot_finding_that_survived_a_briefed_pass_runs_the_whole_screenplay(self):
+        # A line revision that left the finding standing (a super, a shot's
+        # hold, a story beat a one-line fix cannot reach) is not tried again:
+        # the next approach is the screenplay from its plan.
+        base = ["--project", str(self.root)]
+        named = [{"id": "F1", "shot": "1.3"}, {"id": "F2", "shot": "2.1"}]
+        argv = improve.stage_argvs(["script"], {"script"}, base, quality="final",
+                                   root=self.root, script_findings=named,
+                                   survived={"F2": 1})[0]
+        self.assertNotIn("--revise", argv)
+        self.assertTrue({"--polish", "--verify"} <= set(argv))
+        argv = improve.stage_argvs(["script"], {"script"}, base, quality="final",
+                                   root=self.root, script_findings=named,
+                                   survived={"F9": 2})[0]
+        self.assertEqual(argv[argv.index("--revise") + 1], "feedback")
+
+    def test_the_loop_escalates_a_shot_finding_the_revision_left_standing(self):
+        stuck = dict(prose("the super shows the wrong figure", owner="script"), shot="2.1")
+        self.start_pass(card(5.0, findings=[stuck]))
+        FakeEngine.route = route_all_to("script")
+
+        def same(prompt):
+            ids = re.findall(r'"id": "(D\d+)"', prompt)
+            return {"matches": [{"finding": finding_ids(prompt)[0], "defect": ids[0]}]}
+        FakeEngine.same = same
+        runner = FakeRunner(self.root, [card(5.5, findings=[stuck]), card(6.0)])
+        self.improver(runner, max_passes=2, budget_usd=100).run()
+        scripts = [a for a in runner.calls if a[0] == "script"]
+        self.assertEqual(len(scripts), 2, runner.stages())
+        self.assertEqual(scripts[0][scripts[0].index("--revise") + 1], "feedback")
+        self.assertNotIn("--revise", scripts[1])
+        self.assertIn("--polish", scripts[1])
+
+    def test_resume_replays_a_by_shot_script_pass_as_revise_feedback(self):
+        self.start_pass(card(5.0, findings=[dict(prose("the line stumbles", owner="script"),
+                                                 shot="1.3")]))
+        FakeEngine.route = route_all_to("script")
+        self.improver(FakeRunner(self.root, [], fail={"script": 1})).run()
+        runner = FakeRunner(self.root, [card(6.0)])
+        self.improver(runner, resume=True, max_passes=1).run()
+        self.assertEqual(runner.stages()[0], "script")
+        self.assertEqual(runner.calls[0][runner.calls[0].index("--revise") + 1], "feedback")
+
 
 # --------------------------------------------------------------------------- #
 # the loop

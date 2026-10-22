@@ -610,7 +610,12 @@ a pass older than `video.mp4` or `scene.xml` is scored again first), with
 - **A pass.** The earliest routed stage with the flags that force a new
   decision (`--fresh`; `yt vfx --fresh` opens a new `vfx/vNN/`; a script
   pass whose findings all name a shot runs `yt script --revise feedback`,
-  those lines only, and the full `--polish --verify` otherwise), then every
+  those lines only, and the full `--polish --verify` otherwise, or when one
+  of those findings was briefed before and is still there: a revision of
+  the line did not fix it, so the screenplay runs whole. A finding that
+  needs more than its own line, a hook that does not state its promise or a
+  section with no payoff, is routed without a shot to get the full run),
+  then every
   stage downstream up to `yt render` (`--quality`, default final), then `yt
   gate` and `yt qa`. Research and script run only when routed to them, and a
   stage the film never ran (no narration, no voice) is left out. What those
