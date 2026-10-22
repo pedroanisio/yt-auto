@@ -139,10 +139,12 @@ their harness account there. `yt improve` reads cost through
 `spend.cost_in`, which takes `usage.cost_usd`, else the older `cost_usd`, else
 the older `engine.cost_usd`, so records written before still read. `sound.json`
 and `build.json` are not on the shape yet. Every model has a price:
-`spend.PRICES` is keyed by the ids the CLI reports in `modelUsage` (with an
-alias row per short name), the harness installs it into the engine on import,
-`$CLAUDE_PRICES` overrides a row, and a call cut off by its timeout is billed
-from it. A decision that raised is a `failed` row in the harness report with
+`spend.PRICES` is keyed by the ids the CLI reports in `modelUsage`, the harness
+installs it into the engine on import, `$CLAUDE_PRICES` overrides a row, and a
+call cut off by its timeout is billed from it. A short name (`sonnet`) is
+`spend.price_for`'s to resolve, not a row: the engine's table holds no alias,
+so a session on a short name keeps the CLI's own stop at 80% of its cap beside
+the stream meter. A decision that raised is a `failed` row in the harness report with
 what the engine spent, so the record bills it; `yt doctor` warns when a
 record's `by_model` names an id with no price.
 

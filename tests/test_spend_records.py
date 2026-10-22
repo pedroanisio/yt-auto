@@ -99,10 +99,23 @@ class Prices(unittest.TestCase):
         self.assertEqual(spend.PRICES["claude-opus-5-5"]["output"], 20.0)
 
     def test_an_alias_prices_as_the_generation_the_cli_resolves_it_to(self):
-        self.assertEqual(set(spend.ALIASES), {"opus", "sonnet", "haiku"})
+        # Every short name a stage is configured with (`--model sonnet`).
+        self.assertEqual(set(spend.ALIASES), {"fable", "opus", "sonnet", "haiku"})
         for alias, model in spend.ALIASES.items():
             self.assertIn(model, self.CURRENT)
-            self.assertEqual(spend.PRICES[alias], spend.PRICES[model])
+            self.assertEqual(spend.price_for(alias), spend.PRICES[model])
+            # The alias is price_for's to resolve, not a row: the stream reports
+            # the full id, and a session on a short name keeps the CLI's own
+            # budget stop beside the meter (tests/test_sdkkit.py Staged).
+            self.assertNotIn(alias, spend.PRICES)
+            self.assertNotIn(alias, claude_engine.PRICES)
+
+    def test_the_dated_haiku_snapshot_is_priced_as_its_generation(self):
+        # The API serves Haiku 4.5 under its dated id; that is what the stream reports.
+        self.assertEqual(spend.price_for("claude-haiku-4-5-20251001"),
+                         spend.PRICES["claude-haiku-4-5"])
+        self.assertEqual(claude_engine.PRICES.get("claude-haiku-4-5-20251001"),
+                         spend.PRICES["claude-haiku-4-5"])
 
     def test_the_table_is_installed_into_the_engine_when_harness_is_imported(self):
         # ytstudio.harness is imported at the top of this module.
@@ -121,6 +134,12 @@ class Prices(unittest.TestCase):
         self.assertEqual(spend.price_for("claude-sonnet-5-5"), spend.PRICES["claude-sonnet-5-5"])
         self.assertIsNone(spend.price_for("a-model-nobody-priced"))
         self.assertIsNone(spend.price_for(""))
+
+    def test_an_environment_that_is_not_a_table_is_ignored_not_a_crash(self):
+        for raw in ("[1, 2]", "7", "not json", '"claude-sonnet-5-5"'):
+            with mock.patch.dict(os.environ, {"CLAUDE_PRICES": raw}):
+                self.assertEqual(spend.price_for("claude-sonnet-5-5"),
+                                 spend.PRICES["claude-sonnet-5-5"], raw)
 
 
 SCHEMA = {"type": "object", "properties": {"answer": {"type": "string"}},

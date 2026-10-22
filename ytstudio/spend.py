@@ -10,9 +10,11 @@ Every model has a price. A call cut off by its timeout never gets the CLI's
 `result` event that carries the real cost, so the engine estimates it from the
 stream's tokens and `PRICES`; an empty table books such a call at $0 and
 leaves the session's budget meter blind. `PRICES` below is keyed by the model
-ids the CLI reports in `modelUsage`, with an alias row for each short name a
-stage is configured with; `ytstudio.harness` installs it into the engine's
-own table on import, and `$CLAUDE_PRICES` still overrides a row.
+ids the CLI reports in `modelUsage`; `ytstudio.harness` installs it into the
+engine's own table on import, and `$CLAUDE_PRICES` still overrides a row. The
+short names a stage is configured with (`sonnet`) are `price_for`'s to
+resolve, not rows: the engine's table stays without them, so a session on a
+short name keeps the CLI's own budget stop beside the stream meter.
 """
 
 from __future__ import annotations
@@ -50,28 +52,38 @@ PRICES: dict[str, dict[str, float]] = {
     "claude-sonnet-5-5": _row(2.0, 10.0, 0.20),
     "claude-sonnet-5": _row(2.0, 10.0),
     "claude-sonnet-4-6": _row(3.0, 15.0),
+    # Haiku 5.5's rate above 100K prompt tokens (5x) is not modelled: a long
+    # cut-off call is under-estimated.
     "claude-haiku-5-5": _row(0.10, 0.50),
     "claude-haiku-4-5": _row(1.0, 5.0),
 }
+# The API serves Haiku 4.5 under its dated snapshot id, which is what the
+# stream reports; the engine looks a row up exactly.
+PRICES["claude-haiku-4-5-20251001"] = PRICES["claude-haiku-4-5"]
 
-#: The short names a stage is configured with (`--model sonnet`), priced as
-#: the generation the CLI resolves them to.
-ALIASES = {"opus": "claude-opus-5-5", "sonnet": "claude-sonnet-5-5",
-           "haiku": "claude-haiku-5-5"}
-PRICES.update({alias: PRICES[model] for alias, model in ALIASES.items()})
+#: The short names a stage is configured with (`--model sonnet`), priced by
+#: `price_for` as the generation the CLI resolves them to. Not rows.
+ALIASES = {"fable": "claude-fable-5-1", "opus": "claude-opus-5-5",
+           "sonnet": "claude-sonnet-5-5", "haiku": "claude-haiku-5-5"}
 
 
 def price_for(model: Any, env: dict | None = None) -> dict[str, float] | None:
     """The price row the engine would use for `model`: this table, the
-    engine's own, then `$CLAUDE_PRICES`; None when nobody priced it."""
+    engine's own, then `$CLAUDE_PRICES`; a short name resolves to its
+    generation's row; None when nobody priced it."""
     table: dict[str, Any] = {**PRICES, **claude_engine.PRICES}
     raw = (os.environ if env is None else env).get("CLAUDE_PRICES")
     if raw:
         try:
-            table.update(json.loads(raw))
-        except ValueError:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                table.update(parsed)
+        except (ValueError, TypeError):
             pass
-    row = table.get(str(model or ""))
+    name = str(model or "")
+    row = table.get(name)
+    if row is None and name in ALIASES:
+        row = table.get(ALIASES[name])
     return row if isinstance(row, dict) and row else None
 
 
