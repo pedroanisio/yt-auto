@@ -69,6 +69,19 @@ class ProofFrames(unittest.TestCase):
         overlaps = [f for _, fs in results for f in fs if "`lbl-a`" in f and "`lbl-b`" in f]
         self.assertEqual(len(overlaps), 1, overlaps)
 
+    def test_a_section_cut_into_worlds_names_each_pair_once_under_its_own_world(self):
+        second = LABELLED_DOC.replace(
+            '</symbol>', '</symbol><symbol id="world-two" width="1920" height="1080" duration="15">'
+            '<text id="lbl-c" text="c" x="100" y="100" width="300" height="60" size="30"/>'
+            '<text id="lbl-d" text="d" x="180" y="120" width="300" height="60" size="30"/>'
+            '</symbol>', 1)
+        results = self.frames(second, varied_png(), times=[5.0])
+        self.assertEqual(len(results), 2)
+        named = [f for _, fs in results for f in fs if "overlap" in f]
+        self.assertEqual(len(named), 2, named)
+        self.assertTrue(any("world-open" in f and "`lbl-a`" in f for f in named), named)
+        self.assertTrue(any("world-two" in f and "`lbl-c`" in f for f in named), named)
+
 
 class PrecheckCommand(unittest.TestCase):
     """`kit.py precheck <doc>` reads the gate's proof frames in frames/ beside
@@ -154,6 +167,27 @@ class BandRule(unittest.TestCase):
 
     def test_a_layer_drawing_no_text_is_not_judged(self):
         self.assertEqual(self.rule('<layer id="l-img" asset="pic" y="900"/>'), [])
+
+    def test_a_text_with_a_named_style_takes_the_styles_line_height(self):
+        # One row of size 40 is 48 at the default 1.2; the style's 2 makes it 80.
+        self.HEAD = self.HEAD.replace(
+            '<assets>', '<styles><textStyle id="ts-tall" lineHeight="2"/></styles><assets>'
+                        '<text id="t-styled" text="x" size="40" style="ts-tall"/>')
+        self.assertEqual(len(self.rule('<layer id="l-st" asset="t-styled" y="750"/>')), 1)
+        self.assertEqual(self.rule('<layer id="l-line" asset="t-line" y="750"/>'), [])
+
+    def test_a_translated_groups_child_is_judged_where_the_group_puts_it(self):
+        self.assertEqual(len(self.rule('<group id="g" y="300">'
+                                       '<layer id="l-in" asset="t-row" y="600"/></group>')), 1)
+        self.assertEqual(self.rule('<group id="g" y="-300">'
+                                   '<layer id="l-in" asset="t-row" y="900"/></group>'), [])
+        self.assertEqual(self.rule('<group id="g" y="50%">'
+                                   '<layer id="l-in" asset="t-row" y="900"/></group>'), [])
+
+    def test_a_relative_anchor_is_left_to_the_engine(self):
+        self.assertEqual(self.rule('<layer id="l-anc" asset="t-row" y="900" anchorY="50%"/>'), [])
+        self.assertEqual(self.rule('<layer id="l-anc" asset="t-row" y="900" anchorY="200"/>'), [])
+        self.assertEqual(len(self.rule('<layer id="l-anc" asset="t-row" y="900" anchorY="20"/>')), 1)
 
     def test_the_rule_reaches_the_authors_build_check(self):
         doc = (self.HEAD + '<layer id="l-low" asset="t-row" x="100" y="900"/>' + self.TAIL).encode()

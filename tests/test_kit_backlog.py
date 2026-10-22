@@ -254,6 +254,19 @@ class Labels(unittest.TestCase):
         self.assertEqual(framecheck.label_overlaps(self.DOC.replace('x="180" y="120"',
                                                                      'x="700" y="500"'), "doc"), [])
 
+    def test_a_named_symbol_is_judged_alone_and_a_document_whole(self):
+        # The gate names a symbol: only its labels; kit.py precheck names the
+        # document's stem, which is no symbol: every label in the document.
+        two = self.DOC.replace('</symbol>', '</symbol><symbol id="t">'
+                               '<text id="d" text="four" x="100" y="100" width="300" height="60" size="30"/>'
+                               '<text id="e" text="five" x="180" y="120" width="300" height="60" size="30"/>'
+                               '</symbol>')
+        mine = framecheck.label_overlaps(two, "t")
+        self.assertEqual(len(mine), 1, mine)
+        self.assertIn("`d`", mine[0])
+        self.assertNotIn("`a`", mine[0])
+        self.assertEqual(len(framecheck.label_overlaps(two, "doc")), 2)
+
 
 class PrecheckCommand(KitCase):
     def test_the_kit_exposes_the_precheck_and_documents_it(self):

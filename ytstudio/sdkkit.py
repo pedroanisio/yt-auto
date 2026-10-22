@@ -811,22 +811,37 @@ def _band_findings(root, local, height: float) -> list[str]:
     band, where `yt build` burns the captions (measured on the Euler draft:
     a letter row under the captions). A layer drawing a text or formula
     asset, or a text node placed by its own y, is judged from its y, its
-    anchor and its height (the asset's, else one row of its size); what the
-    engine places -- a layout group's child, alignY, a relative length, a
-    3D layer -- is left to the engine and a rendered frame."""
+    anchor and its height (the asset's, else one row of its size at its
+    lineHeight: the schema's 1.2, or the named textStyle's when its own is
+    left at that default), moved by the y and anchor of every plain group
+    above it; what the engine places -- a layout group's child, alignY, a
+    relative length or anchor on the node or a group above it, a 3D layer
+    -- is left to the engine and a rendered frame."""
     from . import design
     nodes = list(root.iter())
     assets = {el.get("id"): el for el in nodes
               if local(el) in ("text", "formula") and el.get("id")}
+    styles = {el.get("id"): el for el in nodes if local(el) == "textStyle" and el.get("id")}
     parents = {child: parent for parent in nodes for child in parent}
     top = height * design.CAPTION_FRACTION
 
-    def laid_out(el) -> bool:
+    def above(el) -> float | None:
+        """What the groups over `el` add to its y; None when one of them
+        places its children itself (a layout) or sits at a relative length."""
+        total = 0.0
         while el in parents:
             el = parents[el]
-            if local(el) == "group" and (el.get("layout") or "none") != "none":
-                return True
-        return False
+            if local(el) != "group":
+                continue
+            if (el.get("layout") or "none") != "none":
+                return None
+            for attr, sign in (("y", 1.0), ("anchorY", -1.0)):
+                if el.get(attr) is None:
+                    continue
+                if not _number(el.get(attr)):
+                    return None
+                total += sign * float(el.get(attr))
+        return total
 
     def rows(el, asset) -> float | None:
         if _number(el.get("boxHeight")) and (el.get("fit") or "none") != "none":
@@ -836,7 +851,11 @@ def _band_findings(root, local, height: float) -> list[str]:
         if not _number(asset.get("size")):
             return None
         line = asset.get("lineHeight") if local(asset) == "text" else None
-        return float(asset.get("size")) * (float(line) if _number(line) else 1.2)
+        factor = float(line) if _number(line) else 1.2
+        style = styles.get(asset.get("style") or "") if local(asset) == "text" else None
+        if style is not None and factor == 1.2 and _number(style.get("lineHeight")):
+            factor = float(style.get("lineHeight"))
+        return float(asset.get("size")) * factor
     out = []
     for el in nodes:
         kind = local(el)
@@ -846,10 +865,15 @@ def _band_findings(root, local, height: float) -> list[str]:
             asset = el
         else:
             continue
+        anchor = el.get("anchorY")
         if asset is None or not _number(el.get("y")) or el.get("alignY") \
-                or (el.get("threeD") or "").strip() in ("true", "1") or laid_out(el):
+                or (el.get("threeD") or "").strip() in ("true", "1") \
+                or (anchor is not None and not _number(anchor)):
             continue
-        y = float(el.get("y")) - (float(el.get("anchorY")) if _number(el.get("anchorY")) else 0.0)
+        offset = above(el)
+        if offset is None:
+            continue
+        y = offset + float(el.get("y")) - (float(anchor) if anchor is not None else 0.0)
         h = rows(el, asset)
         if h is None or y + h <= top:
             continue
