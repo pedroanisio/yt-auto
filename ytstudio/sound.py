@@ -56,7 +56,7 @@ from claude_engine import ClaudeError, EngineConfig, Usage
 from .core import (Idea, read_json, slugify, timecode, wrap,
                    write_json)
 from .ideas import CHANNEL_STYLES, style_brief
-from . import freesound, harness, house, workspace
+from . import flags, freesound, harness, house, workspace
 from .script import Section, load_script, sections_of
 
 #: What a cue can be. `silence` is a cue too: scored silence is a decision,
@@ -918,6 +918,10 @@ LOUDNESS_KINDS = ("music", "ambience")
 NOISE_BELOW_NARRATION_DB = 12.0
 #: Candidates tried for one cue (its first hit included) before it is left unfilled.
 FETCH_TRIES = 3
+#: Cues searched, downloaded and judged at once (`--jobs`): a search and a
+#: download take ~13 s a cue and a judge session 30-90 s, none of it on
+#: this machine, so the round's cues wait side by side.
+FETCH_JOBS = 4
 #: The measurement definitions. ebur128 reports a momentary loudness (M) over
 #: a 400 ms window every 100 ms; a window is complete once 400 ms have been
 #: heard, and the floor is the level the quietest tenth of them reaches.
@@ -2026,6 +2030,8 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                    help="download CC0/CC-BY audio for every cue from Freesound "
                         "into <project>/sound/ and write the files into the "
                         "cue sheet (reuses an existing sound.json)")
+    flags.jobs(p, default=FETCH_JOBS,
+               help="with --fetch: cues searched, downloaded and judged at once")
     p.add_argument("--synth", action="store_true",
                    help="realise every cue still without a file as original "
                         "procedural sound: an agent writes and runs "

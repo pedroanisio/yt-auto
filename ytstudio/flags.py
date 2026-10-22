@@ -4,6 +4,7 @@
     --bar         the review score under which work goes back
     --budget-usd  a spend cap in dollars
     --fresh       ignore what is cached and do the stage again
+    --jobs        how many of the stage's independent pieces run at once
 
 A stage adds the ones it has with its own default and help. The spellings
 earlier releases used stay as hidden aliases that land in the same place and
@@ -51,6 +52,12 @@ def budget(p, *, default, help, old=(), dest="budget_usd", metavar=None) -> None
 
 def fresh(p, *, help="ignore what is cached and do this stage again") -> None:
     p.add_argument("--fresh", action="store_true", help=help)
+
+
+def jobs(p, *, default, help, dest="jobs") -> None:
+    """How many of the stage's independent pieces run at once; 1 is serial."""
+    p.add_argument("--jobs", dest=dest, type=int, default=default, metavar="N",
+                   help=f"{help} (default {default}; 1 does them one at a time)")
 
 
 class _Ignored(argparse.Action):
