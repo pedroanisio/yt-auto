@@ -64,6 +64,10 @@ from typing import Any, Callable, Iterable
 from . import house, qa, spend, workspace
 from .core import read_json, write_json
 from .harness import FEEDBACK_DIR, Harness, HarnessError, brief
+# A stage's price is one thing, for `yt improve` and `yt run` alike: it lives
+# in spend and is read from here by the names it always had.
+from .spend import (DEFAULT_USD, MANIFEST, VFX_PASS_USD,  # noqa: F401
+                    _like, _qa_cost, _reported, stage_estimates, total)
 
 #: The stages a finding can be routed to, in pipeline order.
 PIPELINE = tuple(stage for stage, _ in workspace.STAGES)
@@ -92,12 +96,6 @@ QA_FAILED = "qa filed no new pass"
 REPLAYS = ("vfx",)
 REPORT_JSON, REPORT_MD = "improve.json", "improve.md"
 
-#: What a pass is guessed to cost before one has been measured.
-VFX_PASS_USD = 10.0
-DEFAULT_USD = {"research": 5.0, "styles": 2.0, "script": 3.0, "props": 0.0,
-               "keyframe": 5.0, "voice": 2.0, "retime": 0.5, "vfx": VFX_PASS_USD,
-               "sound": 0.5, "build": 0.1, "render": 0.0, "gate": 0.1, "qa": 0.5}
-
 #: The flags that make a routed stage decide again, and the ones a stage
 #: downstream of it runs with (reusing what its inputs did not change).
 FORCE = {"research": ["--fresh"], "styles": ["--rich"], "script": ["--polish", "--verify"],
@@ -125,12 +123,6 @@ SNAPSHOT = {
     "gate": ["gate.json"],
     "qa": ["qa.json"],
 }
-
-#: The manifest whose cost a stage reports, and where it keeps its decisions.
-MANIFEST = {"research": "dossier.json", "styles": "styles.json", "script": "script.json",
-            "props": "props.json", "keyframe": "keyframe.json", "voice": "voice.json",
-            "retime": "retime.json", "vfx": "vfx.json", "sound": "sound.json",
-            "build": "build.json", "render": "render.json", "gate": "gate.json"}
 
 ROLE = (
     "You are the producer running the improvement loop of docs/production.md §8. "
@@ -603,18 +595,6 @@ def _replay(argv: list[str]) -> list[str]:
     return out
 
 
-def _section_costs(root: Path) -> dict[int, float]:
-    """What each authored section cost, from the active vfx.json: its own
-    spend, else the spend it was carried forward with."""
-    out = {}
-    for rec in (read_json(Path(root) / "vfx.json", warn=False) or {}).get("authored") or []:
-        if isinstance(rec, dict) and isinstance(rec.get("n"), int):
-            cost = rec.get("cost_usd") or rec.get("carried_cost_usd")
-            if isinstance(cost, (int, float)) and cost > 0:
-                out[rec["n"]] = float(cost)
-    return out
-
-
 def routed_sections(root: Path, findings: Iterable[dict]) -> list[int] | None:
     """The vfx sections the findings fall in, by shot label then by timestamp
     against each section's worlds, or None when the whole film is to be
@@ -645,83 +625,6 @@ def routed_sections(root: Path, findings: Iterable[dict]) -> list[int] | None:
             return None
         hit.add(found)
     return None if hit >= {r["n"] for r in authored} else sorted(hit)
-
-
-def _qa_cost(root: Path) -> float | None:
-    qa_json = read_json(Path(root) / "qa.json", warn=False) or {}
-    card = read_json(Path(root) / qa.QA_DIR / str(qa_json.get("pass", "")) / "scorecard.json",
-                     warn=False) or qa_json
-    return _cost_in(card)
-
-
-def _reported(root: Path, stage: str, sections: list[int] | None) -> float | None:
-    """What one project's own report says a run of the stage costs, or None.
-    A zero on a stage that is never free is a cache replay, not a measurement."""
-    root = Path(root)
-    if stage == "qa":
-        cost = _qa_cost(root)
-    elif stage == "vfx":
-        per = _section_costs(root)
-        if sections:
-            cost = sum(per[n] for n in sections) if all(n in per for n in sections) else None
-        else:
-            cost = sum(per.values()) if per else _cost_in(read_json(root / "vfx.json",
-                                                                      warn=False))
-    else:
-        rel = MANIFEST.get(stage)
-        cost = _cost_in(read_json(root / rel, warn=False)) if rel else None
-    if cost is None or (cost <= 0 and DEFAULT_USD.get(stage, 0.5) >= 1.0):
-        return None
-    return round(float(cost), 2)
-
-
-def _like(root: Path, stage: str) -> tuple[float, str] | None:
-    """The median of what the stage cost in the other projects beside this one."""
-    root = Path(root)
-    found = []
-    for other in sorted(root.parent.iterdir()) if root.parent.is_dir() else []:
-        if other.is_dir() and other != root:
-            cost = _reported(other, stage, None)
-            if cost is not None:
-                found.append((cost, other.name))
-    if not found:
-        return None
-    found.sort()
-    return found[len(found) // 2][0], ", ".join(n for _, n in found)
-
-
-def stage_estimates(root: Path, stages: list[str],
-                    sections: list[int] | None = None) -> list[dict]:
-    """One row per stage of a pass, gate and QA included: its cost from its
-    own report (`measured`), else from like projects' (`like`), else the
-    default (`assumed`). An assumed vfx pass is guessed whole, its downstream
-    included, so the stages after it add nothing then."""
-    rows = []
-    folded = False
-    for stage in list(stages) + [s for s in ("gate", "qa") if s not in stages]:
-        wanted = sections if stage == "vfx" else None
-        have = _reported(root, stage, wanted)
-        like = _like(root, stage) if have is None and not wanted else None
-        if have is not None:
-            row = {"stage": stage, "usd": have, "basis": "measured",
-                   "source": (MANIFEST.get(stage) or "qa.json")
-                   + (f" sections {','.join(map(str, wanted))}" if wanted else "")}
-        elif like is not None:
-            row = {"stage": stage, "usd": like[0], "basis": "like", "source": like[1]}
-        elif folded:
-            row = {"stage": stage, "usd": 0.0, "basis": "assumed",
-                   "source": "included in the vfx default"}
-        else:
-            usd = VFX_PASS_USD if stage == "vfx" else DEFAULT_USD.get(stage, 0.5)
-            row = {"stage": stage, "usd": usd, "basis": "assumed",
-                   "source": "default, nothing reported"}
-        folded = folded or (stage == "vfx" and row["basis"] == "assumed")
-        rows.append(row)
-    return rows
-
-
-def total(rows: Iterable[dict]) -> float:
-    return round(sum(r["usd"] for r in rows), 2)
 
 
 def estimate(stages: list[str], last_cost: float | None) -> float:

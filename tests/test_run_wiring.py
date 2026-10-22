@@ -1,10 +1,12 @@
 """`yt run` wires the new stages: props fetches before the animation is
-authored, sound fetches its cues, and the env hints name the Freesound keys."""
+authored, sound fetches its cues, and the env hints name the Freesound keys.
+Its cost plan (`--dry-run`) and its cap (`--budget-usd`) read the stage
+estimates, which live in `spend` (AUTO-81)."""
 
 import argparse
 import unittest
 
-from ytstudio import cli, env, workspace
+from ytstudio import cli, env, improve, spend, workspace
 
 
 class Pipeline(unittest.TestCase):
@@ -42,6 +44,15 @@ class Pipeline(unittest.TestCase):
         for stage in cli.PIPELINE:
             parsed = parser.parse_args(cli.stage_argv(stage, base, extra))
             self.assertEqual(parsed.stage, stage)
+
+
+class Estimates(unittest.TestCase):
+    def test_the_stage_estimates_live_in_spend_and_improve_reads_them_there(self):
+        # One pricing of a stage, for `yt improve` and `yt run` alike.
+        for name in ("stage_estimates", "_reported", "_like", "total",
+                     "MANIFEST", "DEFAULT_USD", "VFX_PASS_USD"):
+            self.assertIs(getattr(improve, name), getattr(spend, name), name)
+        self.assertEqual(spend.stage_estimates.__module__, "ytstudio.spend")
 
 
 class EnvHints(unittest.TestCase):

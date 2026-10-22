@@ -437,7 +437,7 @@ a pass older than `video.mp4` or `scene.xml` is scored again first), with
   `vfx.json`'s active version; the new `vfx/vNN/` stays on disk).
 - **Stops** at READY TO PUBLISH (or `--target` with nothing blocking), at
   `--max-passes` (3), when the next pass's estimate exceeds what is left of
-  `--budget-usd` (15) -- `improve.stage_estimates` prices each stage of the
+  `--budget-usd` (15) -- `spend.stage_estimates` prices each stage of the
   pass from its own report (`measured`), else from a like project (`like`),
   else an assumed default (`assumed`), and only a pass with nothing measured
   falls back to the last pass's cost; `--dry-run` prints the table -- when a
