@@ -486,10 +486,13 @@ An honest spec says where it is blind, so nobody mistakes silence for a pass:
 - **Placeholder shots are disqualifying, not deductible.** While any remain,
   the verdict is NOT READY regardless of the other nine categories.
 - **Narrative clarity is judged from the screenplay and the frames, never
-  from audience data, until the retention loop exists.** No published
-  film's retention curve reaches the pipeline yet, so the score rests on
-  the plan, the narration and what the frames show, and the craft defaults
-  in §6 stay priors rather than measured bounds. The reviewer's predicted
+  from audience data.** `yt retention` reads a published film's curve back
+  onto its shots and `yt improve` routes those findings to the screenplay
+  for the next cut (`work/<slug>/retention.json`), but a QA pass scores a
+  cut nobody has watched, so the score rests on the plan, the narration and
+  what the frames show, and the craft defaults in §6 stay priors until the
+  channel has ten measured films; until then every retention finding is
+  tagged `sanity_bound`. The reviewer's predicted
   satisfaction (`story.satisfaction` in the scorecard) is a ranking proxy
   (judging 4): `yt qa` records it and names it under `not_evidenced` until
   the work directory holds the channel's `retention.json`.
