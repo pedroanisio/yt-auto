@@ -15,6 +15,8 @@ the files a stage would.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import re
@@ -1013,6 +1015,18 @@ class Cli(unittest.TestCase):
         defaults = cli.build_parser().parse_args(["improve", "--title", "x"])
         self.assertEqual((defaults.max_passes, defaults.budget_usd, defaults.target,
                           defaults.quality), (3, 15.0, 9.0, "final"))
+
+    def test_an_author_of_the_reviewers_family_is_refused_before_any_stage(self):
+        # AUTO-92: script (--review), keyframe and vfx are reviewed by
+        # vfx.REVIEWER_MODEL; a loop whose author is that family would reach
+        # one and stop partway, so it is refused up front, as `yt run` does.
+        args = cli.build_parser().parse_args(
+            ["improve", "--title", "x", "--model", "claude-opus-5-5"])
+        with patch.object(improve.workspace, "resolve",
+                               side_effect=AssertionError("resolved")), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(improve.run(args), 2)
+        self.assertIn("does not grade its own work", err.getvalue())
 
     def test_improve_is_not_a_pipeline_stage(self):
         self.assertNotIn("improve", [s for s, _ in workspace.STAGES])

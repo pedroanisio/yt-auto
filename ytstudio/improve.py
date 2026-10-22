@@ -61,7 +61,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from . import house, qa, spend, workspace
+from . import flags, house, qa, spend, workspace
 from .core import read_json, write_json
 from .harness import FEEDBACK_DIR, Harness, HarnessError, brief
 # A stage's price is one thing, for `yt improve` and `yt run` alike: it lives
@@ -1645,6 +1645,14 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
 
 
 def run(args) -> int:
+    # The stages the loop reruns review with vfx.REVIEWER_MODEL (script's
+    # plan with --review, keyframe, vfx): a model never grades its own work,
+    # so an author of that family is refused here, before any stage spends,
+    # as `yt run` refuses it, not partway through a pass.
+    from .vfx import REVIEWER_MODEL
+    if own := flags.own_reviewer(args.model, REVIEWER_MODEL):
+        print(own, file=sys.stderr)
+        return 2
     idea, project = workspace.resolve(args)
     rules, digest = house.for_args(args, project, "improve")
     improver = Improver(project, idea, model=args.model,
