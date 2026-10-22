@@ -524,6 +524,14 @@ hand-authored world showed the cost.
     round, so a last revision that crashes, breaks the build or scores lower
     falls back to that round. A section whose authoring raises becomes an
     error record; the other sections are kept.
+  - A proof frame the host could not render (unreachable, no engine, a
+    timeout, or an engine that died naming no finding: `vfx.infra_failure`)
+    is retried once on the other host and otherwise filed as `infra:`,
+    never `error:`. A round whose only blockers are infra findings is gated
+    again after `vfx.INFRA_WAIT` seconds without a session, gets no review
+    while frames are missing, and the frames the first pass lost are
+    recorded on the round (`rounds[].infra` in `vfx.json`, "lost to the
+    host" in `vfx.md`); no revision is paid for the host's failure.
   - Money is budgeted per section and per stage (`vfx.SpendBudget`):
     `--budget-usd` (15) covers one section's author sessions and its
     reviews, `--stage-budget-usd` (default: that times the sections) covers

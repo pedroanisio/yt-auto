@@ -535,6 +535,11 @@ frames is a camera pointing at nothing. The model then reviews the frames
 against the publication bar and scores them. An error, or a score under
 `--bar` (7), sends the findings back to the author for up to
 `--rounds` rounds (2); every round and its score are kept in `vfx.json`.
+A frame the host could not render is the host's failure, not the author's:
+it is retried once on the other host, else filed as `infra:`, and a round
+blocked only by such frames is gated again after a bounded wait with no
+session and no revision paid (`rounds[].infra` in `vfx.json` says what the
+host lost).
 
 Authoring is versioned. Each run lands in the next `vfx/vNN/`, `vfx.json`
 names the active version, and `--fresh` replans and opens a new version;

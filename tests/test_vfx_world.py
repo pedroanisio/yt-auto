@@ -678,6 +678,92 @@ class Frames(unittest.TestCase):
         self.assertFalse([f for f in findings if f.startswith("error")])
 
 
+class LostStills(unittest.TestCase):
+    """AUTO-68: a still the host could not render is the host's failure, not
+    the author's: it is retried once on the other host, and otherwise filed
+    as `infra:`, never `error:`."""
+
+    UNREACHABLE = "render host unreachable: ssh: connect to host root@small port 22: Connection refused"
+    ROUTES = {"still": "root@small", "encode": "root@big"}
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.ws = vfx.Workspace(self.root, version="v01")
+        self.name = self.ws.doc_name(1, SECTION)
+        (self.ws.dir / self.name).write_text(WORLD_DOC, encoding="utf-8")
+        self.shots = {"world-open": SECTION["shots"]}
+        self.attempts: list[str] = []
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def still(self, answers: dict[str, tuple]):
+        def fake(xml, at, **kw):
+            self.attempts.append(kw.get("host"))
+            return answers[kw.get("host")]
+        return fake
+
+    def go(self, still, **kw):
+        with patch.object(vfx.render, "remote_host", lambda args, job="encode": self.ROUTES[job]), \
+                patch.object(vfx.render, "engine_render_still", still), \
+                patch.object(vfx, "encode_findings", lambda *a, **k: []):
+            return self.ws.frames(self.name, times=[5.0], shots=self.shots, **kw)
+
+    def test_an_unreachable_host_is_dropped_and_the_still_rendered_on_the_other(self):
+        with patch.dict(vfx.render._HOSTS, {"root@small": vfx.render.Host(addr="root@small", engine="/e")}):
+            results = self.go(self.still({"root@small": (None, self.UNREACHABLE),
+                                          "root@big": (varied_png(), "rendered on root@big")}))
+            self.assertNotIn("root@small", vfx.render._HOSTS)       # probed afresh next time
+        self.assertEqual(self.attempts, ["root@small", "root@big"])
+        png, findings = results[0]
+        self.assertIsNotNone(png)
+        self.assertFalse([f for f in findings if f.startswith(("error", "infra"))], findings)
+        self.assertTrue(any(f.startswith("note") and "root@big" in f and "root@small" in f
+                            for f in findings), findings)
+
+    def test_an_engine_that_died_naming_no_finding_is_retried_too(self):
+        died = "render failed\nerror: the engine could not render the frame (exit 255)"
+        results = self.go(self.still({"root@small": (None, died),
+                                      "root@big": (varied_png(), "rendered on root@big")}))
+        self.assertEqual(self.attempts, ["root@small", "root@big"])
+        self.assertIsNotNone(results[0][0])
+
+    def test_a_still_both_hosts_lost_is_an_infra_finding_not_an_error(self):
+        results = self.go(self.still({"root@small": (None, self.UNREACHABLE),
+                                      "root@big": (None, "render host unreachable: Connection timed out")}))
+        self.assertEqual(self.attempts, ["root@small", "root@big"])
+        png, findings = results[0]
+        self.assertIsNone(png)
+        self.assertTrue(findings[0].startswith("infra: frame at 5s of world-open"), findings)
+        self.assertIn("root@small", findings[0])
+        self.assertIn("root@big", findings[0])
+        self.assertFalse([f for f in findings if f.startswith("error")], findings)
+
+    def test_a_document_the_engine_refused_is_the_authors_error_with_no_retry(self):
+        refused = "render failed\nerror[E7]: the camera frames nothing"
+        results = self.go(self.still({"root@small": (None, refused),
+                                      "root@big": (varied_png(), "rendered on root@big")}))
+        self.assertEqual(self.attempts, ["root@small"])
+        self.assertTrue(any(f.startswith("error") for f in results[0][1]))
+        self.assertFalse(any(f.startswith("infra") for f in results[0][1]))
+
+    def test_with_no_other_host_the_lost_still_is_infra_after_one_attempt(self):
+        self.ROUTES = {"still": "root@small", "encode": "root@small"}
+        with patch.object(vfx.render, "host_names", lambda args=None: ["root@small"]):
+            results = self.go(self.still({"root@small": (None, self.UNREACHABLE)}))
+        self.assertEqual(self.attempts, ["root@small"])
+        self.assertTrue(results[0][1][0].startswith("infra:"), results[0][1])
+
+    def test_what_is_the_hosts_failure(self):
+        self.assertTrue(vfx.infra_failure(self.UNREACHABLE))
+        self.assertTrue(vfx.infra_failure("no engine reachable"))
+        self.assertTrue(vfx.infra_failure("render failed\nerror: the engine could not render the frame: Killed"))
+        self.assertFalse(vfx.infra_failure("render failed\nerror[E7]: the camera frames nothing"))
+        self.assertFalse(vfx.infra_failure("render failed\nerror: solver refused its grid"))
+        self.assertFalse(vfx.infra_failure("error: blocked on missing inputs: props/x.hdr"))
+
+
 class EncodeCache(unittest.TestCase):
     """AUTO-67: the proof encode runs on the encode host, one per host at a
     time, and its lines are served from the cache the second time."""

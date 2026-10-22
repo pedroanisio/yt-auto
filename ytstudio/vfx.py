@@ -50,6 +50,7 @@ import re
 import shutil
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from xml.etree import ElementTree as _ET
 from dataclasses import asdict
@@ -1215,6 +1216,40 @@ def encode_findings(files: dict[str, bytes], doc_path: str, *, start: float, end
 #: What the engine's stderr says when the host killed its encode for memory.
 OUT_OF_MEMORY = re.compile(r"out of memory|\bKilled\b|\bOOM\b", re.IGNORECASE)
 
+#: How long the gate waits before gating a round again when the host, not the
+#: author, lost its frames: a saturated still host clears in minutes, and a
+#: paid revision for it is money for nothing (throughput.md, run 2).
+INFRA_WAIT = 120.0
+
+#: The line engine_render_still writes for a render that died saying nothing.
+NO_FINDING = "error: the engine could not render the frame"
+
+
+def infra_failure(message: str) -> bool:
+    """Whether a still that rendered nothing failed for the host's reasons
+    and not the document's: the host did not answer (sdkkit.UNREACHABLE),
+    no engine was reachable, the render timed out, or the engine died
+    naming no finding. A document the engine refused with a diagnostic, or
+    one blocked on a file it names, is the author's."""
+    head, _, rest = message.partition("\n")
+    if any(m in message for m in sdkkit.UNREACHABLE):
+        return True
+    if head.startswith(("render host unreachable", "no engine reachable")):
+        return True
+    if head.startswith("error:"):
+        return False
+    return not any(l.strip() and not l.startswith(NO_FINDING) for l in rest.splitlines())
+
+
+def fallback_host(host: str) -> str:
+    """The other host a still is retried on once `host` lost it: where an
+    encode would go when that is another machine, else the first configured
+    host that is not `host`; "" when there is none."""
+    other = render.remote_host(None, "encode")
+    if other and other != host:
+        return other
+    return next((h for h in render.host_names() if h and h != host), "")
+
 
 def _encode_cache(files: dict[str, bytes], doc_path: str, *, start: float, end: float,
                   quality: str, host: str) -> Path | None:
@@ -2055,18 +2090,40 @@ class Workspace:
                 png, message = render.engine_render_still(
                     proof.encode("utf-8"), t, host=host, files=files,
                     doc_path=f"{self.rel}/.proof-{stem}.scene.xml")
+            where = f"frame at {t:g}s of {fact['id']}"
+            retried = ""
+            if png is None and infra_failure(message):
+                # The host lost the frame, not the author: forget what this
+                # process knew of it and render once more on the other host.
+                getattr(render, "_HOSTS", {}).pop(host, None)
+                other = fallback_host(host)
+                if other:
+                    first = message.partition("\n")[0]
+                    with sdkkit.host_lock(other):
+                        png, message = render.engine_render_still(
+                            proof.encode("utf-8"), t, host=other, files=files,
+                            doc_path=f"{self.rel}/.proof-{stem}.scene.xml")
+                    retried = (f"{host or 'this machine'} answered: {first}; "
+                               f"retried on {other}")
             lines = message.splitlines()
             off = framecheck.never_in_view(lines)
             findings = [l for l in lines[1:] if not l.startswith("warning[E12]")
                         and not framecheck.OFF_CAMERA.search(l)]
-            findings = [f"{l.split(':', 1)[0]}: frame at {t:g}s of {fact['id']}: "
+            findings = [f"{l.split(':', 1)[0]}: {where}: "
                         f"{l.split(':', 1)[1].strip()}" if ":" in l else l for l in findings]
             findings += framecheck.view_findings(off, objects[fact["id"]],
                                                  symbol=fact["id"], at=t)
             if png is None:
+                if infra_failure(message):
+                    # Filed as the host's, never as the author's error: the
+                    # gate waits and looks again instead of paying a revision.
+                    return None, [f"infra: {where} was not rendered: {lines[0]}"
+                                  + (f" ({retried})" if retried else "")] + findings, off
                 if not any(f.startswith("error") for f in findings):
-                    findings.insert(0, f"error: frame at {t:g}s of {fact['id']} was not rendered: {lines[0]}")
+                    findings.insert(0, f"error: {where} was not rendered: {lines[0]}")
                 return None, findings, off
+            if retried:
+                findings.append(f"note: {where} rendered after a host failed it: {retried}")
             target = out_dir / f"{stem}__{fact['id']}__{t:g}s.png"
             target.write_bytes(png)
             return target, judge_frame(png, t, fact["id"]) + findings, off
@@ -2759,19 +2816,33 @@ class VfxPlanner:
                 symbols, findings = self.ws.validate(name, shots=shots, props=True)
                 findings = built + findings
             errors = [f for f in findings if f.startswith("error")]
+            # A frame the host lost is the host's failure, not the author's:
+            # when it is all that blocks the round, wait a bounded time and
+            # gate again without a session. What the first pass lost is
+            # recorded on the round either way (vfx.json shows the host's part).
+            lost = [f for f in findings if f.startswith("infra")]
+            if lost and not errors:
+                self._say(f"    [{n}] {name} round {round_no}: the host lost {len(lost)} "
+                          f"frame(s); gating again in {INFRA_WAIT:g} s, no session")
+                time.sleep(INFRA_WAIT)
+                symbols, findings = self.ws.validate(name, shots=shots, props=True)
+                findings = built + findings
+                errors = [f for f in findings if f.startswith("error")]
+            still_lost = [f for f in findings if f.startswith("infra")]
             paid = reviewer.usage.cost_usd
-            review = (None if errors or not self.review
+            review = (None if errors or still_lost or not self.review
                       else self._review(reviewer, n, name, section, worlds, round_no))
-            if not errors and self.review:
+            if not errors and not still_lost and self.review:
                 review_costs.append(reviewer.usage.cost_usd - paid)
             score = float(review["score"]) if review and review.get("score") is not None else None
             rounds.append({"round": round_no, "symbols": symbols, "errors": len(errors),
                            "score": score, "fidelity": (review or {}).get("fidelity"),
-                           "review": review, "timed_out": False,
+                           "review": review, "timed_out": False, "infra": lost,
                            "findings": [f for f in findings if not f.startswith("note")]})
             self.ws.keep_round(name, round_no)
             self._say(f"    [{n}] {name} round {round_no}: {len(symbols)} symbol(s), "
                       f"{len(errors)} error(s)"
+                      + (f", {len(still_lost)} frame(s) lost to the host" if still_lost else "")
                       + (f", review {score:g}/10" if score is not None else ", no review")
                       + f", {tools_used} tool call(s)")
             return symbols, findings, review
@@ -2800,7 +2871,8 @@ class VfxPlanner:
             revisions += 1
             why = errors[0][:100] if errors else f"review {score:g}/10 under the bar {self.author_bar:g}"
             self._say(f"    [{n}] revision {revisions}: {why}")
-            listing = "\n".join(f"- {f}" for f in findings if not f.startswith("note"))
+            # The host's failures are not the author's to answer.
+            listing = "\n".join(f"- {f}" for f in findings if not f.startswith(("note", "infra")))
             prompt = (f"{name} is not done."
                       + (f" The gate reports:\n{listing}\n\n" if listing else "\n\n")
                       + (self._review_listing(review) + "\n\n" if review else "")
@@ -3539,6 +3611,7 @@ def write_vfx(dossier: Dossier, data: dict) -> list[Path]:
                + (f", review {doc['score']:g}/10" if doc.get("score") is not None else "")
                + f", ${doc.get('cost_usd', 0)}; preview: `yt render --scene {doc['file']}`"]
         md += [f"  - round {r.get('round')}: {r.get('errors', 0)} error(s)"
+               + (f", {len(r['infra'])} frame(s) lost to the host" if r.get("infra") else "")
                + (f", {r['score']:g}/10 — {str((r.get('review') or {}).get('summary', ''))[:140]}"
                   if r.get("score") is not None else ", no review")
                for r in rounds]
