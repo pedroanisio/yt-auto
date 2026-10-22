@@ -273,10 +273,21 @@ def _digest(*parts: Any) -> str:
 
 
 def _tree_digest(root: Path) -> str:
-    """The files an inspection can see, by name, size and content hash."""
+    """The files an inspection can see, by name, size and content hash.
+
+    The tree is shared: another section's thread, or a build's subprocess,
+    writes beside the inspection (a record, a still, a .pyc) as a
+    `.<name>.<pid>.tmp` it renames into place. A writer's temporary is never
+    evidence, and a file gone between the listing and its read is left out
+    rather than failing the inspection."""
     rows = []
     for path in sorted(p for p in root.rglob("*") if p.is_file()):
-        data = path.read_bytes()
+        if path.name.startswith(".") and path.name.endswith(".tmp"):
+            continue
+        try:
+            data = path.read_bytes()
+        except FileNotFoundError:
+            continue
         rows.append((str(path.relative_to(root)), len(data),
                      hashlib.sha256(data).hexdigest()[:12]))
     return _digest(rows)

@@ -13,6 +13,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from claude_engine import Event, Usage
 from ytstudio import harness
@@ -281,6 +282,29 @@ class Inspect(HarnessCase):
 
 
 class Helpers(unittest.TestCase):
+    def test_a_file_that_vanishes_while_digesting_is_left_out(self):
+        # Two section threads share vfx/vNN/: one renames its record's
+        # `.record.json.<pid>.tmp` into place while the other's reviewer
+        # digests the tree. The temporary is not evidence, and a file gone
+        # between the listing and its read does not fail the inspection.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "kept.txt").write_text("kept", encoding="utf-8")
+            whole = harness._tree_digest(root)
+            gone = root / "frames" / "01-open__world__1.5s.png"
+            gone.parent.mkdir()
+            gone.write_bytes(b"png")
+            real = Path.read_bytes
+
+            def read_bytes(path):
+                if path == gone:
+                    gone.unlink()        # the writer's rename lands here
+                return real(path)
+            with patch.object(Path, "read_bytes", read_bytes):
+                self.assertEqual(harness._tree_digest(root), whole)
+            (root / ".record.json.123.tmp").write_text("{}", encoding="utf-8")
+            self.assertEqual(harness._tree_digest(root), whole)
+
     def test_validate_names_every_missing_required_field(self):
         schema = {"type": "object", "required": ["a", "b"],
                   "properties": {"a": {}, "b": {}}}

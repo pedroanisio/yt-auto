@@ -80,6 +80,31 @@ class OneAccount(ContinuityCase):
         agents = len(world.FakeEngine.stream_calls)
         self.assertEqual(self.planner.usage.calls, agents)
 
+    def test_a_section_that_raises_after_its_session_still_reports_its_cost(self):
+        # A reviewer's inspection raised something other than a HarnessError
+        # (a FileNotFoundError from the shared tree, as section threads racing
+        # each other's record writes once produced): the section's record is
+        # the failure, but its author session was paid for, so the planner's
+        # account and the record both carry it.
+        real = harness._tree_digest
+        raised = []
+
+        def once(root):
+            if not raised:
+                raised.append(root)
+                raise FileNotFoundError(root / "rounds" / "01-open" / ".record.json.1.tmp")
+            return real(root)
+        with patch.object(harness, "_tree_digest", once):
+            authored = self.author()
+        failed = [r for r in authored
+                  if any(f.startswith("error: the authoring") for f in r["findings"])]
+        self.assertEqual(len(failed), 1)
+        self.assertIn("FileNotFoundError", failed[0]["findings"][0])
+        self.assertAlmostEqual(failed[0]["cost_usd"], 0.02, places=4)   # its author session
+        spent = sum(d["cost_usd"] for d in authored)
+        self.assertAlmostEqual(self.planner.usage.cost_usd, spent, places=4)
+        self.assertEqual(self.planner.usage.calls, len(world.FakeEngine.stream_calls))
+
 
     def test_a_revision_does_not_count_the_first_round_twice(self):
         self.planner.revisions, self.planner.author_bar = 1, 7.0
