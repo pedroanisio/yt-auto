@@ -39,7 +39,13 @@ from typing import Any, Callable, Sequence
 import claude_engine
 from claude_engine import (READ_ONLY_TOOLS, ClaudeEngine, ClaudeError,
                            EngineConfig, Usage)
+from . import spend
 from .core import _merge_usage, read_json, write_json
+
+# Every model has a price (AUTO-73): the engine estimates a timed-out call
+# from its own table, which starts empty, so the one door to the engine fills
+# it from spend's. $CLAUDE_PRICES still overrides a row.
+spend.install_prices()
 
 __all__ = ["Harness", "HarnessError", "ENGINE", "READ_ONLY_TOOLS", "ClaudeError",
            "brief", "missing_fields", "enum_violations",

@@ -9,15 +9,18 @@ from __future__ import annotations
 
 import inspect
 import json
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
 
+import claude_engine  # noqa: E402
 from claude_engine import Usage  # noqa: E402
 from ytstudio import (assess, cli, gate, harness, improve, keyframe, pilot, props,  # noqa: E402
                       qa, research, retime, review, script, spend, styles, vfx, voice)
@@ -73,6 +76,50 @@ class Helper(unittest.TestCase):
                          1.5)
         self.assertIsNone(spend.cost_in({}))
         self.assertIsNone(spend.cost_in(None))
+
+
+class Prices(unittest.TestCase):
+    """AUTO-73: every model has a price, so a call cut off by its timeout is
+    billed, not booked at $0. The table is spend's; the engine reads a copy."""
+
+    CURRENT = ("claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5",
+               "claude-fable-5-1", "claude-opus-5", "claude-sonnet-5")
+
+    def test_the_table_prices_the_models_the_cli_reports(self):
+        for model in self.CURRENT:
+            row = spend.PRICES[model]
+            self.assertEqual(set(row), {"input", "cached_input", "output", "cache_creation"},
+                             model)
+            self.assertTrue(all(v > 0 for v in row.values()), model)
+            self.assertLess(row["cached_input"], row["input"], model)
+            self.assertLess(row["input"], row["output"], model)
+        self.assertEqual(spend.PRICES["claude-sonnet-5-5"]["input"], 2.0)
+        self.assertEqual(spend.PRICES["claude-sonnet-5-5"]["output"], 10.0)
+        self.assertEqual(spend.PRICES["claude-opus-5-5"]["output"], 20.0)
+
+    def test_an_alias_prices_as_the_generation_the_cli_resolves_it_to(self):
+        self.assertEqual(set(spend.ALIASES), {"opus", "sonnet", "haiku"})
+        for alias, model in spend.ALIASES.items():
+            self.assertIn(model, self.CURRENT)
+            self.assertEqual(spend.PRICES[alias], spend.PRICES[model])
+
+    def test_the_table_is_installed_into_the_engine_when_harness_is_imported(self):
+        # ytstudio.harness is imported at the top of this module.
+        for model, row in spend.PRICES.items():
+            self.assertEqual(claude_engine.PRICES.get(model), row, model)
+        self.assertAlmostEqual(
+            claude_engine._partial_cost({"output_tokens": 1_000_000}, "claude-sonnet-5-5"),
+            10.0)
+
+    def test_the_environment_still_overrides_and_an_unknown_model_has_none(self):
+        override = {"claude-sonnet-5-5": {"input": 0, "cached_input": 0, "output": 1_000_000}}
+        with mock.patch.dict(os.environ, {"CLAUDE_PRICES": json.dumps(override)}):
+            self.assertEqual(spend.price_for("claude-sonnet-5-5")["output"], 1_000_000)
+            self.assertAlmostEqual(
+                claude_engine._partial_cost({"output_tokens": 1}, "claude-sonnet-5-5"), 1.0)
+        self.assertEqual(spend.price_for("claude-sonnet-5-5"), spend.PRICES["claude-sonnet-5-5"])
+        self.assertIsNone(spend.price_for("a-model-nobody-priced"))
+        self.assertIsNone(spend.price_for(""))
 
 
 class Writers(unittest.TestCase):

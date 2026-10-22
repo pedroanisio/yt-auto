@@ -15,9 +15,9 @@ from claude_engine import ClaudeEngine, ClaudeExecutionError, EngineConfig, Usag
 from ytstudio import harness, keyframe, probes, vfx
 
 
-def assistant(mid, **usage):
+def assistant(mid, model="m-1", **usage):
     return json.dumps({"type": "assistant", "message": {
-        "id": mid, "model": "m-1", "usage": usage,
+        "id": mid, "model": model, "usage": usage,
         "content": [{"type": "text", "text": "working"}]}})
 
 
@@ -88,6 +88,18 @@ class EngineBooksTimedOutSpend(unittest.TestCase):
             prices={"m-1": {"input": 2.0, "cached_input": 0.5, "output": 10.0}})
         self.assertAlmostEqual(engine.usage.cost_usd, 12.0)
         self.assertAlmostEqual(engine.usage.timed_out_cost_usd, 12.0)
+        self.assertTrue(engine.usage.timed_out_cost_estimated)
+
+    def test_a_model_the_cli_reports_is_priced_without_any_configuration(self):
+        # AUTO-73: the table in ytstudio/spend.py reaches the engine through
+        # the harness, so a timed-out call on a real model is billed.
+        with mock.patch.dict(claude_engine.os.environ, {"CLAUDE_PRICES": ""}):
+            engine, error = run_stream([assistant(
+                "a", model="claude-sonnet-5-5", input_tokens=100_000, output_tokens=10_000,
+                cache_read_input_tokens=1_000_000)])
+        self.assertIn("timed out", str(error))
+        self.assertGreater(engine.usage.cost_usd, 0.0)
+        self.assertAlmostEqual(engine.usage.timed_out_cost_usd, engine.usage.cost_usd)
         self.assertTrue(engine.usage.timed_out_cost_estimated)
 
     def test_an_unpriced_model_books_tokens_and_says_the_cost_is_unknown(self):
