@@ -1192,7 +1192,10 @@ def encode_findings(files: dict[str, bytes], doc_path: str, *, start: float, end
     stderr = (proc.stderr or "").strip()
     if proc.returncode != 0 and not any(l.startswith("error") for l in lines):
         tail = stderr.splitlines()[-2:]
-        if proc.returncode == 137 or OUT_OF_MEMORY.search(stderr):
+        # What render.run_job says of a job the host lost ("engine killed") is
+        # the host's failure, not the kernel's, so it is not read for memory.
+        engine_said = "\n".join(l for l in stderr.splitlines() if not l.startswith("remote job"))
+        if proc.returncode == 137 or OUT_OF_MEMORY.search(engine_said):
             lines.insert(0, f"error: the proof encode of {start:g}-{end:g}s was killed for memory "
                             f"on {host or 'this machine'} (exit {proc.returncode}): no host can "
                             "encode this world as written. Time-bound every layer and group "
@@ -1213,8 +1216,10 @@ def encode_findings(files: dict[str, bytes], doc_path: str, *, start: float, end
     return lines
 
 
-#: What the engine's stderr says when the host killed its encode for memory.
-OUT_OF_MEMORY = re.compile(r"out of memory|\bKilled\b|\bOOM\b", re.IGNORECASE)
+#: What the engine's stderr says when the host killed its encode for memory:
+#: the kernel's `Killed` keeps its case, so a sentence about a killed job is
+#: not read as one.
+OUT_OF_MEMORY = re.compile(r"(?i:out of memory)|\bKilled\b|\bOOM\b")
 
 #: How long the gate waits before gating a round again when the host, not the
 #: author, lost its frames: a saturated still host clears in minutes, and a

@@ -844,6 +844,18 @@ class EncodeCache(unittest.TestCase):
         lines = self.encode(self.run_job(returncode=1, stderr="boom\n"), start=3, end=7)
         self.assertTrue(lines[0].startswith("warning:"), lines)
 
+    def test_a_job_the_host_lost_is_not_the_authors_memory_error(self):
+        # render._read_job's note on a lost job says "engine killed": the
+        # host's failure, not the kernel's `Killed`, so no revision is paid.
+        lost = ("remote job lost: its process is gone and it wrote no status "
+                "(host rebooted or engine killed)\n")
+        lines = self.encode(self.run_job(returncode=1, stderr=lost), start=3, end=7)
+        self.assertTrue(lines[0].startswith("warning:"), lines)
+        self.assertNotIn("memory", lines[0])
+        self.assertFalse(vfx.OUT_OF_MEMORY.search(lost))
+        self.assertTrue(vfx.OUT_OF_MEMORY.search("scene-render: Killed"))
+        self.assertTrue(vfx.OUT_OF_MEMORY.search("CUDA error: Out of memory"))
+
 
 class Review(unittest.TestCase):
     """The model looks at the frames; a low score sends the author back."""
