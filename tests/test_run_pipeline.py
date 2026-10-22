@@ -8,18 +8,19 @@ vfx on its own thread, since only the build reads the cue sheet (AUTO-75).
 from __future__ import annotations
 
 import io
+import json
 import sys
 import tempfile
 import threading
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-from ytstudio import cli, workspace  # noqa: E402
+from ytstudio import cli, spend, workspace  # noqa: E402
 from ytstudio import (build, keyframe, props, render, research, retime, script,  # noqa: E402
                       sound, styles, vfx, voice)
 
@@ -29,6 +30,10 @@ MODULES = {"research": research, "styles": styles, "script": script, "props": pr
 
 
 class RunCase(unittest.TestCase):
+    """`yt run` against fake stages: each records when it ran, writes the
+    artifact that proves it did and, when `costs` prices it, a manifest that
+    reports that spend."""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -36,7 +41,9 @@ class RunCase(unittest.TestCase):
         self.root.mkdir()
         self.order: list[str] = []
         self.codes: dict[str, int] = {}
+        self.costs: dict[str, float] = {}
         self.hooks: dict[str, callable] = {}
+        self.seen: dict[str, object] = {}
         for stage, module in MODULES.items():
             patch = mock.patch.object(module, "run", self.fake(stage))
             patch.start()
@@ -47,9 +54,13 @@ class RunCase(unittest.TestCase):
 
         def run(args):
             self.order.append(f"{stage}:start")
+            self.seen[stage] = args
             if stage in self.hooks:
                 self.hooks[stage]()
-            (self.root / workspace.ARTIFACTS[artifact]).write_text("{}\n")
+            record = {"usage": spend.record(self.costs.get(stage, 0.0), "fake", 1)}
+            (self.root / workspace.ARTIFACTS[artifact]).write_text(json.dumps(record) + "\n")
+            if stage in spend.MANIFEST:
+                (self.root / spend.MANIFEST[stage]).write_text(json.dumps(record) + "\n")
             self.order.append(f"{stage}:end")
             return self.codes.get(stage, 0)
         return run
@@ -57,9 +68,9 @@ class RunCase(unittest.TestCase):
     def run_yt(self, *flags: str) -> int:
         args = cli.build_parser().parse_args(
             ["run", "--project", str(self.root), "--quiet", *flags])
-        with redirect_stderr(io.StringIO()) as err:
+        with redirect_stderr(io.StringIO()) as err, redirect_stdout(io.StringIO()) as out:
             code = args.run(args)
-        self.err = err.getvalue()
+        self.err, self.out = err.getvalue(), out.getvalue()
         return code
 
     def started(self, stage: str) -> list[str]:
@@ -82,7 +93,8 @@ class Beside(RunCase):
         self.hooks.update(keyframe=in_keyframe, sound=in_sound, vfx=vfx_done.set)
         self.assertEqual(self.run_yt("--skip", "render"), 0)
         self.assertTrue(seen.get("sound_running"), self.order)
-        self.assertLess(self.order.index("vfx:end"), self.order.index("sound:end"))
+        # vfx started while sound was still running; the build waited for it.
+        self.assertLess(self.order.index("vfx:start"), self.order.index("sound:end"))
         self.assertLess(self.order.index("sound:end"), self.order.index("build:start"))
         self.assertEqual(self.started("sound"), ["sound:start", "sound:end"])
 

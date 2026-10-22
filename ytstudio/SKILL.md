@@ -100,7 +100,7 @@ one-line note.
 |---|---|---|---|
 | revision rounds the author gets | `--rounds` | `keyframe` (with `--sheet`), `vfx`, `probe` | `--revisions` (`vfx`) |
 | the review score under which work goes back | `--bar` | `keyframe` (with `--sheet`), `vfx`, `probe` | `--author-bar` (`vfx`) |
-| a spend cap in dollars | `--budget-usd` (`--stage-budget-usd`, `--synth-budget-usd`, `--review-budget-usd` cap the whole stage, the synthesis, a review) | `research`, `keyframe`, `vfx`, `probe`, `assess`, `improve`, `sound` | `--budget` (`research`) |
+| a spend cap in dollars | `--budget-usd` (`--stage-budget-usd`, `--synth-budget-usd`, `--review-budget-usd` cap the whole stage, the synthesis, a review) | `research`, `keyframe`, `vfx`, `probe`, `assess`, `improve`, `sound`, `run` (the whole run) | `--budget` (`research`) |
 | ignore what is cached and do the stage again | `--fresh` | `research`, `keyframe`, `vfx`, `props`, `voice`, `sound`, `build`, `retime`, `review`, `qa`, `gate`, `pilot` | |
 | the model, its reasoning effort, its fallbacks | `--model`, `--effort`, `--fallback-model` | every stage that calls a model, `props` included; not `render` | |
 
@@ -171,7 +171,15 @@ the sheet never leaves the stage with holes, and runs that stage beside
 sheet), joining it before the build and failing the run there if it failed;
 `cli.run_extras` lists what each stage gets and `cli.stage_argv` builds the
 argv (`yt render` is the only stage handed no model flags, `cli.NO_MODEL`;
-`yt props` asks a model and takes them like the rest).
+`yt props` asks a model and takes them like the rest). `yt run --dry-run`
+prints the stages the walk would take from the project as it stands
+(`cli.run_plan`: the same skip, done and look judgement, `cli.stage_state`),
+one row per stage priced by `spend.stage_estimates` (measured, like or
+assumed) and the total, and runs nothing. `yt run --budget-usd N` caps the
+whole run: a stage whose estimate plus what the run's stages have reported
+does not fit is not started, the refusal names the estimate and the run exits
+`retime.UNSETTLED` (3); sound counts at its estimate while it runs beside;
+`yt vfx` is handed what is left as `--stage-budget-usd`.
 
 **The look-lock.** `yt keyframe` takes the look from the film itself, so
 nothing made for it is thrown away. It builds `yt vfx`'s own planner

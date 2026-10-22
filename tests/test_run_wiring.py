@@ -4,9 +4,31 @@ Its cost plan (`--dry-run`) and its cap (`--budget-usd`) read the stage
 estimates, which live in `spend` (AUTO-81)."""
 
 import argparse
+import sys
+import threading
 import unittest
+from pathlib import Path
+from unittest import mock
 
-from ytstudio import cli, env, improve, spend, workspace
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
+sys.path.insert(0, str(HERE))
+
+from test_run_pipeline import RunCase  # noqa: E402
+from ytstudio import cli, env, improve, retime, spend, workspace  # noqa: E402
+
+#: A fake pricing: one row per stage asked for, gate and qa appended as the
+#: real table does, so the plan is seen to leave them out.
+PRICES = {"research": 4.0, "styles": 5.0, "script": 3.0, "props": 0.0, "voice": 2.0,
+          "retime": 0.5, "keyframe": 6.0, "vfx": 20.0, "sound": 0.5, "build": 0.1,
+          "render": 0.0}
+
+
+def fake_estimates(root, stages, sections=None):
+    rows = [{"stage": s, "usd": PRICES.get(s, 0.1), "basis": "fake", "source": "test"}
+            for s in stages]
+    return rows + [{"stage": s, "usd": 9.0, "basis": "fake", "source": "test"}
+                   for s in ("gate", "qa")]
 
 
 class Pipeline(unittest.TestCase):
@@ -53,6 +75,95 @@ class Estimates(unittest.TestCase):
                      "MANIFEST", "DEFAULT_USD", "VFX_PASS_USD"):
             self.assertIs(getattr(improve, name), getattr(spend, name), name)
         self.assertEqual(spend.stage_estimates.__module__, "ytstudio.spend")
+
+
+class Priced(RunCase):
+    def setUp(self):
+        super().setUp()
+        patch = mock.patch.object(spend, "stage_estimates", fake_estimates)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def rows(self) -> dict[str, str]:
+        out = {}
+        for line in self.out.splitlines():
+            words = line.split()
+            if len(words) >= 2 and words[1].startswith("$"):
+                out[words[0]] = words[1]
+        return out
+
+
+class DryRun(Priced):
+    def test_the_run_parser_takes_the_two_flags(self):
+        args = cli.build_parser().parse_args(["run", "--dry-run", "--budget-usd", "12"])
+        self.assertTrue(args.dry_run)
+        self.assertEqual(args.budget_usd, 12.0)
+        args = cli.build_parser().parse_args(["run"])
+        self.assertFalse(args.dry_run)
+        self.assertIsNone(args.budget_usd)
+
+    def test_a_dry_run_prints_a_row_per_stage_and_the_total_and_runs_nothing(self):
+        self.assertEqual(self.run_yt("--dry-run"), 0)
+        self.assertEqual(self.order, [])
+        rows = self.rows()
+        # The walk stops before vfx while the look awaits the operator, and
+        # sound runs beside the keyframe, so it is in the plan.
+        planned = ["research", "styles", "script", "props", "voice", "retime", "keyframe",
+                   "sound"]
+        self.assertEqual(sorted(rows), sorted(planned + ["total"]), self.out)
+        self.assertEqual(rows["keyframe"], "$6.00")
+        self.assertEqual(rows["total"], f"${sum(PRICES[s] for s in planned):.2f}")
+        self.assertIn("stops before vfx", self.out)
+        self.assertNotIn("gate", self.out)
+
+    def test_the_plan_is_what_the_walk_would_do(self):
+        (self.root / "dossier.json").write_text("{}\n")
+        (self.root / "sound.json").write_text("{}\n")
+        self.assertEqual(self.run_yt("--dry-run", "--skip", "keyframe,render",
+                                     "--redo", "research"), 0)
+        rows = self.rows()
+        self.assertEqual(sorted(rows), sorted(["research", "styles", "script", "props",
+                                               "voice", "retime", "vfx", "build", "total"]))
+        self.assertEqual(rows["total"], "$34.60")
+        self.assertNotIn("stops before", self.out)
+        self.assertEqual(self.order, [])
+
+
+class Budget(Priced):
+    def test_a_stage_whose_estimate_does_not_fit_is_refused_by_name(self):
+        self.costs.update(research=3.5, styles=4.0)
+        self.assertEqual(self.run_yt("--budget-usd", "10"), retime.UNSETTLED)
+        self.assertEqual([s for s in self.order if s.endswith(":start")],
+                         ["research:start", "styles:start"])
+        self.assertIn("script", self.err)
+        self.assertIn("$3.00", self.err)
+        self.assertIn("$7.50", self.err)
+        self.assertIn("$10.00", self.err)
+
+    def test_the_remainder_goes_to_vfx_as_its_stage_budget(self):
+        self.costs.update(research=1.0, styles=0.5)
+        vfx_started = threading.Event()
+        # Sound is still running beside when vfx starts, so it counts at its
+        # estimate ($0.50) until it reports.
+        self.hooks.update(vfx=vfx_started.set, sound=lambda: vfx_started.wait(timeout=5))
+        self.assertEqual(self.run_yt("--budget-usd", "50", "--skip", "keyframe,render"), 0)
+        self.assertAlmostEqual(self.seen["vfx"].stage_budget_usd, 50 - 1.5 - 0.5)
+
+    def test_without_a_budget_nothing_is_priced_and_vfx_keeps_its_own_default(self):
+        with mock.patch.object(spend, "stage_estimates",
+                               side_effect=AssertionError("priced without a budget")):
+            self.assertEqual(self.run_yt("--skip", "keyframe,render"), 0)
+        self.assertIsNone(self.seen["vfx"].stage_budget_usd)
+
+    def test_a_sound_stage_beside_is_refused_like_any_other(self):
+        # Every estimate up to retime fits in $6; retime then reports $5.60,
+        # and sound's $0.50 is the first that does not fit.
+        self.costs.update(retime=5.6)
+        self.assertEqual(self.run_yt("--budget-usd", "6"), retime.UNSETTLED)
+        self.assertIn("$0.50", self.err)
+        self.assertNotIn("sound:start", self.order)
+        self.assertNotIn("keyframe:start", self.order)
+        self.assertIn("sound", self.err)
 
 
 class EnvHints(unittest.TestCase):
