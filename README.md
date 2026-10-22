@@ -315,10 +315,13 @@ parallel with real browsing, extracts claims with the source each came from,
 builds the source list, plans the visuals, finds footage in open catalogues
 (NASA, Openverse, Wikimedia Commons, Internet Archive), vets it against
 look-alikes, verifies each licence and that each URL really serves a file,
-audits its own gaps, and writes a script outline. Every stage is cached, so a
-re-run resumes instead of paying twice; `--fresh` forces the work again.
+audits its own gaps, and writes a script outline. The decisions run in
+dependency levels, `--jobs` wide: claims, the source list and the shot list
+at once, then the asset search beside the gap audit, then the outline. Every
+stage is cached, so a re-run resumes instead of paying twice; `--fresh`
+forces the work again.
 
-`--depth` questions · `--shots` / `--per-shot` · `--asset-sources` ·
+`--depth` questions · `--jobs` · `--shots` / `--per-shot` · `--asset-sources` ·
 `--allow-sa` · `--agentic-assets` · `--download` · `--budget-usd` · `--fresh`
 
 The plan depends on the genre. A narrated explainer gets the full scope; a
