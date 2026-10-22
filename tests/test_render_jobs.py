@@ -352,6 +352,26 @@ class RunReports(unittest.TestCase):
         self.assertIn("slice", rep["message"])
 
 
+class RemoteDeadline(Base):
+    """An exit 137 within reach of the deadline is the host's `timeout -k`
+    kill: the report says timeout, and so does the message the author reads."""
+
+    def test_an_exit_137_at_the_deadline_says_the_still_ran_past_it(self):
+        def killed(argv, **kw):
+            self.calls.append(list(argv))
+            return subprocess.CompletedProcess(argv, 137, stdout=b"", stderr=b"\nKilled\n")
+        host = render.Host("root@h", engine="/x/sr")
+        with mock.patch.object(render, "probe", return_value=host), \
+                mock.patch.object(render, "refuse_remote", lambda *a, **k: None), \
+                mock.patch.object(render.subprocess, "run", side_effect=killed):
+            png, message = self.still(host="root@h", timeout=5)
+        self.assertIsNone(png)
+        self.assertIn("(exit 137)", message)
+        self.assertIn("ran past 5 s", message)
+        rep = json.loads(self.reports()[-1].read_text())
+        self.assertEqual(rep["status"], "timeout")
+
+
 class DoctorLists(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())

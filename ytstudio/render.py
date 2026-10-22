@@ -1298,6 +1298,12 @@ def engine_render_still(xml_bytes: bytes, at: float, *, host: str = "",
         report("rendered", envelope=_envelope(engine_json))
     elif proc.returncode == 124 or (proc.returncode == 137 and
                                     time.monotonic() - started >= timeout - 10):
+        # A 137 this close to the deadline is the host's `timeout -k` kill,
+        # not a kill for memory: the message says so beside the exit code,
+        # so a reader of it is told time.
+        if proc.returncode == 137:
+            message = message.replace(
+                "(exit 137)", f"(exit 137) after the still ran past {timeout:g} s on {host}", 1)
         report("timeout", f"the still ran past {timeout:g} s on {host}", timeout_seconds=timeout,
                exit_code=proc.returncode)
     else:

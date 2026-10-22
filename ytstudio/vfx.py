@@ -48,6 +48,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -1238,8 +1239,9 @@ NO_FINDING = "error: the engine could not render the frame"
 #: host's `timeout` wrapper (exit 124) or sdkkit.frame's own line.
 STILL_TIMEOUT = re.compile(r"timed out after|ran past|\(exit 124\)")
 
-#: What a still the host killed for memory says: exit 137, the kernel's word.
-STILL_KILLED = re.compile(r"\(exit 137\)|\bKilled\b")
+#: What a still the host killed for memory says: exit 137, the kernel's word
+#: (-9 when the signal reached a local engine).
+STILL_KILLED = re.compile(r"\(exit 137\)|\(exit -9\)|\bKilled\b")
 
 
 def cost_failure(message: str) -> bool:
@@ -2121,27 +2123,37 @@ class Workspace:
                                    fact["background"])
             files = dict(extra)
             files[f"{self.rel}/{name}"] = text.encode("utf-8")
+            doc_path = f"{self.rel}/.proof-{stem}.scene.xml"
+
+            def still(where: str) -> tuple[bytes | None, str]:
+                # The local engine path raises at the deadline; that is the
+                # world's cost, filed as sdkkit.frame files it, not a crash.
+                try:
+                    return render.engine_render_still(
+                        proof.encode("utf-8"), t, host=where, files=files, doc_path=doc_path,
+                        timeout=sdkkit.STILL_DEADLINE)
+                except subprocess.TimeoutExpired:
+                    return None, f"error: the render ran past {sdkkit.STILL_DEADLINE:g} s"
             # A path-traced or volumetric world goes to the host with the memory
             # for it, one kit render per host at a time (sdkkit.frame's rule).
             host = sdkkit.frame_host(text)
             with sdkkit.host_lock(host):
-                png, message = render.engine_render_still(
-                    proof.encode("utf-8"), t, host=host, files=files,
-                    doc_path=f"{self.rel}/.proof-{stem}.scene.xml")
+                png, message = still(host)
             where = f"frame at {t:g}s of {fact['id']}"
             retried, ran = "", host
             if png is None and (infra_failure(message) or cost_failure(message)):
-                # The host lost the frame, or stopped it for its cost: forget
-                # what this process knew of it and render once more on the
-                # other host before the author is charged with anything.
-                getattr(render, "_HOSTS", {}).pop(host, None)
+                # The host lost the frame, or stopped it for its cost: render
+                # once more on the other host before the author is charged
+                # with anything. A host that did not answer is forgotten, so
+                # the next frame probes it afresh; one that stopped the still
+                # answered fine and stays known.
+                if infra_failure(message):
+                    getattr(render, "_HOSTS", {}).pop(host, None)
                 other = fallback_host(host)
                 if other:
                     first = message.partition("\n")[0]
                     with sdkkit.host_lock(other):
-                        png, message = render.engine_render_still(
-                            proof.encode("utf-8"), t, host=other, files=files,
-                            doc_path=f"{self.rel}/.proof-{stem}.scene.xml")
+                        png, message = still(other)
                     retried = (f"{host or 'this machine'} answered: {first}; "
                                f"retried on {other}")
                     ran = other
@@ -2157,8 +2169,10 @@ class Workspace:
                 if cost_failure(message):
                     # No host holds the world as written: the author's error,
                     # naming what makes it heavy, as sdkkit.frame rules.
-                    how = ("killed for memory" if STILL_KILLED.search(message) else
-                           f"stopped at the {sdkkit.STILL_DEADLINE} s still deadline")
+                    # An exit 137 at the deadline is the host's `timeout -k`
+                    # kill: render names the deadline then, and time is said.
+                    how = (f"stopped at the {sdkkit.STILL_DEADLINE} s still deadline"
+                           if STILL_TIMEOUT.search(message) else "killed for memory")
                     findings = [f for f in findings if not f.startswith("error")]
                     return None, [f"error: {where} not rendered: {how} on "
                                   f"{ran or 'this machine'}"

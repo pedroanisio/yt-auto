@@ -19,6 +19,7 @@ import io
 import json
 import os
 import re
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -778,6 +779,8 @@ class LostStills(unittest.TestCase):
         self.assertTrue(vfx.cost_failure("render failed\nerror: the engine could not render the frame (exit 137)"))
         self.assertTrue(vfx.cost_failure("render failed\nerror: the engine could not render the frame (exit 124)"))
         self.assertTrue(vfx.cost_failure("error: the render ran past 420 s"))
+        # a local engine the signal killed exits -9, not 137
+        self.assertTrue(vfx.cost_failure("render failed\nerror: the engine could not render the frame (exit -9)"))
         self.assertTrue(vfx.cost_failure(vfx.render._still_message(137, "", "cuda: alloc failed", "ok")))
         self.assertFalse(vfx.cost_failure(self.UNREACHABLE))
         self.assertFalse(vfx.cost_failure("render host unreachable: Connection timed out"))
@@ -805,6 +808,40 @@ class LostStills(unittest.TestCase):
         self.assertIn("root@big", findings[0])
         self.assertIn("Cost drivers of this document: raster", findings[0])
         self.assertFalse([f for f in findings if f.startswith("infra")], findings)
+
+    def test_a_host_that_stopped_a_still_for_its_cost_stays_known(self):
+        # The host answered; only a host that did not is probed again.
+        with patch.dict(vfx.render._HOSTS, {"root@small": vfx.render.Host(addr="root@small", engine="/e")}):
+            results = self.go(self.still({"root@small": (None, self.TIMED_OUT),
+                                          "root@big": (varied_png(), "rendered on root@big")}))
+            self.assertIn("root@small", vfx.render._HOSTS)
+        self.assertEqual(self.attempts, ["root@small", "root@big"])
+        self.assertIsNotNone(results[0][0])
+
+    def test_a_local_still_that_ran_past_the_deadline_is_the_worlds_cost_not_a_crash(self):
+        # The local engine path raises on the deadline (sdkkit.frame catches
+        # it the same way); the gate files the cost, it does not fall over.
+        def still(xml, at, **kw):
+            self.attempts.append(kw.get("host"))
+            raise subprocess.TimeoutExpired(["sr"], kw.get("timeout", 600))
+        results = self.go(still)
+        self.assertEqual(self.attempts, ["root@small", "root@big"])
+        png, findings = results[0]
+        self.assertIsNone(png)
+        self.assertTrue(findings[0].startswith("error: frame at 5s of world-open not rendered: "
+                                               "stopped at the"), findings)
+        self.assertIn("Cost drivers of this document", findings[0])
+
+    def test_an_exit_137_at_the_deadline_is_the_deadline_not_memory(self):
+        # render names the deadline when it judged the 137 a `timeout -k` kill;
+        # the author is told time, not memory.
+        at_deadline = ("render failed\nerror: the engine could not render the frame (exit 137) "
+                       "after the still ran past 600 s on root@small")
+        results = self.go(self.still({"root@small": (None, at_deadline),
+                                      "root@big": (None, at_deadline)}))
+        findings = results[0][1]
+        self.assertIn("stopped at the", findings[0])
+        self.assertNotIn("killed for memory", findings[0])
 
     def test_a_still_both_hosts_killed_for_memory_says_so(self):
         results = self.go(self.still({"root@small": (None, self.KILLED),
