@@ -1609,7 +1609,8 @@ class Workspace:
         data = read_json(self.dir / "shots.json", warn=False)
         return data if isinstance(data, dict) else {}
 
-    def prepare(self, *, tokens: dict[str, str], frame: tuple[int, int]) -> None:
+    def prepare(self, *, tokens: dict[str, str], frame: tuple[int, int],
+                look: bool = True) -> None:
         sr_root = str(Path(sdk().__file__).resolve().parents[2])
         automation_root = str(Path(__file__).resolve().parent.parent)
         (self.dir / "sr.py").write_text(
@@ -1630,10 +1631,13 @@ class Workspace:
         # guide, what the engine does per renderer, proven example programs).
         # A section author's workspace (a version) also gets the approved look's
         # program as `look.py`, importable; the keyframe and assess workspaces
-        # inherit no look. Every new version copies it again, --relook included.
+        # inherit no look. Every new version copies it again, --relook included,
+        # except the look pass's own (`look=False`): it makes the look and
+        # builds on none, or its program could import the old one and, once
+        # approved, install as a look.py that imports `look`.
         from .probes import latest_measured
         sdkkit.install(self.dir, measured=latest_measured(self.root.parent) or None,
-                       look=self.look_program() if self.version else None)
+                       look=self.look_program() if self.version and look else None)
 
     def look_program(self) -> Path | None:
         """The approved look's program (`keyframe/look.py`, the approved bytes)
@@ -2575,8 +2579,10 @@ class VfxPlanner:
                 "labels and formulas, materials, lights and camera language. A section that "
                 "departs from the approved look is wrong, whatever else it does well: name "
                 "every departure as a finding with the fix being to use the approved "
-                "section's construct from `look.py` (import it; do not re-derive it), and "
-                "do not score the section above its fidelity."])
+                "section's construct"
+                + (" from `look.py` (import it; do not re-derive it)"
+                   if look.get("look_program") else "")
+                + ", and do not score the section above its fidelity."])
         elif look:
             prompt += "\n\n" + "\n\n".join([
                 harness.brief("The approved look (the operator approved this keyframe as the "
@@ -2874,7 +2880,7 @@ class VfxPlanner:
 
         def work() -> list[dict]:
             version = self.ws.new_version()
-            self.ws.prepare(tokens=tokens, frame=self.frame)
+            self.ws.prepare(tokens=tokens, frame=self.frame, look=not lead_mode)
             jobs = [(n, s, by_heading.get(s.get("heading", ""), {}))
                     for n, s in enumerate(sections, 1)]
             jobs = [j for j in jobs if j[2].get("effects")]

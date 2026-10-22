@@ -194,7 +194,8 @@ the helpers that build labels, formulas and recurring objects, the camera
 language -- with `fidelity` scored against it. The approved bytes,
 `keyframe/look.py`, are copied into every section workspace as `look.py`
 beside `srkit.py` (`sdkkit.install(look=)`, again on every new version and
-`--relook`); the brief says `from look import ...` and redefine nothing it
+`--relook`; not into a later look pass's own version, which makes the next
+look and builds on none); the brief says `from look import ...` and redefine nothing it
 provides, importing it writes no document (srkit's `save` writes nothing during
 an import; a helper of the look's that saves writes when the program calls it),
 and the build records its hash in the document's provenance. An

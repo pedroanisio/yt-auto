@@ -17,9 +17,11 @@ before the operator has seen it. The frame showing the most becomes
 keyframe/keyframe.png and every proof frame goes on keyframe/frames.png.
 `--approve` records the approval against the section document's digest;
 `yt vfx` then carries the section forward (`vfx.look_section`) and every
-other author's brief names its program as the look to copy: its palette and
-type constants, the helpers that build its labels, formulas and recurring
-objects, and its camera language. `--reject "notes"` puts the notes at the
+other author's brief names its program as the look to build on (`look.py` in
+the workspace, imported): its palette and type constants, the helpers that
+build its labels, formulas and recurring objects, and its camera language.
+A later look pass builds on no look: its workspace gets no `look.py`, so the
+next look cannot import the old one. `--reject "notes"` puts the notes at the
 top of the lead section's brief on the next run. `yt run` stops before
 `yt vfx` while a look awaits approval, and runs the keyframe again when it
 was rejected. The keyframe runs after `yt retime`, so the section is timed
