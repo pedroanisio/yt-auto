@@ -75,6 +75,21 @@ class DecisionCase(unittest.TestCase):
         return {d["name"]: d for d in report["decisions"]}
 
 
+class DecisionModel(DecisionCase):
+    def test_each_row_names_the_model_that_answered_it(self):
+        # AUTO-92: an author and its reviewer share one account and one list
+        # of decisions; the report says whose answer each row was.
+        author = harness.Harness(self.root, "script", model="sonnet")
+        reviewer = harness.Harness(self.root, "script", model="opus", usage=author.usage,
+                                   decisions=author.decisions, lock=author.lock)
+        schema = {"type": "object", "properties": {"a": {"type": "string"}},
+                  "required": ["a"]}
+        author.decide("plan", "p", schema)
+        reviewer.decide("plan-review", "r", schema)
+        rows = {d["name"]: d["model"] for d in author.report()["decisions"]}
+        self.assertEqual(rows, {"plan": "sonnet", "plan-review": "opus"})
+
+
 class SourceTest(unittest.TestCase):
     def test_only_the_harness_and_the_sdk_kit_call_ask_json(self):
         found = sorted(p.name for p in (ROOT / "ytstudio").glob("*.py")
