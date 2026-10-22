@@ -22,6 +22,7 @@ Around them, before and after:
     yt review    write the PDF review sheet, and have the model read it
     yt qa        score the rendered film against the publication bar, per pass
     yt improve   route QA's findings to the stages that own them, re-run, keep what improves
+    yt retention read a published film's audience curve back onto its shots, for improve
 
     yt run       all of the above, in order, for one idea
     yt ls        which videos you have, and how far each one got
@@ -60,8 +61,8 @@ import claude_engine
 
 from .core import read_json
 from . import (assess, assets, build, doctor, env, flags, gate, harness, house, ideas, improve,
-               inhibit, keyframe, pilot, probes, props, qa, render, research, retime, review, script,
-               sound, spend, styles, vfx, voice, workspace)
+               inhibit, keyframe, pilot, probes, props, qa, render, research, retention, retime, review,
+               script, sound, spend, styles, vfx, voice, workspace)
 
 #: The stages `yt run` walks, in order.
 PIPELINE = tuple(stage for stage, _ in workspace.STAGES)
@@ -586,6 +587,7 @@ def build_parser() -> argparse.ArgumentParser:
     review.register(sub, [idea, model, quiet, work])
     qa.register(sub, [idea, model, quiet, work])
     improve.register(sub, [idea, model, quiet, work])
+    retention.register(sub, [idea, quiet, work])
     doctor.register(sub, [quiet, work])
     assess.register(sub, [model, quiet, work])
     props.register(sub, [model, quiet, work])
@@ -598,7 +600,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 #: Stages that never wait on a model or a render host need no inhibitor.
-LOCAL_ONLY = frozenset({"ls", "assets", "props"})
+LOCAL_ONLY = frozenset({"ls", "assets", "props", "retention"})
 
 
 def main(argv: list[str] | None = None) -> int:

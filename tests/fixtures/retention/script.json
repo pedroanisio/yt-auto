@@ -1,0 +1,100 @@
+{
+  "title": "Why a comet's tail leads",
+  "target_seconds": 120,
+  "train": "Biermann had to explain why comet tails outrun sunlight's push: what else is blowing?",
+  "promise": "why the tail leads",
+  "ending": {
+    "payoff_line": "It is showing you the wind.",
+    "callback": "",
+    "next_film": ""
+  },
+  "questions": [
+    {
+      "id": "Q1",
+      "text": "why does the tail point ahead of the comet?",
+      "opened_in": 1,
+      "closed_in": 3,
+      "opened_at": "1.1",
+      "closed_at": "3.2"
+    },
+    {
+      "id": "Q2",
+      "text": "is sunlight strong enough to push it?",
+      "opened_in": 2,
+      "closed_in": 2,
+      "opened_at": "2.1",
+      "closed_at": "2.3"
+    }
+  ],
+  "sections": [
+    {
+      "heading": "The tail that leads",
+      "shots": [
+        {
+          "label": "1.1",
+          "narration": "line 1.1",
+          "seconds": 12,
+          "function": "hook"
+        },
+        {
+          "label": "1.2",
+          "narration": "line 1.2",
+          "seconds": 16,
+          "function": "context"
+        },
+        {
+          "label": "1.3",
+          "narration": "line 1.3",
+          "seconds": 12,
+          "function": "setup"
+        }
+      ]
+    },
+    {
+      "heading": "Light is too weak",
+      "shots": [
+        {
+          "label": "2.1",
+          "narration": "line 2.1",
+          "seconds": 15,
+          "function": "setup"
+        },
+        {
+          "label": "2.2",
+          "narration": "line 2.2",
+          "seconds": 15,
+          "function": "rehook"
+        },
+        {
+          "label": "2.3",
+          "narration": "line 2.3",
+          "seconds": 15,
+          "function": "reveal"
+        }
+      ]
+    },
+    {
+      "heading": "The wind",
+      "shots": [
+        {
+          "label": "3.1",
+          "narration": "line 3.1",
+          "seconds": 15,
+          "function": "context"
+        },
+        {
+          "label": "3.2",
+          "narration": "line 3.2",
+          "seconds": 12,
+          "function": "payoff"
+        },
+        {
+          "label": "3.3",
+          "narration": "line 3.3",
+          "seconds": 8,
+          "function": "handoff"
+        }
+      ]
+    }
+  ]
+}

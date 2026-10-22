@@ -151,6 +151,19 @@ class Registries(unittest.TestCase):
                  "nine", "ten", "eleven", "twelve"]
         self.assertIn(words[len(order)], head.lower())
 
+    def test_retention_is_beside_the_chain_and_asks_no_model(self):
+        # AUTO-101: the published film's curve, read back by arithmetic; not a
+        # stage `yt run` walks and not one of MODEL_STAGES
+        sub = stages()
+        self.assertIn("retention", sub)
+        self.assertNotIn("retention", MODEL_STAGES)
+        self.assertNotIn("retention", cli.PIPELINE)
+        opts = options(sub["retention"])
+        for flag in ("--model", "--effort", "--fallback-model"):
+            self.assertNotIn(flag, opts)
+        for flag in ("--project", "--title", "--work", "--export"):
+            self.assertIn(flag, opts)
+
     def test_routable_is_the_pipeline(self):
         self.assertEqual(improve.ROUTABLE, improve.PIPELINE)
 

@@ -59,6 +59,7 @@ ARTIFACTS = {
     "gate": "gate.json",
     "review": "review.json",
     "qa": "qa.json",
+    "retention": "retention.json",
 }
 
 #: Stage name -> the artifact that proves it ran, in pipeline order.

@@ -1494,5 +1494,145 @@ class StoryReview(ImproveCase):
         self.assertNotEqual(record["stop"]["reason"], "story-review")
 
 
+class RetentionFindings(ImproveCase):
+    """AUTO-101: the published film's retention findings (`yt retention`) are
+    a source of their own, fingerprinted by shot and tag, decided by the
+    router (told to send them to the screenplay by their rule unless they
+    name a picture), and reach `feedback/script.md` with the corpus rule
+    they apply and the rubric key as a labelled guess."""
+
+    PROBLEM = ("viewers skipped at 0:48, during shot 2.1 (section 2, \"Light is too "
+               "weak\"), 5.2 points under the channel's typical curve [judging 3]; "
+               "hypothesis, a guess and not a cause: open_loops")
+
+    def rows(self):
+        return [{"source": "retention", "owner": "script", "timestamp": 48, "shot": "2.1",
+                 "section": 2, "heading": "Light is too weak", "tag": "dip-skipped",
+                 "rule": "judging 3", "delta_vs_typical": -5.2, "hypothesis": "open_loops",
+                 "sanity_bound": ["channel baseline of 3 film(s), under 10 (judging 1)"],
+                 "severity": "minor", "problem": self.PROBLEM,
+                 "fix": "cut the beat, shorten it, or give the viewer a live question "
+                        "through it"}]
+
+    def test_collect_adds_them_as_a_source_fingerprinted_by_shot_and_tag(self):
+        found = improve.collect(card(5.0, findings=[prose("flat")]), retention=self.rows())
+        self.assertEqual([f["source"] for f in found], ["qa", "retention"])
+        row = found[1]
+        self.assertEqual(row["id"], "F2")
+        self.assertEqual(row["fingerprint"], "retention|2.1|dip-skipped")
+        self.assertEqual((row["tag"], row["corpus_rule"], row["hypothesis"], row["section"],
+                          row["timestamp"], row["owner"]),
+                         ("dip-skipped", "judging 3", "open_loops", 2, 48, "script"))
+        self.assertIsNone(found[0]["fingerprint"])
+        self.assertEqual(improve.fingerprint(dict(row, timestamp=50)), row["fingerprint"])
+
+    def test_the_router_decides_them_and_they_reach_the_script_brief_with_their_rule(self):
+        found = improve.collect(card(5.0), retention=self.rows())
+        # The fake answers script; what is pinned is that the model was asked
+        # (with the clause and the corpus rule in its prompt), not the answer.
+        FakeEngine.route = route_all_to("script")
+        routing = improve.route(harness.Harness(self.root, "improve", verbose=False), found,
+                                name="route-pass-01")
+        self.assertEqual(routing["routes"]["F1"]["by"], "model")       # never a lookup
+        prompt = FakeEngine.json_calls[0]["prompt"]
+        self.assertIn("A finding from `retention`", prompt)
+        self.assertIn("names a picture", prompt)
+        self.assertIn('"corpus_rule": "judging 3"', prompt)
+        self.assertIn('"tag": "dip-skipped"', prompt)
+        improve.write_feedback(self.root, routing, found, from_pass="pass-01", card=card(5.0),
+                               improve_pass="pass-01")
+        md = (self.root / "feedback" / "script.md").read_text()
+        self.assertIn("[retention: judging 3, dip-skipped; hypothesis: open_loops]", md)
+        self.assertIn("(retention, QA owner: script)", md)
+        twin = read_json(self.root / "feedback" / "script.json")
+        self.assertEqual(twin["findings"][0]["corpus_rule"], "judging 3")
+        _, lines, _ = script.sent_back("feedback", self.root)
+        self.assertEqual(lines[0]["label"], "2.1")
+        self.assertIn("judging 3", lines[0]["problem"])
+
+    def test_a_router_that_sends_one_to_the_picture_is_honoured(self):
+        # A dip on a shot whose picture is the problem is the router's call
+        # (invariant 3): nothing turns it back toward script by lookup.
+        found = improve.collect(card(5.0), retention=self.rows())
+        FakeEngine.route = route_all_to("vfx")
+        routing = improve.route(harness.Harness(self.root, "improve", verbose=False), found,
+                                name="route-pass-01")
+        self.assertEqual(routing["routes"]["F1"]["stage"], "vfx")
+        self.assertEqual(list(routing["stages"]), ["vfx"])
+
+    def test_the_loop_reads_retention_json_while_the_film_is_the_one_measured(self):
+        from ytstudio import retention
+        write_json(self.root / "retention.json", {"film": retention.film(self.root),
+                                                  "findings": self.rows()})
+        imp = self.improver(FakeRunner(self.root))
+        found = imp._evidence_findings(card(5.0, findings=[prose("flat")]))
+        self.assertEqual([f["source"] for f in found], ["qa", "retention"])
+        # a pass that rebuilt the film is no longer the cut the audience watched
+        (self.root / "scene.xml").write_text("<scene rebuilt='1'/>")
+        found = imp._evidence_findings(card(5.0, findings=[prose("flat")]))
+        self.assertEqual([f["source"] for f in found], ["qa"])
+
+    # -- a rebuilt cut has no audience: its dip is not measured again --------
+
+    def briefed_pass(self, after: float) -> tuple[dict, dict, str]:
+        """One pass briefed on the measured dip; the fake build rewrites
+        scene.xml, as a script pass's build does."""
+        from ytstudio import retention
+        write_json(self.root / "retention.json", {"film": retention.film(self.root),
+                                                  "findings": self.rows()})
+        self.start_pass(card(5.0))
+        FakeEngine.route = route_all_to("script")
+        runner = FakeRunner(self.root, [card(after)])
+        record = self.improver(runner, max_passes=1, budget_usd=100).run()
+        self.assertIn("build", runner.stages())
+        p = record["passes"][0]
+        return record, p, (self.root / improve.REPORT_MD).read_text()
+
+    def assert_not_measured(self, record, p, md):
+        did = p["briefed_defects"]["F1"]
+        self.assertTrue(record["defects"][did]["fingerprint"].startswith("retention|"))
+        self.assertEqual(p["fixed"], [])
+        self.assertEqual(p["unmeasured"], [did])
+        self.assertEqual(p["survivors"], {})
+        self.assertEqual(record["defects"][did]["survived"], 0)
+        line = next(x for x in md.splitlines() if "viewers skipped at 0:48" in x)
+        self.assertNotIn("verified", line)
+        self.assertNotIn("gone in", line)
+        self.assertNotIn("still reported", line)
+        self.assertIn("not re-measured", line)
+        self.assertIn("`yt retention`", line)
+        self.assertIn("[retention: judging 3, dip-skipped]", line)
+
+    def test_a_kept_pass_that_rebuilt_the_film_does_not_count_the_dip_fixed(self):
+        self.assert_not_measured(*self.briefed_pass(6.0))
+
+    def test_a_reverted_pass_that_rebuilt_the_film_does_not_count_the_dip_gone(self):
+        record, p, md = self.briefed_pass(4.0)
+        self.assertEqual(p["decision"], "revert")
+        self.assert_not_measured(record, p, md)
+
+    def test_a_pass_judged_after_a_resume_does_not_count_the_dip_fixed(self):
+        # A pass judged outside the loop is checked against the new pass's
+        # mechanical findings only; a retention finding is never among them.
+        self.start_pass(card(5.0), name="pass-01")
+        self.start_pass(card(6.0), name="pass-02")
+        row = improve.collect(card(5.0), retention=self.rows())[0]
+        entry = {"name": "pass-01", "from_pass": "pass-01", "qa_pass": "pass-02",
+                 "stages": ["script"], "decision": "keep", "overall_before": 5.0,
+                 "overall_after": 6.0, "routed": {"script": {
+                     "findings": [{k: row.get(k) for k in (
+                         "id", "source", "kind", "shot", "timestamp", "severity",
+                         "problem", "root_cause", "tag", "corpus_rule")}],
+                     "must_change": ["cut the beat"], "check": "the beat is shorter"}}}
+        record = {"idea": {"title": "A test film"}, "passes": [entry],
+                  "stop": {"reason": "max-passes", "detail": "1 pass(es) run"},
+                  "start": {"pass": "pass-01", "overall": 5.0},
+                  "best": {"pass": "pass-02", "overall": 6.0}}
+        md = improve.report_md(record, self.root)
+        line = next(x for x in md.splitlines() if "viewers skipped at 0:48" in x)
+        self.assertNotIn("verified", line)
+        self.assertIn("not re-measured", line)
+
+
 if __name__ == "__main__":
     unittest.main()

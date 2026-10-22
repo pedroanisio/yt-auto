@@ -197,6 +197,7 @@ work/
     ├── video.mp4    render.json         the film's encode; other jobs write render-<job>.json
     ├── qa/pass-01/  frames/  samples.json  contact-sheet.png  scorecard.json  findings.md
     ├── qa.json                         the latest verdict
+    ├── retention/*.json  retention.json what Studio showed for the published film, read onto its shots
     └── decisions/<stage>/<name>.json   what the model decided, and from what
 ```
 
@@ -1260,8 +1261,9 @@ the end of each section (one non-blank line per screenplay section; an
 answer that skips or blanks one is asked again once, and what is still
 missing is named under `not_evidenced`), and predicts a viewer's
 satisfaction. That prediction scores nothing and is listed under
-`not_evidenced` until the work directory holds the channel's
-`retention.json`. A pass written before this has no `story` and still
+`not_evidenced` until the work directory holds the channel's own
+`work/retention.json`; the per-film `work/<slug>/retention.json` that `yt
+retention` writes does not count. A pass written before this has no `story` and still
 compares, since the comparison reads the scores only.
 
 The bar is applied mechanically on top: READY TO PUBLISH needs an overall of
@@ -1338,7 +1340,59 @@ family is refused with exit 2 before any stage runs, as `yt run` refuses it.
 A script the pass writes again whose story review rejects it stops the pass
 (`story-review`): the snapshot is restored, the rejected screenplay is kept
 under `attempt/`, and `improve.md` gives the verdict, before any voice or
-authoring is paid for.
+authoring is paid for. The published film's retention findings (`yt
+retention`, below) are routed beside QA's while `scene.xml` is the cut they
+measured. A pass that rebuilds the film cannot say whether a dip it was
+briefed on is gone, since no audience has watched the new cut: `improve.md`
+lists it as not re-measured, never as fixed, until the new cut is published
+and `yt retention` reads it.
+
+### `yt retention`
+
+The evidence loop's first half (AUTO-101): what the audience did with the
+published film, read back onto the shots that were on screen. Every number
+in `docs/narrative/` is a prior until the channel's own curves replace it;
+this is where they come in. Nothing is fetched and no model is asked: you
+read Studio's retention report for the film and write it, in Studio's own
+terms, as `work/<slug>/retention/*.json` (several files are merged, so the
+key moments, the curves and the traffic can be typed in separately), or
+pass `--export FILE`. The contract is `retention.INGEST_SCHEMA`:
+`intro_retention_30s`, `above_typical_intro`, `top_moments`, `spikes`,
+`dips` (each a `timestamp` in seconds, a dip with `kind` skipped, abandoned
+or unknown), the standard `curve` and the `typical_curve` (points of
+`timestamp` and `retention` percent), and, when Studio shows them, the
+`traffic` shares (search, external, suggested, browse); without them the
+Intro is recorded, not judged. `tests/fixtures/retention/` pins it with a
+hand-built file until a real export, anonymised, replaces it.
+
+Each timestamp lands on its shot and section from `build.json`'s timings,
+with the questions the screenplay's ledger had open there. The findings
+carry the corpus rule they apply, how far the standard curve sits from the
+typical one (`delta_vs_typical`), and a rubric key as `hypothesis`, a
+labelled guess from a fixed table, not a cause:
+
+- a dip after 0:30: one finding naming the beat, `dip-skipped`,
+  `dip-abandoned` or `dip-unknown` (judging 3);
+- a top moment in the second half: `move_earlier` (judging 3);
+- the Intro: a hook finding only when it is under the median of the
+  channel's last 10 measured films of similar length published before it
+  (a film of unknown length, or a later one, is left out and noted) and
+  under half the views came from search and external traffic (structure
+  38);
+- a last 5% falling at least twice as steeply as a falling 75-95%: `outro`
+  (a 75-95% stretch that held has no slope to compare, and is noted), and a
+  spike after the payoff shot: `unforeshadowed-payoff` (structure 40).
+
+A moment read from the relative curve is noted and filed nowhere (judging
+2). Every constant (`retention.BOUNDS`) and both house readings are tagged
+`sanity_bound` with their rule, and until the channel has 10 measured films
+every finding is (judging 6); `yt doctor` says how many there are. It writes
+`retention.json`, which `yt improve` reads.
+
+```bash
+yt retention --title X                       # reads work/<slug>/retention/*.json
+yt retention --title X --export studio.json
+```
 
 ### `yt doctor`
 
@@ -1351,7 +1405,9 @@ with fail, warn and note lines and the command that fixes each; a record that
 bills a model neither engine priced (`spend.PRICES`, `$CLAUDE_PRICES`,
 `codex_engine.PRICES`, `$CODEX_PRICES`) is a warning, since a Claude call on
 it that times out is booked at $0 and a Codex call on it is recorded without a
-cost. Exit 1 on any fail, so it works in a script.
+cost. Once a published film has been read by `yt retention`, it notes how many
+the channel has measured: under ten, every retention finding carries
+`sanity_bound`. Exit 1 on any fail, so it works in a script.
 
 ### `yt assets`
 

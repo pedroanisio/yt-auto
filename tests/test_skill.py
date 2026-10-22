@@ -124,6 +124,20 @@ class Skill(unittest.TestCase):
         self.assertIn("`--quick`", walk)
         self.assertIn("plan review", walk)
 
+    def test_the_beside_the_chain_table_names_retention(self):
+        # AUTO-101: `yt retention` sits beside the chain, writes retention.json,
+        # and the improvement loop names the source it adds
+        beside = self.text[self.text.index("Beside the chain:"):]
+        beside = beside[:beside.index("\n\n", beside.index("| Tool |"))]
+        row = next(line for line in beside.splitlines()
+                   if line.startswith("| `yt retention` |"))
+        for needle in ("`retention.json`", "`work/<slug>/retention/*.json`", "`--export`",
+                       "sanity_bound", "No model"):
+            self.assertIn(needle, row, needle)
+        loop = self.text[self.text.index("## The improvement loop"):]
+        loop = loop[:loop.index("\n## ")]
+        self.assertIn("`retention`", loop)
+
     def test_the_manual_names_the_story_review_where_it_runs(self):
         # AUTO-93: the script row names each decision of the story review,
         # what it costs and when --gate is to be turned on; a paragraph

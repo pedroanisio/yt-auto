@@ -585,6 +585,15 @@ class StoryStage(unittest.TestCase):
         self.assertIn("section 1", gaps[0])
         self.assertIn("section 3", gaps[0])
 
+    def test_a_films_own_retention_json_is_not_the_channels(self):
+        # `yt retention` writes work/<slug>/retention.json for one published
+        # film (AUTO-101); the satisfaction proxy waits on the channel's.
+        (self.root / qa.RETENTION).write_text("{}")
+        self.run_qa()
+        card = json.loads((self.root / "qa" / "pass-01" / "scorecard.json").read_text())
+        note = next(n for n in card["not_evidenced"] if "satisfaction" in n)
+        self.assertIn("not a film's own", note)
+
     def test_satisfaction_is_kept_once_the_channel_has_retention(self):
         (self.work / qa.RETENTION).write_text("{}")
         self.run_qa()

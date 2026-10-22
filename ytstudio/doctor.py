@@ -28,7 +28,7 @@ import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from . import env, house, keyframe, narrative, render, spend, workspace
+from . import env, house, keyframe, narrative, render, retention, spend, workspace
 from .assets import licence_tier
 from .core import read_json, timecode, write_json
 
@@ -238,7 +238,31 @@ def check_environment(work: Path) -> Report:
         if name.is_file():
             report.add("ok", "house", f"channel standards at {name}")
     review_log(report, work)
+    retention_baseline(report, work)
     return report
+
+
+def retention_baseline(report: Report, work: Path) -> None:
+    """How many published films the channel has measured (`yt retention`,
+    AUTO-101). Fewer than retention.BASELINE_FILMS is no baseline of the
+    channel's own (judging 1), so every retention finding carries
+    `sanity_bound` until there are that many. Said only once a film is
+    measured: before that the evidence loop has nothing to say."""
+    base = retention.channel_baseline(work)
+    if not base["films"]:
+        return
+    n, need = base["films"], retention.BASELINE_FILMS
+    report.metrics["retention_films"] = n
+    said = (f"channel retention baseline: {n} published film(s) measured "
+            f"({', '.join(base['slugs'])})")
+    if n < need:
+        report.add("note", "retention", f"{said}, under {need}: every retention finding "
+                   "carries sanity_bound until the channel has its own baseline (judging 1, "
+                   "judging 6)", "run `yt retention` on each film once it is published")
+    else:
+        report.add("note", "retention", f"{said}: the median Intro of the last {need} of "
+                   "similar length is the baseline; findings that lean on a constant or a "
+                   "house reading still carry sanity_bound")
 
 
 #: The story review's verdicts (AUTO-93), as `yt script --review` appends them.

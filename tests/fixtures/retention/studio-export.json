@@ -1,0 +1,47 @@
+{
+  "video": "anonymised",
+  "views": 2400,
+  "duration_seconds": 120,
+  "intro_retention_30s": 45.0,
+  "above_typical_intro": false,
+  "top_moments": [
+    {"timestamp": 18},
+    {"timestamp": 92}
+  ],
+  "spikes": [
+    {"timestamp": 50},
+    {"timestamp": 115}
+  ],
+  "dips": [
+    {"timestamp": 20, "kind": "skipped"},
+    {"timestamp": 48, "kind": "skipped"},
+    {"timestamp": 76, "kind": "abandoned"}
+  ],
+  "curve": [
+    {"timestamp": 0, "retention": 100.0},
+    {"timestamp": 6, "retention": 80.0},
+    {"timestamp": 12, "retention": 66.0},
+    {"timestamp": 18, "retention": 60.0},
+    {"timestamp": 24, "retention": 52.0},
+    {"timestamp": 30, "retention": 45.0},
+    {"timestamp": 40, "retention": 43.0},
+    {"timestamp": 48, "retention": 40.0},
+    {"timestamp": 60, "retention": 39.0},
+    {"timestamp": 72, "retention": 37.0},
+    {"timestamp": 76, "retention": 34.0},
+    {"timestamp": 84, "retention": 34.0},
+    {"timestamp": 90, "retention": 35.0},
+    {"timestamp": 96, "retention": 34.5},
+    {"timestamp": 104, "retention": 33.0},
+    {"timestamp": 114, "retention": 31.0},
+    {"timestamp": 120, "retention": 22.0}
+  ],
+  "typical_curve": [
+    {"timestamp": 0, "retention": 100.0},
+    {"timestamp": 30, "retention": 50.0},
+    {"timestamp": 60, "retention": 42.0},
+    {"timestamp": 90, "retention": 36.0},
+    {"timestamp": 120, "retention": 30.0}
+  ],
+  "traffic": {"search": 8.0, "external": 4.0, "suggested": 63.0, "browse": 25.0}
+}

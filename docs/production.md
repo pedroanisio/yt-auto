@@ -66,7 +66,8 @@ both the narration and the frames (attention 23). The scorecard's `story`
 block restates the premise as the film made it, says what the viewer has at
 the end of each section, one non-blank line per section, and predicts a
 viewer's satisfaction, which scores nothing and is listed as not evidenced
-until the channel's `retention.json` exists (§12). A finding on the story
+until the channel-level `work/retention.json` exists (§12); the per-film
+`work/<slug>/retention.json` that `yt retention` writes does not count. A finding on the story
 belongs to `script`, whose duty names the same story as row 9 (hook,
 stakes, re-hooks, open questions, payoff).
 
@@ -451,7 +452,9 @@ opinion, and makes the regression check mechanical.
 1. **Verdict** — READY TO PUBLISH or NOT READY.
 2. **Scorecard** — all ten categories plus overall.
 3. **Changes implemented** — for each: timestamp or scene → problem → root
-   cause → correction → verified result.
+   cause → correction → verified result. A retention finding has no
+   verified result until the new cut is published and measured: it reads
+   "not re-measured".
 4. **Remaining issues** — only genuine ones, classified **Blocking** or
    **Minor / acceptable**.
 5. **Final artifact** — path, runtime, resolution, frame rate, audio
@@ -486,13 +489,17 @@ An honest spec says where it is blind, so nobody mistakes silence for a pass:
 - **Placeholder shots are disqualifying, not deductible.** While any remain,
   the verdict is NOT READY regardless of the other nine categories.
 - **Narrative clarity is judged from the screenplay and the frames, never
-  from audience data, until the retention loop exists.** No published
-  film's retention curve reaches the pipeline yet, so the score rests on
-  the plan, the narration and what the frames show, and the craft defaults
-  in §6 stay priors rather than measured bounds. The reviewer's predicted
+  from audience data.** `yt retention` reads a published film's curve back
+  onto its shots and `yt improve` routes those findings to the screenplay
+  for the next cut (`work/<slug>/retention.json`), but a QA pass scores a
+  cut nobody has watched, so the score rests on the plan, the narration and
+  what the frames show, and the craft defaults in §6 stay priors until the
+  channel has ten measured films; until then every retention finding is
+  tagged `sanity_bound`. The reviewer's predicted
   satisfaction (`story.satisfaction` in the scorecard) is a ranking proxy
   (judging 4): `yt qa` records it and names it under `not_evidenced` until
-  the work directory holds the channel's `retention.json`.
+  the work directory holds the channel's own `work/retention.json`, which a
+  film's `work/<slug>/retention.json` from `yt retention` is not.
 
 ---
 
