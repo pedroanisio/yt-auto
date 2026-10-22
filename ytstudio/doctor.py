@@ -255,10 +255,17 @@ def review_log(report: Report, work: Path) -> None:
     if not path.is_file():
         return
     log = narrative.read_review_log(path)
-    rows, labelled = len(log), narrative.labelled(log)
-    report.metrics["review_log"] = {"verdicts": rows, "labelled": labelled}
-    report.add("note", "review log", f"{rows} verdict(s) in {path}, {labelled} labelled "
-               "by a person; it is evidence, and work/ is disposable",
+    agreed, labelled = narrative.agreement(log)
+    unreadable = narrative.unreadable_labels(log)
+    report.metrics["review_log"] = {"verdicts": len(log), "labelled": labelled,
+                                    "agreed": agreed, "unreadable": unreadable}
+    said = f"{len(log)} verdict(s) in {path}, {labelled} labelled by a person"
+    if labelled:
+        said += f", the reviewer agreed with {agreed}"
+    if unreadable:
+        # a label in other words is not dropped without a word
+        said += f" ({unreadable} labelled with a word that is not a verdict)"
+    report.add("note", "review log", said + "; it is evidence, and work/ is disposable",
                f"copy {path} out of work/ before clearing it; label a row by reading "
                "its script and setting `label` to reject, consider or recommend")
 
@@ -791,8 +798,8 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
             if count < narrative.GATE_LABELLED:
                 report.add("warn", "script",
                            f"gate on with {count} labelled verdicts "
-                           f"({narrative.GATE_LABELLED} needed): the story review stopped "
-                           "voice before it was calibrated",
+                           f"({narrative.GATE_LABELLED} needed): this script gated voice "
+                           "on a story review not yet calibrated",
                            "label rows of work/review-log.jsonl (reject, consider or "
                            "recommend), run `python -m ytstudio.narrative calibrate "
                            "tests/fixtures/narrative`, and until both hold drop --gate")

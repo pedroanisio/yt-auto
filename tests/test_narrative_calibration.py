@@ -529,6 +529,22 @@ class Entry(Hermetic):
         self.assertIn("20", gate)
         self.assertIn("not yet", gate)
 
+    def test_the_gate_line_says_how_often_the_reviewer_agreed_with_the_labels(self):
+        # Counting labels is not calibrating against them (judging 9): the
+        # line reports the agreement, with no threshold.
+        self.work.mkdir(parents=True, exist_ok=True)
+        rows = [{"verdict": "recommend", "label": "reject" if i < 15 else "recommend"}
+                for i in range(20)]
+        (self.work / script.REVIEW_LOG).write_text(
+            "".join(json.dumps(r) + "\n" for r in rows))
+        code, out, _ = self.main()
+        self.assertEqual(code, 0)
+        gate = next(line for line in out.splitlines() if line.startswith("--gate"))
+        self.assertIn("may be turned on", gate)
+        self.assertIn("agreed with 5 of 20 labels", gate)
+        report = json.loads((self.work / "calibration" / "calibration.json").read_text())
+        self.assertEqual((report["agreed"], report["labelled"]), (5, 20))
+
     def test_the_module_runs_as_a_program(self):
         source = (ROOT / "ytstudio" / "narrative.py").read_text(encoding="utf-8")
         self.assertIn('if __name__ == "__main__":', source)
@@ -605,8 +621,28 @@ class ReviewLog(unittest.TestCase):
 
     def test_only_a_verdict_is_a_label(self):
         rows = [{"label": "reject"}, {"label": "recommend"}, {"label": None},
-                {"label": "pass"}, {"label": ""}, {}]
+                {"label": "maybe"}, {"label": ""}, {}]
         self.assertEqual(narrative.labelled(rows), 2)
+
+    def test_a_label_in_the_corpus_s_words_or_capitals_is_counted(self):
+        # Coverage says Pass, Consider, Recommend (rules 10 and 12); Pass is
+        # what the rubric calls reject.
+        rows = [{"label": "Pass"}, {"label": "Consider"}, {"label": " RECOMMEND "},
+                {"label": "reject"}]
+        self.assertEqual([narrative.label_of(r) for r in rows],
+                         ["reject", "consider", "recommend", "reject"])
+        self.assertEqual(narrative.labelled(rows), 4)
+        self.assertIsNone(narrative.label_of({"label": "maybe"}))
+        self.assertIsNone(narrative.label_of({"label": 3}))
+
+    def test_agreement_is_the_labels_the_reviewer_s_verdict_matches(self):
+        rows = [{"verdict": "reject", "label": "Pass"},
+                {"verdict": "consider", "label": "consider"},
+                {"verdict": "recommend", "label": "consider"},
+                {"verdict": "consider", "label": None},
+                {"verdict": "consider", "label": "maybe"}]
+        self.assertEqual(narrative.agreement(rows), (2, 3))
+        self.assertEqual(narrative.unreadable_labels(rows), 1)
 
     def test_a_missing_or_broken_log_reads_as_what_it_holds(self):
         self.assertEqual(narrative.read_review_log(self.work / "none.jsonl"), [])
@@ -648,6 +684,10 @@ class Doctor(unittest.TestCase):
         self.assertEqual(found[0].area, "script")
         self.assertIn("gate on with 19 labelled verdicts (20 needed)", found[0].message)
         self.assertIn("calibrate", found[0].fix)
+        # --gate stops voice only on a reject or not_evidenced; this script
+        # was recommended, so the warn says what is true of every gated one
+        self.assertNotIn("stopped", found[0].message)
+        self.assertIn("gated voice on a story review not yet calibrated", found[0].message)
 
     def test_not_at_20_and_not_without_the_gate(self):
         self.write(gate=True, labelled=20)
@@ -668,7 +708,11 @@ class Doctor(unittest.TestCase):
             fh.write(json.dumps({"verdict": "consider", "label": "maybe"}) + "\n")
         report = doctor.Report("environment")
         doctor.review_log(report, self.work)
-        self.assertEqual(report.metrics["review_log"], {"verdicts": 8, "labelled": 4})
+        self.assertEqual(report.metrics["review_log"],
+                         {"verdicts": 8, "labelled": 4, "agreed": 4, "unreadable": 1})
+        note = next(f for f in report.findings if f.area == "review log")
+        self.assertIn("the reviewer agreed with 4", note.message)
+        self.assertIn("1 labelled with a word that is not a verdict", note.message)
 
 
 class GateRecorded(unittest.TestCase):

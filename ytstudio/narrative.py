@@ -751,11 +751,42 @@ def read_review_log(path: Any) -> list[dict]:
     return rows
 
 
-def labelled(rows: Iterable[Any]) -> int:
-    """How many rows a person has labelled: `label` is one of VERDICTS. A
-    null label is a row not yet read; any other word is not a verdict the
+#: Coverage's word for a reject (rules 10 and 12 of judging-narrative.md):
+#: a person labelling in the corpus's words writes Pass.
+COVERAGE_PASS = "pass"
+
+
+def label_of(row: Any) -> str | None:
+    """The verdict a person labelled a review-log row with, or None. Case
+    and spaces do not matter, and coverage's Pass is read as reject. A null
+    label is a row not yet read; any other word is no verdict the
     reviewer's own can be compared with."""
-    return sum(1 for r in rows if isinstance(r, dict) and r.get("label") in VERDICTS)
+    label = row.get("label") if isinstance(row, dict) else None
+    if not isinstance(label, str):
+        return None
+    label = label.strip().lower()
+    label = "reject" if label == COVERAGE_PASS else label
+    return label if label in VERDICTS else None
+
+
+def labelled(rows: Iterable[Any]) -> int:
+    """How many rows a person has labelled with a verdict (label_of)."""
+    return sum(1 for r in rows if label_of(r))
+
+
+def agreement(rows: Iterable[Any]) -> tuple[int, int]:
+    """How many labelled rows carry the label the reviewer's own verdict
+    matches, out of how many are labelled. judging 9 asks for the
+    agreement to be reported; it sets no bar for it, so neither does this."""
+    rows = [r for r in rows if label_of(r)]
+    return sum(1 for r in rows if r.get("verdict") == label_of(r)), len(rows)
+
+
+def unreadable_labels(rows: Iterable[Any]) -> int:
+    """Rows a person labelled with a word that is not a verdict: counted so
+    a label is never dropped without a word."""
+    return sum(1 for r in rows if isinstance(r, dict) and r.get("label") not in (None, "")
+               and not label_of(r))
 
 
 def story_judged(expected: Mapping) -> bool:
@@ -981,10 +1012,11 @@ def calibrate(directory: Any, *, work: Any, model: str = "sonnet",
         row["passed"] = not row["failures"]
     audit = length_audit(pairs)
     log = read_review_log(work / script.REVIEW_LOG)
+    agreed, count = agreement(log)
     report = {"directory": str(directory), "model": model, "reviewer_model": reviewer_model,
               "cases": rows, "audit": audit,
               "passed": all(r["passed"] for r in rows) and audit["passed"],
-              "verdicts": len(log), "labelled": labelled(log),
+              "verdicts": len(log), "labelled": count, "agreed": agreed,
               "cost_usd": round(sum(w.usage.cost_usd for w in writers), 4)}
     (work / "calibration").mkdir(parents=True, exist_ok=True)
     write_json(work / "calibration" / "calibration.json", report)
@@ -1028,16 +1060,20 @@ def calibration_lines(report: Mapping) -> list[str]:
                f"{len(seeded)}; good recommended: {sum(1 for r in good if r.get('passed'))} "
                f"of {len(good)}; spent ${float(report.get('cost_usd') or 0):.2f}")
     count = int(report.get("labelled") or 0)
+    # judging 9 asks for the agreement with the labels to be reported; a
+    # count of labels alone is not a calibration against them
+    agreed = (f"; the reviewer agreed with {int(report.get('agreed') or 0)} of {count} "
+              "labels" if count else "")
     why = []
     if not report.get("passed"):
         why.append("the reviewer did not pass this calibration")
     if count < GATE_LABELLED:
         why.append(f"{count} labelled verdicts in work/review-log.jsonl, "
                    f"{GATE_LABELLED} needed")
-    out.append("--gate: not yet: " + "; ".join(why) if why else
-               "--gate may be turned on: the seeded-bad fixtures all fail, the good one "
-               f"passes, the length audit passes and {count} labelled verdicts are in "
-               "work/review-log.jsonl")
+    out.append(("--gate: not yet: " + "; ".join(why) if why else
+                "--gate may be turned on: the seeded-bad fixtures all fail, the good one "
+                f"passes, the length audit passes and {count} labelled verdicts are in "
+                "work/review-log.jsonl") + agreed)
     return out
 
 
