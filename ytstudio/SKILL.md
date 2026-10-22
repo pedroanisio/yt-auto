@@ -879,6 +879,10 @@ them.
   improvement loop, the traps, the final report.
 - `docs/compute.md`: the two machines, the measurements, the reservation
   convention.
+- `docs/narrative/`: the story craft corpus, numbered rules with their
+  sources, a `Check:` and the `Stages:` they bear on, and in its README the
+  strength of each rule; what is contested and what is folklore. Read it
+  before changing a story prompt, a lint or a reviewer rubric.
 - `README.md`: `claude_engine.py` and each stage for a newcomer.
 - `ytstudio/harness.py`: how a stage asks the model and caches the answer.
 - `tests/`: `python3 -m unittest discover -s tests`. The ones behind this

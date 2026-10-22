@@ -8,16 +8,25 @@ Four files, one index.
 
 | File | Covers | Rules | Feeds stages |
 |---|---|---|---|
-| `structure-and-hooks.md` | spine and plan (BUT/THEREFORE, ABT, cause-and-effect), promise and payoff, the first 30 s, sections and re-hooks, the ending, series format, reading the retention curve back into the script | 40 | ideas, script, keyframe, sound, build, qa, improve |
-| `attention-and-stakes.md` | curiosity gap (Loewenstein, Kang, Gruber), paying the gap, misconception evidence (Muller), stakes (Hitchcock, Pixar, identifiable victim, compassion fade, transportation), honest stakes, cognitive load (Mayer, Sweller), measuring attention | 28 | ideas, research, script, keyframe, vfx, voice, qa, improve |
-| `direction-and-narration.md` | binding picture to words, what is in the frame, motion and transitions, cuts, writing for the ear, delivery (wpm, pauses, emphasis, read-aloud) | 29 | script, styles, keyframe, vfx, voice, retime, sound, build |
-| `judging-narrative.md` | YouTube's retention vocabulary and ranking objective, running a model as story judge (absolute scoring, order swap, k ≥ 3, different family), the coverage-shaped rubric, the plan "train", cold-reader and read-aloud pre-voice checks | 15 | qa, improve, `yt script --review` |
+| `structure-and-hooks.md` | spine and plan (BUT/THEREFORE, ABT, cause-and-effect), promise and payoff, the first 30 s, sections and re-hooks, the ending, series format, reading the retention curve back into the script | 40 | ideas, research, styles, script, voice, retime, keyframe, vfx, sound, build, qa, improve |
+| `attention-and-stakes.md` | curiosity gap (Loewenstein, Kang, Gruber), paying the gap, misconception evidence (Muller), stakes (Hitchcock, Pixar, identifiable victim, compassion fade, transportation), honest stakes, cognitive load (Mayer, Sweller), measuring attention | 28 | ideas, research, script, voice, retime, keyframe, vfx, sound, build, qa, improve |
+| `direction-and-narration.md` | binding picture to words, what is in the frame, motion and transitions, cuts, writing for the ear, delivery (wpm, pauses, emphasis, read-aloud) | 29 | styles, script, voice, retime, keyframe, vfx, sound, build, qa |
+| `judging-narrative.md` | YouTube's retention vocabulary and ranking objective, running a model as story judge (absolute scoring, order swap, k ≥ 3, different family), the coverage-shaped rubric, the plan "train", cold-reader and read-aloud pre-voice checks | 15 | script, voice, qa, improve |
 
 Each file has the same shape: numbered rules (bold statement, evidence with
-inline citations, a `Check:` line naming what a reviewer or a lint can test),
-then **Contested** (claims that circulate as settled and are not), **Folklore
-and open questions** (rules that could not be sourced to a page that was
-read, with what would settle them) and **Sources** grouped by kind.
+inline citations and at least one URL, a `Check:` line naming what a
+reviewer or a lint can test, a `Stages:` line), then **Contested** (claims
+that circulate as settled and are not), **Folklore and open questions**
+(rules that could not be sourced to a page that was read, with what would
+settle them) and **Sources** grouped by kind.
+
+A rule's `Stages:` line names the `yt` stages it bears on (ideas, research,
+styles, script, voice, retime, keyframe, vfx, sound, build, qa, improve)
+and, where its check asks the screenplay for something, the field as
+`plan.<field>` or `shot.<field>`. A field named there is what the check
+needs, not a promise that the schema has it today. The "Feeds stages"
+column above is the union of a file's `Stages:` lines, and
+`tests/test_doc_narrative.py` keeps the two equal.
 
 Shared rules have one home file; the others cross-reference it (each file
 says so in a "Shared rules" paragraph under its intro). Homes: 30-second
@@ -36,10 +45,10 @@ judging 13; Zeigarnik → attention Contested.
    says how hard to enforce it, the Contested and Folklore sections say what
    not to promise.
 2. **Distilled into `work/house.md`.** Each pipeline stage gets a section of
-   `house.md` holding only the rule statements and `Check:` lines whose
-   `applies_to` names that stage, at the strength stated here, with no
-   citations and no numbers that the corpus marks snippet-sourced or
-   unverified. `house.py` injects the stage's section into that stage's
+   `house.md` distilled from the `Stages:` tags: only the rule statements
+   and `Check:` lines of the rules whose `Stages:` line names that stage, at
+   the strength in the table below, with no citations and no numbers that
+   the corpus marks snippet-sourced or unverified. `house.py` injects the stage's section into that stage's
    prompt. The corpus is the source of truth; `house.md` is its compiled
    form and is regenerated, not hand-edited, when a rule changes.
 3. **The narrative rubric.** `yt script --review` scores a plan and script
@@ -109,3 +118,147 @@ creator statements (Kurzgesagt, Tom Scott, Wendover, Real Engineering, Cleo
 Abram, Johnny Harris) remain unread; BBC Editorial Guidelines and Ofcom
 2.2 are the missing regulatory anchor for honest stakes; the YouTube
 Analytics API's coverage of key moments is unchecked.
+
+## Strength of each rule
+
+One word per rule, so a stage, a lint or a rubric reads how hard to enforce
+a rule from here instead of deciding it again. The word is the kind of the
+strongest source that supports the rule *as stated*, not merely its topic:
+
+- **peer-reviewed**: a peer-reviewed study, meta-analysis or review tests
+  what the rule prescribes, on whatever outcome it measured (learning,
+  recall, donations, clicks, ratings), which the rule names. No such study
+  measured YouTube retention, so every row with this word carries that
+  transfer: the word vouches for the outcome the rule's text names, not for
+  watch time. A peer-reviewed source that only describes what texts do,
+  that does not test the device or placement the rule prescribes, or that
+  this pass could not verify does not lift a rule to this word; the rule
+  takes the strength of what remains, and its text says which part that is.
+- **platform**: YouTube's own documentation (Help pages, official blogs,
+  the creator playbook) or a delivery specification is the strongest
+  support.
+- **practitioner**: named craft sources carry it: creators, editors, books,
+  vendor data, press, a preprint or a thesis. Taste with a name on it.
+- **house**: the sources stop short of the rule, or failed to replicate,
+  and it is kept as this pipeline's default; its text says so. A house
+  rule is a prior to tune from the channel's own curves, never a gate on
+  its own.
+
+A house number inside a stronger rule (a window, a threshold) is still
+house; the rule's text labels it. Every word here is a prior until the
+evidence loop (`yt improve` fed by the channel's retention) replaces it.
+
+| Rule | Strength |
+|---|---|
+| structure 1 | practitioner |
+| structure 2 | practitioner |
+| structure 3 | peer-reviewed |
+| structure 4 | practitioner |
+| structure 5 | practitioner |
+| structure 6 | platform |
+| structure 7 | practitioner |
+| structure 8 | practitioner |
+| structure 9 | platform |
+| structure 10 | platform |
+| structure 11 | platform |
+| structure 12 | practitioner |
+| structure 13 | platform |
+| structure 14 | peer-reviewed |
+| structure 15 | peer-reviewed |
+| structure 16 | practitioner |
+| structure 17 | practitioner |
+| structure 18 | practitioner |
+| structure 19 | practitioner |
+| structure 20 | practitioner |
+| structure 21 | practitioner |
+| structure 22 | practitioner |
+| structure 23 | house |
+| structure 24 | peer-reviewed |
+| structure 25 | house |
+| structure 26 | practitioner |
+| structure 27 | practitioner |
+| structure 28 | practitioner |
+| structure 29 | practitioner |
+| structure 30 | peer-reviewed |
+| structure 31 | peer-reviewed |
+| structure 32 | peer-reviewed |
+| structure 33 | practitioner |
+| structure 34 | practitioner |
+| structure 35 | platform |
+| structure 36 | platform |
+| structure 37 | platform |
+| structure 38 | platform |
+| structure 39 | practitioner |
+| structure 40 | platform |
+| attention 1 | peer-reviewed |
+| attention 2 | house |
+| attention 3 | peer-reviewed |
+| attention 4 | peer-reviewed |
+| attention 5 | peer-reviewed |
+| attention 6 | peer-reviewed |
+| attention 7 | peer-reviewed |
+| attention 8 | practitioner |
+| attention 9 | practitioner |
+| attention 10 | practitioner |
+| attention 11 | practitioner |
+| attention 12 | house |
+| attention 13 | peer-reviewed |
+| attention 14 | house |
+| attention 15 | peer-reviewed |
+| attention 16 | peer-reviewed |
+| attention 17 | peer-reviewed |
+| attention 18 | practitioner |
+| attention 19 | peer-reviewed |
+| attention 20 | practitioner |
+| attention 21 | peer-reviewed |
+| attention 22 | peer-reviewed |
+| attention 23 | peer-reviewed |
+| attention 24 | peer-reviewed |
+| attention 25 | peer-reviewed |
+| attention 26 | peer-reviewed |
+| attention 27 | platform |
+| attention 28 | peer-reviewed |
+| direction 1 | peer-reviewed |
+| direction 2 | peer-reviewed |
+| direction 3 | platform |
+| direction 4 | practitioner |
+| direction 5 | peer-reviewed |
+| direction 6 | peer-reviewed |
+| direction 7 | peer-reviewed |
+| direction 8 | peer-reviewed |
+| direction 9 | practitioner |
+| direction 10 | peer-reviewed |
+| direction 11 | peer-reviewed |
+| direction 12 | house |
+| direction 13 | peer-reviewed |
+| direction 14 | practitioner |
+| direction 15 | practitioner |
+| direction 16 | practitioner |
+| direction 17 | practitioner |
+| direction 18 | practitioner |
+| direction 19 | peer-reviewed |
+| direction 20 | peer-reviewed |
+| direction 21 | practitioner |
+| direction 22 | practitioner |
+| direction 23 | practitioner |
+| direction 24 | practitioner |
+| direction 25 | peer-reviewed |
+| direction 26 | peer-reviewed |
+| direction 27 | peer-reviewed |
+| direction 28 | practitioner |
+| direction 29 | practitioner |
+| judging 1 | platform |
+| judging 2 | house |
+| judging 3 | platform |
+| judging 4 | peer-reviewed |
+| judging 5 | practitioner |
+| judging 6 | platform |
+| judging 7 | peer-reviewed |
+| judging 8 | practitioner |
+| judging 9 | peer-reviewed |
+| judging 10 | peer-reviewed |
+| judging 11 | peer-reviewed |
+| judging 12 | practitioner |
+| judging 13 | practitioner |
+| judging 14 | practitioner |
+| judging 15 | peer-reviewed |

@@ -51,6 +51,7 @@ rule 29; the MrBeast time bands in rule 5 are quoted from the PDF text in
    timestamp) and `typical_curve` built from the channel's last 10
    similar-length videos; a retention finding is rejected by the validator
    unless it references one of these fields.
+   Stages: improve
 
 2. **Route script findings from the standard (absolute) retention curve, which carries real timestamps; use the similar-length comparison only for a film-level verdict.**
    The two views answer different questions. YouTube's 2012 analytics post
@@ -74,10 +75,12 @@ rule 29; the MrBeast time bands in rule 5 are quoted from the PDF text in
    Check: a finding routed to `script` must carry a timestamp from the
    standard curve; a finding derived from the comparison view may only carry a
    film-level label (above/below typical for length) *(house convention)*.
+   Stages: improve, script
 
 3. **For every dip, name the beat that was on screen and whether viewers skipped it or left; for every late top moment, consider moving that material earlier in the next script.**
    This is the evidence loop in its direct form: the retention report becomes
-   a diff against the beat sheet. YouTube Help (answer/9314415, above)
+   a diff against the beat sheet. YouTube Help
+   (https://support.google.com/youtube/answer/9314415)
    [platform documentation] gives the platform's own guidance: "review your
    dips to better understand why audiences lost interest in a particular
    segment"; if top moments fall late, "consider introducing the compelling
@@ -94,6 +97,7 @@ rule 29; the MrBeast time bands in rule 5 are quoted from the PDF text in
    tagged `skipped` or `abandoned`; a reviewer confirms the next script in the
    same series addresses or explicitly rejects each finding; a late top moment
    produces a finding tagged `move_earlier`.
+   Stages: improve, script
 
 4. **Weight absolute watch time and satisfaction proxies above click-through rate when scoring a published film, and ask the QA reviewer whether a viewer would rate the film four or five stars.**
    YouTube's published ranking objective is expected watch time per
@@ -120,6 +124,7 @@ rule 29; the MrBeast time bands in rule 5 are quoted from the PDF text in
    "viewer satisfaction" label with a one-line justification; `improve` ranks
    AVD and satisfaction findings above CTR findings; CTR remains an input, not
    the score.
+   Stages: qa, improve
 
 5. **The beat sheet declares a retention job for every time band: a first-minute beat that pays the title promise, a hype-to-execution transition in minutes 1–3, re-engagement beats near 3:00 and 6:00 for films over seven minutes, and no section without a stated job.**
    The only published minute-by-minute retention model from a top channel is
@@ -150,6 +155,7 @@ rule 29; the MrBeast time bands in rule 5 are quoted from the PDF text in
    fails a plan for a film over seven minutes with no beat tagged
    `re_engagement` in [2:30, 3:30] or [5:30, 6:30], or whose first-minute beat
    does not restate the title promise.
+   Stages: script, plan.retention_job
 
 6. **Set retention targets as the channel's own moving baseline and use third-party numbers only as sanity bounds; no vendor "good retention" band is a gate.**
    YouTube publishes no benchmark beyond the 50%-at-0:30 above-typical-intro
@@ -169,6 +175,7 @@ rule 29; the MrBeast time bands in rule 5 are quoted from the PDF text in
    Check: the `improve` stage's retention finding reports the delta from the
    channel's typical curve; any hard threshold in config must cite its source
    and carry the tag `sanity_bound`.
+   Stages: improve
 
 ---
 
@@ -192,6 +199,7 @@ rule 29; the MrBeast time bands in rule 5 are quoted from the PDF text in
    Check: the review gate returns per-criterion absolute labels; any pairwise
    call in the codebase goes through an order-swap plus n-sample majority
    helper, and returns a tie when the orderings disagree.
+   Stages: script, qa
 
 8. **Write every rubric criterion as binary or at most five labelled levels, each level described in one line with a worked example; never ask for an unbounded or 1–100 score, and shuffle option order when the judge picks among labels.**
    Rubric form drives reliability more than prompt wording. Rao and
@@ -214,6 +222,7 @@ rule 29; the MrBeast time bands in rule 5 are quoted from the PDF text in
    Check: a rubric linter rejects any criterion without an enumerated label
    set of five or fewer with per-level descriptions and one example; the
    judge wrapper shuffles label order and aggregates at least three samples.
+   Stages: script, qa
 
 9. **Expect the story reviewer to disagree with a human about one script in four; control length explicitly, calibrate it on a human-labelled set of the channel's own scripts before using it as a gate, and do not ask it to reason at length before judging narrative quality.**
    The only creative-writing judge benchmark with debiased human preferences
@@ -234,6 +243,7 @@ rule 29; the MrBeast time bands in rule 5 are quoted from the PDF text in
    time; a calibration set of at least 20 human-labelled scripts is stored
    and per-criterion agreement is reported; the rubric states in words that
    longer is not better.
+   Stages: script, qa
 
 10. **Review with a different model family than the one that wrote, and seed the calibration set with known-bad scripts the reviewer must fail.**
     Self-preference and leniency are measured. Zheng et al. 2023 (above),
@@ -251,6 +261,7 @@ rule 29; the MrBeast time bands in rule 5 are quoted from the PDF text in
     Check: config asserts `reviewer.family != writer.family`; the calibration
     run must return `Pass` (the coverage term for reject, rule 12) on every
     seeded bad script or the gate is disabled.
+    Stages: script, qa
 
 11. **Never gate a script on a single-run difference of less than one level on a five-level criterion; take the majority of at least three independent runs and return borderline results as "Consider".**
     Even expert humans agree near zero when ranking already-good work. Pier et
@@ -268,6 +279,7 @@ rule 29; the MrBeast time bands in rule 5 are quoted from the PDF text in
     Check: gate decisions are the majority over k ≥ 3 runs; the pass
     threshold sits a full level above the fail boundary; anything between is
     `Consider`, never `Pass` or `Recommend`.
+    Stages: script, qa
 
 ---
 
@@ -297,6 +309,7 @@ rule 29; the MrBeast time bands in rule 5 are quoted from the PDF text in
     `grade` in {Excellent, Good, Fair, Poor}, `verdict` in {Pass, Consider,
     Recommend}, and for Consider a non-empty `problems[]` each tied to a beat
     id; the validator rejects a Recommend that carries any Poor.
+    Stages: script, qa
 
 13. **Every plan carries a one-sentence "train" — who or what is pursuing what, against what, and which question the film answers — and the reviewer rejects a plan whose sentence names only a topic.**
     The one-sentence test is the documentary form of the logline. Sheila
@@ -315,6 +328,7 @@ rule 29; the MrBeast time bands in rule 5 are quoted from the PDF text in
     explicit whether/why/how clause and a named obstacle; the reviewer lists
     which beats advance the train and fails the plan if any section advances
     none.
+    Stages: script, qa, plan.train
 
 ---
 
@@ -339,6 +353,7 @@ rule 29; the MrBeast time bands in rule 5 are quoted from the PDF text in
     harness asserts no research or plan is in context); its output lists
     unexplained terms and a restated premise; the validator diffs the
     restated premise against `train` and raises a finding on mismatch.
+    Stages: script
 
 15. **Before paying for final voice, run a cheap TTS read of the script to catch surface problems — unpronounceable tokens, over-long sentences, typos, repeated words — and nothing else; a read-aloud pass is not a test of story quality.**
     Reading aloud measurably improves detection of surface errors, and little
@@ -359,6 +374,7 @@ rule 29; the MrBeast time bands in rule 5 are quoted from the PDF text in
     Check: a pre-voice linter renders a draft TTS and runs sentence length,
     non-dictionary tokens and numerals-without-spoken-form checks, blocking the
     voice stage until resolved; it carries no story criteria.
+    Stages: script, voice
 
 ---
 
