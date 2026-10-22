@@ -959,8 +959,12 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
                    f"{total} shots · {layers.get('effect', 0)} effects, "
                    f"{layers.get('image', 0)} from files, "
                    f"{placeholders} placeholder cards")
+        # The screenplay's own errors ride in build.json for qa (`error:
+        # script: ...`); the script area already fails them with the command
+        # that clears them, and rebuilding would only carry them over again.
         for error in errors:
-            report.add("fail", "build", str(error)[:140], _cmd("build", project))
+            if not str(error).startswith("error: script: "):
+                report.add("fail", "build", str(error)[:140], _cmd("build", project))
         if total and placeholders > total / 2:
             report.add("warn", "art", f"{placeholders} of {total} shots have no art "
                        "yet; the render is placeholder cards",

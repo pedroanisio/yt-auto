@@ -519,6 +519,24 @@ class Doctor(unittest.TestCase):
         self.assertTrue(any("rule:passive (pt-BR)" in m for m in notes), notes)
 
 
+    def test_a_script_error_carried_into_build_json_fails_once(self):
+        # build.json carries the screenplay's error for qa; doctor reports it
+        # under script, with the command that clears it, and not again under
+        # build with `yt build`, which would only carry it over again
+        import json
+        from ytstudio import doctor, workspace
+        (self.root / "build.json").write_text(json.dumps({
+            "findings": ["error: script: rule:filler: shot 1.1: welcome",
+                         "error: shot 1.2 has no art"],
+            "timeline": {"shots": 1}, "layers": {}}))
+        (self.root / "scene.xml").write_text("<scene/>")
+        report = doctor.check_project(workspace.Project(self.root)).findings
+        build_fails = [f.message for f in report if f.area == "build" and f.level == "fail"]
+        self.assertEqual(build_fails, ["error: shot 1.2 has no art"])
+        script_fails = [f for f in report if f.area == "script" and f.level == "fail"]
+        self.assertEqual(len(script_fails), 1)
+
+
 class Build(unittest.TestCase):
     """`yt build` carries a standing script `error:` into build.json's
     findings, where qa.mechanical_blockers lifts it; warnings stay in the
