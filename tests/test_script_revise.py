@@ -326,5 +326,189 @@ class ParallelDrafting(unittest.TestCase):
         self.assertEqual([(r["figure"].lower(), r["n"]) for r in rows], [("120 kg", 2)])
 
 
+# --------------------------------------------------------------------------- #
+# AUTO-94: the narration rules, revised once measured, then recorded
+# --------------------------------------------------------------------------- #
+
+RULE_PLAN = {"logline": "l", "promise": "You will see the bolt that brought the bridge down.",
+             "payoff": "the bolt",
+             "ending": {"payoff_line": "One bolt held up four lanes.", "callback": "",
+                        "next_film": ""},
+             "sections": [{"heading": "One", "seconds": 10, "beats": []}]}
+
+
+def bridge():
+    return Idea(title="Why the bridge fell", description="d", genre="g")
+
+
+class Rules(unittest.TestCase):
+    """The stage's half of the rules: error and important flags go to revise
+    under `revise-rules`, the rules are read again after the change, and
+    what stands is a finding; house flags are recorded, never revised."""
+
+    def make(self, lines, fixes=(), *, supers=None):
+        w = script.Screenwriter(bridge(), research="", verbose=False, jobs=1)
+        w.plan = lambda: RULE_PLAN
+        w.write_section = lambda *a, **k: [
+            script.Shot(narration=line, seconds=5, function=fn,
+                        on_screen_text=list((supers or {}).get(i, [])))
+            for i, (line, fn) in enumerate(lines, 1)]
+        calls, answers = [], list(fixes)
+
+        def ask(name, prompt, schema):
+            calls.append({"name": name, "prompt": prompt, "kind": kind(schema),
+                          "schema": schema})
+            if kind(schema) == "fixes":
+                return answers.pop(0) if answers else {"fixes": []}
+            raise AssertionError(name)
+        w._ask = ask
+        return w, calls
+
+    GREETING = [("Welcome back. The bridge you cross fell at dawn.", "hook"),
+                ("One bolt held up four lanes.", "payoff")]
+
+    def test_error_and_important_flags_reach_revise_as_revise_rules(self):
+        w, calls = self.make(self.GREETING)
+        w.run()
+        self.assertEqual([c["name"] for c in calls], ["revise-rules"])
+        self.assertIn("rule:filler", calls[0]["prompt"])
+        self.assertNotIn("fact-check", calls[0]["prompt"])
+
+    def test_a_fixed_line_is_read_again_and_clears(self):
+        w, calls = self.make(self.GREETING, [{"fixes": [
+            {"n": 1, "action": "fix", "narration": "The bridge you cross fell at dawn.",
+             "why": "the greeting went"}]}])
+        data = w.run()
+        self.assertEqual(data["sections"][0]["shots"][0]["narration"],
+                         "The bridge you cross fell at dawn.")
+        self.assertFalse([f for f in data["findings"] if "rule:filler" in f], data["findings"])
+        self.assertEqual(data["rules"]["revisions"][0]["n"], 1)
+        self.assertEqual(data["rules"]["flags"], [])
+
+    def test_a_kept_error_stands_as_an_error_with_its_reason(self):
+        w, _ = self.make(self.GREETING, [{"fixes": [
+            {"n": 1, "action": "keep", "narration": "", "why": "the show opens so"}]}])
+        data = w.run()
+        line = [f for f in data["findings"] if "rule:filler" in f]
+        self.assertEqual(len(line), 1, data["findings"])
+        self.assertTrue(line[0].startswith("error: rule:filler: shot 1.1"), line[0])
+        self.assertIn("kept: the show opens so", line[0])
+
+    def test_a_kept_important_flag_is_a_warning(self):
+        w, _ = self.make([("The bridge you cross fell in 1969 and 1970.", "hook"),
+                          ("One bolt held up four lanes.", "payoff")],
+                         [{"fixes": [{"n": 1, "action": "keep", "narration": "",
+                                      "why": "the two years are the point"}]}])
+        data = w.run()
+        line = [f for f in data["findings"] if "rule:numbers" in f]
+        self.assertTrue(line and line[0].startswith("warning: rule:numbers"), data["findings"])
+
+    def test_a_house_flag_is_a_warning_and_never_revised(self):
+        w, calls = self.make([("The bridge you cross was built in a year.", "hook"),
+                              ("One bolt held up four lanes.", "payoff")])
+        data = w.run()
+        self.assertEqual(calls, [])                 # nothing revisable
+        self.assertTrue(any(f.startswith("warning: house:rule:passive") for f in
+                            data["findings"]), data["findings"])
+
+    def test_report_only_records_without_revising(self):
+        w, calls = self.make(self.GREETING)
+        data = w.run(fix=False)
+        self.assertEqual(calls, [])
+        line = [f for f in data["findings"] if "rule:filler" in f]
+        self.assertTrue(line[0].startswith("error: rule:filler"))
+        self.assertIn("not revised (--report-only)", line[0])
+
+    def test_a_super_the_rule_measures_can_be_fixed(self):
+        w, calls = self.make([("The bridge you cross fell at dawn.", "hook"),
+                              ("One bolt held up four lanes.", "payoff")],
+                             [{"fixes": [{"n": 1, "action": "fix",
+                                          "narration": "The bridge you cross fell at dawn.",
+                                          "on_screen_text": ["Dawn"], "why": "shorter"}]}],
+                             supers={1: ["x" * 100]})
+        data = w.run()
+        self.assertIn("x" * 100, calls[0]["prompt"])          # the reviser sees the super
+        self.assertEqual(data["sections"][0]["shots"][0]["on_screen_text"], ["Dawn"])
+        self.assertFalse([f for f in data["findings"] if "rule:legibility" in f])
+
+    def test_a_film_in_another_language_records_what_was_not_evidenced(self):
+        w, _ = self.make([("A ponte que você cruza caiu.", "hook"),
+                          ("Um parafuso segurou quatro pistas.", "payoff")])
+        w.lang = "pt-BR"
+        data = w.run()
+        self.assertIn("not_evidenced: rule:passive (pt-BR)", data["findings"])
+
+
+class RulesOnTheCommandLine(unittest.TestCase):
+    """`yt script` with an `error:` rule finding standing exits 1 and leaves
+    narration.txt unwritten, unless --report-only."""
+
+    def setUp(self):
+        import tempfile
+        from ytstudio import harness
+        from tests.test_harness_decisions import FakeEngine
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self._engine = harness.ENGINE
+        harness.ENGINE = FakeEngine
+        self.addCleanup(setattr, harness, "ENGINE", self._engine)
+        FakeEngine.json_calls, FakeEngine.texts, FakeEngine.answer = [], [], None
+        self.film = self.root / "a-film"
+        self.film.mkdir()
+        (self.root / "work").mkdir()
+        (self.film / "idea.json").write_text(
+            '{"title": "Why the bridge fell", "genre": "g", "description": "d"}')
+
+    def run_stage(self, *flags):
+        import json
+        from unittest import mock
+        from ytstudio import cli
+        from tests.test_harness_decisions import FakeEngine, blank
+
+        def answer(prompt, schema, system=None):
+            FakeEngine.json_calls.append({"prompt": prompt, "schema": schema})
+            out = blank(schema)
+            if "questions" in schema["properties"]:
+                out.update({k: v for k, v in RULE_PLAN.items()})
+                out["sections"] = [dict(blank(schema["properties"]["sections"]["items"]),
+                                        heading="One", seconds=10, beats=["b"])]
+            elif "shots" in schema["properties"]:
+                out["shots"] = [{"visual": "v", "narration": line, "seconds": 5,
+                                 "asset": "", "style": "", "function": fn, "shows": "s"}
+                                for line, fn in Rules.GREETING]
+            elif "fixes" in schema["properties"]:
+                out["fixes"] = [{"n": 1, "action": "keep", "narration": "",
+                                 "why": "the show opens so"}]
+            return out
+        args = cli.build_parser().parse_args(
+            ["script", "--project", str(self.film), "--work", str(self.root / "work"),
+             "--quiet", *flags])
+        with mock.patch.object(FakeEngine, "ask_json", staticmethod(answer)), \
+                contextlib.redirect_stdout(io.StringIO()) as out, \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            code = script.run(args)
+        record = json.loads((self.film / "script.json").read_text())
+        return code, record, out.getvalue() + err.getvalue()
+
+    def test_a_standing_error_exits_1_and_writes_no_narration(self):
+        (self.film / "narration.txt").write_text("an older read\n")
+        code, record, said = self.run_stage()
+        self.assertEqual(code, 1)
+        self.assertFalse((self.film / "narration.txt").exists())
+        self.assertTrue((self.film / "script.md").exists())
+        self.assertTrue(any(f.startswith("error: rule:filler") for f in record["findings"]))
+        self.assertIn("error: rule:filler", said)            # print_hints prints it
+        # the old keys stay beside the findings for one release
+        self.assertIn("legibility", record)
+        self.assertIn("unspoken_numbers", record)
+
+    def test_report_only_writes_the_narration_and_records_the_error(self):
+        code, record, _ = self.run_stage("--report-only")
+        self.assertEqual(code, 0)
+        self.assertTrue((self.film / "narration.txt").exists())
+        self.assertTrue(any(f.startswith("error: rule:filler") for f in record["findings"]))
+
+
 if __name__ == "__main__":
     unittest.main()
