@@ -2463,6 +2463,15 @@ def _words(text: str) -> list[str]:
     return re.findall(r"[\w'’-]+", str(text or "").lower())
 
 
+#: A numeral with its separators: 4,540,000,000 or 12.5.
+_NUMERAL = re.compile(r"\d(?:[\d,.]*\d)?")
+
+
+def _screen_words(text: str) -> list[str]:
+    """`_words` with a numeral counted as one word: direction 2 allows
+    numbers on screen, and its thousands separators are not words."""
+    return _words(_NUMERAL.sub(lambda m: re.sub(r"[,.]", "_", m.group()), str(text or "")))
+
 
 def _has(text: str, phrases) -> list[str]:
     """The phrases of `phrases` found in `text`, on word boundaries."""
@@ -2588,10 +2597,10 @@ def rule_findings(plan: dict, sections: list[Section], wpm: int = DEFAULT_WPM,
     # direction 2: on-screen text is labels and keywords, never the narration.
     longest, echo = BOUNDS["wall_of_text"]["value"], BOUNDS["wall_of_text"]["echo"]
     for _, shot, _ in timed:
-        said = _words(spoken(shot.narration))
+        said = _screen_words(spoken(shot.narration))
         runs = {tuple(said[i:i + echo + 1]) for i in range(len(said) - echo)}
         for text in screen_strings(shot):
-            words = _words(text)
+            words = _screen_words(text)
             why = []
             if len(words) > longest:
                 why.append(f"{len(words)} words on screen, over {longest}")

@@ -65,6 +65,33 @@ class WallOfText(unittest.TestCase):
                             "Under it, the steel had rusted through."])
         self.assertEqual(by_rule(rules(sheet), "rule:wall-of-text"), [])
 
+    def test_exactly_six_words_and_exactly_four_echoed_words_pass(self):
+        # the bounds are "over six" and "more than four"
+        sheet = clean(body=[("We scraped the paint off one joint.",
+                             {"on_screen_text": ["rust ate steel under every coat",
+                                                 "scraped the paint off"]}),
+                            "Under it, the steel had rusted through."])
+        self.assertEqual(by_rule(rules(sheet), "rule:wall-of-text"), [])
+
+    def test_a_long_numeral_is_one_word(self):
+        # direction 2 allows numbers on screen; separators do not make words
+        sheet = clean(body=[("We scraped the paint off one joint.",
+                             {"on_screen_text": ["Earth: 4,540,000,000 years old",
+                                                 "$12,500,000.50 lost"]}),
+                            "Under it, the steel had rusted through."])
+        self.assertEqual(by_rule(rules(sheet), "rule:wall-of-text"), [])
+
+    def test_an_older_shots_quoted_super_is_read(self):
+        # no on_screen_text: the strings quoted in `on_screen` are the supers
+        sheet = clean(body=[("We scraped the paint off one joint.",
+                             {"on_screen_text": [],
+                              "on_screen": 'a card reads "rust ate the steel under '
+                                           'every coat" over the joint'}),
+                            "Under it, the steel had rusted through."])
+        flags = by_rule(rules(sheet), "rule:wall-of-text")
+        self.assertEqual([f["n"] for f in flags], [3])
+        self.assertIn("7 words", flags[0]["problem"])
+
     def test_its_bound_cites_direction_two_and_the_screen_may_be_revised(self):
         rule = next(r for r in script.RULES if r.id == "rule:wall-of-text")
         self.assertEqual(rule.tier, "important")

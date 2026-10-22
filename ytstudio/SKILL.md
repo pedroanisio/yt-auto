@@ -351,8 +351,8 @@ list, and no folklore threshold or vendor hook window is used. The error
 tier: `rule:filler`, `rule:sentence`. The important tier:
 `rule:unspoken-number`, `rule:legibility` (the older checks; their
 script.json keys stay), `rule:wall-of-text` (an on-screen string over six
-words, or more than four words of its own line printed verbatim: direction
-2's check, AUTO-98), `rule:numbers`, `rule:hook-subject`,
+words, a numeral with its separators counted as one, or more than four
+words of its own line printed verbatim: direction 2's check, AUTO-98), `rule:numbers`, `rule:hook-subject`,
 `rule:hook-answer`, `rule:payoff-last`. The house tier, recorded as
 `warning: house:rule:x` and never revised: `rule:clause`, `rule:passive`
 (English only), `rule:person`, `rule:pace`, `rule:density`,

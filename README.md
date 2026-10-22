@@ -490,8 +490,8 @@ judge. Four tiers:
 - **important**: `rule:unspoken-number` and `rule:legibility` (the two
   older checks, still recorded under their old script.json keys
   `unspoken_numbers` and `legibility` too), `rule:wall-of-text` (an
-  on-screen string over six words, or one that prints more than four words
-  of its own line: on-screen text is labels and keywords, never the
+  on-screen string over six words, a long numeral counting as one, or one
+  that prints more than four words of its own line: on-screen text is labels and keywords, never the
   narration), `rule:numbers` (two or more
   numerals in one sentence), `rule:hook-subject` (no content word of the
   title said or shown in the first 30 seconds; the title's verb counts, since
