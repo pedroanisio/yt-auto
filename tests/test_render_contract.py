@@ -112,12 +112,19 @@ class Mirror(unittest.TestCase):
 
     def test_the_upload_leaves_behind_what_no_render_needs(self):
         for pattern in ("qa/", "decisions/", "review-frames/", "raw/", "*.bak", ".cache/",
-                        "video*.mp4", "pilot*.mp4", "vfx/frames/", "vfx/v*/frames/"):
+                        "video*.mp4", "pilot*.mp4", "vfx/frames/", "vfx/v*/frames/",
+                        "build/proof/"):
             self.assertIn(pattern, render.SYNC_EXCLUDES)
         # the scene references these: they must travel
         for kept in ("props", "sound", "vfx"):
             self.assertFalse(any(p.rstrip("/").split("/")[0] == kept and p.count("/") == 1
                                  for p in render.SYNC_EXCLUDES), kept)
+
+    def test_the_builds_proof_frames_stay_behind(self):
+        # build.proof_check keeps up to PROOF_LIMIT draft frames under build/proof/
+        # (AUTO-70); no render reads them, and "/*.png" covers the root only.
+        argv = render.sync_up_args(Path("/w/monty"), "root@h", "/tmp/yt-render/monty/mirror")
+        self.assertIn("--exclude=build/proof/", argv)
 
     def test_a_job_is_linked_from_the_mirror_with_a_rsync_fallback(self):
         script = render.link_job_script("/tmp/yt-render/monty/mirror", "/tmp/yt-render/monty/still-1-a")

@@ -185,6 +185,7 @@ work/
     ├── sound/       index.json          the fetched cue files, and which Freesound id each is
     ├── sound.json   sound.md   cues.csv
     ├── scene.xml    build.json          the compiled document, and its report
+    ├── build/proof/                    the film's frames the build compared with the proof frames
     ├── pilot.scene.xml  pilot.json      the approval cuts
     ├── retime.json  gate.json  review.json  review.pdf
     ├── video.mp4    render.json         the film's encode; other jobs write render-<job>.json
@@ -782,14 +783,14 @@ the host is scoped and cleaned.
 On a host the project lives once, in a persistent mirror
 `/tmp/yt-render/<slug>/mirror/`, refreshed by an incremental rsync before
 every job (what no render needs stays behind: caches, `raw/`, `qa/`,
-`decisions/`, rendered outputs, the proof frames; `props/` and `sound/`
-travel because the scene references them). Every job then gets a directory
-of its own, `/tmp/yt-render/<slug>/<job>-<pid>-<suffix>/`, hardlinked from
-the mirror in a second (`cp -al`, or `rsync --link-dest` where cp cannot),
-with the parent directories of its `-o`/`--report` outputs created first
-because the mirror carries no output trees; the engine runs there, the
-results (video, stills, WAV, the reports) are pulled back and the job
-directory is removed. The mirror is never removed by a job;
+`decisions/`, rendered outputs, the proof frames and `build/proof/`;
+`props/` and `sound/` travel because the scene references them). Every job
+then gets a directory of its own, `/tmp/yt-render/<slug>/<job>-<pid>-<suffix>/`,
+hardlinked from the mirror in a second (`cp -al`, or `rsync --link-dest`
+where cp cannot), with the parent directories of its `-o`/`--report` outputs
+created first because the mirror carries no output trees; the engine runs
+there, the results (video, stills, WAV, the reports) are pulled back and the
+job directory is removed. The mirror is never removed by a job;
 `--prune-remote` deletes it on every host and stops, and the next job
 uploads it again in full. Two jobs on one project never share a directory,
 so a `pilot --render`, a still and a full encode of the same film can run
@@ -964,7 +965,8 @@ drops by 0.5 is a regression. `qa.json` at the project root carries the
 latest verdict. The exit code is 0 only when the film is ready.
 
 `--frames N` for more evidence · `--quality` of the stills · `--reuse PASS` to
-score an earlier pass's frames again, measuring them again without rendering ·
+score an earlier pass's frames again, measuring them again and rendering
+nothing but proof frames that were rendered graded ·
 `--host` / `--local` · `--fresh`
 
 ### `yt improve`

@@ -34,8 +34,10 @@ So:
   ffprobe and the engine, and this workstation has neither.
 - **Frame proofs, short blocks, `--still`, `--frames A..B` → .13.** The
   vfx frame gate's proof frames and its one short draft encode per shot,
-  and `yt qa`'s frame windows (one `--frames A..B` job per sample), are
-  this kind of job.
+  `yt build`'s frames against those proof frames, and `yt qa`'s frame
+  windows (one `--frames A..B` job per sample), are this kind of job. A
+  still of a path-traced document or one with a medium is the exception:
+  it goes where an encode would, for the memory, one per host at a time.
 - **Manim stubs, many small jobs → .13**: better GPU, and they do not
   accumulate RAM.
 - **`cargo build --release` of scene-render → .7**, for the cores and the
@@ -147,7 +149,8 @@ by hand. What `yt` itself runs is scoped by job, not by project:
   (`ytstudio/render.py`, the one list; `yt gate` extends it): `.cache/`,
   `.slices/` (the per-key slice outputs), `*.bak`, `raw/`, `review-frames/`,
   `vfx-stubs/`, `qa/`, `decisions/`, `video*.mp4`, `pilot*.mp4`, `/mix.wav`,
-  `/*.png`, `/*.pdf`, `vfx/frames/`, `vfx/v*/frames/` and `.estimate-*`.
+  `/*.png`, `/*.pdf`, `vfx/frames/`, `vfx/v*/frames/`, `build/proof/` (the
+  build's frames compared with the proof frames) and `.estimate-*`.
   `props/` and `sound/` travel because the scene references them. What
   comes back after a job is `render.PULL_BACK`: `*.mp4`, `*.png`, `*.wav`,
   `render.json`, `render-*.json`, `pilot*.json` and `.estimate-*.json`.

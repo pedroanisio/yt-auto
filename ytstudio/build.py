@@ -51,6 +51,8 @@ from . import fonts, house, workspace
 from .core import Idea, _key, read_json, timecode
 from . import design as designer
 from .harness import Harness, HarnessError, brief
+from .proofframes import (PROOF_DIFF, PROOF_LIMIT, mismatch_text, proof_diff, proof_plan,
+                          ungraded)
 from .scene_sdk import enum_of, sdk
 from .script import Section, Shot, legibility, load_script
 
@@ -172,16 +174,19 @@ VERDICT_SCHEMA = {
 }
 
 
-def look_host() -> str:
-    """The render host a look can be seen on, or "" when none is reachable.
+def look_host(text: str = "") -> str:
+    """The render host a look can be seen on, or "" when none is reachable:
+    the still host, or for a heavy document (`text` path traced or with a
+    medium, `sdkkit.HEAVY`) the host an encode would use, as the kit's
+    `frame` chooses.
 
     Under YT_NO_REMOTE (the suite) there is none, and so no look is applied.
     """
-    from . import render
+    from . import render, sdkkit
     if os.environ.get(render.NO_REMOTE_ENV):
         return ""
     try:
-        return render.remote_host(None, "still") or ""
+        return sdkkit.frame_host(text) or ""
     except Exception:
         return ""
 
@@ -243,7 +248,9 @@ def check_look(builder, engine, look, *, host: str | None = None,
 
     One still with the look and one without go to the harness, which says
     apply | revise | none. Only 'apply' applies it; a revision is checked once
-    more. With no render host nothing is seen, so nothing is graded.
+    more. With no render host nothing is seen, so nothing is graded. The
+    record names the host probed, so a later check reuses it: each probe is
+    an ssh.
     """
     import tempfile
     from . import render
@@ -251,7 +258,7 @@ def check_look(builder, engine, look, *, host: str | None = None,
         return None, {"status": "none chosen"}
     host = look_host() if host is None else host
     if not host:
-        return None, {"status": "not checked",
+        return None, {"status": "not checked", "host": host,
                       "reason": "no render host reachable; the look was not applied"}
     render_still = render_still or render.engine_render_still
     at = look_frame_time(builder)
@@ -279,10 +286,11 @@ def check_look(builder, engine, look, *, host: str | None = None,
 
     answer, why = judge(look, True)
     if answer is None:
-        return None, {"status": "not checked", "at": at,
+        return None, {"status": "not checked", "host": host, "at": at,
                       "reason": f"a frame was not rendered: {why}"}
     verdict = answer.get("verdict") if isinstance(answer, dict) else None
-    record = {"at": at, "verdict": verdict, "reason": str((answer or {}).get("reason", ""))}
+    record = {"host": host, "at": at, "verdict": verdict,
+              "reason": str((answer or {}).get("reason", ""))}
     if verdict == "apply":
         return look, dict(record, status="applied")
     revision = clean_look(answer.get("revision")) if verdict == "revise" else None
@@ -298,6 +306,97 @@ def check_look(builder, engine, look, *, host: str | None = None,
                               verdict="apply", reason=str(second.get("reason", "")))
     return None, dict(record, status="dropped", first=dict(record), verdict=again,
                       reason=str(second.get("reason", "")))
+
+
+#: Where the build keeps the film frames it compared with the proof frames.
+PROOF_DIR = "build/proof"
+
+
+def proof_check(data: bytes, manifest: dict, vfx: dict | None, root: Path, *,
+                host: str | None = None, render_still=None) -> dict:
+    """Each authored world against its proof frame, before the encode, the
+    gate and QA are paid for: the record for build.json's `proof_check`.
+
+    The built document is rendered at each world's proof-frame time (the
+    plan and the comparison are qa's, in proofframes) by the still renderer,
+    and the stage bands are compared. The host is the one the look check
+    probed, when it did; a heavy film (path traced, or with a medium) goes to
+    the host an encode would use, as the gate's proof frames do, and each
+    still waits for the host's render lock, one kit render per host at a
+    time. A mismatch is an `error:` finding naming the world, the time and
+    the difference, and the build is not publishable: this is what a world
+    split into includes, moved, or composed differently from the proof
+    render looks like. The film's frame is kept under PROOF_DIR, which holds
+    this build's frames and no other's, so a build that compares nothing
+    leaves it empty. With no host reachable nothing is compared, and a frame
+    that did not come back is compared with nothing: the manifest says so
+    either way, as a `warning:`.
+    """
+    from . import render, sdkkit
+    frames = Path(root) / PROOF_DIR
+    for stale in frames.glob("*.png") if frames.is_dir() else []:
+        stale.unlink()
+    plan = proof_plan(vfx, root, manifest.get("shots", []))
+    if not plan:
+        return {"status": "no proof frames", "worlds": []}
+    skipped = max(0, len(plan) - PROOF_LIMIT)
+    plan = plan[:PROOF_LIMIT]
+    # The proof frame has no colour pipeline, so neither has the frame
+    # compared with it (AUTO-72): the look is not a mismatch.
+    document = ungraded(data)
+    text = document.decode("utf-8", "replace")
+    files = shipped_with(text, root)
+    # The worlds are in the include copies the film ships, so a path-traced
+    # camera or a medium there makes the film heavy as it did the section.
+    film = "\n".join([text] + [body.decode("utf-8", "replace")
+                               for rel, body in files.items() if rel.endswith(".scene.xml")])
+    # The look check's host is the still host; a heavy film does not fit
+    # there, whatever the look was seen on. "" is a probe that found none.
+    if host is None or (host and sdkkit.HEAVY.search(film)):
+        host = look_host(film)
+    if not host:
+        manifest["findings"].append(
+            f"warning: {len(plan)} world(s) not checked against their proof frames: "
+            "no render host reachable")
+        return {"status": "not checked", "reason": "no render host reachable",
+                "worlds": [{"world": row["world"], "t": row["t"], "status": "not checked"}
+                           for row in plan]}
+    render_still = render_still or render.engine_render_still
+    rows: list[dict] = []
+    mismatched: list[str] = []
+    unread = 0
+    for row in plan:
+        record = {"world": row["world"], "t": row["t"], "shots": row["shots"],
+                  "proof": row["proof"], "frame": row["frame"], "graded": False}
+        with sdkkit.host_lock(host):
+            png, note = render_still(document, row["t"], host=host, files=files)
+        diff = proof_diff(row["proof"], png) if png is not None else None
+        if diff is None:
+            unread += 1
+            reason = re.sub(r"^(?:error|warning|note):\s*", "",
+                            (note or "the frame could not be read").splitlines()[0])
+            rows.append(record | {"status": "unread", "reason": reason})
+            manifest["findings"].append(
+                f"warning: world {row['world']} not compared with its proof frame: {reason}")
+            continue
+        frames.mkdir(parents=True, exist_ok=True)
+        (frames / row["frame"]).write_bytes(png)
+        record["difference"] = round(diff, 2)
+        if diff <= PROOF_DIFF:
+            rows.append(record | {"status": "ok"})
+            continue
+        mismatched.append(row["world"])
+        rows.append(record | {"status": "mismatch"})
+        manifest["findings"].append(f"error: {mismatch_text(row, diff)}; the world was split "
+                                    "into includes, moved, or composed differently from the "
+                                    "proof render (see split_worlds)")
+    if mismatched:
+        manifest["publishable"] = False
+    status = "mismatch" if mismatched else "incomplete" if unread or skipped else "ok"
+    out = {"status": status, "host": host, "worlds": rows, "mismatched": mismatched}
+    if skipped:
+        out["skipped"] = skipped
+    return out
 
 
 def ident(text: str, prefix: str = "x") -> str:
@@ -1090,7 +1189,8 @@ class SceneBuilder:
                 continue
             run_owner = label
         # A run the fold left in more than one include restarts the world at
-        # t=0 in each: name it, since no later gate reads the include count.
+        # t=0 in each: an error, since no later gate reads the include count
+        # and QA finds it only after the encode is paid for (AUTO-70).
         # Two shots of one symbol count as one run when no other effect's shot
         # lies between them (a gap or a placeholder does not end a run).
         split_worlds: list[dict] = []
@@ -1114,7 +1214,7 @@ class SceneBuilder:
                                      "includes": len(owners)})
         for row in split_worlds:
             findings.append(
-                f"warning: symbol {row['symbol']!r} draws shots "
+                f"error: symbol {row['symbol']!r} draws shots "
                 f"{', '.join(row['shots'])} of {row['section']!r} but ends up in "
                 f"{row['includes']} includes, each restarting the world at t=0; "
                 "the cut between them will snap")
@@ -1906,9 +2006,11 @@ class SceneBuilder:
             # The production brief: a placeholder is disqualifying, not deductible,
             # and so is anything the editor named as blocking, and so is a
             # sound design of which nothing reached the mix.
-            # ... and so is a picture that ends before its narration does.
+            # ... and so is a picture that ends before its narration does,
+            # and a world split into includes that restart it at each cut.
             "publishable": (not placeholders and not edit["blocking"]
-                            and not sound["unplaced"] and not timing_errors),
+                            and not sound["unplaced"] and not timing_errors
+                            and not edit["split_worlds"]),
             "timing": timing_errors,
             "editorial": {"applied": edit["applied"], "reasons": edit["reasons"],
                           "captions_off": sorted(edit["captions_off"]),
@@ -2069,9 +2171,14 @@ def print_build(manifest: dict) -> None:
           f"{manifest.get('includes', 0)} include(s) for "
           f"{manifest['markers']['beats']} shots")
     for row in manifest.get("split_worlds") or []:
-        print(f"  warning: {row['symbol']} is split into {row['includes']} "
+        print(f"  error: {row['symbol']} is split into {row['includes']} "
               f"include(s) over shots {', '.join(row['shots'])}: the world "
               "restarts at t=0 at each cut")
+    proof = manifest.get("proof_check") or {}
+    if proof.get("worlds"):
+        print(f"  proof frames: {len(proof['worlds'])} world(s) {proof['status']}"
+              + (f", mismatched: {', '.join(proof['mismatched'])}"
+                 if proof.get("mismatched") else ""))
     if manifest.get("audio_missing"):
         rows = manifest["audio_missing"]
         print(f"\n  {len(rows)} cue(s) with no file to place:")
@@ -2255,6 +2362,11 @@ def run(args) -> int:
         manifest["look_check"] = check
         if chosen and not builder.look:
             manifest["look_declined"] = chosen
+        # Each world against its proof frame, now, before the encode, the
+        # gate and QA are paid for finding it (AUTO-70), on the host the look
+        # check probed when it probed one.
+        manifest["proof_check"] = proof_check(data, manifest, vfx, project.root,
+                                              host=check.get("host"))
     except (HarnessError, Exception) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

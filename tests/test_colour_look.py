@@ -196,6 +196,14 @@ class Checked(unittest.TestCase):
         self.assertEqual(self.renders, [])
         self.assertEqual(engine.calls, [])
 
+    def test_the_record_names_the_host_it_used(self):
+        # so the build's later checks reuse it instead of probing again
+        engine = FakeEngine({"verdict": "apply", "reason": "palette kept"})
+        _, _, record = self.run_check(engine)
+        self.assertEqual(record["host"], "render-1")
+        _, _, record = self.run_check(FakeEngine(), host="")
+        self.assertEqual(record["host"], "")
+
     def test_a_frame_that_did_not_render_means_not_checked(self):
         engine = FakeEngine()
         _, got, record = self.run_check(engine, still=lambda d, a, **k: (None, "boom"))

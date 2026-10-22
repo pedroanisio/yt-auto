@@ -153,11 +153,18 @@ Plus `build.json`, whose keys are: `idea`; `scene` (size, frame rate,
 duration, background, codec, language, the output and loudness settings);
 `look` (the colour look applied, or null), `look_check` (the verdict on the
 rendered still: `applied`, `revised`, `dropped`, `not checked` or `none
-chosen`) and `look_declined` (the look the model chose when it was not
+chosen`, and the `host` probed, which `proof_check` reuses unless the film
+is path traced or has a medium and goes where an encode would) and
+`look_declined` (the look the model chose when it was not
 applied); `timeline`; `layers` (what was drawn, what remains placeholder);
 `placeholders`; `publishable`; `timing`; `editorial`; `design`; `hoisted`,
 `includes` and `split_worlds` (a world's run of shots left in more than one
-include, which restarts it at each cut); `fonts`; the audio placed (`audio_tracks`,
+include, which restarts it at each cut: an `error:` finding, and the build
+is not publishable); `proof_check` (each world's proof frame against the
+built document at the same film time, rendered on a host before the encode:
+`ok`, `mismatch` (an `error:` finding per world, not publishable),
+`incomplete` (a frame that did not come back is `unread`, a `warning:`
+naming the world), `not checked` with no host, or `no proof frames`); `fonts`; the audio placed (`audio_tracks`,
 `narration_tracks`, `buses`, `silence_windows`), the cues it could not place
 (`audio_missing`), the transient staging (`audio_staging`: the bed level,
 the headroom derived from the loudness and true-peak targets, the shift and
@@ -382,8 +389,10 @@ jump, the objects `render.json` says the camera never framed — each
 with an owner and a fix, blocking on the hook, the ending or when repeated
 across shots; and `proof-mismatch`, owned by `build` and always blocking: the
 film at a world's proof-frame time differs from the author's proof frame by
-more than `qa.PROOF_DIFF` in the stage band, which is what a world split into
-includes that restart at t=0 looks like), has the model read the frames and the contact sheet as images
+more than `qa.PROOF_DIFF` in the stage band, both frames rendered ungraded
+so an applied look is no mismatch, which is what a world split into
+includes that restart at t=0 looks like; the other mechanical findings on
+that world's shots are re-owned to `build`), has the model read the frames and the contact sheet as images
 and file the scorecard, applies the bar of section 2 mechanically (a blocking
 mechanical finding caps `visual_quality` and `animation_vfx` at 6; no audio
 track in `build.json` fixes `sound_design` and `music_score` at 2.0), and

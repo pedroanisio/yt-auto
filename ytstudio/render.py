@@ -145,11 +145,13 @@ SCRATCH_ROOTS = (REMOTE_ROOT, "/tmp/yt-gate")
 REMOTE_BINS = ("scene-render", "$HOME/src/scene-render/target/release/scene-render")
 
 #: What never travels to the host: what no render needs -- caches, downloads,
-#: review by-products, this project's own rendered outputs and the proof
-#: frames. props/ and sound/ travel: the scene references them.
+#: review by-products, this project's own rendered outputs, the proof
+#: frames and the build's frames compared with them. props/ and sound/
+#: travel: the scene references them.
 SYNC_EXCLUDES = (".cache/", "*.bak", "raw/", "review-frames/", "vfx-stubs/", "qa/",
                  "decisions/", "video*.mp4", "pilot*.mp4", "/mix.wav", ".slices/",
-                 "/*.png", "/*.pdf", "vfx/frames/", "vfx/v*/frames/", ".estimate-*")
+                 "/*.png", "/*.pdf", "vfx/frames/", "vfx/v*/frames/", "build/proof/",
+                 ".estimate-*")
 
 #: What comes back from the host after a run: results, never the inputs.
 PULL_BACK = ("*.mp4", "*.png", "*.wav", "render.json", "render-*.json", "pilot*.json",

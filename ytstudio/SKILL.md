@@ -154,9 +154,21 @@ cue and the value used. The caption track places the same
 `design.caption_cues` as the sidecar, from the `voice.json` takes, so
 burned-in and sidecar captions are the same cues. The placeholder card draws
 with the design's ink and label size, no literal colour. `yt build` prints
-"N include(s) for M shots" and warns, in the manifest's `findings` and its
-`split_worlds` key, when one symbol's run of consecutive shots in a section is
-left in more than one include.
+"N include(s) for M shots" and files an `error:` finding, with the run under
+the manifest's `split_worlds` key, when one symbol's run of consecutive shots
+in a section is left in more than one include: the build is not publishable
+and the scene is not written without `--force`. After building, `yt build`
+checks each world against its proof frame before the encode, the gate and QA
+are paid for (`build.proof_check`, recorded as `proof_check` in build.json):
+the built document is rendered at each world's proof-frame time by the still
+renderer (cached) on the host the look check probed, or for a path-traced
+film or one with a medium on the host an encode would use, one kit render
+per host at a time as the vfx gate's proof frames go, and the stage bands
+are compared as `yt qa` does; a mismatch is an `error:` finding naming the
+world, the time and the difference, the build is not publishable, and the
+film's frame is kept under `build/proof/`. With no render host reachable
+the worlds are `not checked`, a frame that did not come back is `unread`,
+and a `warning:` says so either way.
 
 `yt run` (`yt run --title X`) walks research, styles, script, props,
 voice, retime, keyframe, vfx, sound, build, render in that order -- `yt
@@ -386,13 +398,21 @@ blocking editorial note. It is not a delivery verdict. The order is:
    on the hook, the ending or more than one sampled shot) blocks on its own
    and caps `visual_quality` and `animation_vfx` at 6 until it is fixed.
    QA's mechanical pass also compares the film with the authors' proof
-   frames: for each world's latest proof frame it renders the film at the
+   frames (as `yt build` did on the built document before the encode):
+   for each world's latest proof frame it renders the film at the
    build's placement of the world's first shot plus the frame's time in the
-   world and compares the stage bands (rows 230..820 of 1080). A difference
-   above `qa.PROOF_DIFF` (4; measured: 0.12 for a matching pair, 7.9 for a
-   sparse world's opening state against 24 s on, 24.6 for another world) is a
-   `proof-mismatch`, owned by `build` and always blocking: it caps
-   `visual_quality` and `animation_vfx` and blocks READY. A film with no proof
+   world and compares the stage bands (rows 230..820 of 1080). Both frames
+   are ungraded: the film's is rendered from a copy of the scene with its
+   `<colorManagement>` removed, as the proof frame was, so an applied look
+   is not a mismatch (each row under `qa/pass-NN/proof/plan.json` says
+   `graded: false`; a `--reuse` pass whose plan does not has its proof
+   frames rendered again; `yt build`'s check renders the same way). A
+   difference above `qa.PROOF_DIFF` (4; measured: 0.12 for a matching pair,
+   7.9 for a sparse world's opening state against 24 s on, 24.6 for another
+   world) is a `proof-mismatch`, owned by `build` and always blocking: it caps
+   `visual_quality` and `animation_vfx` and blocks READY, and every other
+   mechanical finding on that world's shots names `build` as owner too
+   (`reowned` says why). A film with no proof
    frames gets a note in the scorecard. The film's frame is kept under
    `qa/pass-NN/proof/`; the author's stays in `vfx/vNN/frames/`;
    with no audio track in `build.json`, `sound_design` and `music_score`
@@ -608,7 +628,7 @@ hand-authored world showed the cost.
 |---|---|---|
 | The machine suspends mid-stage | a stage waiting on a model or a render host looks idle, so the desktop sleeps and the wait is lost | every stage but `yt ls`, `yt assets` and `yt props` (`cli.LOCAL_ONLY`) holds a `systemd-inhibit` sleep and idle lock for its life; with the tool absent it warns `systemd-inhibit not found` and nothing keeps the machine awake: install it or stop the suspend by hand |
 | `light/@castShadow` defaults to false | every object floats: no contact, no grounding, whatever its y | set it on the light that should ground the scene; the kit's build warns (`rule:shadow`) |
-| Sections reviewed 5-6.5 while the first watch finds dozens of blocking findings | the build split a world into per-shot includes that restart at t=0 | read the build's include line and its split-world warning (`split_worlds` in `build.json`); QA's `proof-mismatch` names the world and the time |
+| Sections reviewed 5-6.5 while the first watch finds dozens of blocking findings | the build split a world into per-shot includes that restart at t=0 | read the build's include line and its split-world error (`split_worlds` in `build.json`; the scene is not written without `--force`); QA's `proof-mismatch` names the world and the time |
 | A dome lights but is not seen | `environmentVisible` defaults to false: the sky or HDRI lights and reflects, and the background stays black | set `environmentVisible` when the environment is the backdrop |
 | A glTF at the wrong size | the engine imports y-up metre models at 100 scene units per metre with a half turn about x, before the object's scale; scaling by the raw bounds makes it 100 times too big | `kit/examples/model_and_environment.py` reads the bounds, applies the node transforms and grounds the model |
 | A dark metal shows no reflection | a metal's reflectance is its `baseColor`; a dark base swallows the environment and any iridescent film | give a metal a light base colour and let roughness and the environment make the look |

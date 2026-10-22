@@ -51,7 +51,6 @@ stage changes no file but its own; it says what to change and who owns it.
 from __future__ import annotations
 
 import argparse
-import glob
 import hashlib
 import re
 import shutil
@@ -60,6 +59,8 @@ from pathlib import Path
 
 from . import geometry as geo
 from . import framecheck, house, reach, spend, workspace
+from .proofframes import (PROOF_DIFF, PROOF_LIMIT, mismatch_text,  # noqa: F401
+                          proof_diff, proof_plan, ungraded)
 from . import render as render_stage
 from .build import EVEN_SHOTS, shots_from_scene  # noqa: F401  (standalone sampling)
 from .core import read_json, timecode, write_json
@@ -445,98 +446,63 @@ def _on_edge(row: dict) -> bool:
 #: Mechanical kinds that block on their own, wherever they sit.
 ALWAYS_BLOCKING = ("penetration", "reads-merged", "proof-mismatch")
 
-#: The film's stage band against the author's proof frame of the same world
-#: moment, as the mean absolute luma difference (0-255) over rows 230..820 of
-#: 1920x1080 on a 240-wide greyscale. Measured on the Euler film (2026-10-21):
-#: the film still against its own proof frame differed by 0.12 (encode and
-#: quality noise only); the same sparse 2D world between its opening state
-#: and its latest proof frame, 24 s on, by 7.9 (what a world restarted at
-#: t=0 under a later shot looks like); another world's frame by 24.6. So the
-#: line sits well above the noise and under the quietest restart measured.
-#: The film's frame is kept under qa/pass-NN/proof/ and the author's stays in
-#: vfx/vNN/frames/, so a reviewer can look at both.
-PROOF_DIFF = 4.0
-PROOF_BAND = (230, 820)           # stage rows at PROOF_BAND_FRAME height
-PROOF_BAND_FRAME = 1080
-PROOF_WIDTH = 240                 # the greyscale both frames are reduced to
-PROOF_DRIFT = 0.05                # plan and build starts further apart are reported
-PROOF_LIMIT = 24                 # the most proof frames rendered from the film
-_PROOF_NAME = re.compile(r"^(?P<t>\d+(?:\.\d+)?)s\.png$")
-
-
-def proof_diff(proof, film) -> float | None:
-    """Mean absolute luma difference of two frames' stage bands, each cut at
-    the band's share of its own height and reduced to the same small
-    greyscale; None when either file cannot be read."""
-    from PIL import Image, ImageChops, ImageStat
-    bands = []
-    for path in (proof, film):
-        try:
-            with Image.open(path) as src:
-                im = src.convert("L")
-        except (OSError, ValueError):
-            return None
-        w, h = im.size
-        top, bottom = (round(h * edge / PROOF_BAND_FRAME) for edge in PROOF_BAND)
-        band = im.crop((0, top, w, max(bottom, top + 1)))
-        height = max(1, round(PROOF_WIDTH * (PROOF_BAND[1] - PROOF_BAND[0]) / 1920))
-        bands.append(band.resize((PROOF_WIDTH, height)))
-    return float(ImageStat.Stat(ImageChops.difference(*bands)).mean[0])
-
-
-def proof_plan(vfx: dict | None, home: Path, shots: list[dict]) -> list[dict]:
-    """One row per authored world that has a proof frame the gate kept: the
-    latest by time, mapped to film time through the build's placement (the
-    `at` of the world's first shot) + T, falling back to `worlds[].start` + T
-    when that shot is not placed. Rows read like sample rows so render_frames
-    renders them; a row carries `start_drift` when plan and build differ."""
-    rows: list[dict] = []
-    for doc in (vfx or {}).get("authored") or []:
-        file = str(doc.get("file") or "")
-        if not file.endswith(".scene.xml"):
+def reown_by_proof(mechanical: list[dict], proof_found: list[dict]) -> int:
+    """A mechanical finding on a shot of a world that fails its proof-frame
+    check is the build's, whatever draws the shot: the film does not show
+    what the author built, so vfx cannot fix a frozen or off-camera shot
+    in it. Each finding moved names the world under `reowned`; returns how
+    many moved."""
+    by_shot = {label: f["world"] for f in proof_found for label in f.get("shots") or []}
+    moved = 0
+    for f in mechanical:
+        world = by_shot.get(str(f.get("shot", "")))
+        if not world or f.get("kind") == "proof-mismatch" or f.get("owner") == "build":
             continue
-        folder = Path(home) / Path(file).parent / "frames"
-        stem = Path(file).name[:-len(".scene.xml")]
-        for world in doc.get("worlds") or []:
-            prefix = f"{stem}__{world.get('id')}__"
-            found = []
-            for png in folder.glob(f"{glob.escape(prefix)}*s.png") if folder.is_dir() else []:
-                m = _PROOF_NAME.match(png.name[len(prefix):])
-                if m:
-                    found.append((float(m["t"]), png))
-            if not found:
-                continue
-            t_in, png = max(found, key=lambda x: x[0])
-            plan_start = float(world.get("start") or 0)
-            first = str((world.get("shots") or [""])[0])
-            placed = next((s for s in shots if str(s.get("label", "")) == first), None)
-            start = float(placed["at"]) if placed else plan_start
-            t = round(start + t_in, 3)
-            shot = next((s for s in shots if float(s["at"]) <= t < float(s["at"]) + float(s["seconds"])),
-                        None)
-            row = {"t": t, "label": str((shot or {}).get("label", "")),
-                   "section": (shot or {}).get("section", ""), "world": str(world.get("id")),
-                   "proof": str(png), "proof_t": t_in, "asset": "effect",
-                   "why": "proof frame", "frame": f"proof-{png.name}"}
-            if placed and abs(start - plan_start) > PROOF_DRIFT:
-                row["start_drift"] = {"plan_start": plan_start, "build_start": start}
-            rows.append(row)
-    return rows
+        f["owner"] = "build"
+        f["reowned"] = f"world {world} fails its proof-frame check, so the build owns this"
+        moved += 1
+    return moved
 
 
 def proof_frame_findings(args, project, scene: str, vfx: dict | None, home: Path,
                          shots: list[dict], out_dir: Path) -> tuple[list[dict], str]:
     """The film at each world's proof-frame time against the proof frame.
     Returns the `proof-mismatch` findings and a note for the scorecard (empty
-    when every world was compared). A film with no proof frames files nothing."""
+    when every world was compared). A film with no proof frames files nothing.
+
+    The film is rendered ungraded, from a copy of the scene beside it with
+    the `<colorManagement>` removed, as the proof frame was (AUTO-72); the
+    copy is named for the pass and lives only for the render. Each row is
+    recorded under `out_dir/proof/plan.json` with `graded: false`; a reused
+    pass whose plan does not say so had its frames rendered graded, and
+    they are rendered again."""
     plan = proof_plan(vfx, home, shots)
     skipped = max(0, len(plan) - PROOF_LIMIT)
     plan = plan[:PROOF_LIMIT]
     if not plan:
         return [], ("no proof frames to compare the film with (no vfx, or an older "
                     "version layout): film-versus-proof check skipped")
+    for row in plan:
+        row["graded"] = False
     frames = Path(out_dir) / "proof"
-    problems = render_frames(args, project, scene, plan, frames)
+    frames.mkdir(parents=True, exist_ok=True)
+    before = read_json(frames / "plan.json", warn=False, shape=list) or []
+    ungraded_before = {r.get("frame") for r in before
+                       if isinstance(r, dict) and r.get("graded") is False}
+    for row in plan:
+        if row["frame"] not in ungraded_before:
+            (frames / row["frame"]).unlink(missing_ok=True)
+    write_json(frames / "plan.json", plan)
+    film = Path(scene)
+    copy = film.with_name(f"{film.stem}.proof-{Path(out_dir).name}{film.suffix}")
+    try:
+        copy.write_bytes(ungraded(film.read_bytes()))
+    except OSError as exc:
+        return [], f"proof check skipped: could not write the ungraded copy {copy}: {exc}"
+    try:
+        problems = render_frames(args, project, str(copy), plan, frames)
+    finally:
+        copy.unlink(missing_ok=True)
     found: list[dict] = []
     unread = []
     for row in plan:
@@ -550,13 +516,9 @@ def proof_frame_findings(args, project, scene: str, vfx: dict | None, home: Path
         found.append({
             "timestamp": row["t"], "frame": f"proof/{row['frame']}", "shot": row["label"],
             "owner": "build", "kind": "proof-mismatch", "severity": "blocking",
-            "world": row["world"], "difference": round(diff, 2),
-            "problem": f"the film at {row['t']:g}s differs from the author's proof frame of "
-                       f"world {row['world']} ({row['proof_t']:g}s in): stage difference "
-                       f"{diff:.1f} against {PROOF_DIFF:g}"
-                       + (f"; the plan starts the world at {drift['plan_start']:g}s but the "
-                          f"build placed its first shot at {drift['build_start']:g}s"
-                          if drift else ""),
+            "world": row["world"], "shots": row["shots"], "difference": round(diff, 2),
+            "graded": False,
+            "problem": mismatch_text(row, diff),
             "why": "the composed film does not show what the author built and the vfx gate "
                    "reviewed; measured mechanically from the two frames",
             "root_cause": "the build split the world into includes that restart at t=0, "
@@ -1091,7 +1053,8 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                    choices=["draft", "preview", "final"],
                    help="render quality of the stills (default preview)")
     p.add_argument("--reuse", metavar="PASS",
-                   help="score the frames of this earlier pass again, rendering nothing")
+                   help="score the frames of this earlier pass again, rendering nothing "
+                        "but proof frames that were rendered graded")
     p.add_argument("--host", help="ssh target of the render host")
     p.add_argument("--local", action="store_true", help="render the stills here")
     p.add_argument("--fresh", action="store_true",
@@ -1174,8 +1137,12 @@ def run(args) -> int:
         args, project, scene, read_json(project.source("vfx"), warn=False)
         if project.source("vfx") else None, home, build.get("shots", []), pass_dir)
     mechanical += proof_found
+    reowned = reown_by_proof(mechanical, proof_found)
     if proof_note and not args.quiet:
         print(f"note: {proof_note}", file=sys.stderr)
+    if reowned and not args.quiet:
+        print(f"note: {reowned} mechanical finding(s) on a mismatched world's shots "
+              "now name build as owner", file=sys.stderr)
     sheet = contact_sheet(samples, frames_dir, pass_dir / "contact-sheet.png")
     if not args.quiet:
         for f in mechanical:
