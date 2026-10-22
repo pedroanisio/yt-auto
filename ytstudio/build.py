@@ -1258,10 +1258,20 @@ class SceneBuilder:
                                     "0 is used")
                     return 0.0
 
+            fades = {}
             for key, attr in (("fade_in", "fadeIn"), ("fade_out", "fadeOut")):
-                fade = number(key)
+                fades[key] = fade = number(key)
                 if fade > 0:
                     setattr(track, attr, round(min(fade, window), 3))
+            if (length and length > window and not cue.get("loop")
+                    and fades["fade_out"] <= 0):
+                # clipOut stops the file mid-sound; only a fade makes that an
+                # ending. The sheet owns the fade, so the mix names the cue.
+                findings.append(
+                    f"warning: cue {cue_id}'s file runs {length:.1f}s and its "
+                    f"window {window:g}s, with no fade_out: it is cut hard, "
+                    f"mid-sound, at {at + window:g}s; give the cue a fade out "
+                    "in the sound design")
             trim = number("gain_db")
             said = str(cue.get("level") or "").strip()
             level = level_db(said)

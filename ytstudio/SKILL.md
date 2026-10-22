@@ -144,7 +144,9 @@ and `build.json` are not on the shape yet.
 sound-designer number (`tail_seconds`, a cue's `fade_in`, `fade_out` or
 `gain_db`, a `level` written in words only) is replaced by its default and
 also recorded as a `warning:` finding in `build.json`, naming the field, the
-cue and the value used. The caption track places the same
+cue and the value used. A cue's `fade_in` and `fade_out` (seconds, from the
+sheet) set the track's fades; a file longer than its window with no fade out
+is cut hard mid-sound, and that is a `warning:` naming the cue. The caption track places the same
 `design.caption_cues` as the sidecar, from the `voice.json` takes, so
 burned-in and sidecar captions are the same cues. The placeholder card draws
 with the design's ink and label size, no literal colour. `yt build` prints

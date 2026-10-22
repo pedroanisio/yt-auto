@@ -150,6 +150,8 @@ CUES_SCHEMA = {
                     "layers": {"type": "array", "items": {"type": "string"}},
                     "entry": {"type": "string"},
                     "exit": {"type": "string"},
+                    "fade_in": {"type": "number"},
+                    "fade_out": {"type": "number"},
                     "level": {"type": "string"},
                     "source": {"type": "string"},
                     "search": {"type": "array", "items": {"type": "string"}},
@@ -190,9 +192,11 @@ REVIEW_SCHEMA = {
 }
 
 #: The cue fields a revision may rewrite: the design, never the file contract
-#: `--fetch` writes for `yt build`, and never the cue's id.
+#: `--fetch` writes for `yt build`, and never the cue's id. The fades are the
+#: numbers beside `entry` and `exit`, in seconds.
 REVISE_TEXT = ("name", "purpose", "description", "motif", "instrumentation",
                "tempo", "sync", "entry", "exit", "level", "source")
+REVISE_FADES = ("fade_in", "fade_out")
 REVISE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -204,6 +208,7 @@ REVISE_SCHEMA = {
         "exit": {"type": "string"}, "level": {"type": "string"},
         "source": {"type": "string"},
         "at": {"type": "integer"}, "seconds": {"type": "integer"},
+        "fade_in": {"type": "number"}, "fade_out": {"type": "number"},
         "why": {"type": "string"},
     },
     "required": ["action", "why"],
@@ -228,6 +233,10 @@ class Cue:
     layers: list[str] = field(default_factory=list)
     entry: str = ""
     exit: str = ""
+    # How the cue comes in and goes out, in seconds; `yt build` sets the
+    # track's fadeIn and fadeOut from them. 0 is a hard edge.
+    fade_in: float = 0.0
+    fade_out: float = 0.0
     level: str = ""
     source: str = ""
     search: list[str] = field(default_factory=list)
@@ -265,6 +274,11 @@ class Cue:
                 clean[key] = max(floor, int(clean.get(key, floor) or floor))
             except (TypeError, ValueError):
                 clean[key] = floor
+        for key in REVISE_FADES:
+            try:
+                clean[key] = max(0.0, float(clean.get(key, 0) or 0))
+            except (TypeError, ValueError):
+                clean[key] = 0.0
         return cls(**clean)
 
     @property
@@ -342,7 +356,7 @@ def coverage(cues: list[Cue], runtime: int) -> dict:
 #: The rules a cue sheet is checked against before the model listens back:
 #: what the timecodes say outright, which the listen-back used to be asked to
 #: find and then kept (Run 2: 15 of 15 flags kept, verdict still not ready).
-RULES = ("rule:overlap", "rule:level", "rule:clock", "rule:no-bed")
+RULES = ("rule:overlap", "rule:level", "rule:clock", "rule:no-bed", "rule:fade")
 
 
 def _is_transient(cue: Cue) -> bool:
@@ -404,6 +418,15 @@ def rule_findings(cues: list[Cue], runtime: int) -> list[dict]:
                 "normalisation, takes the loudness and the integrated target is missed",
                 "bring its level down to sit within the master's headroom, or "
                 "say which bed carries it and keep it with that reason"))
+        # A bed's fade out is required: without one the file is cut hard at
+        # the window's end, mid-sound. A hard entry on a cut can be right.
+        if cue.kind in LOUDNESS_KINDS and cue.fade_out <= 0:
+            out.append(flag(
+                cue, "rule:fade", "important",
+                f"{cue.kind} {cue.cue_id} states no fade out; a bed with none is "
+                "cut hard, mid-sound, where its window ends",
+                "give `fade_out` in seconds, and `fade_in` if it swells rather "
+                "than enters on a cut"))
     return out
 
 
@@ -540,6 +563,16 @@ class SoundDesigner:
         "envelope. In `source` say which path the cue takes: `catalogue` or "
         "`synth`.")
 
+    #: Beside the prose of `entry` and `exit`, the numbers the mix applies.
+    #: A library file is often longer than its cue and is cut at the window's
+    #: end, so a bed with no fade out stops mid-sound.
+    FADE_ASK = (
+        "Beside `entry` and `exit`, give `fade_in` and `fade_out` in seconds: "
+        "how long the cue takes to come in and to go out. They are required "
+        "for music and ambience (a bed with no fade out is cut hard, "
+        "mid-sound, where its window ends) and optional for the rest; 0 is a "
+        "hard edge, which is right for an effect that lands on a frame.")
+
     def _sourcing(self) -> str:
         if self.free_only:
             text = ("Sourcing is restricted to public-domain or CC0 "
@@ -666,7 +699,8 @@ class SoundDesigner:
             "Do not score wall to wall. Leave the narration room where the "
             "point is the words, and give every cue a reason that names what "
             "the viewer gets from it. State the level each cue sits at "
-            "relative to the narration.\n\n" + self._sourcing())
+            "relative to the narration.\n\n" + self.FADE_ASK + "\n\n"
+            + self._sourcing())
         data = self._ask(f"spot-{index:02d}", "\n\n".join(parts), CUES_SCHEMA)
 
         cues = []
@@ -693,7 +727,7 @@ class SoundDesigner:
             f"time in seconds between 0 and {self.runtime} and a duration. "
             "Say in each cue's purpose what has to be happening on screen for "
             "it to work, since the picture is not written yet.\n\n"
-            + self._sourcing())
+            + self.FADE_ASK + "\n\n" + self._sourcing())
         data = self._ask("spot-whole", "\n\n".join(parts), CUES_SCHEMA)
         cues = []
         for raw in data.get("cues", []):
@@ -804,6 +838,15 @@ class SoundDesigner:
             pass
         seconds = max(1, min(seconds, self.runtime - at))   # ends inside the film
         for key, value in (("at", at), ("seconds", seconds)):
+            if value != getattr(cue, key):
+                before[key], after[key] = getattr(cue, key), value
+        for key in REVISE_FADES:                 # a fade fits inside its cue
+            if data.get(key) is None:
+                continue
+            try:
+                value = min(max(0.0, float(data[key])), float(seconds))
+            except (TypeError, ValueError):
+                continue
             if value != getattr(cue, key):
                 before[key], after[key] = getattr(cue, key), value
         if not after:
@@ -1946,6 +1989,8 @@ def print_sound(idea: Idea, data: dict, cues: list[Cue]) -> None:
                              ("note", cue.note)):
             if value:
                 print(wrap(f"{label}: {value}", "      "))
+        if cue.fade_in or cue.fade_out:
+            print(wrap(f"fade: {cue.fade_in:g}s in, {cue.fade_out:g}s out", "      "))
         if cue.layers:
             print(wrap("layers: " + ", ".join(cue.layers), "      "))
         if cue.search:
@@ -2037,6 +2082,8 @@ def write_md(path: str, idea: Idea, data: dict, cues: list[Cue]) -> None:
                              ("Note", cue.note)):
             if value:
                 md.append(f"- **{label}.** {value}")
+        if cue.fade_in or cue.fade_out:
+            md.append(f"- **Fade.** {cue.fade_in:g}s in, {cue.fade_out:g}s out")
         if cue.layers:
             md.append("- **Layers.** " + ", ".join(cue.layers))
         if cue.search:
@@ -2080,9 +2127,9 @@ def write_md(path: str, idea: Idea, data: dict, cues: list[Cue]) -> None:
 def write_csv(path: str, cues: list[Cue]) -> None:
     cols = ["cue_id", "kind", "in", "out", "seconds", "section", "shot", "name",
             "purpose", "description", "motif", "instrumentation", "tempo",
-            "sync", "layers", "entry", "exit", "level", "source", "search",
-            "query", "note", "file", "licence", "credit", "source_url",
-            "duration"]
+            "sync", "layers", "entry", "exit", "fade_in", "fade_out", "level",
+            "source", "search", "query", "note", "file", "licence", "credit",
+            "source_url", "duration"]
     with open(path, "w", encoding="utf-8", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=cols)
         writer.writeheader()

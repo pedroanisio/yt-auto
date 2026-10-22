@@ -18,8 +18,9 @@ from ytstudio import build, sound  # noqa: E402
 
 
 def cue(kind, cue_id, at, seconds, level="-20 dBFS"):
+    # every cue fades out: a bed without one is its own rule (rule:fade)
     return sound.Cue(kind=kind, name=cue_id, at=at, seconds=seconds,
-                     purpose="p", level=level, cue_id=cue_id)
+                     purpose="p", level=level, cue_id=cue_id, fade_out=1.0)
 
 
 def rules(cues, runtime=60):

@@ -23,11 +23,12 @@ def designer():
 
 def cues():
     out = [sound.Cue(kind="music", name="bed", at=0, seconds=30, purpose="p",
-                     file="sound/a.mp3", licence="CC0", credit="x", level="loud"),
+                     file="sound/a.mp3", licence="CC0", credit="x", level="loud",
+                     fade_in=1.0, fade_out=2.0),
            sound.Cue(kind="sfx", name="hit", at=10, seconds=2, purpose="q",
                      level="-18 dBFS peak"),
            sound.Cue(kind="ambience", name="room", at=0, seconds=60, purpose="r",
-                     level="-40 dBFS")]
+                     level="-40 dBFS", fade_out=3.0)]
     return sound.number_cues(out)
 
 
@@ -206,7 +207,7 @@ class RuleFindings(unittest.TestCase):
     def sheet(self):
         c = cues()
         c.append(sound.Cue(kind="music", name="second bed", at=20, seconds=20,
-                           purpose="s", level="-30 dBFS"))
+                           purpose="s", level="-30 dBFS", fade_out=2.0))
         return sound.number_cues(c)
 
     def test_rule_flags_are_revised_before_the_first_review(self):
