@@ -1,0 +1,53 @@
+{
+  "criterion": "open_loops",
+  "verdict": "consider",
+  "why": "The plan is pitched at a lay audience, and sections 2 and 3 lean on plasma, the interplanetary magnetic field and corpuscular radiation without saying what any of them is: each is a question the viewer is left holding that no line answers (structure 8; attention 24, 26; judging 14).",
+  "judging_10": "judging 10 asks the calibration run for reject on every seeded case. The story here is the good one, told in terms a lay viewer is never given; defining them mends it, so by judging 12 it is a consider. The calibration fails a reviewer that says recommend here, grades open_loops above Fair or leaves it without a flag, and a cold reader that does not list the terms.",
+  "evidence": {
+    "in": "script.sections.1.shots.1.narration",
+    "says": "plasma"
+  },
+  "cold_read": {
+    "terms": [
+      "plasma",
+      "interplanetary magnetic field",
+      "corpuscular radiation"
+    ]
+  },
+  "review": {
+    "logline": "A comet's tail leads it away from the Sun because sunlight and a wind from the Sun push it, not because it trails behind.",
+    "synopsis": "A comet leaves the Sun tail first; sunlight is too weak to explain the gas tail; Biermann proposes a wind from the Sun and Mariner 2 measures it; the opening comet is seen again.",
+    "grades": {
+      "train": "Excellent",
+      "hook": "Excellent",
+      "stakes": "Excellent",
+      "open_loops": "Fair",
+      "reveal_setup": "Good",
+      "ending": "Excellent",
+      "honesty": "Excellent"
+    },
+    "verdict": "consider",
+    "flags": [
+      {
+        "n": 5,
+        "section": 2,
+        "criterion": "open_loops",
+        "problem": "Plasma and the interplanetary magnetic field are named for a lay viewer and never explained.",
+        "severity": "important",
+        "fix": "Say what the gas tail is made of in plain words, or cut the terms."
+      },
+      {
+        "n": 7,
+        "section": 3,
+        "criterion": "open_loops",
+        "problem": "Corpuscular radiation and the corona are the reveal, and neither is explained.",
+        "severity": "important",
+        "fix": "Name the stream of particles from the Sun in plain words before its term."
+      }
+    ],
+    "first_minute": {
+      "promise_match": "The comet and its tail are on screen and named at once.",
+      "question_and_stakes": "Why the tail leads; the same wind reached Quebec in 1989."
+    }
+  }
+}

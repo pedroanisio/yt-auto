@@ -1,0 +1,61 @@
+{
+  "criterion": "train",
+  "verdict": "consider",
+  "why": "The sections keep the good film's order, but each joins the one before with AND: sunlight is never shown to fall short, so nothing stands in the way and the train has a question without an obstacle (structure 1, 2; judging 13).",
+  "judging_10": "judging 10 asks the calibration run for reject on every seeded case. This case's fault is a train graded Fair (a question with no obstacle, beats that follow AND THEN), not a topic or a list that survives any order, so by judging 11 and 12 it is a consider: planning again with a BUT fixes it. The calibration fails a reviewer that says recommend here, grades train above Fair or leaves it without a flag, and a plan review that accepts it.",
+  "evidence": {
+    "in": "plan.sections.1.connective",
+    "says": "and"
+  },
+  "review": {
+    "logline": "A comet's tail leads it away from the Sun because sunlight and a wind from the Sun push it, not because it trails behind.",
+    "synopsis": "A comet leaves the Sun tail first; and sunlight pushes its dust; and a stream from the Sun pushes its gas; and the opening comet is seen again.",
+    "grades": {
+      "train": "Fair",
+      "hook": "Excellent",
+      "stakes": "Excellent",
+      "open_loops": "Good",
+      "reveal_setup": "Fair",
+      "ending": "Excellent",
+      "honesty": "Excellent"
+    },
+    "verdict": "consider",
+    "flags": [
+      {
+        "n": 0,
+        "section": 2,
+        "criterion": "train",
+        "problem": "Section 2 joins section 1 with AND: sunlight pushes the dust and the gas streams out as well, so nothing is shown to stand in the way.",
+        "severity": "important",
+        "fix": "Make section 2 the obstacle: sunlight is far too weak for the gas tail, joined to section 1 with BUT, and section 3 follows from it with THEREFORE."
+      },
+      {
+        "n": 0,
+        "section": 3,
+        "criterion": "reveal_setup",
+        "problem": "The stream from the Sun arrives with nothing shown to be hard before it.",
+        "severity": "important",
+        "fix": "Let section 2 show the push of sunlight falling short before section 3 names the stream."
+      }
+    ],
+    "first_minute": {
+      "promise_match": "From the plan (no script yet): section 1 opens on a comet leaving the Sun tail first, the subject the title promised.",
+      "question_and_stakes": "From the plan: why the tail leads, and section 1 says the same wind reaches Earth; no obstacle is planned."
+    }
+  },
+  "plan_review": {
+    "verdict": "revise",
+    "train_ok": false,
+    "reorder_survives": false,
+    "sections_advancing_none": [],
+    "payoff_concrete": true,
+    "questions_unanswered": [],
+    "problems": [
+      {
+        "section": 2,
+        "problem": "Section 2 joins with AND and names no obstacle: the train asks a question nothing stands in the way of.",
+        "fix": "Plan section 2 as the BUT: sunlight is too weak for the gas tail."
+      }
+    ]
+  }
+}
