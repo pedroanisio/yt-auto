@@ -474,7 +474,11 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     Prequestions on Learning from Authentic Lecture Videos*, JARMAC, 2018,
     https://pure.royalholloway.ac.uk/en/publications/the-limited-effects-of-prequestions-on-learning-from-authentic-le/
     — peer-reviewed). Not verified in this pass; exact percentages are in
-    figures not retrieved.
+    figures not retrieved. Neither study tests where the question sits or
+    whether the section closes it: the open-then-close form is practitioner
+    craft ("You open a loop, you then go and close it, and then you move on
+    to the next point", Lawrence, rule 14), and the opening-sentence
+    placement is house.
     Check: each section's first two sentences contain an interrogative or an
     explicit "the question is ..." whose answer appears later in the same
     section, or is explicitly deferred to a named later section. The
@@ -596,7 +600,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     abstract and press coverage at
     https://spacedaily.com/invisible-words-reveal-common-structure-among-stories-999/
     — other). This is descriptive — what texts do, good and bad alike — not
-    a tested prescription.
+    a tested prescription; the prescription is this corpus's house default.
     Check: per-section ratio of cognitive-process words (because, so, means,
     realize, turns out, therefore) to total words; warn if the opening
     section has the highest ratio or the ratio does not rise across

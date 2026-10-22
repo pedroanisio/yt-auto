@@ -125,9 +125,15 @@ One word per rule, so a stage, a lint or a rubric reads how hard to enforce
 a rule from here instead of deciding it again. The word is the kind of the
 strongest source that supports the rule *as stated*, not merely its topic:
 
-- **peer-reviewed**: a peer-reviewed study, meta-analysis or review
-  supports the statement, on whatever outcome it measured (learning,
-  recall, donations, clicks, ratings), which the rule names.
+- **peer-reviewed**: a peer-reviewed study, meta-analysis or review tests
+  what the rule prescribes, on whatever outcome it measured (learning,
+  recall, donations, clicks, ratings), which the rule names. No such study
+  measured YouTube retention, so every row with this word carries that
+  transfer: the word vouches for the outcome the rule's text names, not for
+  watch time. A peer-reviewed source that only describes what texts do,
+  that does not test the device or placement the rule prescribes, or that
+  this pass could not verify does not lift a rule to this word; the rule
+  takes the strength of what remains, and its text says which part that is.
 - **platform**: YouTube's own documentation (Help pages, official blogs,
   the creator playbook) or a delivery specification is the strongest
   support.
@@ -162,13 +168,13 @@ evidence loop (`yt improve` fed by the channel's retention) replaces it.
 | structure 16 | practitioner |
 | structure 17 | practitioner |
 | structure 18 | practitioner |
-| structure 19 | peer-reviewed |
+| structure 19 | practitioner |
 | structure 20 | practitioner |
 | structure 21 | practitioner |
 | structure 22 | practitioner |
 | structure 23 | house |
 | structure 24 | peer-reviewed |
-| structure 25 | peer-reviewed |
+| structure 25 | house |
 | structure 26 | practitioner |
 | structure 27 | practitioner |
 | structure 28 | practitioner |
@@ -185,7 +191,7 @@ evidence loop (`yt improve` fed by the channel's retention) replaces it.
 | structure 39 | practitioner |
 | structure 40 | platform |
 | attention 1 | peer-reviewed |
-| attention 2 | peer-reviewed |
+| attention 2 | house |
 | attention 3 | peer-reviewed |
 | attention 4 | peer-reviewed |
 | attention 5 | peer-reviewed |
@@ -193,7 +199,7 @@ evidence loop (`yt improve` fed by the channel's retention) replaces it.
 | attention 7 | peer-reviewed |
 | attention 8 | practitioner |
 | attention 9 | practitioner |
-| attention 10 | peer-reviewed |
+| attention 10 | practitioner |
 | attention 11 | practitioner |
 | attention 12 | house |
 | attention 13 | peer-reviewed |

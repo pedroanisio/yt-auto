@@ -36,6 +36,19 @@ STRENGTHS = ("peer-reviewed", "platform", "practitioner", "house")
 #: The sections every rule file ends with.
 SECTIONS = ("## Contested", "## Folklore and open questions", "## Sources")
 
+#: Phrases a rule's text uses when its peer-reviewed source stops short of
+#: what the rule prescribes; such a rule takes the strength of what remains.
+NOT_TESTED = ("not a tested prescription", "not a tested device",
+              "not verified in this pass", "does not test")
+
+#: Calls the strength audit made against the definition, pinned so a later
+#: edit to the table restates them on purpose: structure 19's study does not
+#: test placement or closure, structure 25's is descriptive, attention 2's
+#: does not test the stand-in a film must use, attention 10's is a
+#: correlation, not a test of stating the stake.
+AUDITED = {"structure 19": "practitioner", "structure 25": "house",
+           "attention 2": "house", "attention 10": "practitioner"}
+
 RULE_START = re.compile(r"^(\d+)\. \*\*")
 STAGES_LINE = re.compile(r"^\s*Stages:\s*(.*)$", re.M)
 STRENGTH_ROW = re.compile(r"^\|\s*([a-z]+ \d+)\s*\|\s*([a-z-]+)\s*\|\s*$", re.M)
@@ -181,6 +194,30 @@ class Corpus(unittest.TestCase):
         self.assertEqual(sorted(set(table.values()) - set(STRENGTHS)), [])
         for rule in corpus():
             self.assertIn(rule.strength, STRENGTHS, rule.id)
+
+
+    def test_a_rule_that_says_its_study_does_not_test_it_is_not_peer_reviewed(self):
+        # The word is the strongest source that supports the rule as stated.
+        # A study that only describes what texts do, that does not test the
+        # device the rule prescribes, or that this pass could not verify does
+        # not lift a rule to peer-reviewed, whatever its venue.
+        for rule in corpus():
+            said = [p for p in NOT_TESTED if p in " ".join(rule.text.split()).lower()]
+            if said:
+                with self.subTest(rule=rule.id, said=said):
+                    self.assertNotEqual(rule.strength, "peer-reviewed")
+
+    def test_the_audited_calls_hold(self):
+        table = strengths()
+        for rid, word in AUDITED.items():
+            with self.subTest(rule=rid):
+                self.assertEqual(table.get(rid), word)
+
+    def test_the_definition_names_the_transfer_and_what_does_not_count(self):
+        text = " ".join(README.read_text(encoding="utf-8").split())
+        definition = text[text.index("**peer-reviewed**"):text.index("**platform**")]
+        for words in ("YouTube retention", "describes", "does not test", "could not verify"):
+            self.assertIn(words, definition)
 
 
 class Parser(unittest.TestCase):
