@@ -148,9 +148,10 @@ cue and the value used. The caption track places the same
 `design.caption_cues` as the sidecar, from the `voice.json` takes, so
 burned-in and sidecar captions are the same cues. The placeholder card draws
 with the design's ink and label size, no literal colour. `yt build` prints
-"N include(s) for M shots" and warns, in the manifest's `findings` and its
-`split_worlds` key, when one symbol's run of consecutive shots in a section is
-left in more than one include.
+"N include(s) for M shots" and files an `error:` finding, with the run under
+the manifest's `split_worlds` key, when one symbol's run of consecutive shots
+in a section is left in more than one include: the build is not publishable
+and the scene is not written without `--force`.
 
 `yt run` (`yt run --title X`) walks research, styles, script, props,
 voice, retime, keyframe, vfx, sound, build, render in that order -- `yt
@@ -589,7 +590,7 @@ hand-authored world showed the cost.
 |---|---|---|
 | The machine suspends mid-stage | a stage waiting on a model or a render host looks idle, so the desktop sleeps and the wait is lost | every stage but `yt ls`, `yt assets` and `yt props` (`cli.LOCAL_ONLY`) holds a `systemd-inhibit` sleep and idle lock for its life; with the tool absent it warns `systemd-inhibit not found` and nothing keeps the machine awake: install it or stop the suspend by hand |
 | `light/@castShadow` defaults to false | every object floats: no contact, no grounding, whatever its y | set it on the light that should ground the scene; the kit's build warns (`rule:shadow`) |
-| Sections reviewed 5-6.5 while the first watch finds dozens of blocking findings | the build split a world into per-shot includes that restart at t=0 | read the build's include line and its split-world warning (`split_worlds` in `build.json`); QA's `proof-mismatch` names the world and the time |
+| Sections reviewed 5-6.5 while the first watch finds dozens of blocking findings | the build split a world into per-shot includes that restart at t=0 | read the build's include line and its split-world error (`split_worlds` in `build.json`; the scene is not written without `--force`); QA's `proof-mismatch` names the world and the time |
 | A dome lights but is not seen | `environmentVisible` defaults to false: the sky or HDRI lights and reflects, and the background stays black | set `environmentVisible` when the environment is the backdrop |
 | A glTF at the wrong size | the engine imports y-up metre models at 100 scene units per metre with a half turn about x, before the object's scale; scaling by the raw bounds makes it 100 times too big | `kit/examples/model_and_environment.py` reads the bounds, applies the node transforms and grounds the model |
 | A dark metal shows no reflection | a metal's reflectance is its `baseColor`; a dark base swallows the environment and any iridescent film | give a metal a light base colour and let roughness and the environment make the look |

@@ -182,12 +182,26 @@ class SplitWorld(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def build(self, by_label):
+    def build(self, by_label, image=False):
+        """`image`: shot 1.2 is drawn by a licensed download, so the only
+        thing between a split world and a publishable build is the split."""
+        dossier = None
+        if image:
+            from PIL import Image
+            (self.root / "downloads").mkdir()
+            Image.new("RGB", (8, 8)).save(self.root / "downloads" / "thing.png")
+            (self.root / "raw").mkdir()
+            (self.root / "raw" / "08-downloads.json").write_text(
+                '[{"status": "ok", "file": "downloads/thing.png", "title": "a thing", '
+                '"licence": "CC0"}]')
+            dossier = {"assets": [{"title": "a thing", "licence": "CC0",
+                                   "credit_line": "someone"}]}
         sections = [Section(heading="Open", shots=[
             Shot(label=f"1.{n}", n=n, visual="v", narration="w", seconds=3,
-                 at=3 * (n - 1)) for n in (1, 2, 3)])]
+                 at=3 * (n - 1), asset="a thing" if image and n == 2 else "")
+            for n in (1, 2, 3)])]
         return build.SceneBuilder(_idea(), sections, self.root, audio=False,
-                                  verbose=False,
+                                  verbose=False, dossier=dossier,
                                   vfx={"scene": {"by_label": by_label}}).build()
 
     def hit(self, symbol):
@@ -200,21 +214,31 @@ class SplitWorld(unittest.TestCase):
         self.assertEqual(manifest["split_worlds"], [])
         self.assertFalse([f for f in manifest["findings"] if "include(s)" in f])
 
-    def test_a_run_split_only_by_a_gap_warns(self):
+    def test_a_run_split_only_by_a_gap_is_an_error_and_not_publishable(self):
+        # AUTO-70: a split world is the defect behind a 3.0 scorecard, found
+        # 90 minutes later by QA; the build refuses to write it without --force.
         _, manifest = self.build({"1.1": self.hit("fx-1-1"), "1.3": self.hit("fx-1-1")})
         self.assertEqual(manifest["includes"], 2)
-        warned = [f for f in manifest["findings"]
-                  if f.startswith("warning") and "fx-1-1" in f]
-        self.assertEqual(len(warned), 1, manifest["findings"])
+        errors = [f for f in manifest["findings"]
+                  if f.startswith("error") and "fx-1-1" in f]
+        self.assertEqual(len(errors), 1, manifest["findings"])
         for needle in ("1.1", "1.3", "2 include"):
-            self.assertIn(needle, warned[0])
+            self.assertIn(needle, errors[0])
         self.assertEqual(manifest["split_worlds"][0]["includes"], 2)
 
-    def test_a_run_with_no_gap_is_one_include_and_no_warning(self):
+    def test_a_split_world_alone_makes_the_build_unpublishable(self):
+        _, manifest = self.build({"1.1": self.hit("fx-1-1"), "1.3": self.hit("fx-1-1")},
+                                 image=True)
+        self.assertEqual(manifest["layers"]["placeholder"], 0, manifest["findings"])
+        self.assertEqual(manifest["split_worlds"][0]["includes"], 2)
+        self.assertFalse(manifest["publishable"])
+
+    def test_a_run_with_no_gap_is_one_include_and_publishable(self):
         _, manifest = self.build({"1.1": self.hit("fx-1-1"), "1.2": self.hit("fx-1-1"),
                                   "1.3": self.hit("fx-1-1")})
         self.assertEqual(manifest["includes"], 1)
         self.assertEqual(manifest["split_worlds"], [])
+        self.assertTrue(manifest["publishable"])
 
     def test_the_summary_line_says_includes_for_shots_with_the_warning(self):
         import contextlib
@@ -225,7 +249,7 @@ class SplitWorld(unittest.TestCase):
             build.print_build(manifest)
         out = buf.getvalue()
         self.assertIn("2 include(s) for 3 shots", out)
-        self.assertIn("fx-1-1", out)
+        self.assertIn("error: fx-1-1", out)
 
 
 if __name__ == "__main__":

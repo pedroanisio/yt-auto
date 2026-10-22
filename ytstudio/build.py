@@ -1080,7 +1080,8 @@ class SceneBuilder:
                 continue
             run_owner = label
         # A run the fold left in more than one include restarts the world at
-        # t=0 in each: name it, since no later gate reads the include count.
+        # t=0 in each: an error, since no later gate reads the include count
+        # and QA finds it only after the encode is paid for (AUTO-70).
         # Two shots of one symbol count as one run when no other effect's shot
         # lies between them (a gap or a placeholder does not end a run).
         split_worlds: list[dict] = []
@@ -1104,7 +1105,7 @@ class SceneBuilder:
                                      "includes": len(owners)})
         for row in split_worlds:
             findings.append(
-                f"warning: symbol {row['symbol']!r} draws shots "
+                f"error: symbol {row['symbol']!r} draws shots "
                 f"{', '.join(row['shots'])} of {row['section']!r} but ends up in "
                 f"{row['includes']} includes, each restarting the world at t=0; "
                 "the cut between them will snap")
@@ -1799,9 +1800,11 @@ class SceneBuilder:
             # The production brief: a placeholder is disqualifying, not deductible,
             # and so is anything the editor named as blocking, and so is a
             # sound design of which nothing reached the mix.
-            # ... and so is a picture that ends before its narration does.
+            # ... and so is a picture that ends before its narration does,
+            # and a world split into includes that restart it at each cut.
             "publishable": (not placeholders and not edit["blocking"]
-                            and not sound["unplaced"] and not timing_errors),
+                            and not sound["unplaced"] and not timing_errors
+                            and not edit["split_worlds"]),
             "timing": timing_errors,
             "editorial": {"applied": edit["applied"], "reasons": edit["reasons"],
                           "captions_off": sorted(edit["captions_off"]),
@@ -1962,7 +1965,7 @@ def print_build(manifest: dict) -> None:
           f"{manifest.get('includes', 0)} include(s) for "
           f"{manifest['markers']['beats']} shots")
     for row in manifest.get("split_worlds") or []:
-        print(f"  warning: {row['symbol']} is split into {row['includes']} "
+        print(f"  error: {row['symbol']} is split into {row['includes']} "
               f"include(s) over shots {', '.join(row['shots'])}: the world "
               "restarts at t=0 at each cut")
     if manifest.get("audio_missing"):
