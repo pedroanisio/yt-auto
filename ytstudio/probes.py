@@ -149,12 +149,6 @@ PROPS_PHRASES = {"hdri": ("studio", "overcast", "sunset", "interior"),
                  "texture": ("metal", "concrete", "fabric")}
 
 
-def model_family(name: str) -> str:
-    """`opus`, `claude-opus-5-5` and `opus[1m]` are one model family."""
-    low = (name or "").lower()
-    return next((f for f in ("fable", "opus", "sonnet", "haiku") if f in low), low)
-
-
 def work_dir(root: Path | None = None) -> Path:
     return Path(root) if root else Path(__file__).resolve().parent.parent / "work"
 
@@ -461,9 +455,8 @@ def run(args) -> int:
                   f"have {', '.join(BY_ID)}", file=sys.stderr)
             return 2
         selected = [BY_ID[w] for w in wanted]
-    if model_family(args.reviewer_model) == model_family(args.model):
-        print("error: the reviewer must be a different model from the author: a model "
-              "does not grade its own work", file=sys.stderr)
+    if own := flags.own_reviewer(args.model, args.reviewer_model):
+        print(own, file=sys.stderr)
         return 2
     base = probes_dir(args.work)
     name = args.name or time.strftime("r-%Y%m%d-%H%M%S")

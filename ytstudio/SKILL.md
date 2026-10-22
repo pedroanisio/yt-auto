@@ -101,7 +101,7 @@ one-line note.
 | revision rounds the author gets | `--rounds` | `keyframe` (with `--sheet`), `vfx`, `probe` | `--revisions` (`vfx`) |
 | the review score under which work goes back | `--bar` | `keyframe` (with `--sheet`), `vfx`, `probe` | `--author-bar` (`vfx`) |
 | a spend cap in dollars | `--budget-usd` (`--stage-budget-usd`, `--synth-budget-usd`, `--review-budget-usd` cap the whole stage, the synthesis, a review) | `research`, `keyframe`, `vfx`, `probe`, `assess`, `improve`, `sound` | `--budget` (`research`) |
-| the model that reviews, never the author's own | `--reviewer-model` (default `opus`; `--review-budget-usd` is what one review may cost, 2) | `keyframe` (with `--sheet`), `vfx`, `probe` | |
+| the model that reviews, never the author's own: it must differ from `--model` by family, or the stage is refused before anything is paid | `--reviewer-model` (default `opus`; `--review-budget-usd` is what one review may cost, 2) | `keyframe`, `vfx`, `probe`, `run` (handed to keyframe and vfx) | |
 | ignore what is cached and do the stage again | `--fresh` | `research`, `keyframe`, `vfx`, `props`, `voice`, `sound`, `build`, `retime`, `review`, `qa`, `gate`, `pilot` | |
 | the model, its reasoning effort, its fallbacks | `--model`, `--effort`, `--fallback-model` | every stage that calls a model, `props` included; not `render` | |
 
@@ -562,7 +562,10 @@ hand-authored world showed the cost.
     its reviews, `--stage-budget-usd` (default: that times the sections)
     covers all of them, and the estimate prints before the first agent
     starts. The reviewer is `--reviewer-model` (`opus`; never the author's
-    own model) under `--review-budget-usd` (2) a review, and each round's
+    own model: `--model opus` without a reviewer of another family, say
+    `--reviewer-model sonnet`, is refused with exit 2 before anything is
+    paid, as `yt probe` rules, on `yt vfx`, `yt keyframe` and `yt run`)
+    under `--review-budget-usd` (2) a review, and each round's
     review cost is on the record (`rounds[].review_usd`, `budget.review_usd`).
     Each session's cap is what the budgets leave minus the cap of the review
     that follows it; a section that cannot pay another session and review stops

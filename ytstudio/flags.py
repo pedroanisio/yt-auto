@@ -59,6 +59,23 @@ def review_budget(p, *, default, help, dest="review_budget_usd") -> None:
     p.add_argument("--review-budget-usd", dest=dest, type=float, default=default, help=help)
 
 
+def model_family(name: str) -> str:
+    """`opus`, `claude-opus-5-5` and `opus[1m]` are one model family."""
+    low = (name or "").lower()
+    return next((f for f in ("fable", "opus", "sonnet", "haiku") if f in low), low)
+
+
+def own_reviewer(model: str, reviewer_model: str) -> str:
+    """The error when the reviewer is the author's own model (one family),
+    else "". A model never grades its own work, so every stage that reviews
+    refuses this before anything is paid, and says what to pass."""
+    if model_family(reviewer_model) != model_family(model):
+        return ""
+    return (f"error: the reviewer must be a different model from the author (--model {model}, "
+            f"--reviewer-model {reviewer_model}): a model does not grade its own work; pass "
+            "--reviewer-model with another model")
+
+
 def fresh(p, *, help="ignore what is cached and do this stage again") -> None:
     p.add_argument("--fresh", action="store_true", help=help)
 

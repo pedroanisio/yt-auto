@@ -8,7 +8,9 @@ time, with the fix that would remove it. A fix marked **done** is in the code;
 **proposed** is not yet.
 
 The run: a 60-second 3D science explainer in English, ElevenLabs voice,
-every stage on opus, started 2026-10-19 20:47 (-03).
+every stage on opus, started 2026-10-19 20:47 (-03). (The vfx reviewer was
+opus too, the author's own model; a stage now refuses that: `--model opus`
+takes `--reviewer-model` of another family.)
 
 ## Stage log
 

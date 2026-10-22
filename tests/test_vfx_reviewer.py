@@ -5,8 +5,10 @@ round's review cost is on the record, and the defaults afford the rounds the
 estimate prints. The model is never called: the engines are fakes."""
 
 import argparse
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
@@ -116,6 +118,83 @@ class FromArgs(unittest.TestCase):
                     patch.object(vfx.render, "remote_host", lambda *a, **k: ""):
                 vfx.planner_from_args(args, idea, workspace.Project(Path(tmp)))
         self.assertEqual((made["reviewer_model"], made["review_budget_usd"]), ("haiku", 0.5))
+
+
+class Planned(Exception):
+    """Raised by the patched planner: the flags passed the check."""
+
+
+class OwnModel(unittest.TestCase):
+    """A model never grades its own work: the author's model as its reviewer
+    (one family, as `yt probe` reads it: `opus`, `claude-opus-5-5` and
+    `opus[1m]` are one) is refused before anything is paid, on `yt vfx`,
+    `yt keyframe` and `yt run`; `yt run` hands the reviewer flags on."""
+
+    def vfx(self, *argv):
+        with tempfile.TemporaryDirectory() as tmp:
+            args = cli.build_parser().parse_args(["vfx", "--project", tmp, "--quiet", *argv])
+            err = io.StringIO()
+
+            def planned(*a, **k):
+                raise Planned()
+            with patch.object(vfx, "planner_from_args", planned), redirect_stderr(err):
+                return vfx.run(args), err.getvalue()
+
+    def test_vfx_refuses_the_authors_own_model_as_its_reviewer(self):
+        for model in ("opus", "claude-opus-5-5", "opus[1m]"):
+            code, err = self.vfx("--model", model)
+            self.assertEqual(code, 2, model)
+            self.assertIn("does not grade its own work", err)
+            self.assertIn("--reviewer-model", err)
+        code, err = self.vfx("--model", "sonnet", "--reviewer-model", "sonnet")
+        self.assertEqual(code, 2)
+
+    def test_vfx_runs_with_a_reviewer_of_another_family(self):
+        with self.assertRaises(Planned):
+            self.vfx("--model", "opus", "--reviewer-model", "sonnet")
+        with self.assertRaises(Planned):
+            self.vfx("--model", "sonnet")
+
+    def test_keyframe_refuses_it_in_both_modes(self):
+        for mode in ((), ("--sheet",)):
+            with tempfile.TemporaryDirectory() as tmp:
+                args = cli.build_parser().parse_args(
+                    ["keyframe", "--project", tmp, "--model", "opus", "--quiet", *mode])
+                err = io.StringIO()
+                with patch.object(keyframe, "KeyframeStage",
+                                  lambda *a, **k: self.fail("the stage must not run")), \
+                        patch.object(keyframe, "SectionLook",
+                                     lambda *a, **k: self.fail("the look must not run")), \
+                        patch.object(keyframe.render, "engine", lambda: None), \
+                        patch.object(keyframe.render, "remote_host", lambda *a, **k: "root@fast"), \
+                        redirect_stderr(err):
+                    code = keyframe.run(args)
+                self.assertEqual(code, 2, mode)
+                self.assertIn("does not grade its own work", err.getvalue())
+
+    def test_the_pipeline_refuses_it_before_any_stage_and_hands_the_reviewer_on(self):
+        args = cli.build_parser().parse_args(["run", "--title", "T", "--model", "opus"])
+        err = io.StringIO()
+        with patch.object(cli.workspace, "resolve",
+                          lambda *a, **k: self.fail("no stage may start")), \
+                redirect_stderr(err):
+            self.assertEqual(cli._run_pipeline(args), 2)
+        self.assertIn("does not grade its own work", err.getvalue())
+        args = cli.build_parser().parse_args(
+            ["run", "--title", "T", "--model", "opus", "--reviewer-model", "sonnet",
+             "--review-budget-usd", "1.5"])
+        extra = cli.run_extras(args, redo=set())
+        for stage in ("vfx", "keyframe"):
+            ns = cli.build_parser().parse_args(cli.stage_argv(stage, ["--model", "opus"], extra))
+            self.assertEqual((ns.reviewer_model, ns.review_budget_usd), ("sonnet", 1.5), stage)
+        # without the flags every stage keeps its own default
+        extra = cli.run_extras(cli.build_parser().parse_args(["run", "--title", "T"]), redo=set())
+        self.assertNotIn("--reviewer-model", extra["vfx"] + extra["keyframe"])
+
+    def test_the_manual_says_the_reviewer_must_differ_from_the_author(self):
+        text = (Path(__file__).resolve().parent.parent / "ytstudio" / "SKILL.md").read_text()
+        table = text.split("One word per concept", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("`run`", table.split("`--reviewer-model`", 1)[1].split("\n", 1)[0])
 
 
 class Keyframe(unittest.TestCase):

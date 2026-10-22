@@ -1397,10 +1397,10 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                  help=f"spend cap for one authoring session (default {LOOK_BUDGET_USD:g}; "
                       "2 with --sheet)")
     flags.reviewer_model(p, default=vfx.REVIEWER_MODEL,
-                         help="with --sheet: the model that reviews the frame; never the "
-                              f"author's own (default {vfx.REVIEWER_MODEL})")
+                         help="the model that reviews the frame (the look's rounds too); "
+                              f"never the author's own (default {vfx.REVIEWER_MODEL})")
     flags.review_budget(p, default=vfx.REVIEW_USD,
-                        help=f"with --sheet: what one review may cost (default {vfx.REVIEW_USD:g})")
+                        help=f"what one review may cost (default {vfx.REVIEW_USD:g})")
     flags.fresh(p, help="plan and author the look again (with --sheet: pick and compose "
                         "again), ignoring cached decisions")
     p.add_argument("--approve", action="store_true",
@@ -1444,6 +1444,11 @@ def run(args) -> int:
             print(f"  next: yt vfx --project {project.root}   (the author inherits this look)")
         return 0
 
+    # Both modes review (the look through `yt vfx`'s planner): a model never
+    # grades its own work, so the author's family as reviewer is refused here.
+    if own := flags.own_reviewer(args.model, args.reviewer_model):
+        print(own, file=sys.stderr)
+        return 2
     host = render.remote_host(args, "still")
     if not host and render.engine() is None:
         print("error: no engine reachable (RS_RENDER_HOSTS unset, no local binary); the "

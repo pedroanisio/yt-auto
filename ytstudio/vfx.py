@@ -4154,6 +4154,11 @@ def run(args) -> int:
         print(f"finish asked: {path}\n  the run reads it between rounds; every section ends on "
               "its best reviewed round, then continuity, reach and plan run", file=sys.stderr)
         return 0
+    # A model never grades its own work: `--model opus` needs a reviewer of
+    # another family, as `yt probe` rules, before anything is paid.
+    if own := flags.own_reviewer(args.model, getattr(args, "reviewer_model", REVIEWER_MODEL)):
+        print(own, file=sys.stderr)
+        return 2
     sections_only: set[int] = set()
     if getattr(args, "sections", None):
         try:

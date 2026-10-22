@@ -57,7 +57,7 @@ import sys
 import claude_engine
 
 from .core import read_json
-from . import (assess, assets, build, doctor, env, gate, harness, house, ideas, improve,
+from . import (assess, assets, build, doctor, env, flags, gate, harness, house, ideas, improve,
                inhibit, keyframe, pilot, probes, props, qa, render, research, retime, review, script,
                sound, styles, vfx, voice, workspace)
 
@@ -142,6 +142,11 @@ def _register_run(sub, parents: list) -> None:
     p.add_argument("--quick", action="store_true",
                    help="skip the quality passes (deliberation, polish, "
                         "fact-check, listen-back) for a cheaper first draft")
+    flags.reviewer_model(p, default=None,
+                         help="the model that reviews keyframe and vfx; never the author's "
+                              f"own (default {vfx.REVIEWER_MODEL})")
+    flags.review_budget(p, default=None,
+                        help=f"what one review may cost (default {vfx.REVIEW_USD:g})")
     p.set_defaults(run=_run_pipeline)
 
 #: Stages that call no model: `yt run` hands them the project and the quiet
@@ -155,6 +160,12 @@ def run_extras(args, *, redo: set) -> dict[str, list[str]]:
     --quick, a fresh research when it is redone, and the fetches that turn a
     design into files (props, the sound cues)."""
     quick = getattr(args, "quick", False)
+    # The reviewer flags go to the stages that review; unset, each keeps its default.
+    reviewer: list[str] = []
+    if getattr(args, "reviewer_model", None):
+        reviewer += ["--reviewer-model", str(args.reviewer_model)]
+    if getattr(args, "review_budget_usd", None) is not None:
+        reviewer += ["--review-budget-usd", f"{args.review_budget_usd:g}"]
     return {
         # --redo means run again, which for research means ignoring its
         # cached stages too, or the "rerun" would just replay them.
@@ -165,14 +176,14 @@ def run_extras(args, *, redo: set) -> dict[str, list[str]]:
         "props": [],
         # The look is locked once per set of inputs; a redo means plan and
         # author the lead section again, not replay the cached one.
-        "keyframe": ["--fresh"] if redo & {"keyframe", "all"} else [],
+        "keyframe": (["--fresh"] if redo & {"keyframe", "all"} else []) + reviewer,
         "voice": [],
         # The screenplay takes the narration's measured lengths before
         # anything is authored against it.
         "retime": [],
         # vfx caches its own stages by name, so a redo without --fresh would
         # replay the earlier authoring against the clock it was asked to fix.
-        "vfx": ["--fresh"] if redo & {"vfx", "all"} else [],
+        "vfx": (["--fresh"] if redo & {"vfx", "all"} else []) + reviewer,
         "sound": ["--fetch"] + ([] if quick else ["--review"]),
         "build": [],
         "render": ["--quality", "draft"] if quick else [],
@@ -265,6 +276,13 @@ def _run_pipeline(args) -> int:
         print(f"error: unknown stage(s) {', '.join(sorted(unknown))}; pick from "
               f"{', '.join(PIPELINE)}", file=sys.stderr)
         return 1
+    # keyframe and vfx review: a model never grades its own work, so a run
+    # that would reach them is refused here, before any stage spends.
+    reviews = {"keyframe", "vfx"} - skip
+    if reviews and (own := flags.own_reviewer(
+            args.model, getattr(args, "reviewer_model", None) or vfx.REVIEWER_MODEL)):
+        print(own, file=sys.stderr)
+        return 2
 
     idea, project = workspace.resolve(args)
     parser = build_parser()
