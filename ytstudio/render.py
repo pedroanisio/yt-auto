@@ -1340,9 +1340,12 @@ def _still_message(code: int, report: str, messages: str, ok_text: str) -> str:
     if rep.get("error"):
         lines.insert(0, f"error: {rep['error'] if isinstance(rep['error'], str) else json.dumps(rep['error'])[:300]}")
     if code != 0 and not any(l.startswith("error") for l in lines):
+        # The exit code stays beside the tail: 124 and 137 say what the
+        # engine's last words may not (the deadline, a kill for memory).
         tail = messages.strip().splitlines()[-3:] if messages.strip() else []
         lines.insert(0, "error: the engine could not render the frame" +
-                     (": " + " | ".join(t.strip()[:160] for t in tail) if tail else f" (exit {code})"))
+                     (": " + " | ".join(t.strip()[:160] for t in tail) if tail else "")
+                     + f" (exit {code})")
     head = ok_text if code == 0 else "render failed"
     return "\n".join([head] + lines)
 

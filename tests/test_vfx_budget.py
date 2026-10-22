@@ -376,6 +376,24 @@ class InfraRound(Planned):
         self.assertTrue(doc["rounds"][0]["infra"])                  # what the first pass lost
         self.assertFalse([f for f in doc["findings"] if f.startswith(("error", "infra"))])
 
+    def test_a_world_too_heavy_for_the_still_deadline_gets_its_revision_not_a_wait(self):
+        # Both hosts stop the still for its cost: the world is the author's to
+        # lighten, so the round is an error, revised, and never the host's.
+        world.FakeEngine.reviews = [{"frames": [], "score": 9, "summary": "never asked"}]
+        timed_out = "render host unreachable: Command '[...]' timed out after 600.0 seconds"
+        planner = self.planner(budget_usd=20, stage_budget_usd=200, revisions=1)
+        doc = self.gated(planner, lambda xml, at, **kw: (None, timed_out))
+        self.assertEqual(doc["revisions"], 1)
+        self.assertEqual(Costed.log.count("author"), 2)
+        self.assertNotIn("review", Costed.log)
+        self.assertFalse(doc["rounds"][0]["infra"])
+        self.assertTrue([f for f in doc["findings"] if f.startswith("error")])
+        self.assertFalse([f for f in doc["findings"] if f.startswith("infra")])
+        self.assertFalse(any("gating again" in s for s in self.said), self.said)
+        revision = [c for c in world.FakeEngine.stream_calls if "Write" in c["tools"]][1]
+        self.assertIn("Cost drivers of this document", revision["prompt"])
+        self.assertNotIn("infra:", revision["prompt"])
+
     def test_an_authors_error_beside_a_lost_frame_is_still_a_revision_without_the_infra_lines(self):
         world.FakeEngine.reviews = [{"frames": [], "score": 9, "summary": "fine"}] * 2
         n = {"count": 0}

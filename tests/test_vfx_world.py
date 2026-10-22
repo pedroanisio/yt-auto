@@ -684,6 +684,9 @@ class LostStills(unittest.TestCase):
     as `infra:`, never `error:`."""
 
     UNREACHABLE = "render host unreachable: ssh: connect to host root@small port 22: Connection refused"
+    TIMED_OUT = ("render host unreachable: Command '['ssh', 'root@small', 'sh']' timed out "
+                 "after 600.0 seconds")
+    KILLED = "render failed\nerror: the engine could not render the frame: Killed"
     ROUTES = {"still": "root@small", "encode": "root@big"}
 
     def setUp(self):
@@ -758,10 +761,73 @@ class LostStills(unittest.TestCase):
     def test_what_is_the_hosts_failure(self):
         self.assertTrue(vfx.infra_failure(self.UNREACHABLE))
         self.assertTrue(vfx.infra_failure("no engine reachable"))
-        self.assertTrue(vfx.infra_failure("render failed\nerror: the engine could not render the frame: Killed"))
+        self.assertTrue(vfx.infra_failure("render failed\nerror: the engine could not render the frame (exit 255)"))
+        # A kill for memory is the world's cost, not the host's failure (below).
+        self.assertFalse(vfx.infra_failure("render failed\nerror: the engine could not render the frame: Killed"))
+        self.assertFalse(vfx.infra_failure(self.TIMED_OUT))
         self.assertFalse(vfx.infra_failure("render failed\nerror[E7]: the camera frames nothing"))
         self.assertFalse(vfx.infra_failure("render failed\nerror: solver refused its grid"))
         self.assertFalse(vfx.infra_failure("error: blocked on missing inputs: props/x.hdr"))
+
+    def test_what_is_the_worlds_cost(self):
+        # A still stopped at the deadline or killed for memory, however the
+        # render reports it: the ssh side's timeout, the host's `timeout`
+        # wrapper, the kernel's word, sdkkit.frame's own line.
+        self.assertTrue(vfx.cost_failure(self.TIMED_OUT))
+        self.assertTrue(vfx.cost_failure(self.KILLED))
+        self.assertTrue(vfx.cost_failure("render failed\nerror: the engine could not render the frame (exit 137)"))
+        self.assertTrue(vfx.cost_failure("render failed\nerror: the engine could not render the frame (exit 124)"))
+        self.assertTrue(vfx.cost_failure("error: the render ran past 420 s"))
+        self.assertTrue(vfx.cost_failure(vfx.render._still_message(137, "", "cuda: alloc failed", "ok")))
+        self.assertFalse(vfx.cost_failure(self.UNREACHABLE))
+        self.assertFalse(vfx.cost_failure("render host unreachable: Connection timed out"))
+        self.assertFalse(vfx.cost_failure("render failed\nerror: the engine could not render the frame (exit 255)"))
+        self.assertFalse(vfx.cost_failure("render failed\nerror[E7]: the camera frames nothing"))
+        self.assertFalse(vfx.cost_failure("rendered on root@big"))
+
+    def test_a_still_one_host_stopped_for_its_cost_is_retried_on_the_other(self):
+        results = self.go(self.still({"root@small": (None, self.TIMED_OUT),
+                                      "root@big": (varied_png(), "rendered on root@big")}))
+        self.assertEqual(self.attempts, ["root@small", "root@big"])
+        png, findings = results[0]
+        self.assertIsNotNone(png)
+        self.assertFalse([f for f in findings if f.startswith(("error", "infra"))], findings)
+
+    def test_a_still_both_hosts_stopped_for_its_cost_is_the_authors_error_naming_the_cost(self):
+        results = self.go(self.still({"root@small": (None, self.TIMED_OUT),
+                                      "root@big": (None, self.TIMED_OUT)}))
+        self.assertEqual(self.attempts, ["root@small", "root@big"])
+        png, findings = results[0]
+        self.assertIsNone(png)
+        self.assertTrue(findings[0].startswith("error: frame at 5s of world-open not rendered: "
+                                               "stopped at the"), findings)
+        self.assertIn("root@small", findings[0])
+        self.assertIn("root@big", findings[0])
+        self.assertIn("Cost drivers of this document: raster", findings[0])
+        self.assertFalse([f for f in findings if f.startswith("infra")], findings)
+
+    def test_a_still_both_hosts_killed_for_memory_says_so(self):
+        results = self.go(self.still({"root@small": (None, self.KILLED),
+                                      "root@big": (None, self.KILLED)}))
+        png, findings = results[0]
+        self.assertIsNone(png)
+        self.assertTrue(findings[0].startswith("error: frame at 5s of world-open not rendered: "
+                                               "killed for memory"), findings)
+        self.assertIn("Cost drivers of this document: raster", findings[0])
+
+    def test_a_still_stopped_on_one_host_and_lost_on_the_other_is_infra(self):
+        results = self.go(self.still({"root@small": (None, self.TIMED_OUT),
+                                      "root@big": (None, self.UNREACHABLE)}))
+        self.assertEqual(self.attempts, ["root@small", "root@big"])
+        self.assertTrue(results[0][1][0].startswith("infra:"), results[0][1])
+
+    def test_with_no_other_host_a_still_stopped_for_its_cost_is_the_authors_error(self):
+        self.ROUTES = {"still": "root@small", "encode": "root@small"}
+        with patch.object(vfx.render, "host_names", lambda args=None: ["root@small"]):
+            results = self.go(self.still({"root@small": (None, self.TIMED_OUT)}))
+        self.assertEqual(self.attempts, ["root@small"])
+        self.assertTrue(results[0][1][0].startswith("error:"), results[0][1])
+        self.assertIn("Cost drivers", results[0][1][0])
 
 
 class EncodeCache(unittest.TestCase):

@@ -1234,15 +1234,38 @@ INFRA_WAIT = 120.0
 NO_FINDING = "error: the engine could not render the frame"
 
 
+#: What a still stopped at the deadline says: the ssh side's timeout, the
+#: host's `timeout` wrapper (exit 124) or sdkkit.frame's own line.
+STILL_TIMEOUT = re.compile(r"timed out after|ran past|\(exit 124\)")
+
+#: What a still the host killed for memory says: exit 137, the kernel's word.
+STILL_KILLED = re.compile(r"\(exit 137\)|\bKilled\b")
+
+
+def cost_failure(message: str) -> bool:
+    """Whether a still that rendered nothing was stopped for its cost: it ran
+    past the still deadline, or the host killed it for memory. The other host
+    gets one try; a world both hosts lose this way is the author's to
+    lighten, as sdkkit.frame rules, never the host's failure."""
+    if any(m in message for m in sdkkit.UNREACHABLE):
+        return False
+    lines = message.splitlines()
+    said = "\n".join(lines[:1] + [l for l in lines[1:] if l.startswith(NO_FINDING)])
+    return bool(STILL_TIMEOUT.search(said) or STILL_KILLED.search(said))
+
+
 def infra_failure(message: str) -> bool:
     """Whether a still that rendered nothing failed for the host's reasons
     and not the document's: the host did not answer (sdkkit.UNREACHABLE),
-    no engine was reachable, the render timed out, or the engine died
-    naming no finding. A document the engine refused with a diagnostic, or
-    one blocked on a file it names, is the author's."""
+    no engine was reachable, or the engine died naming no finding. A still
+    stopped for its cost (`cost_failure`) is not the host's; a document the
+    engine refused with a diagnostic, or one blocked on a file it names, is
+    the author's."""
     head, _, rest = message.partition("\n")
     if any(m in message for m in sdkkit.UNREACHABLE):
         return True
+    if cost_failure(message):
+        return False
     if head.startswith(("render host unreachable", "no engine reachable")):
         return True
     if head.startswith("error:"):
@@ -2106,10 +2129,11 @@ class Workspace:
                     proof.encode("utf-8"), t, host=host, files=files,
                     doc_path=f"{self.rel}/.proof-{stem}.scene.xml")
             where = f"frame at {t:g}s of {fact['id']}"
-            retried = ""
-            if png is None and infra_failure(message):
-                # The host lost the frame, not the author: forget what this
-                # process knew of it and render once more on the other host.
+            retried, ran = "", host
+            if png is None and (infra_failure(message) or cost_failure(message)):
+                # The host lost the frame, or stopped it for its cost: forget
+                # what this process knew of it and render once more on the
+                # other host before the author is charged with anything.
                 getattr(render, "_HOSTS", {}).pop(host, None)
                 other = fallback_host(host)
                 if other:
@@ -2120,6 +2144,7 @@ class Workspace:
                             doc_path=f"{self.rel}/.proof-{stem}.scene.xml")
                     retried = (f"{host or 'this machine'} answered: {first}; "
                                f"retried on {other}")
+                    ran = other
             lines = message.splitlines()
             off = framecheck.never_in_view(lines)
             findings = [l for l in lines[1:] if not l.startswith("warning[E12]")
@@ -2129,6 +2154,20 @@ class Workspace:
             findings += framecheck.view_findings(off, objects[fact["id"]],
                                                  symbol=fact["id"], at=t)
             if png is None:
+                if cost_failure(message):
+                    # No host holds the world as written: the author's error,
+                    # naming what makes it heavy, as sdkkit.frame rules.
+                    how = ("killed for memory" if STILL_KILLED.search(message) else
+                           f"stopped at the {sdkkit.STILL_DEADLINE} s still deadline")
+                    findings = [f for f in findings if not f.startswith("error")]
+                    return None, [f"error: {where} not rendered: {how} on "
+                                  f"{ran or 'this machine'}"
+                                  + (f" ({retried})" if retried else "")
+                                  + ": no host can render this world as written. Cost "
+                                  f"drivers of this document: {sdkkit.render_settings(text)}. "
+                                  "Lower them (fewer blobs or cells, fewer pathSamples or "
+                                  "maxBounces, no medium) and judge composition at a "
+                                  "setting that renders quickly"] + findings, off
                 if infra_failure(message):
                     # Filed as the host's, never as the author's error: the
                     # gate waits and looks again instead of paying a revision.

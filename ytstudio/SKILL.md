@@ -531,10 +531,14 @@ hand-authored world showed the cost.
     round, so a last revision that crashes, breaks the build or scores lower
     falls back to that round. A section whose authoring raises becomes an
     error record; the other sections are kept.
-  - A proof frame the host could not render (unreachable, no engine, a
-    timeout, or an engine that died naming no finding: `vfx.infra_failure`)
-    is retried once on the other host and otherwise filed as `infra:`,
-    never `error:`. A round whose only blockers are infra findings is gated
+  - A proof frame the host could not render (unreachable, no engine, or an
+    engine that died naming no finding: `vfx.infra_failure`) is retried
+    once on the other host and otherwise filed as `infra:`, never
+    `error:`. A still stopped at the deadline or killed for memory
+    (`vfx.cost_failure`) gets the same one retry; when the other host
+    stops it the same way, no host holds the world as written and the
+    frame is the author's `error:` naming the document's cost drivers, as
+    `kit.py frame` rules. A round whose only blockers are infra findings is gated
     again after `vfx.INFRA_WAIT` seconds without a session, gets no review
     while frames are missing, and the frames the first pass lost are
     recorded on the round (`rounds[].infra` in `vfx.json`, "lost to the

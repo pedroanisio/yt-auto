@@ -539,7 +539,9 @@ A frame the host could not render is the host's failure, not the author's:
 it is retried once on the other host, else filed as `infra:`, and a round
 blocked only by such frames is gated again after a bounded wait with no
 session and no revision paid (`rounds[].infra` in `vfx.json` says what the
-host lost).
+host lost). A frame both hosts stop at the still deadline or kill for
+memory is the author's error, naming the document's cost drivers: no host
+holds that world as written.
 
 Authoring is versioned. Each run lands in the next `vfx/vNN/`, `vfx.json`
 names the active version, and `--fresh` replans and opens a new version;
