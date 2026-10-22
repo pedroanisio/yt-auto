@@ -157,6 +157,20 @@ def traits_of(shot, placed: dict, *, section: str, cues: list[dict],
 STORY_TRAITS = ("hook", "rehook", "payoff")
 
 
+def print_findings(beat_notes: list[str], findings: list[str]) -> None:
+    """The screenplay's beat notes (`gather`'s, e.g. no payoff shot marked)
+    apart from what the editor and the scene checks raised, so a film written
+    before shots had a function is not reported as an SDK finding."""
+    if beat_notes:
+        print("\n  the screenplay's beats:")
+        for note in beat_notes:
+            print(f"    {note}")
+    if findings:
+        print(f"\n  the SDK raised {len(findings)} finding(s):")
+        for finding in findings[:10]:
+            print(f"    {finding}")
+
+
 def gather(project, overrides: dict | None = None) -> tuple[list[Beat], dict]:
     """Every shot, with its traits, from whatever stages have run.
 
@@ -480,7 +494,10 @@ def run(args) -> int:
     engine = Harness(project.root, "pilot", model=args.model, role=ROLE,
                      house=rules, house_digest=digest,
                      fresh=getattr(args, "fresh", False), verbose=not args.quiet)
-    findings: list[str] = list(build.get("beat_notes") or [])
+    # The beat note is gather's, not the SDK's: printed under its own
+    # heading, and first in pilot.json's findings, the same strings as there.
+    beat_notes = [str(n) for n in build.get("beat_notes") or []]
+    findings: list[str] = []
     chosen: dict[int, list[str]] = {}
     verdict: dict = {}
     violations: list[str] = []
@@ -545,10 +562,7 @@ def run(args) -> int:
     print_pilot(idea.title, cuts)
     if verdict.get("notes"):
         print(f"\n  editor's notes: {verdict['notes'][:300]}")
-    if findings:
-        print(f"\n  the SDK raised {len(findings)} finding(s):")
-        for finding in findings[:10]:
-            print(f"    {finding}")
+    print_findings(beat_notes, findings)
     errors = [f for f in findings if f.startswith("error")]
     if errors:
         print(f"\nerror: {len(errors)} check error(s); nothing written",
@@ -564,7 +578,7 @@ def run(args) -> int:
                 "outputs": names,
                 # Same shape and strings as build.json, so anything reading
                 # findings there reads them here without a second format.
-                "findings": findings,
+                "findings": beat_notes + findings,
                 "selection": selection, "notes": verdict.get("notes", ""),
                 "engine": engine.report(),
                 "usage": spend.from_report(engine.report()),

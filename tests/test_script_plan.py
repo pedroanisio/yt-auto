@@ -472,6 +472,19 @@ class Kept(unittest.TestCase):
         ledger = md.split("Question ledger", 1)[1]
         self.assertIn("| Q1 | What brought the bridge down? | 1 | 3 |", ledger)
 
+    def test_the_printed_script_lists_its_findings(self):
+        import contextlib
+        import io
+        w, data = self.run_it(functions=("hook", "climax"))
+        self.assertTrue(data.get("findings"))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            script.print_script(idea(), data, script.sections_of(data))
+        text = out.getvalue()
+        self.assertIn("FINDINGS", text)
+        for finding in data["findings"]:
+            self.assertIn(finding[:40], text)
+
     def test_the_shot_list_has_function_and_shows_columns(self):
         _, data = self.run_it()
         with tempfile.TemporaryDirectory() as tmp:
@@ -538,6 +551,26 @@ class Pilot(unittest.TestCase):
     def test_a_rehook_is_a_trait(self):
         traits, _, _ = self.gather(("hook", "rehook", "payoff", "handoff"))
         self.assertIn("rehook", traits["1.2"])
+
+    def test_the_beat_note_is_printed_apart_from_the_sdks_findings(self):
+        import contextlib
+        import io
+        from ytstudio import pilot
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            pilot.print_findings(["note: the screenplay marks no payoff shot; the last "
+                                  "shot, 2.2, stands for it"],
+                                 ["warning: a scene check"])
+        text = out.getvalue()
+        self.assertIn("the SDK raised 1 finding(s)", text)
+        head, sdk = text.split("the SDK raised", 1)
+        self.assertIn("the screenplay's beats", head)
+        self.assertIn("2.2, stands for it", head)
+        self.assertNotIn("stands for it", sdk)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            pilot.print_findings(["note: n"], [])
+        self.assertNotIn("SDK", out.getvalue())
 
     def test_without_functions_the_last_shot_is_the_payoff_and_a_note_says_so(self):
         traits, build, kept = self.gather(("", "", "", ""))

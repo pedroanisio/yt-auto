@@ -1544,6 +1544,13 @@ def print_script(idea: Idea, data: dict, sections: list[Section]) -> None:
     if check.get("verdict"):
         print(wrap(f"verdict: {check['verdict']}", "  "))
 
+    # What the stage recorded instead of deciding (a value off a schema
+    # list), so the operator sees it without opening script.json.
+    if data.get("findings"):
+        print(f"\n\n{'=' * 78}\nFINDINGS")
+        for finding in data["findings"]:
+            print(wrap(f"· {finding}", "  "))
+
 
 def question_ledger(questions) -> list[str]:
     """The plan's questions as a Markdown table: where each opens and where
