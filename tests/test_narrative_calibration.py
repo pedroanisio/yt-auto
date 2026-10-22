@@ -545,6 +545,40 @@ class Entry(Hermetic):
 # the review log, doctor and yt run
 # --------------------------------------------------------------------------- #
 
+class PlanOnly(Hermetic):
+    """Four cases ship a plan and no script: the story review reads the plan
+    as the film, and a flag can only sit on shot 0."""
+
+    def writer(self) -> script.Screenwriter:
+        return script.Screenwriter(script.Idea(title="t", genre="g", description="d"),
+                                   verbose=False, jobs=1, reviewer_model="opus",
+                                   review_log=None, root=self.work / "list-plan")
+
+    def test_the_prompt_says_no_section_is_drafted_and_flags_go_on_shot_0(self):
+        plan = load(FIXTURES / "list-plan" / "plan.json")
+        prompt = self.writer()._story_prompt([], plan)
+        flat = " ".join(prompt.split())
+        self.assertIn("No section is drafted yet", flat)
+        self.assertIn("review the plan above as the film it would make", flat)
+        self.assertIn("shot 0", flat[flat.index("No section is drafted yet"):])
+        self.assertNotIn("Section 1:", prompt)
+
+    def test_a_flag_on_a_shot_the_plan_does_not_have_unsettles_the_sample(self):
+        said = load(FIXTURES / "list-plan" / "expected.json")["review"]
+        stray = copy.deepcopy(said)
+        stray["flags"][0]["n"] = 1
+
+        def ask(self_, name, prompt, schema):
+            return copy.deepcopy(stray if name.endswith(("-s1", "-s1-again")) else said)
+        with mock.patch.object(script.Screenwriter, "_ask", ask):
+            rnd = self.writer().review_round([], load(FIXTURES / "list-plan" / "plan.json"), 1)
+        first = rnd["samples"][0]
+        self.assertFalse(first["valid"], first)
+        self.assertTrue(first.get("again"), first)
+        self.assertTrue(all(s["valid"] for s in rnd["samples"][1:]))
+        self.assertEqual(rnd["verdict"], said["verdict"])
+
+
 class ReviewLog(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
