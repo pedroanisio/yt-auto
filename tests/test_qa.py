@@ -430,6 +430,19 @@ class StoryBrief(unittest.TestCase):
         self.assertIn("It is showing you the wind.", text)
         self.assertEqual(qa.narration_text({}, {}), "")
 
+    def test_the_narration_is_what_was_voiced_when_voice_has_takes(self):
+        # The film as told is the soundtrack: a take's words win over the
+        # screenplay's line, and a shot with no take was not spoken.
+        voice = {"takes": [{"label": "1.1", "text": "This comet, look, is leaving the Sun."},
+                           {"label": "2.2", "text": "It is showing you the wind."}]}
+        text = qa.narration_text(_script(), self.build(), voice)
+        self.assertIn("as voiced", text.splitlines()[0])
+        self.assertIn("This comet, look, is leaving the Sun.", text)
+        self.assertNotIn("And its tail is in front.", text)
+        unvoiced = qa.narration_text(_script(), self.build(), {"takes": []})
+        self.assertIn("not yet voiced", unvoiced.splitlines()[0])
+        self.assertIn("And its tail is in front.", unvoiced)
+
 
 class StoryStage(unittest.TestCase):
     """The whole stage: the story brief in the prompt, narration.txt in the pass."""
@@ -451,17 +464,21 @@ class StoryStage(unittest.TestCase):
         saved = harness.ENGINE, qa.RENDERER
         self.addCleanup(setattr, qa, "RENDERER", saved[1])
         self.addCleanup(setattr, harness, "ENGINE", saved[0])
-        seen = self.seen = {}
+        seen = self.seen = {"prompts": []}
         card = dict(motion.SCORECARD, story=STORY)
+        # The cards the reviewer files, one per inspection; the last repeats.
+        self.cards = cards = [card]
 
         class Reader(motion.FakeEngine):
             def stream(self_, prompt, system=None):
                 from claude_engine import Event
                 cwd = Path(self_.config.cwd)
                 seen["prompt"], seen["system"] = prompt, system
+                seen["prompts"].append(prompt)
                 seen["narration"] = ((cwd / "narration.txt").read_text()
                                      if (cwd / "narration.txt").is_file() else None)
-                yield Event(type="assistant", text="```json\n" + json.dumps(card) + "\n```")
+                answer = cards.pop(0) if len(cards) > 1 else cards[0]
+                yield Event(type="assistant", text="```json\n" + json.dumps(answer) + "\n```")
                 yield Event(type="result", raw={})
 
         harness.ENGINE = Reader
@@ -489,9 +506,9 @@ class StoryStage(unittest.TestCase):
         base.update(kw)
         return argparse.Namespace(**base)
 
-    def run_qa(self):
+    def run_qa(self, **kw):
         with contextlib.redirect_stdout(io.StringIO()):
-            return qa.run(self.args())
+            return qa.run(self.args(**kw))
 
     def test_the_prompt_carries_the_story_and_the_narration_is_evidence(self):
         self.run_qa()
@@ -500,6 +517,10 @@ class StoryStage(unittest.TestCase):
         self.assertIn("A comet's tail must point somewhere", prompt)
         self.assertIn("It is showing you the wind.", prompt)
         self.assertIn("narration.txt", prompt)
+        # attention 23 has a direction: the explanation should need both
+        self.assertIn("It should need both", prompt)
+        # each frame says what its picture must demonstrate of its line
+        self.assertIn("what 1.1 demonstrates", prompt)
         self.assertIn(qa.ROLE, self.seen["system"])
         # written before the inspection, so the digest of its evidence covers it
         self.assertIsNotNone(self.seen["narration"])
@@ -510,12 +531,59 @@ class StoryStage(unittest.TestCase):
         self.assertEqual(card["story"]["premise_restated"], STORY["premise_restated"])
         self.assertTrue(any("satisfaction" in n for n in card["not_evidenced"]))
 
-    def test_a_changed_narration_is_new_evidence(self):
+    def rewrite_line(self, label, line):
+        path = self.root / "script.json"
+        script = json.loads(path.read_text())
+        for sec in script["sections"]:
+            for shot in sec["shots"]:
+                if shot["label"] == label:
+                    shot["narration"] = line
+        path.write_text(json.dumps(script))
+
+    def test_a_reused_pass_keeps_its_narration_and_a_new_pass_reads_the_new_line(self):
+        self.run_qa()
+        first = self.root / "qa" / "pass-01" / "narration.txt"
+        kept = first.read_text()
+        self.rewrite_line("1.1", "A brand new opening line.")
+        self.run_qa(reuse="pass-01")
+        self.assertEqual(first.read_text(), kept)
+        self.run_qa()
+        second = (self.root / "qa" / "pass-02" / "narration.txt").read_text()
+        self.assertIn("A brand new opening line.", second)
+        self.assertEqual(self.seen["narration"], second)    # what the reviewer read
+
+    def test_a_reused_pass_from_before_the_narration_says_it_was_written_later(self):
         self.run_qa()
         pass_dir = self.root / "qa" / "pass-01"
-        before = harness._tree_digest(pass_dir)
-        (pass_dir / "narration.txt").write_text("another read")
-        self.assertNotEqual(harness._tree_digest(pass_dir), before)
+        (pass_dir / "narration.txt").unlink()
+        asked = len(self.seen["prompts"])
+        self.run_qa(reuse="pass-01")
+        text = (pass_dir / "narration.txt").read_text()
+        self.assertIn("written at a later review than the frames", text.splitlines()[0])
+        # new evidence in the pass: the cached inspection is not served
+        self.assertEqual(len(self.seen["prompts"]), asked + 1)
+
+    def test_every_section_has_a_line_or_the_reviewer_is_asked_again(self):
+        # structure 20: one line per screenplay section, a blank line fails
+        blank_line = dict(STORY, sections=[{"section": 1, "viewer_has_at_end": " "}])
+        self.cards[:] = [dict(self.cards[0], story=blank_line), self.cards[0]]
+        self.run_qa()
+        self.assertEqual(len(self.seen["prompts"]), 2)
+        self.assertIn("section 1", self.seen["prompts"][1].split("Answer again")[-1])
+        card = json.loads((self.root / "qa" / "pass-01" / "scorecard.json").read_text())
+        self.assertEqual(card["story"]["sections"], STORY["sections"])
+        self.assertFalse(any("structure 20" in n for n in card["not_evidenced"]))
+
+    def test_a_section_still_without_a_line_is_named_not_evidenced(self):
+        missing = dict(STORY, sections=[{"section": 3, "viewer_has_at_end": "x"}])
+        self.cards[:] = [dict(self.cards[0], story=missing)]
+        self.run_qa()
+        self.assertEqual(len(self.seen["prompts"]), 2)        # asked once more, no more
+        card = json.loads((self.root / "qa" / "pass-01" / "scorecard.json").read_text())
+        gaps = [n for n in card["not_evidenced"] if "structure 20" in n]
+        self.assertEqual(len(gaps), 1, card["not_evidenced"])
+        self.assertIn("section 1", gaps[0])
+        self.assertIn("section 3", gaps[0])
 
     def test_satisfaction_is_kept_once_the_channel_has_retention(self):
         (self.work / qa.RETENTION).write_text("{}")

@@ -44,11 +44,14 @@ narrative rubric's sentences for narrative_clarity and editing_pacing,
 rendered from `narrative.rubric_text` rather than typed again here; the
 prompt carries the screenplay's story (train, promise, stakes, payoff line,
 the question ledger with where each opens and closes, the re-hook shots) as
-the writer's declaration, and the whole narration is written into the pass
-as `narration.txt` beside the frames, so it is evidence the inspection's
-digest covers. The scorecard's `story` block restates the premise as the
-film made it, says what the viewer has at the end of each section, and
-predicts a viewer's satisfaction, which is a ranking proxy nothing
+the writer's declaration, and the whole narration (the voiced takes once
+there are any) is written into the pass as `narration.txt` beside the
+frames, so it is evidence the inspection's digest covers. The explanation
+should need both: followed by ear alone or by eye alone, it is redundant
+(attention 23). The scorecard's `story` block restates the premise as the
+film made it, says what the viewer has at the end of each section (one
+non-blank line per screenplay section, asked again once when it is not),
+and predicts a viewer's satisfaction, which is a ranking proxy nothing
 validates until the channel's `retention.json` exists: until then it is
 recorded and named under not_evidenced, and it scores nothing.
 
@@ -1205,22 +1208,66 @@ def story_brief(script: dict, build: dict) -> dict | None:
     }
 
 
-def narration_text(script: dict, build: dict) -> str:
+def narration_text(script: dict, build: dict, voice: dict | None = None, *,
+                   later: bool = False) -> str:
     """The film's whole narration, one shot a line with its label and its
     time on the film, for `narration.txt` in the pass: what the film says,
-    read apart from what it shows (attention 23). "" for a screenplay with
-    no shots."""
+    read apart from what it shows (attention 23). The words are the voiced
+    takes' when voice.json has any, since that is the soundtrack and a shot
+    with no take is silent on it; the screenplay's lines stand in only
+    before anything was voiced, and the first line says which it is.
+    `later` says the file was written at a later review than the frames,
+    for a reused pass that had none. "" for a screenplay with no shots."""
     at = _placed(script, build)
+    takes = {str(t.get("label")): t for t in (voice or {}).get("takes") or []
+             if isinstance(t, dict)}
     lines = []
     for sec in (script or {}).get("sections") or []:
         for shot in sec.get("shots") or []:
             label = str(shot.get("label", ""))
-            line = spoken(shot.get("narration", "")) or SILENT_LINE
-            lines.append(f"{label}  {_stamp(at.get(label))}  {line}")
+            words = (takes.get(label) or {}).get("text", "") if takes else shot.get("narration", "")
+            lines.append(f"{label}  {_stamp(at.get(label))}  {spoken(words) or SILENT_LINE}")
     if not lines:
         return ""
-    return ("# The narration, shot by shot: label, time on the film, the line\n"
-            + "\n".join(lines) + "\n")
+    source = ("as voiced (voice.json's takes)" if takes else
+              "as the screenplay writes it (not yet voiced)")
+    when = (" -- written at a later review than the frames, from the files as they "
+            "are now" if later else "")
+    return (f"# The narration {source}, shot by shot: label, time on the film, the line"
+            f"{when}\n" + "\n".join(lines) + "\n")
+
+
+def story_gaps(card: dict, script: dict) -> list[str]:
+    """Where the scorecard's `story.sections` is not one non-blank line per
+    screenplay section (structure 20: a blank line fails), section by
+    section; [] when it is, or when the screenplay has no sections to
+    count."""
+    count = len([s for s in (script or {}).get("sections") or [] if isinstance(s, dict)])
+    story = card.get("story")
+    if not count or not isinstance(story, dict):
+        return []
+    lines: dict[int, list[str]] = {}
+    gaps = []
+    for row in story.get("sections") or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            n = int(row.get("section"))
+        except (TypeError, ValueError):
+            gaps.append(f"a line names section {row.get('section')!r}")
+            continue
+        lines.setdefault(n, []).append(str(row.get("viewer_has_at_end") or "").strip())
+    for n in range(1, count + 1):
+        said = lines.get(n)
+        if not said:
+            gaps.append(f"section {n} has no line")
+        elif len(said) > 1:
+            gaps.append(f"section {n} has {len(said)} lines")
+        elif not said[0]:
+            gaps.append(f"section {n}'s line is blank")
+    gaps += [f"section {n} is not one of the screenplay's {count}"
+             for n in sorted(lines) if not 1 <= n <= count]
+    return gaps
 
 
 def unproven_satisfaction(card: dict, *, retention: bool) -> dict:
@@ -1310,10 +1357,12 @@ def run(args) -> int:
     # The narration beside the frames, as evidence: in the pass directory the
     # inspection's digest covers it, so a changed line is a new review and an
     # unchanged one is served from the cache. A reused pass keeps the
-    # narration its frames were sampled with.
+    # narration written when its frames were sampled.
     narration_file = pass_dir / NARRATION
     if not (args.reuse and narration_file.is_file()):
-        said = narration_text(script, build)
+        # A reused pass from before narration.txt gets one from the files as
+        # they are now, and its first line says so: its frames may be older.
+        said = narration_text(script, build, voice, later=bool(args.reuse))
         if said:
             narration_file.write_text(said, encoding="utf-8")
     frames_dir = pass_dir / "frames"
@@ -1445,14 +1494,17 @@ def run(args) -> int:
         (f"Read `{NARRATION}` too: the whole narration, one shot a line with its "
          "time on the film. Judge narrative_clarity and editing_pacing on the film "
          "as told: can the explanation be followed by ear alone, from the "
-         "narration, and by eye alone, from the frames (attention 23)? "
+         "narration, and by eye alone, from the frames? It should need both "
+         "(attention 23): frames that repeat the narration as text, or narration "
+         "the pictures add nothing to, count against narrative_clarity. "
          if narration_file.is_file() else
          "There is no narration to read; judge the story from the frames. ")
         + "The screenplay's story below is what the writer declared, context and "
         "not evidence: judge whether the film delivers it. Then fill `story`: "
         "restate the premise in one sentence as the film made it, say for each "
         "section what the viewer has at its end that they lacked at its start "
-        "(structure 20), and predict how satisfied a viewer who watched to the "
+        "(structure 20: one line for every section of the screenplay, none blank; "
+        "where a section leaves the viewer nothing new, the line says so), and predict how satisfied a viewer who watched to the "
         "end would say they were, with why. That prediction is recorded for "
         "calibration and scores nothing (judging 4). A finding on the story "
         f"itself ({', '.join(STORY_DUTY)}) is owned by `script`; a picture that "
@@ -1471,12 +1523,32 @@ def run(args) -> int:
             "overall": previous.get("overall"),
             "findings": previous.get("findings", [])[:20]} if previous else None),
     ])
+    form = "scorecard.form.json"
     try:
         card = reviewer.inspect(pass_dir.name, prompt, SCORECARD_SCHEMA,
-                                cwd=pass_dir, form="scorecard.form.json")
+                                cwd=pass_dir, form=form)
+        # structure 20, checked past the schema: one non-blank line per
+        # screenplay section. Asked once more with the gaps named; what
+        # still lacks a line is named under not_evidenced, never filled in.
+        gaps = story_gaps(card, script)
+        if gaps:
+            if not args.quiet:
+                print(f"[qa] {pass_dir.name}: asking again ({'; '.join(gaps)})",
+                      file=sys.stderr)
+            (pass_dir / form).unlink(missing_ok=True)   # the first answer's form
+            card = reviewer.inspect(
+                f"{pass_dir.name}-again", prompt + "\n\nAnswer again, the whole form: "
+                f"an earlier answer's `story.sections` was not one line per section of "
+                f"the screenplay (structure 20): {'; '.join(gaps)}. The screenplay has "
+                f"{len(script.get('sections') or [])} sections, numbered from 1; give "
+                "each one non-blank line.", SCORECARD_SCHEMA, cwd=pass_dir, form=form)
+            gaps = story_gaps(card, script)
     except HarnessError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    if gaps:
+        card = dict(card, not_evidenced=list(card.get("not_evidenced") or []) + [
+            f"story.sections (structure 20): {'; '.join(gaps)}, asked once more"])
 
     # -- the bar, applied; the pass, kept ----------------------------------------
     # What the measurements proved overrides what the reviewer awarded: a
