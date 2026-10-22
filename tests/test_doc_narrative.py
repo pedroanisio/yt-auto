@@ -224,7 +224,9 @@ class Parser(unittest.TestCase):
     """The parser reads a missing part as missing, so the checks above can fail."""
 
     def parse(self, text: str, table: str = "") -> list[Rule]:
-        tmp = Path(tempfile.mkdtemp())
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        tmp = Path(holder.name)
         (tmp / "structure-and-hooks.md").write_text(text, encoding="utf-8")
         if table:
             (tmp / "README.md").write_text(table, encoding="utf-8")
