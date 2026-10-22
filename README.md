@@ -1220,11 +1220,17 @@ ending, rendered from `ytstudio/narrative.py`, for scoring
 screenplay's story (train, promise, stakes, payoff line, each question with
 the time its section opens and the time the section that answers it does,
 the re-hook shots) as what the writer declared. The pass holds the whole
-narration as `narration.txt` beside the frames, so the inspection's evidence
-digest covers it: can the film be followed by ear alone, and by eye alone?
-The scorecard's `story` block restates the premise as the film made it,
-says what the viewer has at the end of each section, and predicts a
-viewer's satisfaction. That prediction scores nothing and is listed under
+narration as `narration.txt` beside the frames (the voiced takes' words
+once `voice.json` has them, the screenplay's lines before that, and the
+file's first line says which), so the inspection's evidence digest covers
+it. Can the film be followed by ear alone, and by eye alone? It should need
+both: frames that print the narration, or narration the pictures add
+nothing to, count against `narrative_clarity`. The scorecard's `story`
+block restates the premise as the film made it, says what the viewer has at
+the end of each section (one non-blank line per screenplay section; an
+answer that skips or blanks one is asked again once, and what is still
+missing is named under `not_evidenced`), and predicts a viewer's
+satisfaction. That prediction scores nothing and is listed under
 `not_evidenced` until the work directory holds the channel's
 `retention.json`. A pass written before this has no `story` and still
 compares, since the comparison reads the scores only.

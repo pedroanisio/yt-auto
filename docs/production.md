@@ -60,9 +60,11 @@ Narrative clarity and editing / pacing are read against the narrative
 rubric's rows for the hook, the stakes, open loops, reveal setup and the
 ending, rendered into the reviewer's role from `ytstudio/narrative.py`
 (`qa.STORY_RUBRIC`), with the narration beside the frames in each pass
-(`narration.txt`) and the screenplay's story as the writer's declaration.
-The scorecard's `story` block restates the premise as the film made it,
-says what the viewer has at the end of each section, and predicts a
+(`narration.txt`, the voiced takes once there are any) and the
+screenplay's story as the writer's declaration. The explanation should need
+both the narration and the frames (attention 23). The scorecard's `story`
+block restates the premise as the film made it, says what the viewer has at
+the end of each section, one non-blank line per section, and predicts a
 viewer's satisfaction, which scores nothing and is listed as not evidenced
 until the channel's `retention.json` exists (§12). A finding on the story
 belongs to `script`, whose duty names the same story as row 9 (hook,
