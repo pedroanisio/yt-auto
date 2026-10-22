@@ -27,7 +27,7 @@ import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from . import env, keyframe, render, spend, workspace
+from . import env, house, keyframe, render, spend, workspace
 from .assets import licence_tier
 from .core import read_json, timecode, write_json
 
@@ -64,6 +64,15 @@ DRIFT_LIMIT = 0.05
 STALE_PAIRS = (("script", "voice", "yt voice"), ("script", "build", "yt build"),
                ("voice", "build", "yt build"), ("sound", "build", "yt build"),
                ("build", "video", "yt render"))
+
+#: The manifests that record the house they were decided under. Every cached
+#: decision's digest carries the house digest, so a manifest whose house
+#: differs from what loads now is one whose stage asks its model again, and
+#: pays again, on the next run (house.py).
+HOUSE_MANIFESTS = ("styles.json", "script.json", "voice.json", "retime.json",
+                   "props.json", "keyframe.json", "vfx.json", "sound.json",
+                   "build.json", "gate.json", "review.json", "qa.json",
+                   "improve.json")
 
 
 @dataclass
@@ -323,6 +332,38 @@ def scene_digest(path: Path) -> str:
 
 def _cmd(stage: str, project: workspace.Project, *extra: str) -> str:
     return " ".join(["yt", stage, "--project", str(project.root), *extra])
+
+
+def _house_of(record, depth: int = 2) -> dict | None:
+    """The house digest a manifest was decided under: its own `house`, or the
+    one inside a report it carries (`engine`, `director`, `engine.review`)."""
+    if not isinstance(record, dict):
+        return None
+    if isinstance(record.get("house"), dict) and "sha256" in record["house"]:
+        return record["house"]
+    for value in record.values() if depth else ():
+        found = _house_of(value, depth - 1)
+        if found is not None:
+            return found
+    return None
+
+
+def check_house(project: workspace.Project, report: Report) -> None:
+    """Warn for each manifest decided under another house than the one that
+    loads now (the shipped default, the channel's and the project's own).
+    The work directory is the project's parent, as `workspace.projects`
+    lays it out; a run that named `--house` or `--no-house` shows up here
+    too, which is the truth: its decisions are not what the next plain run
+    would ask."""
+    now = house.load(project.root.parent, project.root).sha256
+    for name in HOUSE_MANIFESTS:
+        path = project.root / name
+        decided = _house_of(read_json(path, warn=False)) if path.is_file() else None
+        if decided is None or decided.get("sha256", "") == now:
+            continue
+        report.add("warn", "house", f"{name} was decided under a different house digest "
+                   f"({decided.get('sha256') or 'none'}; now {now or 'none'}): its stage "
+                   "asks every cached decision again on its next run")
 
 
 #: The verdict `yt qa` writes into qa.json when the bar is met (qa.READY;
@@ -950,6 +991,7 @@ def check_project(project: workspace.Project) -> Report:
 
     if (project.root / "house.md").is_file():
         report.add("note", "house", "this video has its own house.md")
+    check_house(project, report)
 
     # -- next steps --------------------------------------------------------
     # Commands only: what fixes a fail, what fixes a warn, then the stage that

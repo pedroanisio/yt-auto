@@ -15,7 +15,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from ytstudio import house
+from ytstudio import doctor, house, workspace
+from ytstudio.core import write_json
 
 ROOT = Path(__file__).resolve().parent.parent
 NARRATIVE = ROOT / "docs" / "narrative"
@@ -239,6 +240,39 @@ class TheShippedText(unittest.TestCase):
                 self.assertNotIn("%", body)
                 self.assertIsNone(re.search(r"\b[dgr] ?= ?\.?\d", body))
                 self.assertNotIn("http", body)
+
+
+class Doctor(unittest.TestCase):
+    """A manifest decided under another house is one whose decisions the next
+    run asks again; doctor says so before the money is spent."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name) / "a-film"
+        self.root.mkdir()
+        write_json(self.root / "idea.json", {"title": "T", "genre": "g", "description": "d"})
+
+    def house_findings(self):
+        report = doctor.check_project(workspace.Project(self.root))
+        return [f.message for f in report.findings if f.area == "house" and f.level == "warn"]
+
+    def test_a_manifest_under_another_house_digest_is_a_warning(self):
+        write_json(self.root / "script.json", {"house": {"sources": [], "sha256": "0123"}})
+        found = self.house_findings()
+        self.assertEqual(len(found), 1)
+        self.assertIn("decided under a different house digest", found[0])
+        self.assertIn("script.json", found[0])
+
+    def test_the_digest_inside_the_engine_report_counts_too(self):
+        write_json(self.root / "qa.json", {"engine": {"house": {"sha256": "0123"}}})
+        self.assertEqual(len(self.house_findings()), 1)
+
+    def test_a_manifest_under_the_current_house_is_quiet(self):
+        now = house.load(self.root.parent, self.root).digest()
+        write_json(self.root / "script.json", {"house": now})
+        write_json(self.root / "sound.json", {"engine": {"house": now}})
+        self.assertEqual(self.house_findings(), [])
 
 
 if __name__ == "__main__":
