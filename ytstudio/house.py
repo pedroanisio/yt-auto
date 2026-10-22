@@ -4,25 +4,35 @@ A rule like "the narration has to carry the message on first listen" binds the
 screenplay, the visual direction, the animation plan and the sound at once.
 Pasting it into each stage's SYSTEM prompt would put one rule in five places
 that then drift, and passing it as --notes retypes it every run. So it lives in
-a file:
+a file, layered:
 
+    ytstudio/house/default.md   the shipped default, distilled from docs/narrative/
     work/house.md               the channel's standard
     work/<slug>/house.md        this video's own, overriding sections by name
     --house FILE                somewhere else entirely
-    --no-house                  ignore it for this run
+    --no-house                  ignore all of it for this run
 
 Sections are Markdown headings, matched by stage name, and each stage is given
 `## all` plus its own:
 
-    ## all          every stage that writes
-    ## script       the screenplay
+    ## all          every stage that asks the model
+    ## script       the screenplay, after `## format`
     ## styles       the visual direction
-    ## sound        effects, score and mix
     ## vfx          the animation plan
+    ## sound        effects, score and mix
+    ## voice        the read
+    ## format       the channel's recurring narrator, opening, ending and
+                    hand-off, which the screenplay follows
 
-Anything before the first heading counts as `## all`. A project file's section
-replaces the channel's section of the same name; sections it does not mention
-still apply.
+Anything before the first heading counts as `## all`, and an HTML comment is
+the maintainer's, never the model's: the default's comments name the corpus
+rules each section came from. A later file's section replaces the earlier
+file's section of the same name; sections it does not mention still apply.
+
+Every decision's cache digest carries the house digest, so a changed default
+is a changed question: editing default.md re-asks every cached decision in
+every project on its next run, and `yt doctor` warns about a manifest decided
+under a different house digest.
 
 The order a stage sees is deliberate: its SYSTEM prompt says what it is, these
 standards say how this channel works, the dossier and the direction say what is
@@ -40,14 +50,29 @@ from pathlib import Path
 
 FILENAME = "house.md"
 HEADING = re.compile(r"^##[ \t]+(.+?)[ \t]*$", re.M)
+COMMENT = re.compile(r"<!--.*?-->", re.S)
 ALL = "all"
 
-#: The stages that read standards. The rest deal in facts, not craft.
-STAGES = ("script", "styles", "sound", "vfx")
+#: The shipped default, under every other house file.
+DEFAULT = Path(__file__).resolve().parent / "house" / "default.md"
+#: How a digest names it: the same in every checkout, so a manifest decided
+#: under the default says so wherever it was made.
+DEFAULT_SOURCE = "ytstudio/house/default.md"
+
+#: The sections the default ships, in its order. A stage reads `## all` and
+#: the sections READS names for it, else its own.
+STAGES = (ALL, "script", "styles", "vfx", "sound", "voice", "format")
+
+#: A stage that reads more than its own section, in the order it reads them.
+#: The format is the channel's frame around every screenplay, so the writer
+#: reads it before the script rules.
+READS = {"script": ("format", "script")}
 
 
 def parse(text: str) -> dict[str, str]:
-    """Markdown into {section: body}, with the preamble as `all`."""
+    """Markdown into {section: body}, with the preamble as `all`. Comments
+    are dropped: they are provenance for whoever edits the file."""
+    text = COMMENT.sub("", text)
     out: dict[str, str] = {}
     matches = list(HEADING.finditer(text))
     preamble = text[:matches[0].start()] if matches else text
@@ -73,7 +98,7 @@ class House:
 
     def for_stage(self, stage: str) -> str:
         """The block this stage is held to, or "" when there is nothing."""
-        parts = [self.sections[name] for name in (ALL, stage)
+        parts = [self.sections[name] for name in (ALL, *READS.get(stage, (stage,)))
                  if self.sections.get(name)]
         if not parts:
             return ""
@@ -88,9 +113,10 @@ class House:
 
 def files(work: Path | None, project_root: Path | None,
           explicit: str | None = None) -> list[Path]:
-    """Channel first, then the project, then whatever was named."""
+    """The shipped default, then the channel, then the project, then
+    whatever was named."""
     out = []
-    for candidate in ([work / FILENAME] if work else []) \
+    for candidate in [DEFAULT] + ([work / FILENAME] if work else []) \
             + ([project_root / FILENAME] if project_root else []) \
             + ([Path(explicit).expanduser()] if explicit else []):
         if candidate.is_file() and candidate not in out:
@@ -111,7 +137,7 @@ def load(work: Path | None = None, project_root: Path | None = None, *,
             continue
         # A later file replaces a section by name and leaves the rest alone.
         sections.update(parse(text))
-        sources.append(str(path))
+        sources.append(DEFAULT_SOURCE if path == DEFAULT else str(path))
         digest.update(text.encode("utf-8"))
     return House(sections=sections, sources=sources,
                  sha256=digest.hexdigest()[:16] if sources else "")

@@ -63,6 +63,11 @@ class NoSubjectInSharedText(unittest.TestCase):
             with self.subTest(doc=path.name):
                 self.assertEqual(leaks(path.read_text(encoding="utf-8")), [], path.name)
 
+    def test_the_shipped_house_names_no_project(self):
+        # AUTO-89: the default house enters every prompt of every film.
+        path = ROOT / "ytstudio" / "house" / "default.md"
+        self.assertEqual(leaks(path.read_text(encoding="utf-8")), [])
+
     def test_the_check_itself_catches_a_leak(self):
         self.assertEqual(leaks("key the flight to clear the desk"), ["desk"])
         self.assertEqual(leaks("host pve-desk-1 renders"), [])

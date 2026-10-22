@@ -14,7 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from claude_engine import ClaudeError, EngineConfig, Event, Usage
-from ytstudio import assess, harness, ideas, research, script, sound, styles, vfx
+from ytstudio import assess, harness, house, ideas, research, script, sound, styles, vfx
 from ytstudio.core import Idea
 from ytstudio.research import Dossier
 
@@ -79,6 +79,15 @@ class SourceTest(unittest.TestCase):
         self.assertLessEqual(set(found), {"harness.py", "sdkkit.py"})
 
 
+def shipped(stage: str) -> tuple[str, dict, str]:
+    """The block and digest a stage gets from the shipped house alone, and one
+    sentence of that stage's own section (AUTO-89)."""
+    block, digest = house.for_args(SimpleNamespace(work=None, house=None, no_house=False),
+                                   None, stage)
+    own = house.load().sections[stage]
+    return block, digest, re.split(r"(?<=\.)\s+", own)[0]
+
+
 class StylesTest(DecisionCase):
     def director(self):
         return styles.Director(self.idea, root=self.root, verbose=False, count=1)
@@ -120,6 +129,16 @@ class StylesTest(DecisionCase):
         self.assertIn("Make the colours quieter.", FakeEngine.json_calls[0]["system"])
 
 
+    def test_the_choice_is_asked_under_the_shipped_styles_section(self):
+        block, digest, sentence = shipped("styles")
+        director = styles.Director(self.idea, root=self.root, verbose=False, count=1,
+                                   house=block, house_digest=digest)
+        director.choose([("Flat", "flat diagrams")])
+        self.assertIn(sentence, FakeEngine.json_calls[0]["prompt"])
+        self.assertEqual(director.harness.report()["house"]["sources"],
+                         ["ytstudio/house/default.md"])
+
+
 class ScriptTest(DecisionCase):
     def writer(self, **kw):
         return script.Screenwriter(self.idea, root=self.root, verbose=False, **kw)
@@ -146,6 +165,14 @@ class ScriptTest(DecisionCase):
         names = [d["name"] for d in writer.harness.report()["decisions"]]
         self.assertEqual(names, ["write-1", "plan"])
         self.assertEqual(writer.usage.calls, 2)
+
+    def test_the_plan_is_asked_under_the_shipped_script_section(self):
+        block, digest, sentence = shipped("script")
+        writer = self.writer(house=block, house_digest=digest)
+        writer.plan()
+        self.assertIn(sentence, FakeEngine.json_calls[0]["prompt"])
+        self.assertEqual(writer.harness.report()["house"]["sources"],
+                         ["ytstudio/house/default.md"])
 
     def test_a_failed_check_degrades_as_before(self):
         FakeEngine.answer = {}
