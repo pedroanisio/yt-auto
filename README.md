@@ -332,12 +332,16 @@ voice brief; `--list-styles` prints them) · `--rich` for hooks and keywords ·
 premise rather than a headline: `question` (what the title raises and does not
 answer), `stakes`, `viewer_belief` (what a typical viewer already believes,
 the half-knowledge the question is pitched at) and `promise` (title plus
-thumbnail concept in one sentence). `yt script` prints the first three in its
-brief and holds the promise frozen: the plan is told to write its hook to it
-and pay it off, never to change it. `--rank` also labels each idea's
-`curiosity` (`sustained`, `brief`, `none`) and `title_concrete` (`concrete`,
-`abstract`) beside the score; they are the model's judgements, and the order is
-the score's alone (docs/narrative: attention 1, 3, 4; structure 5, 6, 13).
+thumbnail concept in one sentence). `yt script`'s brief prints all four, the
+promise marked frozen, and the plan is told the promise is frozen: its own
+promise, what the first fifteen seconds promise, keeps to it, and the last
+section pays it off; nothing changes it. `--rank` also labels each idea's
+`curiosity` (`sustained`, `brief` if the gap closes well before the end of the
+idea's stated length, `none`) and `title_concrete` (`concrete` if the title
+names a specific thing, place, person or event, else `abstract`) beside the
+score; they are the model's judgements, and the order is the score's alone. A
+label outside its set is kept as written, said on stderr and noted on the
+idea's `why` (docs/narrative: attention 1, 3, 4; structure 5, 6, 13).
 
 ### `yt research`
 
