@@ -846,6 +846,9 @@ validation, and `--strict` to fail on any finding.
 **[docs/production.md](docs/production.md) is the production brief**: what a
 finished piece must be, which file feeds which decision, the checks, and the
 loop that runs until it is done. Read it before composing anything.
+What a good factual story does is in [docs/narrative/](docs/narrative/README.md):
+numbered craft rules with their sources, the check each one allows, the
+stages it bears on and how strong its evidence is.
 
 Heavy work does not run on this machine: see
 [docs/compute.md](docs/compute.md) for the two render hosts, which job goes

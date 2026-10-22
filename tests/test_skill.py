@@ -89,6 +89,10 @@ class Skill(unittest.TestCase):
         self.assertIn(".claude/skills/yt/SKILL.md", self.text)
         self.assertIn("tests/test_skill.py", self.text)
 
+    def test_the_manual_points_at_the_narrative_corpus(self):
+        more = self.text[self.text.index("## Where to read more"):]
+        self.assertIn("`docs/narrative/`", more)
+
     def test_the_manual_keeps_the_delivery_order_and_the_bar(self):
         for needle in ("--quality final --strict", "READY TO PUBLISH", "9.0", "8.5",
                        "docs/production.md", "docs/compute.md", "RS_RENDER_HOSTS"):
