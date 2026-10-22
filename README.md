@@ -448,19 +448,23 @@ whose answer breaks its own rubric (`narrative.check_review`) is asked once
 more as `review-r1-sK-again`. The grade per criterion and the verdict are the
 median of the valid samples; two that disagree on the verdict are a
 consider; a failed call is a failed engine row, and fewer than two valid
-samples is `not_evidenced`, never a pass. A cold reader (`cold-read`) hears
-the narration alone, with no research, plan or house in its prompt or its
-system, and restates the premise, names the terms it was never told, says
-why each major claim matters and where the plan's questions were answered;
-`cold-read-match` checks that premise against the train. A consider sends
-its binding flags back: a shot's to `revise-story-1` (the line may be
-restructured, never given a new fact), a section's to `redraft-NN` (the
-section written again with the flags and the closing shots of the sections
-around it), and a flag on the plan itself stays unresolved with `yt script
+samples is `not_evidenced`, never a pass. A flag on a shot or a section the
+script does not have is a broken answer, asked again like any other. A cold
+reader (`cold-read`) hears the narration alone, with no research, plan or
+house in its prompt or its system, and restates the premise, names the terms
+it was never told and says why each major claim matters; only then is it
+shown the plan's questions and asked where they were answered
+(`cold-read-answers`), so they cannot prime the premise. `cold-read-match`
+checks that premise against the train. A consider sends its binding flags
+back: a shot's to `revise-story-1` (the line may be restructured, never given
+a new fact), a section's (shot 0) to `redraft-NN` (the section written again
+with the flags, how the section before it ends and how the one after it
+opens), and a flag on the plan itself stays unresolved with `yt script
 --fresh --review`. The revision is read again with the review it revises
 (`review-r2-s1`.., `previous` required) and stands only when the samples call
-it better, for at most `--rounds`. It is priced from the script's words:
-about $0.65 for 10 minutes at opus. Every verdict is appended to
+it better, for at most `--rounds`; when it stands, the cold reader reads the
+draft that stands (`cold-read-r2`..), and what is unresolved is that draft's.
+It is priced from the script's words: about $0.74 for 10 minutes at opus. Every verdict is appended to
 `work/review-log.jsonl` with `label: null`, the raw material of the
 calibration set; copy it out, since `work/` is disposable.
 
@@ -470,8 +474,9 @@ reviewer is not calibrated yet. `--gate` makes a reject or `not_evidenced`
 leave `narration.txt` unwritten and exit 1; turn it on once
 work/review-log.jsonl holds 20 labelled scripts and the seeded-bad fixtures
 in `tests/fixtures/narrative/` fail under the live reviewer. `yt run` never
-passes it. The record is `script.json` `review` and the `## Story review`
-section of `script.md`.
+passes it, and it is refused without `--review` or with `--revise`, which
+never reads the story again. The record is `script.json` `review` and the
+`## Story review` section of `script.md`.
 
 Sections are drafted in parallel (`--jobs`, default 4; `--jobs 1` drafts in
 order, each reading the one before) against a ledger that reserves each
