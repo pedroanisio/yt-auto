@@ -301,6 +301,10 @@ class Decision:
     cost_usd: float = 0.0
     kind: str = "decide"
     tool_calls: int = 0
+    #: The model that answered: a stage may share one account between
+    #: harnesses of different models (an author and its reviewer), so the
+    #: row says whose answer it was.
+    model: str = ""
 
 
 @dataclass
@@ -402,6 +406,7 @@ class Harness:
             _merge_usage(self.usage, usage)
 
     def _note(self, decision: Decision) -> None:
+        decision.model = decision.model or self.model
         with self.lock:
             self.decisions.append(decision)
 
@@ -552,5 +557,6 @@ class Harness:
             "by_model": self.usage.by_model,
             "decisions": [{"name": d.name, "kind": d.kind, "cached": d.cached,
                            "digest": d.digest, "cost_usd": round(d.cost_usd, 4),
-                           "tool_calls": d.tool_calls} for d in self.decisions],
+                           "tool_calls": d.tool_calls, "model": d.model}
+                          for d in self.decisions],
         }
