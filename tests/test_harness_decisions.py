@@ -7,11 +7,15 @@ its required fields, and listed with its cost in the stage's engine report.
 The model is never called: `harness.ENGINE` is a fake.
 """
 
+import contextlib
+import io
+import json
 import re
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from claude_engine import ClaudeError, EngineConfig, Event, Usage
 from ytstudio import assess, harness, house, ideas, research, script, sound, styles, vfx
@@ -173,6 +177,39 @@ class ScriptTest(DecisionCase):
         self.assertIn(sentence, FakeEngine.json_calls[0]["prompt"])
         self.assertEqual(writer.harness.report()["house"]["sources"],
                          ["ytstudio/house/default.md"])
+
+    def test_the_stage_records_the_shipped_house_in_script_json(self):
+        # The stage's own call, not a block built by the test: with no house
+        # file anywhere, script.json names the shipped default and the block
+        # the script stage is handed.
+        from ytstudio import cli
+
+        def answer(prompt, schema, system=None):
+            FakeEngine.json_calls.append({"prompt": prompt, "schema": schema, "system": system})
+            if "sections" in schema.get("required", []):
+                return {"logline": "l", "promise": "p", "payoff": "p", "sections": [
+                    {"heading": "One", "purpose": "p", "seconds": 10, "beats": ["b"]}]}
+            if "shots" in schema.get("required", []):
+                return {"shots": [{"visual": "a drawing", "narration": "It moves.",
+                                   "seconds": 4, "asset": "", "style": ""}]}
+            return blank(schema)
+
+        film, work = self.root / "a-film", self.root / "work"
+        film.mkdir()
+        work.mkdir()
+        (film / "idea.json").write_text(json.dumps(
+            {"title": "A test film", "genre": "explainer", "description": "one take"}))
+        args = cli.build_parser().parse_args(
+            ["script", "--project", str(film), "--work", str(work), "--quiet"])
+        with mock.patch.object(FakeEngine, "ask_json", staticmethod(answer)), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            script.run(args)
+        record = json.loads((film / "script.json").read_text())
+        self.assertEqual(record["house"]["sources"], ["ytstudio/house/default.md"])
+        self.assertEqual(record["house"]["stage"], "script")
+        self.assertEqual(record["house"], house.load(work, film).digest("script"))
+        self.assertIn(shipped("script")[2], FakeEngine.json_calls[0]["prompt"])
 
     def test_a_failed_check_degrades_as_before(self):
         FakeEngine.answer = {}
