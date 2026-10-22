@@ -391,7 +391,9 @@ def rank(decider: harness.Harness, ideas: list[Idea], *, niche: str | None = Non
     The labels are judgements (attention 1, 3, 4; structure 13), so they are
     the model's fields, not a pattern over the title; they never move an idea
     in the order. A label outside its set, after the harness has asked once
-    more, is kept as the model wrote it and named on stderr.
+    more, is kept as the model wrote it, named on stderr and noted on the
+    idea's `why` (invariant 3): ideas has no findings file, and `why` is
+    what reaches ideas.json and the store with the label.
     """
     listing = "\n".join(_listed(n, i) for n, i in enumerate(ideas, 1))
     context = f" for a channel about {niche}" if niche else ""
@@ -418,6 +420,7 @@ def rank(decider: harness.Harness, ideas: list[Idea], *, niche: str | None = Non
             idea = ideas[index]
             idea.score = row.get("score")
             idea.why = str(row.get("why", "")).strip()
+            notes = []
             for name, labels in (("curiosity", CURIOSITY),
                                  ("title_concrete", TITLE_CONCRETE)):
                 value = str(row.get(name) or "").strip()
@@ -426,6 +429,8 @@ def rank(decider: harness.Harness, ideas: list[Idea], *, niche: str | None = Non
                     print(f"warning: rank labelled {idea.title!r} {name}={value!r}, "
                           f"not one of {', '.join(labels)}; kept as written",
                           file=sys.stderr)
+                    notes.append(f"note: {name} {value!r} not in the schema")
+            idea.why = "; ".join(filter(None, (idea.why, *notes)))
     return sorted(ideas, key=lambda i: (i.score is None, -(i.score or 0)))
 
 

@@ -184,6 +184,26 @@ class RankLabels(unittest.TestCase):
         self.assertIn("huge", err.getvalue())
         self.assertIn("curiosity", err.getvalue())
 
+    def test_a_label_outside_the_set_is_noted_on_the_idea(self):
+        # invariant 3: ideas has no findings file, so the note rides on the
+        # idea's `why` and reaches ideas.json with it
+        a = Idea(title="A", genre="g", description="d")
+        decider = Decider([{"n": 1, "score": 5, "why": "cheap to film",
+                            "curiosity": "huge", "title_concrete": "vague"}])
+        with contextlib.redirect_stderr(io.StringIO()):
+            ideas.rank(decider, [a])
+        self.assertTrue(a.why.startswith("cheap to film"))
+        self.assertIn("note: curiosity 'huge' not in the schema", a.why)
+        self.assertIn("note: title_concrete 'vague' not in the schema", a.why)
+        self.assertIn("note: curiosity", compact(a)["why"])
+
+    def test_labels_in_the_set_add_no_note(self):
+        a = Idea(title="A", genre="g", description="d")
+        decider = Decider([{"n": 1, "score": 5, "why": "w", "curiosity": "brief",
+                            "title_concrete": "concrete"}])
+        ideas.rank(decider, [a])
+        self.assertEqual(a.why, "w")
+
 
 class Printed(unittest.TestCase):
     def test_markdown_shows_the_plan_and_the_labels(self):
