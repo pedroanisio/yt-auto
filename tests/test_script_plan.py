@@ -411,5 +411,52 @@ class OlderScripts(unittest.TestCase):
             script.write_csv(f"{tmp}/s.csv", sections)
 
 
+# --------------------------------------------------------------------------- #
+# the pilot keeps the shot that pays the promise
+# --------------------------------------------------------------------------- #
+
+class Pilot(unittest.TestCase):
+    LABELS = ("1.1", "1.2", "2.1", "2.2")
+
+    def gather(self, functions):
+        from ytstudio import pilot, workspace
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "scene.xml").write_text("<scene/>")
+            shots = [{"label": label, "visual": "v", "narration": f"line {label}",
+                      "seconds": 5, "function": fn}
+                     for label, fn in zip(self.LABELS, functions)]
+            (root / "script.json").write_text(json.dumps({"sections": [
+                {"heading": "A", "shots": shots[:2]}, {"heading": "B", "shots": shots[2:]}]}))
+            (root / "build.json").write_text(json.dumps({"shots": [
+                {"label": label, "at": n * 5.0, "seconds": 5.0, "asset": "effect"}
+                for n, label in enumerate(self.LABELS)]}))
+            beats, build = pilot.gather(workspace.Project(root, standalone=True))
+            ranked = pilot.rank(beats)
+            first_two = {b.label for b in ranked[:2]}
+        return {b.label: b.traits for b in beats}, build, first_two
+
+    def test_the_payoff_function_shot_is_kept_not_the_last(self):
+        traits, build, kept = self.gather(("hook", "context", "payoff", "handoff"))
+        self.assertIn("payoff", traits["2.1"])
+        self.assertNotIn("payoff", traits["2.2"])
+        self.assertIn("hook", traits["1.1"])
+        self.assertEqual(kept, {"1.1", "2.1"})
+        self.assertFalse(build.get("beat_notes"))
+
+    def test_a_rehook_is_a_trait(self):
+        traits, _, _ = self.gather(("hook", "rehook", "payoff", "handoff"))
+        self.assertIn("rehook", traits["1.2"])
+
+    def test_without_functions_the_last_shot_is_the_payoff_and_a_note_says_so(self):
+        traits, build, kept = self.gather(("", "", "", ""))
+        self.assertIn("payoff", traits["2.2"])
+        self.assertIn("hook", traits["1.1"])
+        self.assertEqual(kept, {"1.1", "2.2"})
+        notes = build["beat_notes"]
+        self.assertTrue(notes and all(n.startswith("note:") for n in notes), notes)
+        self.assertTrue(any("payoff" in n and "2.2" in n for n in notes), notes)
+
+
 if __name__ == "__main__":
     unittest.main()
