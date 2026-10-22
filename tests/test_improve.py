@@ -1092,6 +1092,137 @@ class Contradicted(ImproveCase):
         self.assertIn("contradicted by build.json: audio_tracks", md)
 
 
+class StoryFindings(ImproveCase):
+    """AUTO-99: a story finding reaches the screenplay with the rubric key it
+    bears on, and one the plan's declarations contradict is annotated, never
+    dropped: the reviewer watched the film, the plan is the writer's word."""
+
+    PAYOFF = "It is showing you the wind."
+
+    def plan_script(self):
+        write_json(self.root / "script.json", {
+            "target_seconds": 15, "train": "what pushes the tail?",
+            "stakes": "a grid goes out", "promise": "why the tail leads",
+            "ending": {"payoff_line": self.PAYOFF, "callback": "", "next_film": ""},
+            "sections": [{"heading": "Open", "rehook": "Q1", "shots": []}]})
+
+    def story_card(self, problem="the ending is a recap: the promise is never paid in "
+                                 "resolved form", owner="script", shot=None):
+        f = prose(problem, t=14.0, owner=owner)
+        if shot:
+            f["shot"] = shot
+        return card(5.0, findings=[f])
+
+    def routed_with(self, rules, stage="script"):
+        def answer(prompt):
+            ids = finding_ids(prompt)
+            return {"routes": [{"finding": i, "stage": stage, "why": "the story"} for i in ids],
+                    "briefs": [{"stage": stage, "must_change": ["pay the promise"],
+                                "check": "the last line pays it", "rules": rules}]}
+        return answer
+
+    def test_the_brief_names_a_rubric_key_per_finding_from_the_narrative_module(self):
+        from ytstudio import narrative
+        item = improve.ROUTE_SCHEMA["properties"]["briefs"]["items"]
+        rule = item["properties"]["rules"]["items"]["properties"]["rule"]
+        self.assertEqual(rule["enum"], list(narrative.KEYS))
+        self.assertNotIn("rules", item["required"])
+
+    def test_a_story_finding_carries_its_rubric_key_into_the_screenwriters_prompt(self):
+        self.plan_script()
+        c = self.story_card(shot="1.2")
+        findings = improve.collect(c)
+        FakeEngine.route = self.routed_with([{"finding": "F1", "rule": "ending"}])
+        routing = improve.route(harness.Harness(self.root, "improve", verbose=False),
+                                findings, name="route-pass-01")
+        self.assertEqual(routing["routes"]["F1"]["stage"], "script")
+        self.assertEqual(routing["routes"]["F1"]["rule"], "ending")
+        improve.write_feedback(self.root, routing, findings, from_pass="pass-01", card=c,
+                               improve_pass="pass-01")
+        md = (self.root / "feedback" / "script.md").read_text()
+        self.assertIn("rubric: ending", md)
+        twin = read_json(self.root / "feedback" / "script.json")
+        self.assertEqual(twin["findings"][0]["rule"], "ending")
+        # the Screenwriter's every decision carries the note, rubric key and all
+        FakeEngine.json_calls = []
+        script.Screenwriter(self.idea, root=self.root, verbose=False)._ask(
+            "decide", "ask", {"type": "object", "required": []})
+        self.assertIn("rubric: ending", FakeEngine.json_calls[0]["system"])
+        # and a line sent back alone (--revise feedback) is told the key too
+        _, rows, _ = script.sent_back("feedback", self.root)
+        self.assertIn("rubric: ending", rows[0]["problem"])
+
+    def test_a_rule_outside_the_rubric_is_kept_apart_not_passed_off_as_a_key(self):
+        self.plan_script()
+        findings = improve.collect(self.story_card())
+        FakeEngine.route = self.routed_with([{"finding": "F1", "rule": "pacing"}])
+        routing = improve.route(harness.Harness(self.root, "improve", verbose=False),
+                                findings, name="route-pass-01")
+        self.assertNotIn("rule", routing["routes"]["F1"])
+        self.assertEqual(routing["routes"]["F1"]["rule_outside"], "pacing")
+
+    def test_the_router_is_told_a_story_finding_is_the_screenplays_though_expensive(self):
+        from ytstudio import narrative
+        findings = improve.collect(self.story_card(owner="story"))
+        FakeEngine.route = self.routed_with([])
+        improve.route(harness.Harness(self.root, "improve", verbose=False), findings,
+                      name="route-pass-01")
+        prompt = FakeEngine.json_calls[0]["prompt"]
+        self.assertIn("even though it is expensive", prompt)
+        self.assertIn(narrative.rubric_text("writer"), prompt)    # rendered, not retyped
+        self.assertIn("the story (hook, stakes", prompt)        # DUTIES["script"]
+
+    def test_a_finding_the_plan_contradicts_is_annotated_and_still_routed(self):
+        self.plan_script()
+        c = self.story_card("there is no payoff: the film stops without answering",
+                            owner="story")
+        findings = improve.collect(c)
+        FakeEngine.route = self.routed_with([{"finding": "F1", "rule": "ending"}])
+        routing = improve.route(harness.Harness(self.root, "improve", verbose=False),
+                                findings, name="route-pass-01")
+        self.assertEqual(routing["contradicted"], [])
+        self.assertEqual(routing["routes"]["F1"]["stage"], "script")
+        declared = routing["routes"]["F1"]["plan_declared"]
+        self.assertIn("ending.payoff_line", declared)
+        self.assertIn(self.PAYOFF, declared)
+        # the router decided without the annotation: it is the writer's to read
+        self.assertNotIn(self.PAYOFF, FakeEngine.json_calls[0]["prompt"])
+        improve.write_feedback(self.root, routing, findings, from_pass="pass-01", card=c,
+                               improve_pass="pass-01")
+        md = (self.root / "feedback" / "script.md").read_text()
+        self.assertIn("the plan declared ending.payoff_line", md)
+        twin = read_json(self.root / "feedback" / "script.json")
+        self.assertIn("ending.payoff_line", twin["findings"][0]["plan_declared"])
+
+    def test_the_record_and_the_report_carry_the_key_and_the_annotation(self):
+        self.plan_script()
+        self.start_pass(self.story_card("there is no payoff: the film stops without "
+                                        "answering", owner="script"))
+        FakeEngine.route = self.routed_with([{"finding": "F1", "rule": "ending"}])
+        self.improver(FakeRunner(self.root, [card(6.0)]), max_passes=1,
+                      budget_usd=100).run()
+        record = read_json(self.root / "improve.json")
+        row = record["passes"][0]["routed"]["script"]["findings"][0]
+        self.assertEqual(row["rule"], "ending")
+        self.assertIn("ending.payoff_line", row["plan_declared"])
+        md = (self.root / improve.REPORT_MD).read_text()
+        self.assertIn("[rubric: ending]", md)
+        self.assertIn("the plan declared ending.payoff_line", md)
+
+    def test_the_plan_claims_checked_are_film_neutral(self):
+        plan = {"stakes": "a grid goes out", "ending": {"payoff_line": "x"},
+                "questions": [{"id": "Q1", "text": "why?", "opened_in": 1, "closed_in": 2}],
+                "sections": [{"rehook": "Q1"}]}
+        self.assertIn("stakes", improve.plan_declared({"problem": "No stakes are set"}, plan))
+        self.assertIn("questions", improve.plan_declared(
+            {"problem": "the question is never answered"}, plan))
+        self.assertIn("rehook", improve.plan_declared({"problem": "there is no re-hook"}, plan))
+        self.assertIsNone(improve.plan_declared({"problem": "the light is flat"}, plan))
+        self.assertIsNone(improve.plan_declared({"problem": "no payoff"},
+                                                {"ending": {"payoff_line": ""}}))
+        self.assertIsNone(improve.plan_declared({"problem": "no payoff"}, None))
+
+
 class Cli(unittest.TestCase):
     def test_improve_is_a_command_with_its_flags(self):
         args = cli.build_parser().parse_args(

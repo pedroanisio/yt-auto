@@ -26,7 +26,12 @@ loop as code:
    stage's open notes into every decision and inspection it makes
    (`harness.feedback_for`), as revision notes that outrank the house
    standards; a pass that consumed them moves them to
-   `feedback/closed/<pass>/`.
+   `feedback/closed/<pass>/`. A story finding is the screenplay's even
+   though script is expensive; its brief names the narrative rubric key
+   each one bears on (`rule`), and one that says the film lacks what the
+   plan declares (`PLAN_CLAIMS`) is annotated "the plan declared ..." and
+   routed as before, since the reviewer watched the film and the plan is
+   the writer's own report.
 4. **Re-run.** The earliest routed stage with the flags that force a new
    decision (`--fresh`; vfx opens a new `vfx/vNN/`), every stage downstream
    of it up to render (research and the screenplay only when routed to
@@ -61,7 +66,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from . import flags, house, qa, spend, workspace
+from . import flags, house, narrative, qa, spend, workspace
 from .core import read_json, write_json
 from .harness import FEEDBACK_DIR, Harness, HarnessError, brief
 # A stage's price is one thing, for `yt improve` and `yt run` alike: it lives
@@ -154,7 +159,16 @@ ROUTE_SCHEMA = {
                 "stage": {"type": "string", "enum": list(ROUTABLE)},
                 "must_change": {"type": "array", "items": {"type": "string"}},
                 "check": {"type": "string",
-                          "description": "how the next QA pass will tell it is fixed"}},
+                          "description": "how the next QA pass will tell it is fixed"},
+                # The rubric key each story finding bears on (AUTO-99), so the
+                # screenplay's brief says which criterion to rewrite against.
+                "rules": {"type": "array", "items": {
+                    "type": "object",
+                    "properties": {
+                        "finding": {"type": "string", "description": "the finding's id"},
+                        "rule": {"type": "string", "enum": list(narrative.KEYS),
+                                 "description": "the narrative rubric key it bears on"}},
+                    "required": ["finding", "rule"]}}},
             "required": ["stage", "must_change", "check"]}},
     },
     "required": ["routes", "briefs"],
@@ -274,6 +288,57 @@ def contradicted_by(finding: dict, build: dict | None) -> str | None:
     return None
 
 
+#: A story finding that says the film lacks what the plan declares (AUTO-99):
+#: the pattern of the claim and the script.json field the plan holds it in.
+#: Unlike CLAIMS this routes nothing away: the reviewer watched the film and
+#: the plan is the writer's own report, so a declared payoff the film did not
+#: deliver is still a finding. It is annotated, so the writer reads that the
+#: line was there and did not land.
+PLAN_CLAIMS = (
+    (re.compile(r"\bno (?:clear |real )?payoff\b|\bpayoff (?:is )?(?:missing|absent)\b|"
+                r"\bnever pa(?:ys|id)\b|\bpromise is (?:never|not) paid\b", re.I),
+     "ending.payoff_line"),
+    (re.compile(r"\bno (?:clear |real )?stakes\b|\bstakes (?:are )?(?:missing|absent)\b|"
+                r"\bnothing (?:is )?at (?:risk|stake)\b", re.I), "stakes"),
+    (re.compile(r"\bno (?:clear )?(?:central )?question\b|"
+                r"\bquestions? (?:is |are )?never (?:answered|closed)\b|"
+                r"\b(?:open|unanswered) questions?\b", re.I), "questions"),
+    (re.compile(r"\bno re-?hooks?\b", re.I), "sections[].rehook"),
+    (re.compile(r"\bno (?:clear )?(?:hook|promise)\b", re.I), "promise"),
+)
+
+
+def _declared(plan: dict, field: str) -> str:
+    """What the plan holds under `field`, in a few words, or "" for nothing."""
+    if field == "ending.payoff_line":
+        ending = plan.get("ending") if isinstance(plan.get("ending"), dict) else {}
+        return " ".join(str(ending.get("payoff_line") or "").split())
+    if field == "questions":
+        return "; ".join(f"{q.get('id', '?')} opened in section {q.get('opened_in', '?')}, "
+                         + (f"closed in section {q.get('closed_in')}" if q.get("closed_in")
+                            else "left open")
+                         for q in plan.get("questions") or [] if isinstance(q, dict))
+    if field == "sections[].rehook":
+        return ", ".join(f"section {n} re-opens {s['rehook']}"
+                         for n, s in enumerate(plan.get("sections") or [], 1)
+                         if isinstance(s, dict) and str(s.get("rehook") or "").strip())
+    return " ".join(str(plan.get(field) or "").split())
+
+
+def plan_declared(finding: dict, plan: dict | None) -> str | None:
+    """`the plan declared <field>: "..."` when a finding says the film lacks
+    something script.json's plan declares, else None."""
+    if not isinstance(plan, dict):
+        return None
+    text = str(finding.get("problem", ""))
+    for pattern, field in PLAN_CLAIMS:
+        if pattern.search(text):
+            held = _declared(plan, field)
+            if held:
+                return f"the plan declared {field}: \"{held[:240]}\""
+    return None
+
+
 # --------------------------------------------------------------------------- #
 # routing
 # --------------------------------------------------------------------------- #
@@ -305,6 +370,12 @@ def _route_prompt(findings: list[dict], fixed: dict[str, str], context: dict | N
         "screenplay, which is expensive and changes its facts. Route there only when the "
         "picture or the sound cannot be fixed without a different screenplay. A weak, "
         "unsourced or low-confidence claim is `upstream-fact`, never `research`.\n"
+        "- A finding on the story itself (its hook, stakes, re-hooks, open questions, "
+        "payoff, or a section that leaves the viewer nothing) is owned by `script`: "
+        "route it there even though it is expensive, since no picture or sound fixes "
+        "a story the screenplay does not tell. In that brief's `rules`, name for each "
+        "such finding the key of the narrative rubric below it bears on; a finding "
+        "that is not about the story gets no rule.\n"
         "- A finding whose fix is the operator's approval or sign-off (approving a "
         "keyframe, waiving a requirement, choosing between options) is `external`: "
         "running the stage again does not approve anything. The project's state below "
@@ -325,6 +396,8 @@ def _route_prompt(findings: list[dict], fixed: dict[str, str], context: dict | N
         "brief verbatim by the tooling; do not copy them.",
         brief("Pipeline stages and what each owns",
               {s: DUTIES.get(s, "") for s in ROUTABLE}),
+        "The narrative rubric, by key (for a brief's `rules`):\n"
+        + narrative.rubric_text("writer"),
         brief("The pass", context or {}),
         brief("Findings", rows),
     ])
@@ -417,6 +490,26 @@ def route(h: Harness, findings: list[dict], *, name: str,
     for b in answer.get("briefs") or []:
         if isinstance(b, dict) and b.get("stage") in ROUTABLE and b["stage"] not in briefs:
             briefs[b["stage"]] = b
+    # The rubric key a story finding bears on, as the brief named it. A key
+    # the rubric does not have is kept apart under `rule_outside`, so it is
+    # recorded rather than passed off as a criterion.
+    for b in briefs.values():
+        for row in b.get("rules") or []:
+            if not isinstance(row, dict) or str(row.get("finding", "")) not in routes:
+                continue
+            rule = str(row.get("rule") or "").strip()
+            if rule in narrative.KEYS:
+                routes[str(row["finding"])]["rule"] = rule
+            elif rule:
+                routes[str(row["finding"])]["rule_outside"] = rule
+    # What the plan declared against a finding that says the film lacks it:
+    # an annotation for the writer, decided after the routing and never
+    # shown to it, so it changes no route.
+    plan_doc = read_json(Path(h.root) / "script.json", warn=False)
+    for f in findings:
+        declared = plan_declared(f, plan_doc)
+        if declared:
+            routes[f["id"]]["plan_declared"] = declared
     for f in findings:
         stage = routes[f["id"]]["stage"]
         if stage in HUMAN:
@@ -468,11 +561,15 @@ def feedback_md(stage: str, entry: dict, findings: list[dict], *, from_pass: str
         where = f"{stamp(f['timestamp'])} " if f.get("timestamp") is not None else ""
         shot = f"shot {f['shot']} " if f.get("shot") else ""
         what = f"{f['source']}" + (f" {f['kind']}" if f.get("kind") else "")
+        rule = f" [rubric: {f['rule']}]" if f.get("rule") else ""
         lines.append(f"- **{f['id']}** {where}{shot}[{f.get('severity', '?')}] ({what}, "
-                     f"QA owner: {f.get('owner') or '?'}): {f['problem']}")
+                     f"QA owner: {f.get('owner') or '?'}){rule}: {f['problem']}")
         for label, key in (("why", "why"), ("root cause", "root_cause"), ("fix", "fix")):
             if f.get(key):
                 lines.append(f"  - {label}: {f[key]}")
+        if f.get("plan_declared"):
+            lines.append(f"  - {f['plan_declared']}; QA watched the film and still found "
+                         "this, so what the plan declares did not land on screen")
         if f.get("duplicate_of"):
             lines.append(f"  - the same defect as {f['duplicate_of']}")
         if survived and survived.get(f["id"]):
@@ -502,7 +599,10 @@ def write_feedback(root: Path, routing: dict, findings: list[dict], *, from_pass
     by_id = {f["id"]: f for f in findings}
     written = []
     for stage, entry in stages.items():
-        rows = [dict(by_id[fid], duplicate_of=routing["routes"][fid].get("duplicate_of", ""))
+        rows = [dict(by_id[fid], duplicate_of=routing["routes"][fid].get("duplicate_of", ""),
+                     **{k: routing["routes"][fid][k]
+                        for k in ("rule", "rule_outside", "plan_declared")
+                        if routing["routes"][fid].get(k)})
                 for fid in entry["findings"]]
         base.mkdir(parents=True, exist_ok=True)
         tried = (attempts or {}).get(stage) or []
@@ -1458,9 +1558,12 @@ class Improver:
 
     def _routed(self, routing: dict, findings: list[dict]) -> dict:
         by_id = {f["id"]: f for f in findings}
-        return {stage: {"findings": [{k: by_id[fid].get(k) for k in
-                                      ("id", "source", "kind", "shot", "timestamp",
-                                       "severity", "problem", "root_cause")}
+        routes = routing.get("routes") or {}
+        return {stage: {"findings": [{**{k: by_id[fid].get(k) for k in
+                                         ("id", "source", "kind", "shot", "timestamp",
+                                          "severity", "problem", "root_cause")},
+                                      **{k: routes[fid][k] for k in ("rule", "plan_declared")
+                                         if (routes.get(fid) or {}).get(k)}}
                                      for fid in e["findings"]],
                         "must_change": e["must_change"], "check": e["check"]}
                 for stage, e in routing["stages"].items()}
@@ -1620,6 +1723,8 @@ def report_md(record: dict, root: Path) -> str:
                 when = stamp(f.get("timestamp")) if f.get("timestamp") is not None else "-"
                 shot = f" shot {f['shot']}" if f.get("shot") else ""
                 kind = f" [{f['kind']}]" if f.get("kind") else ""
+                kind += f" [rubric: {f['rule']}]" if f.get("rule") else ""
+                kind += f" ({f['plan_declared']})" if f.get("plan_declared") else ""
                 lines.append(f"- {when}{shot}{kind} → {f.get('problem', '')} → root cause: "
                              f"{f.get('root_cause') or '-'} → correction ({stage}): "
                              f"{correction} → {result}")
