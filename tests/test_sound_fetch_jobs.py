@@ -15,6 +15,7 @@ import io
 import json
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -105,6 +106,19 @@ class Overlap(FetchCase):
         index = json.loads((self.root / "sound" / "index.json").read_text())
         self.assertEqual(index, {"1": "sound/01-room-tone.mp3", "2": "sound/02-tap.mp3"})
         self.assertEqual(data["fetch"]["filled"], 2)
+
+    def test_the_unfilled_list_is_in_cue_order_whichever_search_ends_first(self):
+        self.catalogue.clear()
+        inner = freesound.fetch_json
+
+        def fake_json(url, **kw):
+            if "hum" in url:
+                time.sleep(0.05)        # the first cue's search is the slower one
+            return inner(url, **kw)
+        freesound.fetch_json = fake_json
+        data = self.fetch()
+        self.assertEqual([m["cue_id"] for m in data["unfilled"]], ["A1", "S1"])
+        self.assertEqual(data["fetch"]["unfilled"], 2)
 
     def test_a_rounds_judgements_overlap(self):
         wait = self.meeting("judge")

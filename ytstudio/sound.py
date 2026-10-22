@@ -1253,6 +1253,7 @@ class _Job:
     rejected: list = field(default_factory=list)    # candidates the judge turned down
     tries: int = 0
     done: bool = False
+    lost: dict | None = None        # its `unfilled` entry, when nothing fit
     lines: list = field(default_factory=list)       # progress not yet said
 
 
@@ -1369,9 +1370,8 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
                 why += "; a composition brief with no library stand-in stays unfilled"
             tell(job, f"  {job.cid} unfilled: tried "
                       f"{', '.join(repr(q) for q in job.miss['queries'])}")
-        with book:
-            unfilled.append(job.miss | {"reason": why}
-                            | ({"rejected": job.rejected} if job.rejected else {}))
+        job.lost = job.miss | {"reason": why} | ({"rejected": job.rejected}
+                                                 if job.rejected else {})
 
     def search(job: _Job) -> None:
         """The job's candidates: the first query with any allowed hit, a kept
@@ -1546,6 +1546,8 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
             + "; the cues keep their sheet level and no noise check was made")
         say("  WARNING: " + summary["warning"])
 
+    # The jobs gave up on their own threads; the record keeps cue order.
+    unfilled.extend(job.lost for job in work if job.lost)
     data["unfilled"] = unfilled
     summary["unfilled"] = len(unfilled)
     data["fetch"] = summary
