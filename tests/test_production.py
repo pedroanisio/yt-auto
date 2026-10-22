@@ -307,10 +307,11 @@ class BuildHoists(unittest.TestCase):
         text = data.decode()
         self.assertIn('<light id="shot-1.1-key" type="rect-area"', text)
         self.assertIn('<light id="shot-1.1-sky" type="dome"', text)
-        # on for [0, 7), off after; a light with no intensity of its own is 1
-        self.assertIn('<key time="0" value="8"/>', text)
+        # on for [0, 7), held there (the schema's default curve is linear, so
+        # a bare key would fade), off after; a light with no intensity is 1
+        self.assertIn('<key time="0" value="8" interpolation="hold"/>', text)
         self.assertIn('<key time="7" value="0"/>', text)
-        self.assertIn('<key time="0" value="1"/>', text)
+        self.assertIn('<key time="0" value="1" interpolation="hold"/>', text)
         self.assertEqual(manifest["hoisted"]["lights"], 2)
         self.assertFalse([f for f in manifest["findings"] if f.startswith("error")])
 

@@ -63,7 +63,13 @@ came from breaking one of them.
    writes a scene's content.
 7. **An `<include>` carries neither styles, paints nor lights.** `yt build`
    hoists them (the file's tokens win, design fills the rest; a light keeps its
-   `<animate>` re-timed by the include's start, and a `downloads/` image inside
+   `<animate>` verbatim, re-timed by the include's start and gated to its span
+   by explicit holds, so the author's curve reaches the film and no light
+   fades into a neighbouring section; each intensity track is gated on its
+   own, a ramp crossing the include's end is clipped, a key's `marker` is
+   read from the document's own `<markers>`, and an `additive`,
+   `normalized`, `extrapolateBefore`/`After` or generated marker the gate
+   cannot carry is converted and named in the findings; and a `downloads/` image inside
    an include is credited from the manifest or is an error) and points the
    include at a cleaned copy, `vfx/vNN/<section>.include.scene.xml`, with
    the tokens inlined and those sections dropped, so the engine raises no

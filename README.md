@@ -673,7 +673,19 @@ the file's resolved value and the three sections dropped, so the engine
 raises no E12 warning. The authored document is read, never written.
 `build.json` records what was hoisted, which copy was cut from which file,
 and the editor's decisions under `editorial`. A hoisted light keeps its own
-`<animate>`, re-timed by the include's start, and a `downloads/` image an
+`<animate>` verbatim (its `defaultInterpolation` and every key attribute),
+re-timed by the include's start; the gate keys that hold it at 0 outside the
+include's span are explicit holds, so an authored ramp stays a ramp and no
+light fades into the neighbouring section. A ramp that crosses the include's
+end is clipped at its last frame, not stepped. A light with several intensity
+tracks gets one gate per track, stacked as the engine stacks them, and a
+key's `marker` is read from the document's own `<markers>`. What the gate
+cannot carry as written is converted and named in the findings: an
+`additive` track with no replacing track beside it is folded onto the
+light's intensity, an `extrapolateBefore`/`After` other than hold becomes the
+gate's hold, a marker the document does not define (a beat grid's `beat.N`)
+leaves the key at its offset, and a `normalized` time base is read as
+seconds. A `downloads/` image an
 included document embeds is credited from `raw/08-downloads.json` (a file the
 manifest does not list is a build error).
 
