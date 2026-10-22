@@ -1,0 +1,13 @@
+{
+  "idea": {"title": "Tides", "genre": "explainer", "description": "The Moon pulls."},
+  "logline": "The Moon lifts the sea.",
+  "target_seconds": 8,
+  "wpm": 150,
+  "sections": [
+    {"heading": "Pull", "purpose": "", "seconds": 8, "beats": [],
+     "shots": [
+       {"visual": "the sea rises", "narration": "The Moon pulls the sea.",
+        "on_screen": "\"High tide\"", "asset": "make", "style": "",
+        "source": "", "seconds": 8, "note": "", "n": 1, "label": "1.1", "at": 0}]}
+  ]
+}
