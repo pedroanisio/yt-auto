@@ -757,6 +757,19 @@ STORY_BRIEF = (
     "descriptions, whatever language the film is in, so the later stages can "
     "read them.")
 
+#: Told to the plan when the idea carries a promise (`yt ideas --rich`): the
+#: packaging is fixed before the hook is written, and the hook answers to it
+#: (docs/narrative: structure 5, 6). The plan's own promise keeps the one
+#: meaning STORY_BRIEF gives it, what the first fifteen seconds promise; it
+#: must keep to the packaging's, and is still the model's to write: nothing
+#: copies the idea's over it.
+FROZEN_PROMISE = (
+    "The promise above is frozen: the title and thumbnail were fixed before "
+    "this plan. The plan's promise, what the first fifteen seconds promise, "
+    "must keep to it: the hook delivers what the title and thumbnail promise. "
+    "Restate its question in the first 30 seconds and pay it off in the last "
+    "section; do not change what the title promises to suit the plan.")
+
 #: What the writer of every section is told about the audience.
 AUDIENCE_BRIEF = {
     "lay": ("The audience is lay: define every term the first time it is said, "
@@ -900,6 +913,17 @@ class Screenwriter:
             bits.append(f"Planned hook: {self.idea.hook}")
         if self.idea.keywords:
             bits.append(f"Search intent: {', '.join(self.idea.keywords)}")
+        # What `yt ideas --rich` planned past the title (AUTO-100). An idea
+        # saved without them briefs as before, so its cached decisions hold.
+        if self.idea.question:
+            bits.append(f"Planned question: {self.idea.question}")
+        if self.idea.stakes:
+            bits.append(f"Stakes: {self.idea.stakes}")
+        if self.idea.viewer_belief:
+            bits.append(f"What a typical viewer already believes: "
+                        f"{self.idea.viewer_belief}")
+        if self.idea.promise:
+            bits.append(f"Promise (title and thumbnail, frozen): {self.idea.promise}")
         bits.append(f"Runtime: {timecode(self.seconds)} "
                     f"({words_for(self.seconds, self.wpm)} words of narration "
                     f"at {self.wpm} wpm)")
@@ -931,6 +955,11 @@ class Screenwriter:
 
     # -- stage one: the beat sheet -----------------------------------------
 
+    def _frozen(self) -> list[str]:
+        """The frozen-promise clause, for an idea that carries a promise;
+        nothing otherwise, so a plan from an older idea is asked as before."""
+        return [FROZEN_PROMISE] if self.idea.promise else []
+
     def plan(self) -> dict:
         if self.outline.get("sections"):
             return self._plan_from_outline()
@@ -946,7 +975,7 @@ class Screenwriter:
                  "research is supplied, name the claims each section rests on "
                  "and the assets it shows. Put the weakest material last or "
                  "cut it. Also give the logline.",
-                 STORY_BRIEF]
+                 STORY_BRIEF, *self._frozen()]
         data = self._ask("plan", "\n\n".join(parts), PLAN_SCHEMA)
 
         # The model's section runtimes rarely add up; hold the total.
@@ -978,7 +1007,7 @@ class Screenwriter:
                  "Write the story fields for this outline. Answer one entry "
                  f"under sections for each of its {len(sections)} sections, in "
                  "its order.",
-                 STORY_BRIEF]
+                 STORY_BRIEF, *self._frozen()]
         prompt = "\n\n".join(parts)
         fields_ = self._ask("plan-fields", prompt, PLAN_FIELDS_SCHEMA)
         rows = fields_.get("sections") or []
