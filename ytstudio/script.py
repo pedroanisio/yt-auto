@@ -338,6 +338,55 @@ BACK_REVISE_SCHEMA = {
     "required": ["fixes"],
 }
 
+#: `revise` over the picture-check's flags (AUTO-98): REVISE_SCHEMA with
+#: the shot's picture as optional answers. `revise` reads them only under a
+#: decision named `revise-picture`, the one revision that may change what a
+#: shot shows; the fact-check's revise keeps its own schema and rewrites the
+#: narration only.
+PICTURE_REVISE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "fixes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    **REVISE_SCHEMA["properties"]["fixes"]["items"]["properties"],
+                    "visual": {"type": "string", "description": (
+                        "the shot's picture after the fix, in what it demonstrates; omit "
+                        "to leave it as it is")},
+                    "shows": {"type": "string", "description": (
+                        "what the picture must demonstrate of the line after the fix; "
+                        "omit to leave it as it is")},
+                    "on_screen_text": {"type": "array", "items": {"type": "string"},
+                                       "description": (
+                                           "the shot's on-screen strings after the fix; "
+                                           "omit to leave them as they are")},
+                },
+                "required": ["n", "action", "narration", "why"],
+            },
+        }
+    },
+    "required": ["fixes"],
+}
+
+#: The picture-check's findings as flags (`picture_flags`): their kind, the
+#: severity `revise-picture` and `vfx.picture_constraints` read, and the fix.
+#: A section whose pictures do not carry its beat (direction 4), a bare
+#: large number (attention 15, peer-reviewed) and a claim no picture shows
+#: bind the picture; an unsignposted list (attention 22, d = 0.38, a small
+#: effect) is revised but binds nothing downstream.
+PICTURE_FLAGS = {
+    "picture:section": ("important", "change what the section's shots show so its beat "
+                                     "can be read from the pictures alone"),
+    "picture:bare-number": ("important", "pair the figure with a comparison at human "
+                                         "scale, or make the picture show the quantity"),
+    "picture:unshown-claim": ("important", "make the picture demonstrate what the line "
+                                           "claims, or cut the claim from the line"),
+    "picture:unsignposted-list": ("minor", "announce the count, or label each part on "
+                                           "screen as it is named"),
+}
+
 CHECK_SCHEMA = {
     "type": "object",
     "properties": {
@@ -1136,6 +1185,14 @@ class Screenwriter:
             house=house, house_digest=self.house_digest, budget_usd=review_budget_usd,
             verbose=verbose, usage=self.usage, decisions=self.harness.decisions,
             lock=self.harness.lock) if reviewer_model else None
+        #: The same reviewer's model reading the drafted screenplay's pictures
+        #: with the narration taken away (AUTO-98), under a role of its own:
+        #: the plan's role would tell it there is no screenplay yet.
+        self.picture_reviewer = harness.Harness(
+            root or ".", "script", model=reviewer_model, role=narrative.picture_role(),
+            house=house, house_digest=self.house_digest, budget_usd=review_budget_usd,
+            verbose=verbose, usage=self.usage, decisions=self.harness.decisions,
+            lock=self.harness.lock) if reviewer_model else None
 
     # -- plumbing ----------------------------------------------------------
 
@@ -1146,6 +1203,8 @@ class Screenwriter:
     def _ask(self, name: str, prompt: str, schema: dict) -> dict:
         if schema is narrative.PLAN_REVIEW_SCHEMA:
             return self.reviewer.decide(name, prompt, schema)
+        if schema is narrative.PICTURE_SCHEMA:
+            return self.picture_reviewer.decide(name, prompt, schema)
         drafting = ("shots" in schema.get("properties", {}) and self.draft_effort
                     and not claude_engine.default_for("effort"))
         return (self._drafter if drafting else self.harness).decide(name, prompt, schema)
@@ -1580,12 +1639,21 @@ class Screenwriter:
         narration or, when the reason is about the screen, to the supers.
         Only the flagged numbers are answered: every other shot passed in is
         there to read them in.
+
+        A decision named `revise-picture` answers the picture-check's flags
+        (AUTO-98): the writer sees each shot's picture beside its line, every
+        flag is answered whatever its severity, and only there may the answer
+        change a shot's `visual`, `shows` and on-screen text. Under any other
+        name a picture field in the answer is ignored, so the fact-check's
+        revise still rewrites the narration only.
         """
+        picture = name.startswith("revise-picture")
+        answered = narrative.SEVERITIES if picture else REVISABLE
         by_n = {s.n: s for s in shots}
         todo: dict[int, list[dict]] = {}
         for f in flags:
             n = int(f.get("n", 0) or 0)
-            if n in by_n and f.get("severity") in REVISABLE:
+            if n in by_n and f.get("severity") in answered:
                 todo.setdefault(n, []).append(f)
         result = {"applied": [], "kept": [], "failed": False}
         if not todo:
@@ -1595,7 +1663,31 @@ class Screenwriter:
             f"{n}. " + " / ".join(f"{f['severity']}: {f.get('problem', '')} "
                                   f"(suggested: {f.get('fix', '')})" for f in fs)
             for n, fs in sorted(todo.items()))
-        if rules:
+        if picture:
+            # Direction 4 and attention 15, 22: the screen carries what the
+            # voice says, a large number has its comparison, a list its
+            # count. The writer sees the line beside its picture, since a
+            # fix may belong to either.
+            parts = [self._brief(), *([self.research] if self.research else []),
+                     harness.brief("The screenplay as written, each shot with its line "
+                                   "and its picture",
+                                   [{"n": s.n, "label": s.label, "narration": s.narration,
+                                     "visual": s.visual, "shows": s.shows,
+                                     "on_screen_text": list(s.on_screen_text or [])}
+                                    for s in shots]),
+                     "A reviewer read only these shots' pictures, with the narration "
+                     "taken away, and found:\n\n" + problems,
+                     "For each flagged shot make the change its problem asks for: to "
+                     "what the shot shows (visual, the picture in what it demonstrates; "
+                     "shows, what it must demonstrate of the line), to its on-screen "
+                     "text (on_screen_text, every string it should show), or to its "
+                     "narration when the line claims what no picture can show. Describe "
+                     "a picture by what it demonstrates; its look is the treatment's. "
+                     "Keep every fact, the voice and the line's job in the story. Never "
+                     "add a fact. When the shot is right as written, answer keep and "
+                     "say why in one clause. Answer for every flagged number and no "
+                     "other."]
+        elif rules:
             parts = [self._brief(), *([self.research] if self.research else []),
                      "The script as written:\n\n"
                      + shot_listing(shots, cite=True, supers=True),
@@ -1644,7 +1736,8 @@ class Screenwriter:
                      "Answer for every flagged number and no other."]
         try:
             data = self._ask(name, "\n\n".join(parts),
-                             RULE_REVISE_SCHEMA if rules
+                             PICTURE_REVISE_SCHEMA if picture
+                             else RULE_REVISE_SCHEMA if rules
                              else BACK_REVISE_SCHEMA if back else REVISE_SCHEMA)
         except ClaudeError as exc:
             self._say(f"[revise] failed ({exc}); keeping the lines as written")
@@ -1674,12 +1767,19 @@ class Screenwriter:
                     if isinstance(given, list) else [])
             screen = (rules and isinstance(given, list)
                       and any(f.get("rule") in SCREEN_RULES for f in todo[n])) \
-                or (bool(back) and bool(text))
+                or ((bool(back) or picture) and bool(text))
             if screen:
                 if text != list(shot.on_screen_text or []):
                     row |= {"on_screen_before": list(shot.on_screen_text or []),
                             "on_screen_after": text}
                     shot.on_screen_text = text
+            # The picture itself only under revise-picture; an empty answer
+            # is the field left alone, never a shot with no picture.
+            for key in ("visual", "shows") if picture else ():
+                value = " ".join(str(fix.get(key) or "").split())
+                if value and value != getattr(shot, key):
+                    row |= {f"{key}_before": getattr(shot, key), f"{key}_after": value}
+                    setattr(shot, key, value)
             if len(row) > 3:
                 result["applied"].append(row)
         self._say(f"[revise] rewrote {len(result['applied'])}, "
@@ -1769,6 +1869,100 @@ class Screenwriter:
                 break
         return {"revisions": revisions, "kept": kept}
 
+    # -- say it, show it: the pictures read without the words (AUTO-98) ----
+
+    def picture_check(self, sections: list[Section]) -> tuple[dict, list[int], bool]:
+        """The reviewer's model reads only what each shot puts on screen
+        (`visual`, `shows`, `on_screen_text`) with the plan's beat for its
+        section, never the narration (direction 4), under PICTURE_SCHEMA.
+        A reading that leaves a drafted section out is asked once more as
+        `picture-check-again` with the sections named; the second answer
+        stands. Returns the reading, the sections still unread and whether
+        it was asked again. A failed call raises ClaudeError."""
+        listing = [{"section": i, "heading": sec.heading,
+                    "beat": {"purpose": sec.purpose, "beats": list(sec.beats)},
+                    "shots": [{"n": s.n, "label": s.label, "visual": s.visual,
+                               "shows": s.shows,
+                               "on_screen_text": list(s.on_screen_text or [])}
+                              for s in sec.shots]}
+                   for i, sec in enumerate(sections, 1) if sec.shots]
+        self._say(f"[picture] picture-check: {self.picture_reviewer.model} reads "
+                  f"{sum(len(row['shots']) for row in listing)} shots' pictures")
+        prompt = "\n\n".join([
+            f"Title: {self.idea.title}",
+            harness.brief("The screenplay's pictures, section by section, each with the "
+                          "beat the plan gave it (the narration is not shown)", listing),
+            f"Answer one entry under sections for each of the {len(listing)} sections, by "
+            "its number: the claim its pictures alone carry, written first, then whether "
+            "that is its beat, what is missing and the shot numbers where the thread is "
+            "lost. Under reports list only the shots with a bare number, an unshown "
+            "claim or an unsignposted list, by their number."])
+        wanted = [row["section"] for row in listing]
+
+        def unread(review: dict) -> list[int]:
+            got = set()
+            for row in review.get("sections") or []:
+                try:
+                    got.add(int(row.get("section") or 0))
+                except (AttributeError, TypeError, ValueError):
+                    continue
+            return [i for i in wanted if i not in got]
+
+        review = self._ask("picture-check", prompt, narrative.PICTURE_SCHEMA)
+        missing = unread(review)
+        if not missing:
+            return review, [], False
+        self._say(f"[picture] picture-check: asking again (section(s) "
+                  f"{', '.join(map(str, missing))} unread)")
+        review = self._ask(
+            "picture-check-again", prompt + "\n\nYour previous answer read no claim for "
+            f"section(s) {', '.join(map(str, missing))}. Answer again, one entry for every "
+            "section.", narrative.PICTURE_SCHEMA)
+        return review, unread(review), True
+
+    def picture_pass(self, sections: list[Section], shots: list[Shot], *,
+                     fix: bool = True) -> dict:
+        """The picture-check, its flags (`picture_flags`) and their one
+        revision, `revise-picture`, the only decision that may change a
+        shot's picture. What stands afterwards (a flag kept with its
+        reason, one the answer left as it was, every one under
+        report-only) is the record's `flags`, which vfx.picture_constraints
+        hands the people who draw the film, and a `warning:` in the stage's
+        findings. A failed check is recorded, never silent, and changes
+        nothing."""
+        record: dict = {"model": self.picture_reviewer.model}
+        try:
+            review, unread, again = self.picture_check(sections)
+        except ClaudeError as exc:
+            self._say(f"[picture] picture-check failed ({exc}); the pictures are unread")
+            self.findings.append(f"warning: picture-check failed ({exc}); the screenplay's "
+                                 "pictures were not read")
+            return {**record, "failed": str(exc), "sections": [], "flags": [],
+                    "revisions": [], "kept": []}
+        if unread:
+            self.findings.append(f"note: picture-check read no claim for section(s) "
+                                 f"{', '.join(map(str, unread))}, after asking again")
+        flags = picture_flags(review, sections)
+        result = (self.revise(shots, flags, name="revise-picture") if fix and flags
+                  else {"applied": [], "kept": [], "failed": False})
+        kept = {k["n"]: k["why"] for k in result["kept"]}
+        changed = {r["n"] for r in result["applied"]}
+        standing = [({**f, "kept": kept[f["n"]]} if f["n"] in kept else f) for f in flags
+                    if f["n"] in kept or f["n"] not in changed]
+        for f in standing:
+            said = (f"; kept: {f['kept']}" if f.get("kept")
+                    else "; still standing after the revision" if fix
+                    else "; not revised (--report-only)")
+            self.findings.append(f"warning: {f['problem']}{said}")
+        self._say(f"[picture] {len(flags)} flag(s), {len(changed)} shot(s) revised, "
+                  f"{len(standing)} standing")
+        return {**record,
+                "sections": [{k: row.get(k) for k in ("section", "claim", "carries_beat",
+                                                      "missing", "confused_at")}
+                             for row in review.get("sections") or [] if isinstance(row, dict)],
+                "flags": standing, "revisions": result["applied"],
+                "kept": result["kept"], "again": again, "unread": unread}
+
     # -- run ---------------------------------------------------------------
 
     def _draft(self, index: int, specs: list[dict], plan: dict, sourced: bool,
@@ -1848,6 +2042,11 @@ class Screenwriter:
         if written:
             self._drop_repeats(sections, written)
         polished = self.polish(written) if do_polish and written else 0
+        # The pictures read without the words (AUTO-98), by the reviewer's
+        # model the plan review brought; before the rules and the
+        # fact-check, which then read whatever line revise-picture changed.
+        pictured = (self.picture_pass(sections, written, fix=fix)
+                    if review and written else None)
         # The narration rules after the polish and before the fact-check, so
         # the check reads the lines the rules changed (AUTO-94).
         ruled = (self.revise_rules(sections, written, plan)
@@ -1878,6 +2077,9 @@ class Screenwriter:
             "house": self.house_digest,
             # The reviewer's reading of the plan, when it was asked (AUTO-92).
             **({"plan_review": plan_review} if plan_review else {}),
+            # The picture-check's reading and the flags still standing,
+            # which bind the picture downstream (AUTO-98).
+            **({"picture": pictured} if pictured is not None else {}),
             "check": check,
             # The rules' flags still standing on the final text, what their
             # revision changed and what it kept, with the reason.
@@ -1933,6 +2135,18 @@ def visible_text(shot: Shot) -> str:
         if not strings:
             strings = [field_text]
     return " ".join(" ".join(strings).split())
+
+
+def screen_strings(shot: Shot) -> list[str]:
+    """Each string a shot prints on screen, one element at a time: its
+    `on_screen_text`, or in an older screenplay the strings quoted in
+    `on_screen`. Never the unquoted direction, which is no text a viewer
+    reads (`visible_text` falls back to it for the reading speed)."""
+    strings = [" ".join(str(t).split()) for t in shot.on_screen_text or [] if str(t).strip()]
+    if strings:
+        return strings
+    return [" ".join(next(g for g in m.groups() if g).split())
+            for m in _QUOTED.finditer(shot.on_screen or "")]
 
 
 def legibility(sections: list[Section], timings: dict | None = None) -> list[dict]:
@@ -2034,6 +2248,14 @@ BOUNDS: dict[str, dict] = {
     "legibility": {
         "value": READING_CPS, "unit": "characters a second of on-screen text",
         "corpus": ("direction 3",), "strength": "platform"},
+    "wall_of_text": {
+        "value": 6, "unit": "words in one on-screen string", "echo": 4,
+        "echo_unit": "words of the shot's own line printed verbatim",
+        "corpus": ("direction 2", "attention 23"), "strength": "house",
+        "note": "both numbers are direction 2's Check line, not its evidence: Mayer "
+                "and Johnson 2008 measured two-to-three-word keywords, and the "
+                "redundancy effect's size is contested; on-screen text is labels and "
+                "keywords, never the narration"},
     "numbers": {
         "value": 2, "unit": "numerals in one sentence", "corpus": ("direction 21",),
         "strength": "practitioner"},
@@ -2122,6 +2344,7 @@ RULES: tuple[Rule, ...] = (
     Rule("rule:sentence", "error", (), "sentence"),
     Rule("rule:unspoken-number", "important", _LEXICAL, "unspoken_number"),
     Rule("rule:legibility", "important", (), "legibility"),
+    Rule("rule:wall-of-text", "important", (), "wall_of_text"),
     Rule("rule:numbers", "important", (), "numbers"),
     Rule("rule:hook-subject", "important", _LEXICAL, "hook_window"),
     Rule("rule:hook-answer", "important", (), "hook_answer"),
@@ -2141,7 +2364,7 @@ _RULE = {r.id: r for r in RULES}
 
 #: The rules that measure what the shot shows rather than what it says: only
 #: a flag of one of these lets `revise` change the shot's on_screen_text.
-SCREEN_RULES = ("rule:legibility", "rule:unspoken-number")
+SCREEN_RULES = ("rule:legibility", "rule:unspoken-number", "rule:wall-of-text")
 
 #: The words a lexical rule looks for, by language. Lower case; a phrase
 #: matches on word boundaries.
@@ -2351,6 +2574,24 @@ def rule_findings(plan: dict, sections: list[Section], wpm: int = DEFAULT_WPM,
                              f"the screen shows {row['number']}, which the narration "
                              "never says",
                              "say the figure in the line, or take it off the screen"))
+    # direction 2: on-screen text is labels and keywords, never the narration.
+    longest, echo = BOUNDS["wall_of_text"]["value"], BOUNDS["wall_of_text"]["echo"]
+    for _, shot, _ in timed:
+        said = _words(spoken(shot.narration))
+        runs = {tuple(said[i:i + echo + 1]) for i in range(len(said) - echo)}
+        for text in screen_strings(shot):
+            words = _words(text)
+            why = []
+            if len(words) > longest:
+                why.append(f"{len(words)} words on screen, over {longest}")
+            if any(tuple(words[i:i + echo + 1]) in runs
+                   for i in range(len(words) - echo)):
+                why.append(f"more than {echo} words of the narration printed verbatim")
+            if why:
+                out.append(_flag("rule:wall-of-text", shot,
+                                 f"\"{text[:60]}\" is {' and '.join(why)}",
+                                 "cut it to a label or a two-to-three-word keyword for "
+                                 "what the picture shows; the voice carries the sentence"))
 
     # -- the opening --------------------------------------------------------
     window = BOUNDS["hook_window"]["value"]
@@ -2526,6 +2767,82 @@ def rule_lines(flags: list[dict], kept: dict | None = None, lang: str = "",
         else:
             out.append(f"warning: {line}")
     return out + not_evidenced(lang)
+
+
+def _number(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def picture_flags(review: dict, sections: list[Section]) -> list[dict]:
+    """The picture-check's reading as flags in CHECK_SCHEMA's shape, with
+    their `kind` and `section`: a section whose pictures do not carry its
+    beat (`carries_beat` false) is a flag on each shot the reading says the
+    thread is lost at, or on the section's first shot when it names none of
+    its own; each shot report's bare number, unshown claim and unsignposted
+    list is a flag on that shot. Severity and fix are PICTURE_FLAGS'. What
+    the model said is kept in the problem, verbatim; nothing is judged
+    here (invariant 3), and a row naming no shot of the film is dropped."""
+    review = review if isinstance(review, dict) else {}
+    by_n = {s.n: (i, s) for i, sec in enumerate(sections, 1) for s in sec.shots}
+    out: list[dict] = []
+
+    def flag(kind: str, i: int, shot: Shot, problem: str) -> None:
+        severity, fix = PICTURE_FLAGS[kind]
+        out.append({"n": shot.n, "section": i, "kind": kind, "severity": severity,
+                    "problem": f"{kind}: shot {shot.label}: {problem}", "fix": fix})
+
+    for row in review.get("sections") or []:
+        if not isinstance(row, dict) or row.get("carries_beat") is not False:
+            continue
+        i = _number(row.get("section"))
+        if not 1 <= i <= len(sections) or not sections[i - 1].shots:
+            continue
+        section = sections[i - 1]
+        beat = "; ".join(section.beats) or section.purpose
+        own = {s.n for s in section.shots}
+        lost = [n for n in dict.fromkeys(_number(n) for n in row.get("confused_at") or [])
+                if n in own] or [section.shots[0].n]
+        missing = str(row.get("missing") or "").strip()
+        for n in lost:
+            flag("picture:section", i, by_n[n][1],
+                 f"section {i} \"{section.heading}\" read from its pictures alone says "
+                 f"\"{str(row.get('claim') or '').strip()}\", not its beat \"{beat}\""
+                 + (f"; missing: {missing}" if missing else ""))
+    for rep in review.get("reports") or []:
+        if not isinstance(rep, dict) or _number(rep.get("n")) not in by_n:
+            continue
+        i, shot = by_n[_number(rep.get("n"))]
+        for key, kind in (("bare_number", "picture:bare-number"),
+                          ("unshown_claim", "picture:unshown-claim"),
+                          ("unsignposted_list", "picture:unsignposted-list")):
+            text = " ".join(str(rep.get(key) or "").split())
+            if text:
+                flag(kind, i, shot, text)
+    return out
+
+
+def picture_lines(record) -> list[str]:
+    """script.json's `picture` as a Markdown section: who read the pictures,
+    each section's claim as read from them, what was revised and what still
+    stands."""
+    if not isinstance(record, dict) or "model" not in record:
+        return []
+    md = ["## Picture check", "",
+          f"Read by {record['model']} from the pictures alone, without the narration."
+          + (f" It failed: {record['failed']}" if record.get("failed") else ""), ""]
+    for row in record.get("sections") or []:
+        mark = "carries its beat" if row.get("carries_beat") else "misses its beat"
+        md += [f"- section {row.get('section')}: {mark}: {row.get('claim', '')}"
+               + (f" (missing: {row['missing']})" if row.get("missing") else "")]
+    md += [f"- revised {r.get('label', r.get('n'))}: {r.get('why', '')}"
+           for r in record.get("revisions") or []]
+    md += [f"- **{f.get('severity', '?')}** {f.get('problem', '')}"
+           + (f" (kept: {f['kept']})" if f.get("kept") else "")
+           for f in record.get("flags") or []]
+    return md + [""]
 
 
 #: The order findings are printed in: what blocks, what warns, the rest.
@@ -2723,6 +3040,7 @@ def write_md(path: str, idea: Idea, data: dict, sections: list[Section]) -> None
                f"- **Next film:** {ending.get('next_film', '')}", ""]
 
     md += plan_review_lines(data.get("plan_review"))
+    md += picture_lines(data.get("picture"))
 
     check = data.get("check") or {}
     if check.get("flags") or check.get("verdict"):
@@ -2747,8 +3065,8 @@ def write_md(path: str, idea: Idea, data: dict, sections: list[Section]) -> None
     if data.get("findings"):
         md += ["## Findings", "",
                "The narration rules' findings (`error:` blocks the stage, "
-               "`warning:` does not, `house:` is the house's own prior) and the "
-               "stage's notes.", ""]
+               "`warning:` does not, `house:` is the house's own prior), the "
+               "picture-check's standing flags and the stage's notes.", ""]
         md += [f"- `{f.split(': ', 1)[0]}` {f.split(': ', 1)[-1]}"
                for f in data["findings"]]
         md.append("")
