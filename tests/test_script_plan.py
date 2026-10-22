@@ -156,6 +156,21 @@ class Schema(unittest.TestCase):
                              ["hook", "context", "setup", "reveal", "rehook",
                               "payoff", "handoff"])
 
+    def test_a_question_left_open_on_purpose_is_declared_not_invented(self):
+        # structure 8: a question deliberately left open is recorded as a
+        # choice, so closed_in need not be made up
+        item = script.PLAN_SCHEMA["properties"]["questions"]["items"]
+        self.assertIn("0", item["properties"]["closed_in"]["description"])
+        self.assertIn("left_open_why", item["properties"])
+        self.assertNotIn("left_open_why", item["required"])
+        self.assertIn("left open", script.STORY_BRIEF)
+        self.assertIn("same section or a later one", script.STORY_BRIEF)
+        ledger = "\n".join(script.question_ledger([
+            {"id": "Q3", "text": "Will the twin stand?", "opened_in": 3, "closed_in": 0,
+             "left_open_why": "the inspection is not done"}]))
+        self.assertIn("| Q3 | Will the twin stand? | 3 | left open: the inspection "
+                      "is not done |", ledger)
+
     def test_the_descriptions_say_what_happens_to_an_empty_or_strange_value(self):
         props = script.PLAN_SCHEMA["properties"]
         self.assertIn("pre-check", props["train"]["description"])

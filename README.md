@@ -393,7 +393,8 @@ The plan is a story brief: the film's promise and payoff, who wants what
 and what is in the way, the stakes for the viewer, the misconception it
 breaks (from the dossier's sourced misconceptions, numbered M1, M2 ...), the
 audience, the reveal, a ledger of questions each opened in one section and
-closed in a later one, and an ending with a callback and the next film.
+answered in the same section or a later one (or left open on purpose, with
+why), and an ending with a callback and the next film.
 Each section joins the one before with but, therefore or because, and
 every shot names its function (hook, setup, reveal, rehook, payoff ...) and
 what its picture shows of its line; `script.md` prints the question ledger.

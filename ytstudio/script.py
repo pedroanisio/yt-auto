@@ -126,7 +126,13 @@ STORY_PROPERTIES = {
                 "id": {"type": "string", "description": "Q1, Q2, ..."},
                 "text": {"type": "string"},
                 "opened_in": {"type": "integer", "description": "section number"},
-                "closed_in": {"type": "integer", "description": "section number"},
+                "closed_in": {"type": "integer", "description": (
+                    "the section that answers it, the same as opened_in or a later "
+                    "one; 0 for a question deliberately left open, with why in "
+                    "left_open_why")},
+                "left_open_why": {"type": "string", "description": (
+                    "why a question with closed_in 0 is left open on purpose; "
+                    "empty otherwise")},
             },
             "required": ["id", "text", "opened_in", "closed_in"],
         },
@@ -733,7 +739,10 @@ STORY_BRIEF = (
     "comes after the constraint, never before.\n"
     "- questions: the ledger of every question the film raises: an id (Q1, "
     "Q2, ...), the question, the section that opens it and the section that "
-    "answers it. Every question opened is answered.\n"
+    "answers it (the same section or a later one). Every question opened is "
+    "answered, or is marked left open (closed_in 0) with why in "
+    "left_open_why, as a choice; a question that points past the film belongs "
+    "in ending.next_film.\n"
     "- ending: payoff_line, the last narrated line, which pays the promise in "
     "resolved form; callback, how it mirrors the opening; next_film, one "
     "named film that continues the question.\n"
@@ -1543,10 +1552,17 @@ def question_ledger(questions) -> list[str]:
     if not rows:
         return []
     cell = lambda v: " ".join(str(v if v is not None else "").split()).replace("|", "/")  # noqa: E731
+
+    def answered(q: dict) -> str:
+        # closed_in 0 is a question left open on purpose (structure 8)
+        if q.get("closed_in") == 0:
+            why = cell(q.get("left_open_why"))
+            return "left open" + (f": {why}" if why else "")
+        return cell(q.get("closed_in"))
     return (["## Question ledger", "", "| id | question | opened in | answered in |",
              "|---|---|---|---|"]
             + [f"| {cell(q.get('id'))} | {cell(q.get('text'))} | {cell(q.get('opened_in'))} "
-               f"| {cell(q.get('closed_in'))} |" for q in rows] + [""])
+               f"| {answered(q)} |" for q in rows] + [""])
 
 
 def write_md(path: str, idea: Idea, data: dict, sections: list[Section]) -> None:

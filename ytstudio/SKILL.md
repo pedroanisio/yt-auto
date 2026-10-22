@@ -317,8 +317,9 @@ way), the `stakes` and `viewer_stake`, the `misconception` it breaks (cited
 as `[M1]` from the research block, which numbers the dossier's sourced
 misconceptions and names its identifiable case), the `audience` (lay,
 enthusiast, expert), the `reveal` and the section that constrains it, a
-question ledger (`questions`, each opened in one section and closed in a
-later one) and the `ending` (`payoff_line`, `callback`, `next_film`). Each
+question ledger (`questions`, each opened in one section and answered in
+the same section or a later one, or marked left open, `closed_in` 0, with
+`left_open_why`) and the `ending` (`payoff_line`, `callback`, `next_film`). Each
 section names the questions it `opens` and `closes`, its `connective` to the
 one before (and, but, therefore, because), a `rehook`, an `escalation` and
 an `anchor_visual`. With `--outline` the outline keeps its sections and these
