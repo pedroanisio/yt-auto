@@ -13,8 +13,11 @@ a stub that returns a varied PNG.
 """
 
 import argparse
+import contextlib
+import importlib.util
 import io
 import json
+import os
 import re
 import tempfile
 import unittest
@@ -629,6 +632,131 @@ class Frames(unittest.TestCase):
         results = self.go(still,lambda *a, **k: None, shots=self.shots)
         self.assertFalse([f for _, fs in results for f in fs if f.startswith("error")])
         self.assertEqual(len(results), len(calls))
+
+    # AUTO-67: the author's frame renders stills only; the encode is the gate's
+    def test_an_authors_frame_renders_stills_and_no_encode(self):
+        calls, still = self.still()
+        windows, encode = self.encode(lambda s, e: ["hero-ball"])
+        with patch.object(vfx.render, "engine_render_still", still), \
+                patch.object(vfx, "encode_findings", encode):
+            results = self.ws.frames(self.name, times=[5.0], shots=self.shots, encode=False)
+        self.assertEqual([c["at"] for c in calls], [5.0])
+        self.assertEqual(windows, [])                      # no draft encode was paid for
+        self.assertEqual(len(results), 1)
+        self.assertIsNotNone(results[0][0])
+        self.assertFalse([f for _, fs in results for f in fs if f.startswith("error")])
+
+    def test_sr_frame_renders_stills_only_and_says_the_gate_encodes(self):
+        self.ws.prepare(tokens={"ink": "#FFFFFF"}, frame=(1920, 1080))
+        self.ws.write_shots(self.shots)
+        spec = importlib.util.spec_from_file_location("sr_under_test", self.ws.dir / "sr.py")
+        sr = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(sr)
+        calls, still = self.still()
+        windows, encode = self.encode(lambda s, e: ["hero-ball"])
+        out = io.StringIO()
+        with patch.object(vfx.render, "engine_render_still", still), \
+                patch.object(vfx, "encode_findings", encode), contextlib.redirect_stdout(out):
+            code = sr.frame([str(self.ws.dir / self.name)])
+        self.assertEqual(code, 0)
+        self.assertEqual(sorted(c["at"] for c in calls), vfx.shot_times(SECTION["shots"], 15))
+        self.assertEqual(windows, [])
+        self.assertIn("gate", out.getvalue())             # the author is told where the camera check runs
+
+    def test_the_gate_runs_the_encode_once_per_shot_per_round(self):
+        calls, still = self.still()
+        windows, encode = self.encode(lambda s, e: [])
+        with patch.object(vfx.render, "engine_validate", lambda data, **kw: []), \
+                patch.object(vfx.render, "engine_render_still", still), \
+                patch.object(vfx, "encode_findings", encode), \
+                patch.object(self.ws, "geometry", lambda *a, **k: []):
+            symbols, findings = self.ws.validate(self.name, shots=self.shots)
+        self.assertEqual(symbols, ["world-open"])
+        self.assertEqual(sorted((w["start"], w["end"]) for w in windows),
+                         [(0.0, 3.0), (3.0, 7.0), (7.0, 11.0), (11.0, 15.0)])
+        self.assertEqual(len(calls), len(vfx.shot_times(SECTION["shots"], 15)))
+        self.assertFalse([f for f in findings if f.startswith("error")])
+
+
+class EncodeCache(unittest.TestCase):
+    """AUTO-67: the proof encode runs on the encode host, one per host at a
+    time, and its lines are served from the cache the second time."""
+
+    FILES = {"vfx/v01/a.scene.xml": b"<scene/>", "vfx/v01/.proof-a.scene.xml": b"<scene>p</scene>"}
+    DOC = "vfx/v01/.proof-a.scene.xml"
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.cache = Path(self._tmp.name) / "stills"
+        self.cache.mkdir()
+        (self.cache / "engines.json").write_text(json.dumps(
+            {"root@big": {"version": "1.0", "sha256": "abc", "path": "x"}}))
+        self.jobs: list[str] = []
+        self.locks: list[str] = []
+        tests = self
+
+        class Lock:
+            def __init__(self, host):
+                tests.locks.append(host)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return None
+        self.lock = Lock
+        self.envelope = {"result": {"outputs": [{"findings": [
+            {"code": "X-rs-scene-render-3D-OFF-CAMERA", "severity": "warning",
+             "message": OFF_CAMERA.format(id="desk")[len("warning: "):]}]}]}}
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def run_job(self, returncode=0, stderr=""):
+        def fake(cmd, root, host, *, job, verbose=False, **kw):
+            self.jobs.append(host)
+            return SimpleNamespace(returncode=returncode,
+                                   stdout=json.dumps(self.envelope) if returncode == 0 else "",
+                                   stderr=stderr)
+        return fake
+
+    def encode(self, run_job, **kw):
+        routes = {"encode": "root@big", "still": "root@small"}
+        with patch.dict(os.environ, {"YT_STILL_CACHE": str(self.cache)}), \
+                patch.object(vfx.render, "run_job", run_job), \
+                patch.object(vfx.render, "remote_host", lambda args, job="encode": routes[job]), \
+                patch.object(vfx.sdkkit, "host_lock", self.lock):
+            return vfx.encode_findings(self.FILES, self.DOC, **kw)
+
+    def test_the_window_runs_on_the_encode_host_under_its_lock(self):
+        lines = self.encode(self.run_job(), start=3, end=7)
+        self.assertEqual(self.jobs, ["root@big"])
+        self.assertEqual(self.locks, ["root@big"])
+        self.assertEqual(vfx.framecheck.never_in_view(lines), ["desk"])
+
+    def test_the_same_window_is_served_from_the_cache(self):
+        first = self.encode(self.run_job(), start=3, end=7)
+        second = self.encode(self.run_job(), start=3, end=7)
+        self.assertEqual(self.jobs, ["root@big"])                  # one encode, two answers
+        self.assertEqual(first, second)
+        self.encode(self.run_job(), start=7, end=11)              # another window is another encode
+        self.assertEqual(self.jobs, ["root@big", "root@big"])
+        self.FILES = dict(self.FILES, **{"vfx/v01/a.scene.xml": b"<scene>changed</scene>"})
+        self.encode(self.run_job(), start=3, end=7)               # a changed world too
+        self.assertEqual(len(self.jobs), 3)
+
+    def test_an_encode_the_host_could_not_hold_is_the_authors_error_and_is_not_cached(self):
+        killed = self.run_job(returncode=137, stderr="scene-render: Killed\n")
+        lines = self.encode(killed, start=3, end=7)
+        self.assertTrue(lines[0].startswith("error:"), lines)
+        self.assertIn("memory", lines[0])
+        self.assertIn("3-7s", lines[0])
+        self.encode(killed, start=3, end=7)
+        self.assertEqual(len(self.jobs), 2)                       # a failure is run again next round
+
+    def test_a_proof_encode_that_failed_for_another_reason_stays_a_warning(self):
+        lines = self.encode(self.run_job(returncode=1, stderr="boom\n"), start=3, end=7)
+        self.assertTrue(lines[0].startswith("warning:"), lines)
 
 
 class Review(unittest.TestCase):

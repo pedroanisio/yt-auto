@@ -1102,6 +1102,13 @@ def _engine_id(host: str, cache: Path) -> tuple[str, dict]:
     return (f"local|{info['sha256']}" if info["sha256"] else ""), info
 
 
+def engine_identity(host: str = "", cache_dir: Path | str | None = None) -> str:
+    """The identity a cache keys a job on `host` by (see _engine_id), found
+    without ssh; "" when it is not known, and then nothing may be cached."""
+    cache = Path(cache_dir) if cache_dir else still_cache_dir()
+    return _engine_id(host, cache)[0]
+
+
 def _remember_engine(cache: Path, host: str, info: dict) -> None:
     if not (info.get("version") or info.get("sha256")):
         return

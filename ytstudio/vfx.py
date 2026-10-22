@@ -839,7 +839,9 @@ SR_WRAPPER = '''#!/usr/bin/env python3
     python3 sr.py frame <file.scene.xml> [--symbol ID] [--at SECONDS]
                                            render a proof frame at each shot's midpoint
                                            (shots.json) the way `yt build` includes the
-                                           symbol; writes frames/*.png -- Read them
+                                           symbol; writes frames/*.png -- Read them.
+                                           Stills only: the gate's own encode reports
+                                           what the camera never frames, once a round
 """
 import json, sys
 sys.path.insert(0, {sr_root!r})
@@ -863,7 +865,10 @@ def frame(argv):
         else:
             i += 1
     ws = Workspace.of(path)
-    results = ws.frames(path.name, symbol=symbol, times=[at] if at is not None else None)
+    # Stills only: the draft encode that reports what the camera never frames
+    # runs once a round at the gate, on the encode host, not on every look.
+    results = ws.frames(path.name, symbol=symbol, times=[at] if at is not None else None,
+                        encode=False)
     worst = 0
     for png, findings in results:
         print(f"frame: {{png if png else '(not rendered)'}}")
@@ -875,7 +880,9 @@ def frame(argv):
         return 1
     print("\\nnow Read every frame above and judge it against the brief: the hero "
           "legible and framed, the set lit, one continuous camera; a flat, black "
-          "or empty frame is not a finished shot.")
+          "or empty frame is not a finished shot. The gate encodes each shot once "
+          "a round and reports every object the camera never frames; keep the "
+          "hero in view in every frame here and that report stays clean.")
     return 1 if worst == 2 else 0
 
 
@@ -1141,13 +1148,26 @@ def encode_findings(files: dict[str, bytes], doc_path: str, *, start: float, end
     The bundle is shipped and run through render's public job hook
     (`render.run_job`; a scratch directory is a project as far as it is
     concerned), so the hosts, the sync and the binary lookup stay in one place.
+
+    An encode of a whole world wants the memory an encode gets: it goes to
+    the encode host, one kit render per host at a time (`sdkkit.host_lock`),
+    and its lines are cached by the still fingerprint of the bundle and the
+    window, so a round that changed nothing in a world pays no encode. An
+    encode the host killed for memory (exit 137) is the author's `error:`
+    -- the world is too heavy to encode anywhere -- and is never cached;
+    nor is any other failure.
     """
     import subprocess
     import tempfile
-    host = host or render.remote_host(None, "still")
+    host = host or render.remote_host(None, "encode")
     binary = render.engine()
     if binary is None and not host:
         return None
+    cached = _encode_cache(files, doc_path, start=start, end=end, quality=quality, host=host)
+    if cached is not None and cached.is_file():
+        hit = read_json(cached, warn=False)
+        if isinstance(hit, dict) and isinstance(hit.get("lines"), list):
+            return [str(l) for l in hit["lines"]]
     with tempfile.TemporaryDirectory(prefix="proof-") as tmp:
         root = Path(tmp)
         for rel, data in files.items():
@@ -1157,22 +1177,59 @@ def encode_findings(files: dict[str, bytes], doc_path: str, *, start: float, end
                "--json", "--report", ".estimate-proof.json", "--start", f"{start:g}",
                "--end", f"{end:g}", "--quality", quality]
         try:
-            if host:
-                proc = render.run_job(cmd, root, host, job="proof", verbose=False)
-            else:
-                proc = subprocess.run([str(binary)] + cmd[1:], cwd=root, capture_output=True,
-                                      text=True, timeout=timeout)
+            with sdkkit.host_lock(host):
+                if host:
+                    proc = render.run_job(cmd, root, host, job="proof", verbose=False)
+                else:
+                    proc = subprocess.run([str(binary)] + cmd[1:], cwd=root,
+                                          capture_output=True, text=True, timeout=timeout)
         except (subprocess.SubprocessError, OSError) as exc:
             return [f"warning: the proof encode of {start:g}-{end:g}s could not run: "
                     f"{str(exc)[:120]}"]
         report = _envelope(proc.stdout or "") or read_json(root / ".estimate-proof.json", warn=False)
     lines = framecheck.report_findings(report)
+    stderr = (proc.stderr or "").strip()
     if proc.returncode != 0 and not any(l.startswith("error") for l in lines):
-        tail = (proc.stderr or "").strip().splitlines()[-2:]
-        lines.insert(0, f"warning: the proof encode of {start:g}-{end:g}s exited "
-                        f"{proc.returncode}" + (": " + " | ".join(t.strip()[:120] for t in tail)
-                                               if tail else ""))
+        tail = stderr.splitlines()[-2:]
+        if proc.returncode == 137 or OUT_OF_MEMORY.search(stderr):
+            lines.insert(0, f"error: the proof encode of {start:g}-{end:g}s was killed for memory "
+                            f"on {host or 'this machine'} (exit {proc.returncode}): no host can "
+                            "encode this world as written. Time-bound every layer and group "
+                            "to its shots, drop what has faded to opacity 0, and lower the "
+                            "samples, the resolution of clay objects or the medium density")
+        else:
+            lines.insert(0, f"warning: the proof encode of {start:g}-{end:g}s exited "
+                            f"{proc.returncode}" + (": " + " | ".join(t.strip()[:120] for t in tail)
+                                                   if tail else ""))
+    if proc.returncode == 0 and cached is not None:
+        try:
+            cached.parent.mkdir(parents=True, exist_ok=True)
+            cached.write_text(json.dumps({"host": host or "this machine", "start": start,
+                                          "end": end, "lines": lines}, indent=2) + "\n",
+                              encoding="utf-8")
+        except OSError:
+            pass
     return lines
+
+
+#: What the engine's stderr says when the host killed its encode for memory.
+OUT_OF_MEMORY = re.compile(r"out of memory|\bKilled\b|\bOOM\b", re.IGNORECASE)
+
+
+def _encode_cache(files: dict[str, bytes], doc_path: str, *, start: float, end: float,
+                  quality: str, host: str) -> Path | None:
+    """Where one proof window's lines are cached: beside the still cache, under
+    the still fingerprint of the bundle, the engine, the window and the
+    quality. None when the engine on `host` is not known, since then the
+    lines cannot be keyed to the engine that produced them."""
+    cache = render.still_cache_dir()
+    ident = render.engine_identity(host, cache)
+    if not ident or doc_path not in files:
+        return None
+    shipped = {rel: data for rel, data in files.items() if rel != doc_path}
+    key = render.still_fingerprint(files[doc_path], shipped, doc_path, start, quality, ident,
+                                   options=f"encode:{start:g}-{end:g}")
+    return cache.parent / "encodes" / f"{key}.json"
 
 
 def frame_times(duration: float) -> list[float]:
@@ -1927,8 +1984,11 @@ class Workspace:
                   f"`python3 sr.py frame {doc}`: it renders a proof frame at each shot's "
                   "midpoint (from shots.json) plus the symbol's start and end, the way "
                   "the build includes it, writes frames/*.png and reports what the "
-                  "engine says: flat, black, clipped or too-dark frames, and every "
-                  "object3D the camera never frames. Read every PNG. A black, flat, "
+                  "engine says: flat, black, clipped or too-dark frames. It renders "
+                  "stills only, in seconds; "
+                  "the gate then encodes each shot once a round, on the encode host, "
+                  "and reports every object3D the camera never frames, so keep the "
+                  "hero in view in every frame you look at. Read every PNG. A black, flat, "
                   "empty or wrong frame, a hero out of view, or a hero that changes "
                   "between frames means the document is not done: fix the camera, the "
                   "lights, the materials or the geometry in the program, build and render "
@@ -1947,8 +2007,8 @@ class Workspace:
 
     def frames(self, name: str, *, symbol: str | None = None,
                times: list[float] | None = None, frame: tuple[int, int] | None = None,
-               jobs: int = 3, shots: dict[str, list[dict]] | None = None
-               ) -> list[tuple[Path | None, list[str]]]:
+               jobs: int = 3, shots: dict[str, list[dict]] | None = None,
+               encode: bool = True) -> list[tuple[Path | None, list[str]]]:
         """Render each symbol of a document as `yt build` includes it, at the
         midpoint of each shot it holds (`shots`, else shots.json, else the
         symbol's start, middle and end).
@@ -1960,7 +2020,11 @@ class Workspace:
         frame -- a camera pointing at nothing). The camera verdicts come from
         one short draft encode per shot (`encode_findings`), since only an
         encode computes them; each shot's verdict lands on its midpoint frame.
-        The author looks at the PNGs; this only catches what needs no eyes.
+        The encodes are the gate's (`validate`, once a round): an author's own
+        `sr.py frame` passes `encode=False` and gets stills alone, so a look
+        costs seconds, not the 20-40 minutes a whole-world encode took
+        (docs/throughput.md, run 2). The author looks at the PNGs; this only
+        catches what needs no eyes.
         """
         path = self.dir / name
         if not path.is_file():
@@ -2009,8 +2073,8 @@ class Workspace:
 
         # One encode window per shot of each 3D symbol (the whole symbol when
         # it has no shots): the only render that reports what the camera
-        # never frames.
-        windows = [(f, s) for f in facts if objects[f["id"]]
+        # never frames. None when the caller wants stills alone.
+        windows = [(f, s) for f in facts if encode and objects[f["id"]]
                    for s in (shots.get(f["id"]) or
                              [{"label": "", "at": 0.0, "seconds": f["duration"]}])]
 
