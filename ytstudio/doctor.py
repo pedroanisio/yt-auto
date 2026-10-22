@@ -27,7 +27,7 @@ import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from . import env, keyframe, render, workspace
+from . import env, keyframe, render, spend, workspace
 from .assets import licence_tier
 from .core import read_json, timecode, write_json
 
@@ -444,6 +444,28 @@ def check_renders(project: workspace.Project, report: Report) -> None:
                     }.get(status, "read the report, then re-run the job"))
 
 
+def check_spend(project: workspace.Project, report: Report) -> None:
+    """Warn when a record bills a model nobody priced (AUTO-73): a stage's
+    `usage.by_model` (or a harness stage's `engine.by_model`) names the ids
+    the CLI reported, and every timed-out call on an id with no row in
+    `spend.PRICES` or `$CLAUDE_PRICES` was booked at $0."""
+    unpriced: dict[str, list[str]] = {}
+    for path in sorted(project.root.glob("*.json")):
+        rec = read_json(path, warn=False)
+        if not isinstance(rec, dict):
+            continue
+        for key in ("usage", "engine"):
+            account = rec.get(key)
+            by_model = account.get("by_model") if isinstance(account, dict) else None
+            for model in (by_model or {}):
+                if spend.price_for(model) is None:
+                    unpriced.setdefault(str(model), []).append(path.name)
+    for model, names in sorted(unpriced.items()):
+        report.add("warn", "spend", f"{model} has no price; {', '.join(sorted(set(names)))} "
+                   "bill calls on it, and a call that timed out was booked at $0",
+                   "add its row to ytstudio/spend.PRICES or $CLAUDE_PRICES")
+
+
 def check_project(project: workspace.Project) -> Report:
     report = Report(project.root.name)
     done = project.done()
@@ -856,6 +878,7 @@ def check_project(project: workspace.Project) -> Report:
                        f"{qa_done.get('overall', '?')}")
 
     check_renders(project, report)
+    check_spend(project, report)
 
     # -- pilot -------------------------------------------------------------
     # The pilot writes its own document (segment outputs, schema raised to

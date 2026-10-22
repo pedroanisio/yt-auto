@@ -22,8 +22,9 @@ sys.path.insert(0, str(HERE))
 
 import claude_engine  # noqa: E402
 from claude_engine import Usage  # noqa: E402
-from ytstudio import (assess, cli, gate, harness, improve, keyframe, pilot, props,  # noqa: E402
-                      qa, research, retime, review, script, spend, styles, vfx, voice)
+from ytstudio import (assess, cli, doctor, gate, harness, improve, keyframe, pilot,  # noqa: E402
+                      props, qa, research, retime, review, script, spend, styles, vfx,
+                      voice, workspace)
 from ytstudio.core import Idea, write_json  # noqa: E402
 
 import test_wordless  # noqa: E402
@@ -173,6 +174,49 @@ class FailedDecision(unittest.TestCase):
         report = self.failing(self.Wordless)
         self.assertEqual([d["kind"] for d in report["decisions"]], ["failed"])
         self.assertAlmostEqual(report["cost_usd"], 0.3)
+
+
+class Doctor(unittest.TestCase):
+    """AUTO-73: a record that bills a model nobody priced is a warning, since
+    every timed-out call on that model was booked at $0."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        write_json(self.root / "idea.json", {"title": "T", "genre": "g", "description": "d"})
+
+    def spend_findings(self):
+        report = doctor.check_project(workspace.Project(self.root))
+        return [f for f in report.findings if f.area == "spend"]
+
+    def test_an_unpriced_model_in_a_record_is_a_warning_naming_both(self):
+        by_model = {"claude-sonnet-5-5": {"calls": 2, "cost_usd": 0.4},
+                    "claude-x-9": {"calls": 1, "cost_usd": 0.0}}
+        write_json(self.root / "styles.json",
+                   {"styles": [], "usage": spend.record(0.4, "sonnet", 3, by_model=by_model)})
+        write_json(self.root / "retime.json",
+                   {"engine": {"model": "sonnet", "by_model": {"claude-x-9": {"calls": 1}}}})
+        found = self.spend_findings()
+        self.assertEqual([f.level for f in found], ["warn"])
+        self.assertIn("claude-x-9", found[0].message)
+        self.assertNotIn("claude-sonnet-5-5", found[0].message)
+        self.assertIn("styles.json", found[0].message)
+        self.assertIn("retime.json", found[0].message)
+        self.assertIn("CLAUDE_PRICES", found[0].fix)
+
+    def test_priced_models_and_records_without_a_breakdown_are_quiet(self):
+        write_json(self.root / "styles.json", {"styles": [], "usage": spend.record(
+            0.4, "sonnet", 1, by_model={"claude-sonnet-5-5": {"calls": 1}})})
+        write_json(self.root / "voice.json", {"engine": "kokoro", "usage": spend.record(0, "", 0)})
+        self.assertEqual(self.spend_findings(), [])
+
+    def test_a_price_set_in_the_environment_counts(self):
+        write_json(self.root / "styles.json", {"styles": [], "usage": spend.record(
+            0.4, "m", 1, by_model={"claude-x-9": {"calls": 1}})})
+        row = {"input": 1, "cached_input": 0.1, "output": 5}
+        with mock.patch.dict(os.environ, {"CLAUDE_PRICES": json.dumps({"claude-x-9": row})}):
+            self.assertEqual(self.spend_findings(), [])
 
 
 class Writers(unittest.TestCase):
