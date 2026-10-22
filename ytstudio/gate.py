@@ -316,8 +316,9 @@ def run_remote(plan: RemotePlan, report: dict, project_root: Path, *, verbose: b
         technical = project_root / "qa" / "TECHNICAL.json"
         technical.parent.mkdir(parents=True, exist_ok=True)
         render_stage.refuse_remote()
-        pulled = subprocess.run(["rsync", "-az", f"{plan.host}:{plan.project}/qa/TECHNICAL.json",
-                                 str(technical)], capture_output=True, text=True)
+        pulled = subprocess.run(["rsync", "-az", "-e", render_stage.SSH_COMMAND,
+                                 f"{plan.host}:{plan.project}/qa/TECHNICAL.json", str(technical)],
+                                capture_output=True, text=True)
         if pulled.returncode == 0 and technical.is_file():
             data = read_json(technical, warn=False)
             if isinstance(data, dict):

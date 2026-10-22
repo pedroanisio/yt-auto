@@ -10,13 +10,16 @@ back. Nothing here opens an ssh connection: the plan is a pure value.
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from tests import hermetic  # noqa: E402
 from ytstudio import gate  # noqa: E402
 from ytstudio import render  # noqa: E402
 
@@ -123,6 +126,45 @@ class RemotePlan(unittest.TestCase):
         self.assertTrue(script.startswith(f"cd {plan.root} && "))
         self.assertIn("python3 " + f"{plan.root}/tools/gate/production_gate.py technical", script)
         self.assertIn("--voice-end 15.0", script)
+
+
+class RemoteRun(unittest.TestCase):
+    """Every ssh and rsync the gate's run makes carries the connect timeout and
+    BatchMode (AUTO-69): the pull of qa/TECHNICAL.json too, which a sshd that
+    hangs between the gate's ssh and the pull held for good."""
+
+    def setUp(self):
+        hermetic.fake_remote(self)
+        self.ran: list[list[str]] = []
+
+    def run_gate(self):
+        plan = gate.RemotePlan(host="root@h", root="/r/p/gate-1", project="/r/p/gate-1/p",
+                               engine="/bin/e", local_root="/x/p", command=["gate"],
+                               syncs=[render.sync_up_args(ROOT, "root@h", "/r/p/gate-1/p", delete=False)])
+
+        def fake(argv, **kw):
+            self.ran.append(list(argv))
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(gate.subprocess, "run", side_effect=fake), \
+                mock.patch.object(gate.render_stage, "remove_remote"):
+            gate.run_remote(plan, {}, Path(tmp), verbose=False, keep_remote=False)
+        return self.ran
+
+    def test_every_ssh_and_rsync_carries_the_connect_timeout(self):
+        ran = self.run_gate()
+        pulls = [a for a in ran if a[0] == "rsync" and a[-1].endswith("TECHNICAL.json")]
+        self.assertEqual(len(pulls), 1, ran)
+        for argv in ran:
+            if argv[0] == "ssh":
+                self.assertIn("ConnectTimeout=10", argv)
+                self.assertIn("BatchMode=yes", argv)
+            else:
+                self.assertEqual(argv[0], "rsync")
+                self.assertIn("-e", argv, argv)
+                command = argv[argv.index("-e") + 1]
+                self.assertIn("ConnectTimeout=10", command)
+                self.assertIn("BatchMode=yes", command)
 
 
 class HostChoice(unittest.TestCase):
