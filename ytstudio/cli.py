@@ -147,7 +147,8 @@ def _register_run(sub, parents: list) -> None:
     p.add_argument("--dry-run", action="store_true", dest="dry_run",
                    help="print the stages this run would walk, each with its "
                         "estimated cost (measured, like or assumed) and the "
-                        "total, and run nothing")
+                        "total, and run nothing (the project is planted, as "
+                        "for any stage)")
     flags.budget(p, default=None, metavar="USD",
                  help="spend cap for the whole run: a stage whose estimate plus "
                       "what the run has spent does not fit is not started "

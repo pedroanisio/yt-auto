@@ -14,7 +14,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
 
-from test_run_pipeline import RunCase  # noqa: E402
+# Aliased so the loader does not collect the base class here a second time.
+from test_run_pipeline import RunCase as _RunCase  # noqa: E402
 from ytstudio import cli, env, improve, retime, spend, workspace  # noqa: E402
 
 #: A fake pricing: one row per stage asked for, gate and qa appended as the
@@ -77,7 +78,7 @@ class Estimates(unittest.TestCase):
         self.assertEqual(spend.stage_estimates.__module__, "ytstudio.spend")
 
 
-class Priced(RunCase):
+class Priced(_RunCase):
     def setUp(self):
         super().setUp()
         patch = mock.patch.object(spend, "stage_estimates", fake_estimates)
@@ -180,7 +181,7 @@ class Budget(Priced):
         self.assertIn("sound", self.err)
 
 
-class WalkOrder(RunCase):
+class WalkOrder(_RunCase):
     """The plan and the cap price the stages in the order the walk reaches
     them, sound before the keyframe, with the real estimator: an assumed vfx
     folds in what follows it, so a stage priced after vfx when it runs before

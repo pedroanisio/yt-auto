@@ -23,7 +23,7 @@ CONCEPTS = {
     "rounds": ("--rounds", {"--revisions": "vfx"}, ("keyframe", "vfx", "probe")),
     "bar": ("--bar", {"--author-bar": "vfx"}, ("keyframe", "vfx", "probe")),
     "budget": ("--budget-usd", {"--budget": "research"},
-               ("keyframe", "vfx", "probe", "research", "assess", "improve")),
+               ("keyframe", "vfx", "probe", "research", "assess", "improve", "run")),
     "fresh": ("--fresh", {}, ("research", "keyframe", "vfx", "props")),
 }
 #: Stages that author with or ask a model; render and the local fetchers do not.
