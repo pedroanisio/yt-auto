@@ -3112,6 +3112,18 @@ class VfxPlanner:
             short = score is not None and score < self.author_bar
             if not errors and not short:
                 break
+            # The last round went unreviewed with nothing the author can
+            # answer (its frames lost to the host, or no review came back):
+            # the listing of the round the section stands on was already
+            # answered in it, so no further revision is paid for the host's
+            # failure; the section ends on its incumbent.
+            if not errors and rounds[-1]["score"] is None:
+                lost = any(f.startswith("infra") for f in rounds[-1]["findings"])
+                self.spend.stopped[n] = "infra" if lost else "unreviewed"
+                self._say(f"    [{n}] revision {revisions} was "
+                          + ("lost to the host" if lost else "not reviewed")
+                          + f"; no revision {revisions + 1}, the best reviewed round is kept")
+                break
             # The operator asked the run to finish (`yt vfx --finish-now`, or
             # SIGUSR1): no further revision; the section ends on its best round.
             if self.finish_requested():

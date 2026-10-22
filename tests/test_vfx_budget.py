@@ -378,6 +378,32 @@ class InfraRound(Planned):
         self.assertTrue(doc["rounds"][0]["infra"])                  # what the first pass lost
         self.assertFalse([f for f in doc["findings"] if f.startswith(("error", "infra"))])
 
+    def test_a_revision_the_host_lost_ends_the_section_on_its_incumbent_not_in_another_session(self):
+        # Round 0 is reviewed under the bar; revision 1's frames are lost on
+        # both passes, so it has no review. The section stands on round 0,
+        # but no further revision is paid for the host's failure: the author
+        # already answered round 0's listing in the round the host lost.
+        world.FakeEngine.reviews = [{"frames": [], "score": 6, "summary": "short"}]
+        passes: list[float] = []
+
+        def still(xml, at, **kw):
+            passes.append(at)
+            if len(passes) <= len(vfx.shot_times(world.SECTION["shots"], 15)):
+                return world.varied_png(), "rendered on root@small"    # round 0's frames
+            return None, self.LOST
+        planner = self.planner(budget_usd=40, stage_budget_usd=400, revisions=3)
+        doc = self.gated(planner, still)
+        self.assertEqual(Costed.log.count("author"), 2)            # round 0 and revision 1
+        self.assertEqual(Costed.log.count("review"), 1)
+        self.assertEqual(doc["revisions"], 1)
+        self.assertEqual([r["score"] for r in doc["rounds"]], [6, None])
+        self.assertTrue(doc["rounds"][-1]["infra"])
+        self.assertEqual((doc["best_round"], doc["score"]), (0, 6))
+        self.assertEqual(doc["stopped"], "infra")
+        self.assertEqual(doc["budget"]["stopped"], "infra")
+        self.assertFalse(any("revision 2:" in s for s in self.said), self.said)
+        self.assertTrue(any("lost to the host; no revision 2" in s for s in self.said))
+
     def test_a_world_too_heavy_for_the_still_deadline_gets_its_revision_not_a_wait(self):
         # Both hosts stop the still for its cost: the world is the author's to
         # lighten, so the round is an error, revised, and never the host's.

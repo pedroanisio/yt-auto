@@ -553,7 +553,9 @@ hand-authored world showed the cost.
     again after `vfx.INFRA_WAIT` seconds without a session, gets no review
     while frames are missing, and the frames the first pass lost are
     recorded on the round (`rounds[].infra` in `vfx.json`, "lost to the
-    host" in `vfx.md`); no revision is paid for the host's failure.
+    host" in `vfx.md`); no revision is paid for the host's failure: a
+    revision whose frames stay lost (or that got no review) ends the
+    section on the round it stands on, `stopped: infra` (`unreviewed`).
   - Money is budgeted per section and per stage (`vfx.SpendBudget`):
     `--budget-usd` (18: what the default `--rounds` cost at the most, so the
     estimate and the budget agree) covers one section's author sessions and
