@@ -28,7 +28,7 @@ Shared rules. This file is the home for on-screen text and redundancy (rule 2), 
 4. **Every section of the plan names its anchor visual before the script is written, and the story is scoped to what can be shown; a section with nothing to show is cut or merged.**
    Vox's pitch template asks for the anchor visuals at the pitch stage; if a producer cannot name them "they know that they do not have a video story there", and scope is cropped "where you stop having things to show people" (Fong, SciComm Summer #1, 2022, https://opinionscipod.buzzsprout.com/981667/episodes/10682097-scicomm-summer-1-joss-fong-producing-science-videos — practitioner). Kurzgesagt chooses "the best visual metaphors and ideas for each scene in the sketching phase" before illustration (Kurzgesagt, "What we do", https://kurzgesagt.org/what-we-do?visit=videos — practitioner). Hampe's picture-off test is the inverse check and is kept in Folklore because it was read only through student excerpts.
    Check: `PLAN_SCHEMA` requires `anchor_visual` per section; a reviewer reads only the shot descriptions, with no narration, and must reconstruct the section's claim; flag sections where that fails, and flag any narrated number, comparison or mechanism that no shot depicts.
-   Stages: script, keyframe, plan.anchor_visual
+   Stages: script, styles, keyframe, plan.anchor_visual
 
 ## 2. What is in the frame
 
@@ -55,7 +55,7 @@ Shared rules. This file is the home for on-screen text and redundancy (rule 2), 
 9. **For every abstract claim, the first shot is a specific worked example, simulation or drawing; the definition or rule comes after the viewer has seen it happen.**
    Grant Sanderson's two most repeated craft rules are "Concrete before abstract" and "Never start with definitions", with "Always ask what picture or visual you could use to elucidate a topic" (Sanderson, 3Blue1Brown About page, SoME talk takeaways, 2021, https://www.3blue1brown.com/about/ — practitioner), and "When we put the visuals first, then start to articulate the meaning, you can get a sense of ownership over it" (The Stanford Daily, 2020, https://stanforddaily.com/2020/01/24/3blue1brown-creator-grant-sanderson-15-talks-engaging-with-math-using-stories-and-visuals/ — practitioner, interview). Fong withheld the black-hole photo until the viewer understood the difficulty: "I wanted to get people to understand why this is so difficult before they saw the result" (Fong, The Open Notebook, 2020, as above). The learning-side support is the dynamic-drawing result in rule 6; the narration-side version is rule 20.
    Check: tag each plan beat as example, mechanism, definition or generalisation; flag any definition or generalisation beat not preceded within the same section by an example or mechanism beat with a concrete shot.
-   Stages: script, keyframe, vfx
+   Stages: script, styles, keyframe, vfx
 
 ## 3. Motion and transitions
 
