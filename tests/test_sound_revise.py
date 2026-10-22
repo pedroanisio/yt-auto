@@ -261,6 +261,39 @@ class RuleFindings(unittest.TestCase):
         self.assertEqual([x.level for x in c if x.cue_id == "M2"], ["quiet"])
         self.assertEqual([f["rule"] for f in out["unresolved"]], ["rule:overlap"])
 
+    def test_a_models_revision_that_clears_a_kept_rule_resolves_it(self):
+        # the rules are read again after the model's own loop: M2 kept its
+        # overlap at the rule stage, then the model's flag on M2 moved it clear
+        c = self.sheet()
+        d, calls = rig([{"flags": [flag("M2")], "verdict": "no"},
+                        {"flags": [], "verdict": "ok"}],
+                       [fix(action="keep", why="handover"),
+                        {"action": "fix", "at": 30, "why": "moved after the first bed"}])
+        out = d.review_and_revise(c, stats(c))
+        self.assertEqual(len(calls["revise"]), 2)
+        self.assertEqual([x.at for x in c if x.cue_id == "M2"], [30])
+        self.assertEqual(out["unresolved"], [])
+        self.assertEqual(out["flags"], [])
+
+    def test_a_models_revision_that_breaks_a_rule_is_unresolved_and_named(self):
+        # no rule broken on the sheet, then the model's own fix for M2 moves it
+        # onto M1: nothing asked the model about that overlap, and build must
+        # still see it
+        c = cues()
+        c.append(sound.Cue(kind="music", name="second bed", at=30, seconds=20,
+                           purpose="s", level="-30 dBFS", fade_out=2.0))
+        c = sound.number_cues(c)
+        d, calls = rig([{"flags": [flag("M2")], "verdict": "no"},
+                        {"flags": [], "verdict": "ok"}],
+                       [{"action": "fix", "at": 20, "why": "earlier"}])
+        out = d.review_and_revise(c, stats(c))
+        self.assertEqual(len(calls["revise"]), 1)
+        self.assertEqual([(f["cue"], f["rule"]) for f in out["unresolved"]],
+                         [("M2", "rule:overlap")])
+        self.assertEqual(out["unresolved"][0]["kept"],
+                         "introduced by a revision; not answered")
+        self.assertEqual([f["rule"] for f in out["flags"]], ["rule:overlap"])
+
     def test_report_only_lists_the_rule_flags_and_revises_nothing(self):
         c = self.sheet()
         d, calls = rig([{"flags": [flag("M1")], "verdict": "no"}], [])
@@ -281,6 +314,18 @@ class RuleFindings(unittest.TestCase):
         out = d.review_and_revise(c, stats(c))
         self.assertEqual(out["revisions"][0]["cue"], "M2")
         self.assertEqual(out["unresolved"], [])
+
+    def test_report_only_lists_the_rule_flags_when_the_review_fails(self):
+        c = self.sheet()
+        d = designer()
+
+        def ask(name, prompt, schema):
+            raise sound.ClaudeError("down")
+        d._ask = ask
+        out = d.review_and_revise(c, stats(c), fix=False)
+        self.assertEqual([(f["cue"], f.get("rule")) for f in out["flags"]],
+                         [("M2", "rule:overlap")])
+        self.assertEqual(out["verdict"], "")
 
     def test_run_carries_rule_results_into_the_record(self):
         d = designer()

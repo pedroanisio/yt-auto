@@ -903,11 +903,15 @@ class SoundDesigner:
         The sheet's own rules (`rule_findings`) go to `revise` first, before
         the model listens back: a rule flag it keeps, or answers with a change
         that still breaks the rule, stands in `flags` and `unresolved` with
-        its `rule`, and `yt build` names it.
+        its `rule`, and `yt build` names it. The rules are read again after
+        the model's own loop, which moves cues too: a kept rule that loop
+        cleared is resolved, and one it broke is unresolved, unanswered.
         """
         rules = rule_findings(cues, self.runtime)
         if not fix:
             review = self.review(cues, stats)
+            if not review and rules:
+                review = {"flags": [], "verdict": ""}
             if review:
                 review["flags"] = list(review.get("flags", [])) + rules
             return review
@@ -922,12 +926,6 @@ class SoundDesigner:
                 rule_kept[(f["cue"], f["rule"])] = result["why"]
         if revisions:
             stats = coverage(cues, self.runtime)
-        standing = rule_findings(cues, self.runtime)
-        for f in standing:
-            f["kept"] = rule_kept.get((f["cue"], f["rule"])) or (
-                f"still breaks {f['rule']} after the revision; left as it is")
-        if standing:
-            self._say(f"[rules] {len(rules)} finding(s), {len(standing)} standing")
 
         review = self.review(cues, stats)
         if not review:
@@ -966,6 +964,17 @@ class SoundDesigner:
                 [f for f in review.get("flags", []) if f.get("cue") not in changed]
                 + [f for f in again.get("flags", []) if f.get("cue") in changed])
             review["recheck"] = again.get("verdict", "")
+        # The rules, on the sheet as the model's loop left it: a flag it was
+        # asked about carries its answer; one that loop made was never asked.
+        asked = {(f["cue"], f["rule"]) for f in rules}
+        standing = rule_findings(cues, self.runtime)
+        for f in standing:
+            key = (f["cue"], f["rule"])
+            f["kept"] = rule_kept.get(key) or (
+                f"still breaks {f['rule']} after the revision; left as it is"
+                if key in asked else "introduced by a revision; not answered")
+        if standing:
+            self._say(f"[rules] {len(rules)} finding(s), {len(standing)} standing")
         left = binding(review.get("flags", []), kept)
         for f in review.get("flags", []):
             if f.get("cue") in kept:
