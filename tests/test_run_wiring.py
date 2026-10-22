@@ -14,7 +14,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
 
-# Aliased so the loader does not collect the base class here a second time.
+# Imported under another name so a reader sees it is the base, not a case here
+# (it has no tests of its own, so the loader collects nothing from it either way).
 from test_run_pipeline import RunCase as _RunCase  # noqa: E402
 from ytstudio import cli, env, improve, retime, spend, workspace  # noqa: E402
 

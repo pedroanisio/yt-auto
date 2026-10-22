@@ -1090,12 +1090,20 @@ stage's argv; `yt props` gets no extras, only the flags every model stage
 gets (only `yt render` goes without the model flags). Only the build reads
 the cue sheet, so `yt sound` runs beside `yt keyframe` and `yt vfx` on its
 own thread (`cli.Beside`, a daemon, so a Ctrl-C ends the run and the sound
-stage with it) and is joined before `yt build`; a sound stage that
-failed fails the run there, and a walk that stops earlier still waits for it.
+stage with it; the terminal's interrupt reaches the stage's engine through
+the process group, where a `kill -INT` of `yt` alone leaves that engine to
+finish on its own) and is joined before `yt build`; a sound stage that
+failed fails the run there, and a walk that stops earlier still waits for it
+and reports its code. The synthesis `--synth` asks for runs on this
+workstation (the agent's NumPy program, no ffmpeg); its WAVs are levelled on
+a render host like the fetched ones. `core.write_json` writes every record
+beside the file and moves it into place, so a write an interrupt cut short
+leaves the old record whole rather than a truncated one.
 `--dry-run` prints the stages the walk would take from the project as it
 stands, one row per stage with its estimated cost (`spend.stage_estimates`:
 measured from the project's own report, else a like project's, else
-assumed) and the total, and runs nothing. `--budget-usd N` caps the whole
+assumed) and the total, and runs nothing (the project is planted, as for any
+stage). `--budget-usd N` caps the whole
 run: a stage whose estimate plus what the run has spent does not fit is not
 started, the refusal names the estimate and the run exits 3
 (`retime.UNSETTLED`), and `yt vfx` gets what is left as `--stage-budget-usd`.
