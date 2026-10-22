@@ -249,6 +249,15 @@ def _burst(t: float, *, fps: float, seconds: float | None, frame: str) -> dict:
     return plan
 
 
+#: The screenplay functions every sample includes, each row's `why` naming
+#: it as `beat: <function>`.
+SAMPLED_BEATS = ("rehook", "payoff")
+
+#: The reasons a single mechanical defect blocks on: the opening, the last
+#: shot and the shot that pays the promise. A re-hook is sampled, not an edge.
+EDGE_REASONS = ("hook", "ending", "beat: payoff")
+
+
 def sample(build: dict, *, limit: int = 14) -> list[dict]:
     """Where the evidence is taken, per docs/production.md §7, in priority
     order so a tight limit still keeps the hook, the ending and the sections.
@@ -266,6 +275,11 @@ def sample(build: dict, *, limit: int = 14) -> list[dict]:
         return shots[-1]
 
     wanted: list[tuple[dict, str]] = [(shots[0], "hook"), (shots[-1], "ending")]
+    # The screenplay's own beats (AUTO-90: build.json carries each shot's
+    # `function`) come next, beside the positional rows rather than instead
+    # of them, so a mislabelled payoff cannot drop the film's real ending.
+    wanted += [(s, f"beat: {s['function']}") for s in shots
+               if s.get("function") in SAMPLED_BEATS]
     seen_sections = set()
     for s in shots:
         if s.get("section") and s["section"] not in seen_sections:
@@ -283,7 +297,8 @@ def sample(build: dict, *, limit: int = 14) -> list[dict]:
         t = _mid(shot)
         hit = next((row for row in out if abs(row["t"] - t) < 0.5), None)
         if hit:
-            if why not in hit["why"]:
+            # whole reasons, not substrings: "hook" is inside "beat: rehook"
+            if why not in hit["why"].split("; "):
                 hit["why"] += f"; {why}"
             continue
         if len(out) >= limit:
@@ -439,8 +454,10 @@ def engine_diagnostics(report: dict | None, shots: list[dict]) -> dict:
 
 
 def _on_edge(row: dict) -> bool:
-    why = str(row.get("why", ""))
-    return "hook" in why or "ending" in why
+    """Whether a sampled row is one a single defect blocks on, by its whole
+    reasons: a substring test made `beat: rehook` (and a section named after
+    Hooke) an edge."""
+    return any(why in EDGE_REASONS for why in str(row.get("why", "")).split("; "))
 
 
 #: Mechanical kinds that block on their own, wherever they sit.
