@@ -1206,11 +1206,15 @@ def encode_findings(files: dict[str, bytes], doc_path: str, *, start: float, end
                             f"{proc.returncode}" + (": " + " | ".join(t.strip()[:120] for t in tail)
                                                    if tail else ""))
     if proc.returncode == 0 and cached is not None:
+        # Written whole, as render stores a still: a reader in another
+        # process must never see half a file and encode the window again.
         try:
             cached.parent.mkdir(parents=True, exist_ok=True)
-            cached.write_text(json.dumps({"host": host or "this machine", "start": start,
-                                          "end": end, "lines": lines}, indent=2) + "\n",
-                              encoding="utf-8")
+            tmp = cached.with_name(f".{cached.stem}.{os.getpid()}.tmp")
+            tmp.write_text(json.dumps({"host": host or "this machine", "start": start,
+                                       "end": end, "lines": lines}, indent=2) + "\n",
+                           encoding="utf-8")
+            os.replace(tmp, cached)
         except OSError:
             pass
     return lines

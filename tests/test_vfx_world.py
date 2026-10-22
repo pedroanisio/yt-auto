@@ -844,6 +844,23 @@ class EncodeCache(unittest.TestCase):
         lines = self.encode(self.run_job(returncode=1, stderr="boom\n"), start=3, end=7)
         self.assertTrue(lines[0].startswith("warning:"), lines)
 
+    def test_the_cache_is_written_whole_as_the_still_cache_is(self):
+        # A reader in another process sees the file complete or not at all:
+        # written beside its name and renamed into place, never partially.
+        moves: list[tuple[str, str]] = []
+        real = os.replace
+
+        def replace(src, dst, *a, **kw):
+            moves.append((Path(src).name, Path(dst).name))
+            return real(src, dst, *a, **kw)
+        with patch.object(vfx.os, "replace", replace):
+            self.encode(self.run_job(), start=3, end=7)
+        self.assertEqual(len(moves), 1, moves)
+        tmp, final = moves[0]
+        self.assertTrue(tmp.startswith(".") and tmp.endswith(f".{os.getpid()}.tmp"), tmp)
+        self.assertTrue(final.endswith(".json"), final)
+        self.assertEqual(sorted(p.name for p in self.cache.rglob("*.tmp")), [])
+
     def test_a_job_the_host_lost_is_not_the_authors_memory_error(self):
         # render._read_job's note on a lost job says "engine killed": the
         # host's failure, not the kernel's `Killed`, so no revision is paid.
