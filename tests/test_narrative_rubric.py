@@ -371,16 +371,27 @@ def at(doc: dict, dotted: str):
     return value
 
 
-#: The faults the card names, each with the criterion it fails on.
+#: The faults the card names that the story review catches, each with the
+#: criterion it fails on.
 SEEDED = {"list-plan": "train", "topic-train": "train", "empty-payoff": "ending",
-          "reveal-first": "reveal_setup", "recap-ending": "ending",
-          "hook-enumerates": "hook"}
+          "and-chain": "train", "reveal-first": "reveal_setup",
+          "recap-ending": "ending", "hook-enumerates": "hook"}
+
+#: The faults only the cold read catches: a premise a first-time viewer
+#: could not restate, and terms a lay audience is never given. judging 14
+#: puts them under the pre-voice checks that are not story checks, and the
+#: stage files the cold read's mismatch as a flag of its own without
+#: touching the story verdict, so the story review is not judged on them.
+COLD_READ = ("no-premise", "jargon")
+
+#: The cases with no script: the plan is the whole of what is read.
+PLAN_ONLY = ("list-plan", "topic-train", "empty-payoff", "and-chain")
 
 
 class Fixtures(unittest.TestCase):
     def test_the_set_holds_every_seeded_fault_and_one_good_pair(self):
         names = cases()
-        self.assertEqual(sorted(names), sorted([*SEEDED, "good"]))
+        self.assertEqual(sorted(names), sorted([*SEEDED, *COLD_READ, "good"]))
         good = names["good"]
         self.assertTrue((good / "plan.json").is_file() and (good / "script.json").is_file())
         for name, criterion in SEEDED.items():
@@ -389,6 +400,21 @@ class Fixtures(unittest.TestCase):
                 self.assertEqual(expected["criterion"], criterion)
                 self.assertIn(expected["verdict"], ("reject", "consider"))
                 self.assertTrue(expected["why"].strip())
+                self.assertNotIn("story", expected)
+
+    def test_a_cold_read_case_holds_the_story_review_to_nothing(self):
+        # The rubric has no criterion for these faults, so a case that named
+        # one would fail a reviewer for following the rubric.
+        for name in COLD_READ:
+            expected = load(FIXTURES / name / "expected.json")
+            with self.subTest(case=name):
+                self.assertIs(expected["story"], False)
+                self.assertNotIn("criterion", expected)
+                self.assertNotIn("verdict", expected)
+                self.assertTrue(expected["cold_read"])
+                self.assertTrue(expected["why"].strip())
+                self.assertIn("judging 14", expected["judging_10"])
+                self.assertTrue((FIXTURES / name / "script.json").is_file())
 
     def test_every_plan_and_script_is_shaped_like_the_screenplay(self):
         for name, path in cases().items():
@@ -467,7 +493,7 @@ class Fixtures(unittest.TestCase):
     def test_a_plan_only_case_is_reviewed_from_its_own_plan(self):
         # No script ships with these cases, so the review reads the plan: its
         # first minute says so, and nothing in it is the good film's script.
-        for name in ("list-plan", "topic-train", "empty-payoff"):
+        for name in PLAN_ONLY:
             path = FIXTURES / name
             self.assertFalse((path / "script.json").is_file())
             said = load(path / "expected.json")["review"]
@@ -499,7 +525,7 @@ class Fixtures(unittest.TestCase):
                 self.assertIn(criterion, [f["criterion"] for f in said["flags"]])
 
     def test_a_plan_fault_is_expressible_to_the_plan_review(self):
-        for name in ("list-plan", "topic-train", "empty-payoff"):
+        for name in PLAN_ONLY:
             said = load(FIXTURES / name / "expected.json")["plan_review"]
             with self.subTest(case=name):
                 self.assertEqual(problems(said, narrative.PLAN_REVIEW_SCHEMA), [])

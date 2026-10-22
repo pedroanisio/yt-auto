@@ -1,0 +1,44 @@
+{
+  "story": false,
+  "why": "The plan is pitched at a lay audience, and sections 2 and 3 lean on plasma, the interplanetary magnetic field and corpuscular radiation without saying what any of them is: a first-time viewer is left holding three words no line explains (structure 8; attention 24, 26; judging 14).",
+  "judging_10": "judging 10 asks the calibration run to fail the reviewer on every seeded case; this fault is not the story review's to catch. The story here is the good one, and the rubric has no criterion for terms a lay viewer is never given: open_loops' Fair is a question never answered or a setup never paid, which this arc does not have. judging 14 puts unexplained terms in the cold read, among the pre-voice checks that are not story checks. So the story review is read here and not judged, and the calibration fails a cold read that does not list the terms, each by one of the names the case accepts.",
+  "evidence": {
+    "in": "script.sections.1.shots.1.narration",
+    "says": "plasma"
+  },
+  "cold_read": {
+    "terms": [
+      [
+        "plasma"
+      ],
+      [
+        "interplanetary magnetic field",
+        "magnetic field",
+        "IMF"
+      ],
+      [
+        "corpuscular radiation",
+        "corpuscular"
+      ]
+    ]
+  },
+  "review": {
+    "logline": "A comet's tail leads it away from the Sun because sunlight and a wind from the Sun push it, not because it trails behind.",
+    "synopsis": "A comet leaves the Sun tail first; sunlight is too weak to explain the gas tail; Biermann proposes a wind from the Sun and Mariner 2 measures it; the opening comet is seen again.",
+    "grades": {
+      "train": "Excellent",
+      "hook": "Excellent",
+      "stakes": "Excellent",
+      "open_loops": "Good",
+      "reveal_setup": "Excellent",
+      "ending": "Excellent",
+      "honesty": "Excellent"
+    },
+    "verdict": "recommend",
+    "flags": [],
+    "first_minute": {
+      "promise_match": "The comet and its tail are on screen and named at once.",
+      "question_and_stakes": "Why the tail leads; the same wind reached Quebec in 1989."
+    }
+  }
+}

@@ -472,9 +472,21 @@ calibration set; copy it out, since `work/` is disposable.
 A reject is an `error: story review: reject` finding that `yt doctor` fails
 on; `narration.txt` is still written and the stage exits 0, because the
 reviewer is not calibrated yet. `--gate` makes a reject or `not_evidenced`
-leave `narration.txt` unwritten and exit 1; turn it on once
-work/review-log.jsonl holds 20 labelled scripts and the seeded-bad fixtures
-in `tests/fixtures/narrative/` fail under the live reviewer. `yt run` never
+leave `narration.txt` unwritten and exit 1, and script.json then records
+`gate: true`. Turn it on only when `python -m ytstudio.narrative calibrate
+tests/fixtures/narrative` shows the seeded-bad fixtures all fail, the good one
+passes and the length audit passes (the padded copies of the good script and
+of the recap ending may not win more than 60% of their pairs, and an audit
+whose every pair was read at the ceiling fails), and work/review-log.jsonl
+holds at least 20 rows a person has labelled reject, consider or recommend
+(coverage's Pass counts as reject). The calibration reads the cases on the
+real models with the plan review where the case names a plan verdict, the
+three samples on every case, and the cold read where there is narration;
+the premise and jargon cases are judged on the cold read alone, since the
+rubric has no criterion for them. It costs about $1 a case at opus, revises
+nothing and logs nothing, and prints a pass/fail table and how often the
+reviewer agreed with the labels; `yt doctor` warns `gate on with N labelled
+verdicts (20 needed)` for a gated script.json below that count. `yt run` never
 passes it, and it is refused without `--review` or with `--revise`, which
 never reads the story again. The record is `script.json` `review` and the
 `## Story review` section of `script.md`.
@@ -1671,7 +1683,7 @@ ytstudio/
 ├── assets.py           the open-catalogue search (NASA, Openverse, Commons, Archive)
 ├── styles.py           Director, the style library, the deliberation stages
 ├── script.py           Screenwriter, Section, Shot
-├── narrative.py        the narrative rubric: criteria, levels, the review's and the plan review's schemas
+├── narrative.py        the narrative rubric: criteria, levels, the review's and the plan review's schemas; `python -m ytstudio.narrative calibrate`
 ├── voice.py            VoiceOver, the TTS engines, captions and drift
 ├── props.py            CC0 models, HDRIs and textures from Poly Haven, into props/
 ├── vfx.py              the model authors each section's world, versioned under vfx/vNN/

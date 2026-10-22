@@ -1,0 +1,159 @@
+{
+  "idea": {
+    "title": "Why a comet's tail points away from the Sun",
+    "genre": "explainer",
+    "description": "The tail is not a wake: what pushes it."
+  },
+  "sections": [
+    {
+      "heading": "Tail first",
+      "shots": [
+        {
+          "n": 1,
+          "visual": "a comet moving away from the Sun, tail ahead",
+          "narration": "This comet you are looking at right now is on its way out, leaving the Sun behind it. And, strangely enough, its long tail is out in front of it, leading the way.",
+          "seconds": 13,
+          "asset": "make",
+          "style": "the film's treatment",
+          "source": "",
+          "function": "hook",
+          "shows": "the tail leads the comet outward",
+          "on_screen": "",
+          "on_screen_text": []
+        },
+        {
+          "n": 2,
+          "visual": "the same stream reaching Earth, a city's lights going out",
+          "narration": "A tail that leads the way instead of trailing behind? Whatever it is that is pushing that tail out ahead reaches you too, right here at home. In March 1989 a storm in it put the power out across Quebec for nine long hours.",
+          "seconds": 18,
+          "asset": "make",
+          "style": "the film's treatment",
+          "source": "",
+          "function": "setup",
+          "shows": "the stream that bends the tail arrives at Earth",
+          "on_screen": "",
+          "on_screen_text": []
+        },
+        {
+          "n": 3,
+          "visual": "the comet again, tail ahead",
+          "narration": "So the question is a simple one to ask: what, exactly, is pushing it?",
+          "seconds": 6,
+          "asset": "make",
+          "style": "the film's treatment",
+          "source": "",
+          "function": "rehook",
+          "shows": "the question, over the comet",
+          "on_screen": "",
+          "on_screen_text": []
+        }
+      ]
+    },
+    {
+      "heading": "Too weak",
+      "shots": [
+        {
+          "n": 4,
+          "visual": "dust grains drifting in sunlight",
+          "narration": "Sunlight itself pushes on things. Not by very much at all, but on something as small as a grain of dust it turns out to be enough.",
+          "seconds": 11,
+          "asset": "make",
+          "style": "the film's treatment",
+          "source": "",
+          "function": "context",
+          "shows": "light pressure moving dust",
+          "on_screen": "",
+          "on_screen_text": []
+        },
+        {
+          "n": 5,
+          "visual": "a straight gas tail beside a curved dust tail",
+          "narration": "But a comet does not have just the one tail. It has a second tail, made of gas, and that one is straight, and it is fast. It is far, far too fast for sunlight alone to explain.",
+          "seconds": 15,
+          "asset": "make",
+          "style": "the film's treatment",
+          "source": "",
+          "function": "setup",
+          "shows": "the gas tail outruns the dust tail",
+          "on_screen": "",
+          "on_screen_text": []
+        },
+        {
+          "n": 6,
+          "visual": "the two tails, the straight one highlighted",
+          "narration": "In 1951 a scientist named Ludwig Biermann asked what seems, looking back on it, the obvious question: if it is not the light, then what else is blowing?",
+          "seconds": 11,
+          "asset": "make",
+          "style": "the film's treatment",
+          "source": "",
+          "function": "rehook",
+          "shows": "the question the reveal answers",
+          "on_screen": "",
+          "on_screen_text": []
+        }
+      ]
+    },
+    {
+      "heading": "The wind",
+      "shots": [
+        {
+          "n": 7,
+          "visual": "particles streaming out from the Sun past a comet",
+          "narration": "His answer was this: the Sun never stops shedding itself, not for a moment. A steady stream of particles pours out of it, in every direction, all of the time, without a pause.",
+          "seconds": 13,
+          "asset": "make",
+          "style": "the film's treatment",
+          "source": "",
+          "function": "reveal",
+          "shows": "particles leaving the Sun and bending the gas tail",
+          "on_screen": "",
+          "on_screen_text": []
+        },
+        {
+          "n": 8,
+          "visual": "a probe crossing the stream",
+          "narration": "Eleven years later the Mariner 2 probe flew right through that stream and measured it directly. Today we call it the solar wind.",
+          "seconds": 10,
+          "asset": "make",
+          "style": "the film's treatment",
+          "source": "",
+          "function": "reveal",
+          "shows": "the probe meeting the stream",
+          "on_screen": "",
+          "on_screen_text": []
+        }
+      ]
+    },
+    {
+      "heading": "Showing the wind",
+      "shots": [
+        {
+          "n": 9,
+          "visual": "the opening comet, tail ahead",
+          "narration": "So now, with all of that in mind, look again at that comet from the very beginning.",
+          "seconds": 7,
+          "asset": "make",
+          "style": "the film's treatment",
+          "source": "",
+          "function": "payoff",
+          "shows": "the opening comet",
+          "on_screen": "",
+          "on_screen_text": []
+        },
+        {
+          "n": 10,
+          "visual": "the opening comet, the stream visible",
+          "narration": "It is not flying backwards at all. What it is doing is showing you the wind.",
+          "seconds": 8,
+          "asset": "make",
+          "style": "the film's treatment",
+          "source": "",
+          "function": "payoff",
+          "shows": "the tail pointing along the stream",
+          "on_screen": "",
+          "on_screen_text": []
+        }
+      ]
+    }
+  ]
+}

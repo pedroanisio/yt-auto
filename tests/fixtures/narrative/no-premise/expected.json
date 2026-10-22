@@ -1,0 +1,48 @@
+{
+  "story": false,
+  "why": "The plan's train holds, but the narration never voices it: the tail leading, the question what pushes it and the push of sunlight falling short are all cut, so a first-time viewer cannot restate the premise (judging 13, 14).",
+  "judging_10": "judging 10 asks the calibration run to fail the reviewer on every seeded case; this fault is not the story review's to catch. The plan behind this script holds and the sections are in its order, so the rubric's train grades well, and judging 14 puts a premise a first-time viewer cannot restate among the pre-voice checks that are not story checks. The stage agrees: the cold read's mismatch becomes a train flag of its own (by: cold-read-match) and the story verdict is left alone. So the story review is read here and not judged, and the calibration fails a cold read whose premise matches the train.",
+  "evidence": {
+    "in": "script.sections.0.shots.2.narration",
+    "says": "fascinated people for centuries"
+  },
+  "cold_read": {
+    "match": "mismatch"
+  },
+  "review": {
+    "logline": "A comet's tail leads it away from the Sun because sunlight and a wind from the Sun push it, not because it trails behind.",
+    "synopsis": "Comets are beautiful; a storm from the Sun cut Quebec's power; a comet has a gas tail; Biermann studied comets; the Sun sheds particles; Mariner 2 measured them; comets are remarkable.",
+    "grades": {
+      "train": "Good",
+      "hook": "Fair",
+      "stakes": "Excellent",
+      "open_loops": "Fair",
+      "reveal_setup": "Excellent",
+      "ending": "Fair",
+      "honesty": "Excellent"
+    },
+    "verdict": "consider",
+    "flags": [
+      {
+        "n": 1,
+        "section": 1,
+        "criterion": "hook",
+        "problem": "The opening line praises comets instead of showing the tail in front.",
+        "severity": "important",
+        "fix": "Open on the comet leaving the Sun with its tail ahead."
+      },
+      {
+        "n": 10,
+        "section": 4,
+        "criterion": "ending",
+        "problem": "The last line pays no promise.",
+        "severity": "important",
+        "fix": "End on the tail showing the wind."
+      }
+    ],
+    "first_minute": {
+      "promise_match": "A comet is on screen, but the narration never says its tail leads.",
+      "question_and_stakes": "No question is asked; the Quebec storm stands alone."
+    }
+  }
+}

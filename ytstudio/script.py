@@ -1463,9 +1463,11 @@ REVIEW_LOG = "review-log.jsonl"
 REPLAN_FIX = "yt script --fresh --review"
 
 #: When `--gate` is to be turned on: the review is a prior until it has been
-#: measured against people (judging 9, N10).
-GATE_WHEN = ("turn on once work/review-log.jsonl holds 20 labelled scripts and the "
-             "seeded-bad fixtures fail under the live reviewer")
+#: measured against people and against the seeded-bad fixtures (judging 9
+#: and 10, AUTO-97: `python -m ytstudio.narrative calibrate`).
+GATE_WHEN = (f"turn on once `python -m ytstudio.narrative calibrate tests/fixtures/narrative` "
+             f"passes and work/review-log.jsonl holds {narrative.GATE_LABELLED} labelled "
+             "verdicts")
 
 #: Judging 14: the cold reader knows nothing but the words. Its system holds
 #: the mission and this role only: no house, no feedback notes. Its first
@@ -2468,6 +2470,12 @@ class Screenwriter:
         listing = "\n\n".join(
             f"Section {i}: {sec.heading}\n"
             + shot_listing(sec.shots, supers=True) for i, sec in enumerate(sections, 1))
+        if not sections:
+            # A plan read before any section is drafted (a calibration case,
+            # AUTO-97): the review reads the plan, and its flags are the plan's.
+            listing = ("No section is drafted yet: review the plan above as the film it "
+                       "would make, and tie each flag to shot 0 with the plan section's "
+                       "number, or section 0 for the whole plan.")
         parts = [self._brief(), harness.brief("The plan", plan_view(plan)),
                  "The script, section by section; each shot is numbered first:\n\n"
                  + listing,
@@ -4535,6 +4543,10 @@ def run(args) -> int:
              "unspoken_numbers": unspoken_numbers(sections)}
     data |= hints
 
+    if getattr(args, "gate", False):
+        # Doctor reads this: a gated script while too few verdicts are
+        # labelled is a gate nobody has calibrated (AUTO-97).
+        data["gate"] = True
     print_script(idea, data, sections)
     errors, blocked = write_outputs(args, project, idea, data, sections, wpm=args.wpm)
 

@@ -28,5 +28,8 @@
     "payoff_concrete": true,
     "questions_unanswered": [],
     "problems": []
+  },
+  "cold_read": {
+    "match": "match"
   }
 }

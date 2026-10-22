@@ -55,8 +55,11 @@ as a house prior.
 from __future__ import annotations
 
 import copy
+import json
+import sys
 from dataclasses import dataclass, field
 from itertools import permutations
+from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 #: The four labels, best first (coverage's Excellent, Good, Fair, Poor).
@@ -685,3 +688,474 @@ PICTURE_SCHEMA = {
     },
     "required": ["sections", "reports"],
 }
+
+
+# --------------------------------------------------------------------------- #
+# calibration (AUTO-97)
+# --------------------------------------------------------------------------- #
+#
+# The reviewer is checked before it is trusted as a gate. judging 9: a model
+# judge disagrees with a person about one script in four and favours the
+# longer of two stories, so it is calibrated on human-labelled scripts of the
+# channel's own and audited for length bias before it gates anything.
+# judging 10: known-bad scripts it must fail are what make leniency
+# observable. tests/fixtures/narrative/ is that floor: one case per seeded
+# fault, each `expected.json` naming the criterion the fault is graded on
+# and the best verdict a correct reviewer may give, and one good plan and
+# script. The good script and the recap ending each have a padded copy for
+# the length audit: the good pair may be read at the ceiling, where the
+# longer copy cannot win, and the consider-level one leaves it room. Two
+# faults are not the story review's: a premise the narration never voices
+# and terms a lay viewer is never given have no rubric criterion, judging
+# 14 puts them in the cold read, and the stage files the cold read's
+# mismatch without touching the verdict. Their cases say `"story": false`
+# and are judged on the cold read alone. The fixtures are not the
+# channel's scripts: the twenty a person labels in work/review-log.jsonl
+# are the set, these are what any reviewer must clear first.
+#
+# `python -m ytstudio.narrative calibrate <dir>` reads every case with the
+# script stage's own readers (the plan review, the three samples, the cold
+# read) and prints what each said against what it should. Nothing is
+# revised, nothing is appended to review-log.jsonl, and every verdict is the
+# model's: `judge_case` only compares it with the case's expectation.
+
+#: How many story-review verdicts in work/review-log.jsonl a person must have
+#: labelled before `yt script --gate` is turned on (judging 9: a set of at
+#: least 20 of the channel's own scripts).
+GATE_LABELLED = 20
+
+#: The length audit fails when the padded script wins more than this share
+#: of its pairs (judging 9).
+LENGTH_BIAS_LIMIT = 0.6
+
+#: What a live calibration run is expected to cost a case at the reviewer's
+#: model: the three samples, the cold read and, for a plan case, the plan
+#: review. An estimate for the operator, never a cap.
+CALIBRATE_USD_PER_CASE = 1.0
+
+#: What `calibrate` spends at most unless told otherwise.
+CALIBRATE_BUDGET_USD = 20.0
+
+
+def read_review_log(path: Any) -> list[dict]:
+    """The rows of a review log (work/review-log.jsonl), in order. A missing
+    file is no rows; a line that is not a JSON object is skipped, since a
+    person edits this file by hand to label it."""
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    rows = []
+    for line in text.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+#: Coverage's word for a reject (rules 10 and 12 of judging-narrative.md):
+#: a person labelling in the corpus's words writes Pass.
+COVERAGE_PASS = "pass"
+
+
+def label_of(row: Any) -> str | None:
+    """The verdict a person labelled a review-log row with, or None. Case
+    and spaces do not matter, and coverage's Pass is read as reject. A null
+    label is a row not yet read; any other word is no verdict the
+    reviewer's own can be compared with."""
+    label = row.get("label") if isinstance(row, dict) else None
+    if not isinstance(label, str):
+        return None
+    label = label.strip().lower()
+    label = "reject" if label == COVERAGE_PASS else label
+    return label if label in VERDICTS else None
+
+
+def labelled(rows: Iterable[Any]) -> int:
+    """How many rows a person has labelled with a verdict (label_of)."""
+    return sum(1 for r in rows if label_of(r))
+
+
+def agreement(rows: Iterable[Any]) -> tuple[int, int]:
+    """How many labelled rows carry the label the reviewer's own verdict
+    matches, out of how many are labelled. judging 9 asks for the
+    agreement to be reported; it sets no bar for it, so neither does this."""
+    rows = [r for r in rows if label_of(r)]
+    return sum(1 for r in rows if r.get("verdict") == label_of(r)), len(rows)
+
+
+def unreadable_labels(rows: Iterable[Any]) -> int:
+    """Rows a person labelled with a word that is not a verdict: counted so
+    a label is never dropped without a word."""
+    return sum(1 for r in rows if isinstance(r, dict) and r.get("label") not in (None, "")
+               and not label_of(r))
+
+
+def story_judged(expected: Mapping) -> bool:
+    """Whether a case holds the story review to anything. A case whose fault
+    only the cold read can catch says `"story": false`: the review is read
+    and shown, and a reviewer is never failed for following a rubric that
+    has no criterion for the fault."""
+    return expected.get("story", True) is not False
+
+
+def _term_named(names: Any, listed: Iterable[str]) -> bool:
+    """Whether a reader's list of unexplained terms names a seeded term. The
+    term is one name or the list of names a reader may give it ("IMF" for
+    the interplanetary magnetic field); one of them inside one listed entry
+    is enough, so a reader is not failed for its own words."""
+    names = [names] if isinstance(names, str) else list(names or [])
+    return any(str(n).lower() in t for n in names for t in listed)
+
+
+def judge_case(expected: Mapping, got: Mapping) -> list[str]:
+    """What the reviewer got wrong on one calibration case, one line each;
+    empty when it caught what the case seeds.
+
+    `expected` is the case's expected.json; `got` holds the story review's
+    median `verdict`, `grades` and merged `flags`, the plan review's verdict
+    (`plan_review`) and the cold read (`cold_read`). A seeded case fails the
+    reviewer when the verdict is better than the case allows, the named
+    criterion is graded above Fair, or no flag names it (judging 10 and the
+    case's `judging_10`); the good case when it is not recommended; a case
+    with `"story": false` holds the story review to nothing. A plan
+    case's plan review must send a bad plan back and accept the good one; a
+    cold-read case's reader must find the mismatch or the terms it hides. A
+    reading that gave no verdict (`not_evidenced`, a failed call) is a
+    failure, never a pass."""
+    failed: list[str] = []
+    rank = {v: i for i, v in enumerate(VERDICTS)}
+    want, verdict = expected.get("verdict"), got.get("verdict")
+    key = expected.get("criterion")
+    if not story_judged(expected):
+        pass                    # the cold read below is all this case judges
+    elif verdict not in rank:
+        failed.append(f"the story review gave no verdict ({verdict or 'none'}): a reading "
+                      "that cannot judge is never a pass")
+    elif key is None:
+        if verdict != want:
+            failed.append(f"the story review said {verdict}; the good case is {want}")
+    else:
+        if want in rank and rank[verdict] > rank[want]:
+            failed.append(f"the story review said {verdict}; the best this case allows "
+                          f"is {want}")
+        grade = (got.get("grades") or {}).get(key)
+        if grade not in ("Fair", "Poor"):
+            failed.append(f"{key} graded {grade or 'nothing'}; the seeded fault is graded "
+                          "Fair or Poor")
+        if not any(isinstance(f, dict) and f.get("criterion") == key
+                   for f in got.get("flags") or []):
+            failed.append(f"no flag on {key}, where the fault is")
+    plan_want = (expected.get("plan_review") or {}).get("verdict")
+    if plan_want:
+        plan_got = got.get("plan_review")
+        if plan_got not in PLAN_VERDICTS:
+            failed.append(f"the plan review gave no verdict ({plan_got or 'none'})")
+        elif (plan_want == "accept") != (plan_got == "accept"):
+            failed.append(f"the plan review said {plan_got}; this plan is to be "
+                          + ("accepted" if plan_want == "accept"
+                             else "sent back (revise or reject)"))
+    cold_want = expected.get("cold_read") or {}
+    if cold_want:
+        cold = got.get("cold_read") or {}
+        if cold_want.get("match") and cold.get("match") != cold_want["match"]:
+            failed.append(f"the cold read was {cold.get('match') or 'not matched'} against "
+                          f"the train; this case is a {cold_want['match']}")
+        listed = [str(t).lower() for t in cold.get("unexplained_terms") or []]
+        missing = [t if isinstance(t, str) else t[0] for t in cold_want.get("terms") or []
+                   if not _term_named(t, listed)]
+        if missing:
+            failed.append(f"the cold read did not list {', '.join(missing)} among the "
+                          "unexplained terms")
+    return failed
+
+
+def pair_winner(shorter: Mapping, longer: Mapping) -> str:
+    """Which of two readings of the same content at two lengths came out
+    ahead: `longer`, `shorter` or `tie`. The verdict decides; on the same
+    verdict, whether more criteria were graded a level higher in one than in
+    the other. Labels are compared as labels, never summed into a score."""
+    rank = {v: i for i, v in enumerate(VERDICTS)}
+    a, b = rank.get(shorter.get("verdict"), -1), rank.get(longer.get("verdict"), -1)
+    if a != b:
+        return "longer" if b > a else "shorter"
+    level = {v: i for i, v in enumerate(LEVELS)}           # best first
+    ga, gb = shorter.get("grades") or {}, longer.get("grades") or {}
+    both = [k for k in KEYS if ga.get(k) in level and gb.get(k) in level]
+    up = sum(1 for k in both if level[gb[k]] < level[ga[k]])
+    down = sum(1 for k in both if level[gb[k]] > level[ga[k]])
+    return "longer" if up > down else "shorter" if down > up else "tie"
+
+
+def at_ceiling(shorter: Mapping, longer: Mapping) -> bool:
+    """Whether both readings of a pair are already at the top: recommend,
+    every criterion Excellent. The longer copy has nothing left to win
+    there, so such a tie says nothing about length bias."""
+    def top(reading: Mapping) -> bool:
+        grades = reading.get("grades") or {}
+        return (reading.get("verdict") == VERDICTS[-1]
+                and all(grades.get(k) == LEVELS[0] for k in KEYS))
+    return top(shorter) and top(longer)
+
+
+def length_audit(pairs: Iterable[tuple[Mapping, Mapping]]) -> dict:
+    """judging 9's audit: each pair is one sample of a script read at its
+    own length and the same sample of it padded. It fails when the padded
+    one wins more than LENGTH_BIAS_LIMIT of the pairs. With no pair it has
+    not run, and with every pair at the ceiling (at_ceiling) it could not
+    have seen a bias; neither is a pass. The calibration set pads a
+    consider-level case beside the good one so the longer copy has room
+    to win."""
+    pairs = list(pairs)
+    winners = [pair_winner(short, long) for short, long in pairs]
+    n, longer = len(winners), winners.count("longer")
+    ceiling = sum(1 for short, long in pairs if at_ceiling(short, long))
+    return {"pairs": n, "longer": longer, "shorter": winners.count("shorter"),
+            "ties": winners.count("tie"), "ceiling": ceiling,
+            "passed": bool(n) and ceiling < n and longer / n <= LENGTH_BIAS_LIMIT}
+
+
+def calibration_cases(directory: Any) -> list[dict]:
+    """Every case under `directory`: a folder with plan.json and
+    expected.json, and script.json (and padded.json) when the case has a
+    screenplay."""
+    def read(path: Path):
+        return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+    out = []
+    for path in sorted(Path(directory).iterdir()):
+        if not (path / "expected.json").is_file() or not (path / "plan.json").is_file():
+            continue
+        out.append({"name": path.name, "plan": read(path / "plan.json"),
+                    "script": read(path / "script.json"),
+                    "padded": read(path / "padded.json"),
+                    "expected": read(path / "expected.json")})
+    return out
+
+
+def calibrate(directory: Any, *, work: Any, model: str = "sonnet",
+              reviewer_model: str = "opus", budget_usd: float | None = None,
+              review_budget_usd: float | None = None, fresh: bool = False,
+              verbose: bool = True) -> dict:
+    """Read every calibration case with the script stage's own readers and
+    compare each reading with what the case expects (`judge_case`).
+
+    A case with a plan verdict in its expected.json gets the plan review
+    (`plan-review`); every case gets the story review's three samples
+    (`review-r1-s1..`), over its screenplay or, for a plan case, over the
+    plan alone; a case with narration gets the cold read. A case with a
+    padded.json is read again padded, in a work directory of its own, and
+    each valid sample is paired with its padded twin for the length audit.
+    Decisions are cached under `<work>/calibration/<case>/`, so a second
+    run pays only for what changed. `model` is the writer's: the reviewer
+    is refused in its family, as `yt script --review` refuses it. Once
+    `budget_usd` is spent no further case is read, and an unread case
+    fails. Nothing is revised and nothing is appended to the review log:
+    these are not the channel's scripts. The report is also written to
+    `<work>/calibration/calibration.json`."""
+    from . import flags, house, script       # script imports this module
+    from .core import Idea, write_json
+
+    own = flags.own_reviewer(model, reviewer_model)
+    if own:
+        raise ValueError(own)
+    work = Path(work)
+    rules = house.load(work)
+    block, digest = rules.for_stage("script"), rules.digest("script")
+    cases = calibration_cases(directory)
+    fallback = next((c["script"]["idea"] for c in cases
+                     if c["script"] and isinstance(c["script"].get("idea"), dict)), None)
+    writers: list = []
+
+    def reader(case: dict, name: str):
+        plan = case["plan"]
+        seconds = sum(int(s.get("seconds", 0) or 0) for s in plan.get("sections") or [])
+        raw = (case["script"] or {}).get("idea") or fallback or {
+            "title": plan.get("promise") or case["name"], "genre": "",
+            "description": plan.get("logline") or ""}
+        w = script.Screenwriter(
+            Idea.from_raw(raw), model=model, minutes=max(seconds, 60) / 60,
+            reviewer_model=reviewer_model, review_budget_usd=review_budget_usd,
+            house=block, house_digest=digest, fresh=fresh, verbose=verbose,
+            root=work / "calibration" / name, review_log=None)
+        writers.append(w)
+        return w
+
+    def spent() -> bool:
+        return budget_usd is not None and sum(w.usage.cost_usd for w in writers) >= budget_usd
+
+    rows, pairs = [], []
+    for case in cases:
+        expected = case["expected"]
+        row = {"name": case["name"], "criterion": expected.get("criterion"),
+               "story": story_judged(expected),
+               "expected": expected.get("verdict"), "got": None, "plan_review": None,
+               "cold_read": None, "ran": False, "passed": False, "failures": []}
+        rows.append(row)
+        if spent():
+            row["failures"] = [f"not read: the budget of ${budget_usd:g} was spent"]
+            continue
+        row["ran"] = True
+        w, plan, got = reader(case, case["name"]), case["plan"], {}
+        if (expected.get("plan_review") or {}).get("verdict"):
+            try:
+                review, _, _ = w.review_plan(plan)
+                got["plan_review"] = row["plan_review"] = review.get("verdict")
+            except script.ClaudeError as exc:
+                row["failures"].append(f"the plan review failed ({exc})")
+        sections = script.sections_of(case["script"]) if case["script"] else []
+        shots = w._renumber(sections)
+        rnd = w.review_round(sections, plan, 1)
+        got.update(verdict=rnd["verdict"], grades=rnd["grades"], flags=rnd["flags"])
+        row.update(got=rnd["verdict"], grades=rnd["grades"],
+                   samples=[{k: s.get(k) for k in ("name", "verdict", "valid", "failed")}
+                            for s in rnd["samples"]])
+        if any(s.narration for s in shots):
+            cold = w.cold_read(shots, plan)
+            got["cold_read"] = row["cold_read"] = {
+                k: cold[k] for k in ("premise", "match", "difference",
+                                     "unexplained_terms", "failed") if k in cold}
+        row["failures"] += judge_case(expected, got)
+        if case["padded"]:
+            if spent():
+                row["failures"].append(f"the padded copy was not read: the budget of "
+                                       f"${budget_usd:g} was spent")
+            else:
+                p = reader(case, f"{case['name']}-padded")
+                longer = script.sections_of(case["padded"])
+                p._renumber(longer)
+                padded = p.review_round(longer, plan, 1)
+                pairs += [(a, b) for a, b in zip(rnd["samples"], padded["samples"])
+                          if a.get("valid") and b.get("valid")]
+                row["padded"] = padded["verdict"]
+        row["passed"] = not row["failures"]
+    audit = length_audit(pairs)
+    log = read_review_log(work / script.REVIEW_LOG)
+    agreed, count = agreement(log)
+    report = {"directory": str(directory), "model": model, "reviewer_model": reviewer_model,
+              "cases": rows, "audit": audit,
+              "passed": all(r["passed"] for r in rows) and audit["passed"],
+              "verdicts": len(log), "labelled": count, "agreed": agreed,
+              "cost_usd": round(sum(w.usage.cost_usd for w in writers), 4)}
+    (work / "calibration").mkdir(parents=True, exist_ok=True)
+    write_json(work / "calibration" / "calibration.json", report)
+    return report
+
+
+def calibration_lines(report: Mapping) -> list[str]:
+    """The calibration as the operator reads it: one row per case (fixture,
+    criterion, expected, got, plan review, cold read, result) with what a
+    failing row got wrong under it, the length audit, and whether --gate
+    may be turned on."""
+    rows = report.get("cases") or []
+    width = max([len("fixture")] + [len(r["name"]) for r in rows]) + 2
+    head = ("criterion", "expected", "got", "plan", "cold read")
+    sizes = (14, 11, 15, 9, 11)
+    out = ["fixture".ljust(width) + "".join(h.ljust(s) for h, s in zip(head, sizes))
+           + "result"]
+    for r in rows:
+        cold = r.get("cold_read") or {}
+        # a case judged on the cold read alone says so where the criterion is
+        criterion = r.get("criterion") or ("-" if r.get("story", True) else "cold read")
+        cells = (criterion, r.get("expected") or "-", r.get("got") or "-",
+                 r.get("plan_review") or "-",
+                 cold.get("match") or ("failed" if cold.get("failed") else "-"))
+        result = "pass" if r.get("passed") else "fail" if r.get("ran") else "not run"
+        out.append(r["name"].ljust(width)
+                   + "".join(str(c).ljust(s) for c, s in zip(cells, sizes)) + result)
+        out += [f"    - {line}" for line in r.get("failures") or []]
+    audit = report.get("audit") or {}
+    limit = f"{LENGTH_BIAS_LIMIT:.0%}"
+    ceiling = int(audit.get("ceiling") or 0)
+    if audit.get("pairs") and ceiling >= audit["pairs"]:
+        out.append(f"length audit: fail: all {audit['pairs']} pairs were read at the ceiling "
+                   "(recommend, every grade Excellent), where the padded script has nothing "
+                   "to win, so the audit could not see a bias")
+    elif audit.get("pairs"):
+        out.append(f"length audit: {'pass' if audit.get('passed') else 'fail'}: the padded "
+                   f"script won {audit['longer']} of {audit['pairs']} pairs, "
+                   f"{audit.get('ties', 0)} tied, {ceiling} at the ceiling where it could "
+                   f"not win (it fails above {limit})")
+    else:
+        out.append(f"length audit: fail: no pair was read (it fails above {limit}; a "
+                   "padded.json beside a case's script is needed)")
+    good = [r for r in rows if r.get("story", True) and not r.get("criterion")]
+    seeded = [r for r in rows if r not in good]
+    out.append(f"seeded-bad caught: {sum(1 for r in seeded if r.get('passed'))} of "
+               f"{len(seeded)}; good recommended: {sum(1 for r in good if r.get('passed'))} "
+               f"of {len(good)}; spent ${float(report.get('cost_usd') or 0):.2f}")
+    count = int(report.get("labelled") or 0)
+    # judging 9 asks for the agreement with the labels to be reported; a
+    # count of labels alone is not a calibration against them
+    agreed = (f"; the reviewer agreed with {int(report.get('agreed') or 0)} of {count} "
+              "labels" if count else "")
+    why = []
+    if not report.get("passed"):
+        why.append("the reviewer did not pass this calibration")
+    if count < GATE_LABELLED:
+        why.append(f"{count} labelled verdicts in work/review-log.jsonl, "
+                   f"{GATE_LABELLED} needed")
+    out.append(("--gate: not yet: " + "; ".join(why) if why else
+                "--gate may be turned on: the seeded-bad fixtures all fail, the good one "
+                f"passes, the length audit passes and {count} labelled verdicts are in "
+                "work/review-log.jsonl") + agreed)
+    return out
+
+
+def main(argv: list[str] | None = None) -> int:
+    """`python -m ytstudio.narrative calibrate <dir>`: the calibration run.
+    A module entry point, not a `yt` stage: it reads fixtures, not a film.
+    Exits 0 when the reviewer passed every case and the length audit, 1
+    when it did not, 2 on a refused argument."""
+    import argparse
+    from . import flags
+    from .vfx import REVIEW_USD, REVIEWER_MODEL
+
+    parser = argparse.ArgumentParser(
+        prog="python -m ytstudio.narrative",
+        description="Check the story reviewer against the calibration set before "
+                    "`yt script --gate` trusts it (judging 9 and 10).")
+    sub = parser.add_subparsers(dest="command", required=True)
+    p = sub.add_parser("calibrate", help="read every calibration case and print the table")
+    p.add_argument("directory", help="the cases, e.g. tests/fixtures/narrative")
+    p.add_argument("--model", default="sonnet",
+                   help="the writer's model, which the reviewer may not share (default sonnet)")
+    flags.reviewer_model(p, default=REVIEWER_MODEL,
+                         help=f"the model under calibration (default {REVIEWER_MODEL})")
+    flags.review_budget(p, default=REVIEW_USD,
+                        help=f"what one review may cost (default {REVIEW_USD:g})")
+    flags.budget(p, default=CALIBRATE_BUDGET_USD,
+                 help=f"read no further case once this much is spent (default "
+                      f"{CALIBRATE_BUDGET_USD:g}; about ${CALIBRATE_USD_PER_CASE:g} a case)")
+    p.add_argument("--work", default="work",
+                   help="where the readings are cached (<work>/calibration/) and "
+                        "review-log.jsonl is counted (default work)")
+    flags.fresh(p, help="ask every reading again instead of reusing the ones on disk")
+    p.add_argument("--quiet", action="store_true", help="print the table only")
+    args = parser.parse_args(argv)
+    if not Path(args.directory).is_dir():
+        print(f"error: no calibration cases at {args.directory}", file=sys.stderr)
+        return 2
+    try:
+        report = calibrate(args.directory, work=args.work, model=args.model,
+                           reviewer_model=args.reviewer_model, budget_usd=args.budget_usd,
+                           review_budget_usd=args.review_budget_usd, fresh=args.fresh,
+                           verbose=not args.quiet)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print("\n".join(calibration_lines(report)))
+    if not args.quiet:
+        print(f"wrote {Path(args.work) / 'calibration' / 'calibration.json'}",
+              file=sys.stderr)
+    return 0 if report["passed"] else 1
+
+
+if __name__ == "__main__":
+    # Run as a program this file is `__main__`; the script stage imports it
+    # as ytstudio.narrative. The entry point is that one's, so one copy of
+    # the module answers both.
+    from ytstudio.narrative import main as _main
+    sys.exit(_main())
