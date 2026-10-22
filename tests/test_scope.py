@@ -76,7 +76,8 @@ class FakeEngine:
         FakeEngine.calls.append({"prompt": prompt, "schema": schema, "system": system})
         return {"premise": "p", "questions": [], "gaps": [], "verdict": "v",
                 "claims": [], "sources": [], "shots": [], "topic_searches": [],
-                "working_title": "t", "runtime": "60 s", "sections": []}
+                "working_title": "t", "runtime": "60 s", "sections": [],
+                "misconceptions": [], "identifiable_case": {"who": "", "source": ""}}
 
 
 class Plan(unittest.TestCase):
