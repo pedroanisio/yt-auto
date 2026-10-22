@@ -278,11 +278,23 @@ agent that looked filing the form itself.
 
 Editorial rules that bind more than one stage live in `work/house.md`, in
 Markdown sections keyed by stage (`## all`, `## script`, `## styles`, `##
-sound`, `## vfx`). Each stage is handed `## all` plus its own, so no prompt
+sound`, `## vfx`, `## voice`, `## format`). Each stage is handed `## all` plus
+its own (the script stage `## format` too), so no prompt
 carries a rule that does not apply to it, and a `house.md` inside one video's
 directory replaces sections of the same name for that video alone. `--house
 FILE` points elsewhere, `--no-house` ignores it. The digest of what was loaded
 goes into every manifest, so an artifact says which standards produced it.
+
+Under all of them sits the shipped default, `ytstudio/house/default.md`: the
+craft corpus in `docs/narrative/` distilled by hand into `## all`, `## script`,
+`## styles`, `## vfx`, `## sound`, `## voice` and `## format` (the narrator,
+opening, ending and hand-off the channel repeats, which the script stage reads
+before its own section). Each section opens with a comment naming the corpus
+rules it states; comments never reach a prompt, and a test holds the ids to the
+corpus. The channel's file replaces a section by writing one of the same name.
+Because every cached decision is keyed on the house digest, an edit to the
+default re-asks every decision in every project on its next run; `yt doctor`
+warns for each manifest decided under a different house digest.
 
 The order each stage sees is deliberate: its own system prompt says what it is,
 `house.md` says how this channel works, the dossier and the direction say what
@@ -1414,6 +1426,7 @@ ytstudio/
 ├── harness.py          the one door to claude_engine: decide, inspect, cache, account
 ├── core.py             the Idea, the name key, usage accounting, shared readers
 ├── house.py            the channel's standards, sliced per stage
+├── house/default.md    the shipped standards, docs/narrative/ distilled per stage
 ├── env.py              API keys from a file, names logged and never values
 ├── scene_sdk.py        finds sr-core, installed or in a checkout
 ├── ideas.py            Generator, the voice briefs, the idea store
