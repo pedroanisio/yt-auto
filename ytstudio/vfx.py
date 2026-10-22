@@ -2890,6 +2890,16 @@ class VfxPlanner:
                 findings = built + findings
                 errors = [f for f in findings if f.startswith("error")]
             still_lost = [f for f in findings if f.startswith("infra")]
+            if still_lost and not errors:
+                # Lost twice: the gate never saw the world rendered, so it
+                # does not pass. The error keeps it out of the film and
+                # behind an earlier reviewed version; the section is the
+                # host's to stop, not the author's to revise.
+                findings.append(f"error: the host lost {len(still_lost)} frame(s) in two "
+                                f"passes: {still_lost[0]}; author it again "
+                                f"(yt vfx --sections {n})")
+                errors = [f for f in findings if f.startswith("error")]
+                self.spend.stopped[n] = "host"
             paid = reviewer.usage.cost_usd
             review = (None if errors or still_lost or not self.review
                       else self._review(reviewer, n, name, section, worlds, round_no))
@@ -2915,6 +2925,10 @@ class VfxPlanner:
             score = rounds[-1]["score"]
             short = score is not None and score < self.author_bar
             if not errors and not short:
+                break
+            # A round the host lost twice is stopped, not revised: the author
+            # has nothing to answer for.
+            if self.spend.stopped.get(n) == "host":
                 break
             # The section's and the stage's budgets decide whether another session
             # (and the review after it) can be paid; if not, the section ends here,

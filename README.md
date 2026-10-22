@@ -539,7 +539,11 @@ A frame the host could not render is the host's failure, not the author's:
 it is retried once on the other host, else filed as `infra:`, and a round
 blocked only by such frames is gated again after a bounded wait with no
 session and no revision paid (`rounds[].infra` in `vfx.json` says what the
-host lost). A frame both hosts stop at the still deadline or kill for
+host lost). A round the host loses twice does not pass: it ends on an
+`error:` naming the host and `yt vfx --sections N` (`stopped: host` in the
+section's budget row), so the world the gate never saw rendered stays out
+of the film and an earlier reviewed version of the section is kept over
+it. A frame both hosts stop at the still deadline or kill for
 memory is the author's error, naming the document's cost drivers: no host
 holds that world as written.
 

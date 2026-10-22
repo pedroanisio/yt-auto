@@ -351,9 +351,22 @@ class InfraRound(Planned):
         self.assertEqual(len(doc["rounds"]), 1)
         self.assertTrue(doc["rounds"][-1]["infra"])                 # recorded as the host's
         self.assertTrue(all(f.startswith("infra") for f in doc["rounds"][-1]["infra"]))
-        self.assertFalse([f for f in doc["findings"] if f.startswith("error")])
         self.assertTrue([f for f in doc["findings"] if f.startswith("infra")])
         self.assertIsNone(doc["score"])
+        # A section the gate never saw rendered does not pass: the second pass
+        # losing the frames too is an error naming the host and the way back,
+        # so the composer leaves the world out and an earlier reviewed version
+        # of the section is kept over it.
+        errors = [f for f in doc["findings"] if f.startswith("error")]
+        self.assertEqual(len(errors), 1, doc["findings"])
+        self.assertIn("the host lost", errors[0])
+        self.assertIn("two passes", errors[0])
+        self.assertIn("yt vfx --sections 1", errors[0])
+        self.assertIn(self.LOST, errors[0])
+        self.assertEqual(doc["rounds"][-1]["errors"], 1)
+        self.assertEqual(doc["budget"]["stopped"], "host")
+        self.assertTrue(vfx.has_errors(doc))
+        self.assertTrue(vfx.keeps_previous({"score": 7.5, "findings": []}, doc))
         frames = len(vfx.shot_times(world.SECTION["shots"], 15))
         self.assertEqual(len(gates), 2 * frames)                    # gated once, then again
         self.assertTrue(any("gating again" in s for s in self.said), self.said)

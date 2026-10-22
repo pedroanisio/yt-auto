@@ -542,7 +542,12 @@ hand-authored world showed the cost.
     again after `vfx.INFRA_WAIT` seconds without a session, gets no review
     while frames are missing, and the frames the first pass lost are
     recorded on the round (`rounds[].infra` in `vfx.json`, "lost to the
-    host" in `vfx.md`); no revision is paid for the host's failure.
+    host" in `vfx.md`); no revision is paid for the host's failure. A round
+    the host loses twice does not pass: the section ends on an `error:`
+    naming the host and `yt vfx --sections N`, with `stopped: host` in its
+    budget row, so the world the gate never saw rendered stays out of the
+    film (`has_errors`) and an earlier reviewed version of the section is
+    kept over it (`keeps_previous`).
   - Money is budgeted per section and per stage (`vfx.SpendBudget`):
     `--budget-usd` (15) covers one section's author sessions and its
     reviews, `--stage-budget-usd` (default: that times the sections) covers
