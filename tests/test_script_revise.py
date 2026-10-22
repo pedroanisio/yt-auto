@@ -513,6 +513,13 @@ class QuestionFindings(unittest.TestCase):
             self.assertEqual(rule.corpus, bound["corpus"])
         self.assertFalse({r.id for r in script.LEDGER_RULES} & {r.id for r in script.RULES})
 
+    def test_the_docs_name_every_ledger_rule(self):
+        root = Path(__file__).resolve().parent.parent
+        for doc in ("README.md", "ytstudio/SKILL.md"):
+            text = (root / doc).read_text(encoding="utf-8")
+            for rule in script.LEDGER_RULES:
+                self.assertIn(f"`{rule.id}`", text, f"{doc} does not name {rule.id}")
+
 
 class LedgerDrafting(unittest.TestCase):
     """The ledger through the stage: briefed with --jobs 4 and 1 alike, and
