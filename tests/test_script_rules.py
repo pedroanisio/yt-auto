@@ -519,5 +519,36 @@ class Doctor(unittest.TestCase):
         self.assertTrue(any("rule:passive (pt-BR)" in m for m in notes), notes)
 
 
+class Build(unittest.TestCase):
+    """`yt build` carries a standing script `error:` into build.json's
+    findings, where qa.mechanical_blockers lifts it; warnings stay in the
+    screenplay's record."""
+
+    def test_only_the_errors_are_carried(self):
+        from ytstudio import build
+        carried = build.script_errors({"findings": FINDINGS})
+        self.assertEqual(len(carried), 1)
+        self.assertTrue(carried[0].startswith("error: script: rule:filler"), carried)
+
+    def test_the_manifest_carries_them_and_qa_lifts_them(self):
+        import tempfile
+        from tests.test_build_audio import _idea, _sections
+        from ytstudio import build, qa
+        with tempfile.TemporaryDirectory() as tmp:
+            _, manifest = build.SceneBuilder(
+                _idea(), _sections(), Path(tmp), verbose=False, audio=False,
+                edit={"coverage": [], "captions_off": [], "tail_seconds": 0.5,
+                      "notes": "", "blocking": []},
+                script_findings=build.script_errors({"findings": FINDINGS})).build()
+        self.assertIn(build.script_errors({"findings": FINDINGS})[0], manifest["findings"])
+        lifted = qa.mechanical_blockers(manifest, gate=None)
+        self.assertTrue(any("rule:filler" in b for b in lifted), lifted)
+
+    def test_an_older_screenplay_carries_nothing(self):
+        from ytstudio import build
+        self.assertEqual(build.script_errors({}), [])
+        self.assertEqual(build.script_errors(None), [])
+
+
 if __name__ == "__main__":
     unittest.main()
