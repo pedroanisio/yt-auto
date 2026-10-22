@@ -970,11 +970,28 @@ class Screenwriter:
                  f"under sections for each of its {len(sections)} sections, in "
                  "its order.",
                  STORY_BRIEF]
-        fields_ = self._ask("plan-fields", "\n\n".join(parts), PLAN_FIELDS_SCHEMA)
+        prompt = "\n\n".join(parts)
+        fields_ = self._ask("plan-fields", prompt, PLAN_FIELDS_SCHEMA)
         rows = fields_.get("sections") or []
+        # The count is part of the answer's validity, which the schema cannot
+        # state: asked once more with the problem named (invariant 3), under
+        # its own name so both answers are kept and a rerun replays them.
         if len(rows) != len(sections):
+            problem = (f"you answered {len(rows)} section(s) for an outline of "
+                       f"{len(sections)}")
+            self._say(f"[plan] plan-fields: asking again ({problem})")
+            fields_ = self._ask(
+                "plan-fields-retry",
+                prompt + f"\n\nYour previous answer was rejected: {problem}. Answer "
+                f"exactly {len(sections)} entries under sections, one per outline "
+                "section, in its order.", PLAN_FIELDS_SCHEMA)
+            rows = fields_.get("sections") or []
+        if len(rows) != len(sections):
+            # Neither answer is usable; kept, they would fail every rerun.
+            for name in ("plan-fields", "plan-fields-retry"):
+                self.harness.forget(name)
             raise ClaudeError(f"the plan fields answered {len(rows)} section(s) for "
-                              f"an outline of {len(sections)}")
+                              f"an outline of {len(sections)}, after asking again")
         for section, row in zip(sections, rows):
             section.update({k: row[k] for k in SECTION_STORY if k in row})
         data = {"logline": self.outline.get("working_title", self.idea.title),

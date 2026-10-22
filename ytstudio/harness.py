@@ -380,6 +380,12 @@ class Harness:
             "cost_usd": round(cost, 4), "tool_calls": tool_calls,
             "when": time.strftime("%Y-%m-%dT%H:%M:%S"), "result": result})
 
+    def forget(self, name: str) -> None:
+        """Drop a kept answer, so the next run asks the question again. For a
+        stage whose own check, past the schema, found the answer unusable:
+        kept, it would be served on every rerun and fail the same way."""
+        self.path(name).unlink(missing_ok=True)
+
     def _check(self, name: str, result: Any, schema: dict, *, enums: bool = False) -> Any:
         missing = missing_fields(result, schema)
         if missing:

@@ -80,7 +80,7 @@ PLAN = {
          "beats": ["paint hides steel"], "opens": ["Q2"], "closes": [],
          "connective": "but", "rehook": "Q1", "escalation": "the twin opens soon",
          "anchor_visual": "a paint layer under a microscope"},
-        {"heading": "The bolt", "purpose": "reveal", "seconds": 20, "beats": ["the bolt"],
+        {"heading": "The bolt", "purpose": "answer", "seconds": 20, "beats": ["the bolt"],
          "opens": [], "closes": ["Q1", "Q2"], "connective": "therefore", "rehook": "",
          "escalation": "", "anchor_visual": "the sheared bolt"},
     ],
@@ -209,6 +209,69 @@ class ThroughTheHarness(unittest.TestCase):
                             for f in w.findings), w.findings)
         self.assertTrue(all(f.startswith("note:") for f in w.findings))
 
+    def test_an_audience_off_the_list_is_asked_again_then_recorded(self):
+        answer = copy.deepcopy(PLAN)
+        answer["audience"] = "kids"
+        FakeEngine.answer = answer
+        w = self.writer()
+        plan = w.plan()
+        self.assertEqual(len(FakeEngine.json_calls), 2)
+        self.assertIn("audience", FakeEngine.json_calls[1]["prompt"])
+        self.assertTrue(any(f.startswith("note: audience 'kids'") for f in w.findings),
+                        w.findings)
+        # no audience brief: none of AUDIENCE_BRIEF's texts is handed on
+        lines = "\n".join(script.story_lines(plan))
+        for text in script.AUDIENCE_BRIEF.values():
+            self.assertNotIn(text, lines)
+
+    OUTLINE = {"working_title": "W", "sections": [
+        {"heading": "A", "seconds": 30, "beats": ["a"]},
+        {"heading": "B", "seconds": 30, "beats": ["b"]}]}
+
+    def fields(self, rows):
+        answer = blank(script.PLAN_FIELDS_SCHEMA)
+        answer["sections"] = [blank(script.PLAN_FIELDS_SCHEMA["properties"]["sections"]
+                                    ["items"]) for _ in range(rows)]
+        return answer
+
+    def queue(self, *answers):
+        """FakeEngine answering each ask with the next of `answers`."""
+        pending = list(answers)
+
+        class Queued(FakeEngine):
+            def ask_json(self, prompt, schema, system=None):
+                FakeEngine.json_calls.append({"prompt": prompt, "schema": schema})
+                return pending.pop(0)
+        harness.ENGINE = Queued
+
+    def kept(self):
+        return sorted(p.stem for p in (self.root / "decisions" / "script").glob("*.json"))
+
+    def test_plan_fields_for_another_number_of_sections_are_asked_again(self):
+        self.queue(self.fields(1), self.fields(2))
+        plan = self.writer(outline=self.OUTLINE).plan()
+        self.assertEqual(len(plan["sections"]), 2)
+        self.assertEqual(len(FakeEngine.json_calls), 2)
+        again = FakeEngine.json_calls[1]["prompt"]
+        self.assertIn("you answered 1 section(s) for an outline of 2", again)
+        self.assertIn("plan-fields-retry", self.kept())
+        # a rerun is served the same two answers and asks nothing
+        self.queue()
+        self.assertEqual(len(self.writer(outline=self.OUTLINE).plan()["sections"]), 2)
+        self.assertEqual(len(FakeEngine.json_calls), 2)
+
+    def test_plan_fields_wrong_twice_fail_and_leave_nothing_kept(self):
+        self.queue(self.fields(1), self.fields(3))
+        with self.assertRaises(script.ClaudeError) as caught:
+            self.writer(outline=self.OUTLINE).plan()
+        self.assertIn("3 section(s) for an outline of 2", str(caught.exception))
+        self.assertEqual(len(FakeEngine.json_calls), 2)
+        self.assertEqual(self.kept(), [])
+        # the next run asks again rather than replaying the bad answer
+        self.queue(self.fields(2))
+        self.assertEqual(len(self.writer(outline=self.OUTLINE).plan()["sections"]), 2)
+        self.assertEqual(len(FakeEngine.json_calls), 3)
+
     def test_the_outline_plan_fields_are_a_kept_decision(self):
         answer = blank(script.PLAN_FIELDS_SCHEMA)
         answer["sections"] = [blank(script.PLAN_FIELDS_SCHEMA["properties"]["sections"]
@@ -261,7 +324,19 @@ class SectionPrompt(unittest.TestCase):
         self.assertIn("a paint layer under a microscope", second)
         third = prompts["write-03"]
         self.assertIn("THEREFORE", third)
-        self.assertIn("reveal", third)
+
+    def test_the_reveal_and_its_constraint_are_named_beats(self):
+        prompts = self.prompts()
+        self.assertIn("main reveal", prompts["write-03"])
+        self.assertIn("section 2 showed why it is hard", prompts["write-03"])
+        self.assertIn("do not give the reveal away", prompts["write-02"])
+        self.assertIn("in section 3", prompts["write-02"])
+        for text in ("main reveal", "reveal away", "reveal in section"):
+            self.assertNotIn(text, prompts["write-01"])
+
+    def test_the_plans_misconception_reaches_every_writer(self):
+        for prompt in self.prompts().values():
+            self.assertIn(PLAN["misconception"], prompt)
 
     def test_the_audience_brief_reaches_the_writer(self):
         lay = self.prompts("lay")["write-01"]
@@ -319,9 +394,10 @@ class Outline(unittest.TestCase):
         fields = self.fields()
         fields["sections"] = fields["sections"][:1]
         w = writer(outline=self.OUTLINE)
-        faked(w, fields=fields)
+        calls = faked(w, fields=fields)
         with self.assertRaises(script.ClaudeError):
             w.plan()
+        self.assertEqual([c["name"] for c in calls], ["plan-fields", "plan-fields-retry"])
 
     def test_the_script_carries_promise_payoff_and_train(self):
         w = writer(outline=self.OUTLINE)

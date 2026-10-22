@@ -322,7 +322,9 @@ later one) and the `ending` (`payoff_line`, `callback`, `next_film`). Each
 section names the questions it `opens` and `closes`, its `connective` to the
 one before (and, but, therefore, because), a `rehook`, an `escalation` and
 an `anchor_visual`. With `--outline` the outline keeps its sections and these
-fields come from one `plan-fields` decision. Every shot names its `function`
+fields come from one `plan-fields` decision (an answer with another number of
+sections is asked once more as `plan-fields-retry`; wrong twice, both are
+dropped and the stage fails). Every shot names its `function`
 (hook, context, setup, reveal, rehook, payoff, handoff) and `shows`, what its
 picture must demonstrate of its line. An audience, connective or function
 outside its list is kept as written and recorded in script.json's
