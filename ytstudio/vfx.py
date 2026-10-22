@@ -119,23 +119,28 @@ AUTHOR_TIMEOUT = 3600.0
 
 #: What a section may spend in all: its author sessions and its reviews. A session
 #: is capped at AUTHOR_SESSION_USD (docs/throughput.md: authors spent up to $4) and
-#: a review costs about REVIEW_USD ($1.35-2.65 measured); the first is held back from
-#: a session's cap for the review that follows it, replaced by the section's own
-#: measured review cost once it has one. A revision needs MIN_SESSION_USD to be worth
-#: starting.
-SECTION_BUDGET_USD = 15.0
+#: a review at REVIEW_USD, the default `--review-budget-usd` ($1.35-2.65 measured
+#: uncapped); the review's cap is held back from a session's cap for the review
+#: that follows it. A revision needs MIN_SESSION_USD to be worth starting. The
+#: section's budget is what the default rounds cost at the most, so the estimate
+#: the run prints and the budget say the same thing (AUTO-79).
 AUTHOR_SESSION_USD = 4.0
 REVIEW_USD = 2.0
 MIN_SESSION_USD = 1.0
+DEFAULT_ROUNDS = 2
+SECTION_BUDGET_USD = (1 + DEFAULT_ROUNDS) * (AUTHOR_SESSION_USD + REVIEW_USD)
+#: The reviewer is never the author's model: a model never grades its own work.
+REVIEWER_MODEL = "opus"
 
 
 def estimate_spend(sections: int, revisions: int, section_usd: float,
-                   stage_usd: float) -> dict:
+                   stage_usd: float, *, review_usd: float = REVIEW_USD) -> dict:
     """What authoring `sections` sections is expected to cost at the most: every round
-    (the first and each revision) is a session and a review."""
+    (the first and each revision) is a session and a review at its cap."""
     rounds = 1 + max(0, revisions)
-    per = rounds * (AUTHOR_SESSION_USD + REVIEW_USD)
+    per = rounds * (AUTHOR_SESSION_USD + review_usd)
     return {"sections": sections, "rounds": rounds, "per_section_usd": per,
+            "review_usd": review_usd,
             "stage_usd": sections * per, "section_budget_usd": section_usd,
             "stage_budget_usd": stage_usd}
 
@@ -143,10 +148,10 @@ def estimate_spend(sections: int, revisions: int, section_usd: float,
 def estimate_line(e: dict) -> str:
     """The estimate, in one line, for printing before the first agent starts."""
     line = (f"estimate: {e['sections']} section(s) x {e['rounds']} round(s) x (author session "
-            f"up to ${AUTHOR_SESSION_USD:g} + review ~${REVIEW_USD:g}) = up to "
-            f"${e['per_section_usd']:.2f} a section, ${e['stage_usd']:.2f} for the stage; "
-            f"budgets: ${e['section_budget_usd']:g} a section, ${e['stage_budget_usd']:g} "
-            "for the stage")
+            f"up to ${AUTHOR_SESSION_USD:g} + review up to ${e.get('review_usd', REVIEW_USD):g}) "
+            f"= up to ${e['per_section_usd']:.2f} a section, ${e['stage_usd']:.2f} for the "
+            f"stage; budgets: ${e['section_budget_usd']:g} a section, "
+            f"${e['stage_budget_usd']:g} for the stage")
     if e["per_section_usd"] > e["section_budget_usd"] or e["stage_usd"] > e["stage_budget_usd"]:
         line += ("; a section that would pass its budget stops, and ends on its best "
                  "reviewed round")
@@ -2432,9 +2437,10 @@ class VfxPlanner:
                  per_section: int = 3, jobs: int = 2,
                  budget_usd: float = SECTION_BUDGET_USD,
                  stage_budget_usd: float | None = None,
+                 reviewer_model: str = REVIEWER_MODEL, review_budget_usd: float = REVIEW_USD,
                  budget_hours: float | None = None, sections: list[dict] | None = None,
                  words: dict[str, dict] | None = None, frame: tuple[int, int] = FRAME,
-                 direction: dict | None = None, revisions: int = 2,
+                 direction: dict | None = None, revisions: int = DEFAULT_ROUNDS,
                  author_bar: float = 7.0, fresh: bool = False,
                  verbose: bool = True, sections_only: set[int] | None = None,
                  lead: int | None = None, look_notes: list[str] | None = None,
@@ -2455,6 +2461,10 @@ class VfxPlanner:
         self.budget_usd = budget_usd
         self.stage_budget_usd = stage_budget_usd
         self.spend = SpendBudget(budget_usd, stage_budget_usd or budget_usd)
+        #: The reviewer: its own model (a model never grades its own work) under
+        #: its own cap, which is what a session holds back for the review after it.
+        self.reviewer_model = reviewer_model
+        self.review_budget_usd = float(review_budget_usd)
         self.budget_hours = budget_hours
         self.words = words or {}
         # Once a take exists, the picture is planned on the narration's
@@ -2914,17 +2924,16 @@ class VfxPlanner:
             **sdkkit.author_config(self.ws.dir, project_root=self.ws.root, programs=[program]),
             model=self.model, timeout=AUTHOR_TIMEOUT))     # each session's cap is granted below
         finish = sdkkit.finish_prompt(program, name, f"python3 sr.py frame {name}")
-        reviewer = harness.Harness(self.ws.root, "vfx", model=self.model, role=REVIEW_ROLE,
-                                   house=self.house, house_digest=self.house_digest,
-                                   fresh=self.fresh, verbose=self.verbose, timeout=1800.0)
+        reviewer = harness.Harness(self.ws.root, "vfx", model=self.reviewer_model,
+                                   role=REVIEW_ROLE, house=self.house,
+                                   house_digest=self.house_digest, fresh=self.fresh,
+                                   verbose=self.verbose, timeout=1800.0,
+                                   budget_usd=self.review_budget_usd)
         self.spend.track(n, author=engine.usage, review=reviewer.usage)
-        review_costs: list[float] = []
 
         def reserve() -> float:
-            """What the review after a session will cost: this section's own
-            measured one once it has one, else the estimate."""
-            measured = [c for c in review_costs if c > 0]
-            return max(measured) if measured else REVIEW_USD
+            """What the review after a session may cost: its cap."""
+            return self.review_budget_usd
 
         def grant() -> float:
             """The cap of the next session, with the review that follows it kept
@@ -2988,12 +2997,11 @@ class VfxPlanner:
             review = (None if errors or still_lost or not self.review
                       else self._review(reviewer, n, name, section, worlds, round_no,
                                         previous=best_round(rounds)))
-            if not errors and not still_lost and self.review:
-                review_costs.append(reviewer.usage.cost_usd - paid)
             score = float(review["score"]) if review and review.get("score") is not None else None
             rounds.append({"round": round_no, "symbols": symbols, "errors": len(errors),
                            "score": score, "fidelity": (review or {}).get("fidelity"),
                            "review": review, "timed_out": False, "infra": lost,
+                           "review_usd": round(reviewer.usage.cost_usd - paid, 4),
                            "findings": [f for f in findings if not f.startswith("note")]})
             self.ws.keep_round(name, round_no)
             self._say(f"    [{n}] {name} round {round_no}: {len(symbols)} symbol(s), "
@@ -3106,6 +3114,7 @@ class VfxPlanner:
                            else rounds[-1]["review"] if rounds else None),
                 "cost_usd": round(engine.usage.cost_usd + reviewer.usage.cost_usd, 4),
                 "budget": self.spend.row(n), "stopped": self.spend.stopped.get(n),
+                "reviewer": {"model": self.reviewer_model, "budget_usd": self.review_budget_usd},
                 "timed_out_usage": timed_out_usage(engine.usage),
                 "engine": reviewer.report(), **self._provenance(n, findings)}
 
@@ -3192,11 +3201,13 @@ class VfxPlanner:
                          else self.budget_usd * len(jobs))
             self.spend = SpendBudget(self.budget_usd, stage_usd)
             self._say("  " + estimate_line(estimate_spend(
-                len(jobs), self.revisions, self.budget_usd, stage_usd)))
+                len(jobs), self.revisions, self.budget_usd, stage_usd,
+                review_usd=self.review_budget_usd)))
             self._say(f"  authoring {len(jobs)} section(s) into {self.ws.rel}/ ({version}), "
                       f"{self.jobs} at a time, up to ${self.budget_usd:g} each "
                       f"(sessions and reviews), ${stage_usd:g} for the stage, "
-                      f"bar {self.author_bar:g}/10, {self.revisions} revision(s)")
+                      f"bar {self.author_bar:g}/10, {self.revisions} revision(s), reviewed by "
+                      f"{self.reviewer_model} at up to ${self.review_budget_usd:g} a review")
             with ThreadPoolExecutor(max_workers=self.jobs) as pool:
                 futures = [(job, pool.submit(self._author_one, job[0], job[1], job[2], style,
                                              tokens)) for job in jobs]
@@ -3857,9 +3868,15 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                         "(default: --budget-usd times the sections authored)")
     p.add_argument("--budget-hours", type=float,
                    help="refinement hours available; shapes what to cut")
-    flags.rounds(p, default=2, dest="revisions", old=("--revisions",),
+    flags.reviewer_model(p, default=REVIEWER_MODEL,
+                         help="the model that reviews each round's proof frames; never the "
+                              f"author's own (default {REVIEWER_MODEL})")
+    flags.review_budget(p, default=REVIEW_USD,
+                        help=f"what one review may cost (default {REVIEW_USD:g}); a session "
+                             "holds it back for the review that follows it")
+    flags.rounds(p, default=DEFAULT_ROUNDS, dest="revisions", old=("--revisions",),
                  help="rounds the author gets to fix what the frame gate and the "
-                      "review find (default 2)")
+                      f"review find (default {DEFAULT_ROUNDS}; the section budget affords them)")
     flags.bar(p, default=7.0, dest="author_bar", old=("--author-bar",),
               help="provisional review score (0-10) under which the frames go "
                    "back to the author (default 7)")
@@ -3933,9 +3950,11 @@ def planner_from_args(args, idea: Idea, project, *, sections_only: set[int] | No
         per_section=flag("per_section", 3), jobs=flag("jobs", 2),
         budget_usd=flag("budget_usd", SECTION_BUDGET_USD),
         stage_budget_usd=flag("stage_budget_usd", None), budget_hours=flag("budget_hours", None),
+        reviewer_model=flag("reviewer_model", REVIEWER_MODEL),
+        review_budget_usd=flag("review_budget_usd", REVIEW_USD),
         sections=sections, words=words,
         frame=(flag("width", FRAME[0]), flag("height", FRAME[1])), direction=direction,
-        revisions=flag("revisions", 2), author_bar=flag("author_bar", 7.0),
+        revisions=flag("revisions", DEFAULT_ROUNDS), author_bar=flag("author_bar", 7.0),
         fresh=bool(flag("fresh", False)), sections_only=sections_only, lead=lead,
         look_notes=look_notes, relook=relook, recover=recover, take_attempt=take_attempt,
         take_why=take_why, verbose=verbose)

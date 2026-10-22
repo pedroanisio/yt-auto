@@ -215,9 +215,10 @@ class SectionBudget(Planned):
     def test_a_section_stops_before_it_overruns_and_keeps_its_best_round(self):
         # each revision is judged better (AUTO-78), so only the money stops it
         self.reviews(6, 6.5, 6.5)
-        planner = self.planner(budget_usd=7, stage_budget_usd=70)
+        planner = self.planner(budget_usd=7, stage_budget_usd=70, review_budget_usd=1.0)
         doc = self.author(planner)[0]
-        # round 0: 3 + 1 of 7; the revision gets 7 - 4 - 1 (the review it still owes) = 2
+        # round 0: 3 + 1 of 7; the revision gets 7 - 4 - 1 (the cap of the review it
+        # still owes, AUTO-79) = 2
         self.assertEqual(Costed.caps, [4.0, 2.0])
         self.assertEqual([r["score"] for r in doc["rounds"]], [6, 6.5])
         self.assertLessEqual(planner.spend.spent(1), 7 + 1e-9)
@@ -234,7 +235,7 @@ class SectionBudget(Planned):
 
     def test_the_stage_budget_stops_a_section_too(self):
         self.reviews(5, 6, 6)                       # judged better: the money stops it
-        planner = self.planner(budget_usd=100, stage_budget_usd=6)
+        planner = self.planner(budget_usd=100, stage_budget_usd=6, review_budget_usd=1.0)
         doc = self.author(planner)[0]
         self.assertEqual(Costed.caps, [4.0, 1.0])
         self.assertEqual(doc["budget"]["stopped"], "budget")

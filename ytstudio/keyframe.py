@@ -732,12 +732,17 @@ class KeyframeStage:
     def __init__(self, project: workspace.Project, idea: Idea, *, model: str = "sonnet",
                  house: str = "", house_digest: dict | None = None, rounds: int = DEFAULT_ROUNDS,
                  bar: float = DEFAULT_BAR, budget_usd: float = 2.0, fresh: bool = False,
+                 reviewer_model: str = vfx.REVIEWER_MODEL,
+                 review_budget_usd: float = vfx.REVIEW_USD,
                  verbose: bool = True, host: str = "", work: Path | None = None,
                  script_path: str | None = None, styles_path: str | None = None) -> None:
         self.project = project
         self.root = Path(project.root)
         self.idea = idea
         self.model = model
+        #: The reviewer: its own model under its own cap, as `yt vfx`'s.
+        self.reviewer_model = reviewer_model
+        self.review_budget_usd = float(review_budget_usd)
         self.house = house
         self.house_digest = house_digest or {}
         self.rounds = max(0, int(rounds))
@@ -763,6 +768,14 @@ class KeyframeStage:
         return harness.Harness(self.root, "keyframe", model=self.model, role=role,
                                house=self.house, house_digest=self.house_digest,
                                fresh=self.fresh, verbose=self.verbose, timeout=1800.0)
+
+    def _reviewer(self) -> harness.Harness:
+        """The frame's reviewer: never the author's model, and capped."""
+        return harness.Harness(self.root, "keyframe", model=self.reviewer_model,
+                               role=REVIEW_ROLE, house=self.house,
+                               house_digest=self.house_digest, fresh=self.fresh,
+                               verbose=self.verbose, timeout=1800.0,
+                               budget_usd=self.review_budget_usd)
 
     # -- 1. the elements ---------------------------------------------------
 
@@ -923,7 +936,7 @@ class KeyframeStage:
         engine = harness.ENGINE(EngineConfig(
             **sdkkit.author_config(ws.dir, project_root=self.root, programs=[PROGRAM_NAME]),
             model=self.model, max_turns_budget_usd=self.budget_usd, timeout=AUTHOR_TIMEOUT))
-        reviewer = self._harness(REVIEW_ROLE)
+        reviewer = self._reviewer()
         doc = ws.dir / DOC_NAME
         # A document from before programs were required is not reusable: the
         # program is the source, so it is authored again from the brief.
@@ -1383,6 +1396,11 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
     flags.budget(p, default=None,
                  help=f"spend cap for one authoring session (default {LOOK_BUDGET_USD:g}; "
                       "2 with --sheet)")
+    flags.reviewer_model(p, default=vfx.REVIEWER_MODEL,
+                         help="with --sheet: the model that reviews the frame; never the "
+                              f"author's own (default {vfx.REVIEWER_MODEL})")
+    flags.review_budget(p, default=vfx.REVIEW_USD,
+                        help=f"with --sheet: what one review may cost (default {vfx.REVIEW_USD:g})")
     flags.fresh(p, help="plan and author the look again (with --sheet: pick and compose "
                         "again), ignoring cached decisions")
     p.add_argument("--approve", action="store_true",
@@ -1442,6 +1460,8 @@ def run(args) -> int:
               + f"\n  frame on {host or 'this machine'}", file=sys.stderr)
     stage = KeyframeStage(project, idea, model=args.model, house=rules, house_digest=digest,
                           rounds=args.rounds, bar=args.bar, budget_usd=args.budget_usd,
+                          reviewer_model=args.reviewer_model,
+                          review_budget_usd=args.review_budget_usd,
                           fresh=args.fresh, verbose=verbose, host=host,
                           work=workspace.work_dir(args) if getattr(args, "work", None) else None,
                           script_path=workspace.override(args, "script"),

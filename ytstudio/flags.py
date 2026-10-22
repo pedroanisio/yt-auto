@@ -1,9 +1,11 @@
 """The stage flags that mean the same thing everywhere, spelled once.
 
-    --rounds      revision rounds the author gets
-    --bar         the review score under which work goes back
-    --budget-usd  a spend cap in dollars
-    --fresh       ignore what is cached and do the stage again
+    --rounds             revision rounds the author gets
+    --bar                the review score under which work goes back
+    --budget-usd         a spend cap in dollars
+    --reviewer-model     the model that reviews, never the author's own
+    --review-budget-usd  what one review may cost
+    --fresh              ignore what is cached and do the stage again
 
 A stage adds the ones it has with its own default and help. The spellings
 earlier releases used stay as hidden aliases that land in the same place and
@@ -47,6 +49,14 @@ def bar(p, *, default, help, old=(), dest="bar") -> None:
 def budget(p, *, default, help, old=(), dest="budget_usd", metavar=None) -> None:
     _flag(p, "--budget-usd", old, dest, type=float, default=default, help=help,
           metavar=metavar)
+
+
+def reviewer_model(p, *, default, help, dest="reviewer_model") -> None:
+    p.add_argument("--reviewer-model", dest=dest, default=default, metavar="MODEL", help=help)
+
+
+def review_budget(p, *, default, help, dest="review_budget_usd") -> None:
+    p.add_argument("--review-budget-usd", dest=dest, type=float, default=default, help=help)
 
 
 def fresh(p, *, help="ignore what is cached and do this stage again") -> None:
