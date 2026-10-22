@@ -30,8 +30,8 @@ Like `framecheck.CHECKLIST`, one tuple is meant to be rendered twice: into
 the writer's prompt (`rubric_text("writer")`, the top level of each
 criterion) and into the reviewer's role (`reviewer_role()`, every level with
 its strength), so a round is never spent finding out what will be looked at.
-Nothing calls either yet: the script stage wires them with the plan review
-and the story review (AUTO-92, AUTO-93). Nothing here decides a verdict: it
+`yt script --review` wires the reviewer's role and PLAN_REVIEW_SCHEMA into
+the plan review (AUTO-92); the story review is not wired yet (AUTO-93). Nothing here decides a verdict: it
 is schema and prompt text, and `check_review` only names what the caller
 asks the model again about (invariant 3).
 

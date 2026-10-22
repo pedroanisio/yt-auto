@@ -414,6 +414,24 @@ rounds. `--report-only` keeps the old report-without-fixing behaviour.
 `--polish` reads the narration end to end and rewrites only what repeats,
 stumbles or buries its point.
 
+`--review` has a reviewer of another model family (`--reviewer-model`,
+default `opus`, refused with exit 2 when it is the author's own family) read
+the beat sheet before any section is drafted. The `plan-review` decision
+grades five rows of the narrative rubric (the train, the stakes, the open
+loops, the reveal's setup, the ending) and is told how to attack the plan:
+reorder the sections and see whether the story survives, find a section that
+advances no question, check that the payoff names something concrete. It
+also reads the pre-checks code can count (`rule:` an AND between sections,
+a question never closed, a reveal before its constraint; `house:` a long
+film with no rehook) and decides on its own. `accept` drafts; `revise`
+sends the plan back once with the problems (`plan-2`, read again as
+`plan-review-2`); `reject`, or a second `revise`, exits 1 before a section
+is written, and no `script.json` is left for `yt run` to take as done.
+`--report-only` records a revise and drafts on; a reject still stops. There
+is no `--bar`: the verdict is the bar. The review is capped by
+`--review-budget-usd` (2), adds about $0.50, and is kept in `script.json`
+`plan_review` and the `## Plan review` section of `script.md`.
+
 Sections are drafted in parallel (`--jobs`, default 4; `--jobs 1` drafts in
 order, each reading the one before) against a ledger that reserves each
 figure for the section that owns it; a figure spoken twice is rewritten after
@@ -1264,9 +1282,10 @@ read, and the run stops before `yt vfx` until the look is approved (`yt
 keyframe --approve`, then `yt run` again; a rejected look is authored again
 with the notes; `--skip keyframe` runs without one). `--redo stage[,stage]` or `--redo all` forces them, `--skip` leaves
 stages out, and `--quick` drops the quality passes (deliberation, polish,
-fact-check, listen-back) for a cheaper first draft and renders at draft
+fact-check, plan review, listen-back) for a cheaper first draft and renders at draft
 quality. `cli.run_extras` is the flags each stage gets (`--rich` and
-`--deliberate critique` for styles, `--polish --verify` for script,
+`--deliberate critique` for styles, `--polish --verify --review` for script
+(with `--reviewer-model` and `--review-budget-usd`, as keyframe and vfx get them),
 `--fetch --synth` and `--review` for sound), and `cli.stage_argv` builds each
 stage's argv; `yt props` gets no extras, only the flags every model stage
 gets (only `yt render` goes without the model flags). Only the build reads

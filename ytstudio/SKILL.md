@@ -104,10 +104,10 @@ one-line note.
 
 | Concept | Flag | Stages | Old spelling |
 |---|---|---|---|
-| revision rounds the author gets | `--rounds` | `keyframe` (with `--sheet`), `vfx`, `probe` | `--revisions` (`vfx`) |
-| the review score under which work goes back | `--bar` | `keyframe` (with `--sheet`), `vfx`, `probe` | `--author-bar` (`vfx`) |
-| a spend cap in dollars | `--budget-usd` (`--stage-budget-usd`, `--synth-budget-usd`, `--review-budget-usd` cap the whole stage, the synthesis, a review) | `research`, `keyframe`, `vfx`, `probe`, `assess`, `improve`, `sound`, `run` (the whole run) | `--budget` (`research`) |
-| the model that reviews, never the author's own: it must differ from `--model` by family, or the stage is refused before anything is paid | `--reviewer-model` (default `opus`; `--review-budget-usd` is what one review may cost, 2) | `keyframe`, `vfx`, `probe`, `run` (handed to keyframe and vfx) | |
+| revision rounds the author gets | `--rounds` | `keyframe` (with `--sheet`), `vfx`, `probe`, `script` (the fact-check's revisions; the plan review sends a plan back once) | `--revisions` (`vfx`) |
+| the review score under which work goes back | `--bar` | `keyframe` (with `--sheet`), `vfx`, `probe`; not `script`, whose plan review has no score: the verdict (accept, revise, reject) is the bar | `--author-bar` (`vfx`) |
+| a spend cap in dollars | `--budget-usd` (`--stage-budget-usd`, `--synth-budget-usd`, `--review-budget-usd` cap the whole stage, the synthesis, a review) | `research`, `keyframe`, `vfx`, `probe`, `assess`, `improve`, `sound`, `run` (the whole run); `--review-budget-usd` on `script` too (the plan review) | `--budget` (`research`) |
+| the model that reviews, never the author's own: it must differ from `--model` by family, or the stage is refused before anything is paid | `--reviewer-model` (default `opus`; `--review-budget-usd` is what one review may cost, 2) | `keyframe`, `vfx`, `probe`, `script` (with `--review`), `run` (handed to script, keyframe and vfx) | |
 | ignore what is cached and do the stage again | `--fresh` | `research`, `keyframe`, `vfx`, `props`, `voice`, `sound`, `build`, `retime`, `review`, `qa`, `gate`, `pilot` | |
 | the model, its reasoning effort, its fallbacks | `--model`, `--effort`, `--fallback-model` | every stage that calls a model, `props` included; not `render` | |
 | how many of the stage's independent pieces run at once | `--jobs` | `ideas`, `research`, `styles`, `script`, `keyframe`, `vfx`, `probe`, `sound` (with `--fetch`: cues searched, downloaded and judged at once, default 4) | |
@@ -128,7 +128,7 @@ itself, and `--project DIR` names a directory directly.
 | `yt ideas` | a niche | `work/ideas.json` | yes (`--rich` adds each idea's `question`, `stakes`, `viewer_belief` and `promise`, which `yt script`'s brief prints, holding the promise frozen; `--rank` labels `curiosity` and `title_concrete` beside the score, which alone sorts) |
 | `yt research` | the idea | `dossier.json`, `README.md`, `claims.csv`, `assets.csv`, `raw/`; with `--download`, `downloads/` | yes |
 | `yt styles` | dossier | `styles.json`, `styles.md` | yes |
-| `yt script` | dossier, styles | `script.json`, `script.md`, `narration.txt`, `shotlist.csv` | yes (the narrative rubric the story will be graded on is in `ytstudio/narrative.py`: seven criteria of four labelled levels, a coverage-shaped review with the verdict reject, consider or recommend, and the plan review's schema; not yet wired into the stage, see AUTO-92, AUTO-93) |
+| `yt script` | dossier, styles | `script.json`, `script.md`, `narration.txt`, `shotlist.csv` | yes (the narrative rubric is in `ytstudio/narrative.py`: seven criteria of four labelled levels, a coverage-shaped story review with the verdict reject, consider or recommend (not yet wired, AUTO-93), and the plan review's schema. `--review` has `--reviewer-model`, never the author's family, read the beat sheet before any section is drafted, about $0.50 more: `plan-review` grades the train, stakes, open loops, reveal setup and ending against the plan and the `rule:`/`house:` pre-checks; revise sends it back once as `plan-2` and `plan-review-2`; a reject, or a second revise, exits 1 before a section is written and leaves no `script.json`; `--report-only` records a revise and drafts on, but a reject still stops. There is no `--bar`: the verdict is the bar. The record is `script.json` `plan_review` and the `## Plan review` of `script.md`) |
 | `yt props` | script, styles (or phrases given) | `props/<kind>/<id>/`, `props.json` | yes (two decisions: `phrases`, the search phrases picked from the catalogue's vocabulary, and `keep`, the candidates worth building with, each with its `fit` note; the files are Poly Haven, all CC0) |
 | `yt voice` | script | `voice/`, `voice.json`, `narration.vtt`, `.srt` | yes (casting, retakes) |
 | `yt retime` | script, voice | `retime.json`, the screenplay's measured lengths (`script.json.bak` kept) | yes (accept, rerecord, rewrite, keep) |
@@ -195,8 +195,8 @@ operator (`yt keyframe --approve`, then `yt run` again; a rejected look is
 authored again with the notes; `--skip keyframe` runs without a look) --
 and skips a stage whose output exists unless it is named in
 `--redo` (`--redo all` repeats everything, `--skip` leaves stages out,
-`--quick` drops the deliberation, polish, fact-check and listen-back passes
-and renders at draft). It always passes `--fetch --synth` to `yt sound`, so
+`--quick` drops the deliberation, polish, fact-check, plan review
+(`yt script --review`) and listen-back passes and renders at draft). It always passes `--fetch --synth` to `yt sound`, so
 the sheet never leaves the stage with holes (the synthesis program the agent
 writes runs on this workstation, NumPy only and no ffmpeg; its WAVs are
 levelled on a render host like the fetched ones), and runs that stage beside

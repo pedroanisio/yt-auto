@@ -93,6 +93,24 @@ class Skill(unittest.TestCase):
         more = self.text[self.text.index("## Where to read more"):]
         self.assertIn("`docs/narrative/`", more)
 
+    def test_the_manual_names_the_plan_review_where_it_runs(self):
+        # AUTO-92: the concept table names script for the flags it took, the
+        # stage table names the decision and its cost, and the `yt run`
+        # paragraph says --quick drops it.
+        table = self.text.split("One word per concept", 1)[1].split("\n## ", 1)[0]
+        rows = [line for line in table.splitlines() if line.startswith("| ")]
+        for flag in ("`--rounds`", "`--reviewer-model`", "`--review-budget-usd`"):
+            row = next(r for r in rows if flag in r.split("|")[2])
+            self.assertIn("`script`", row.split("|")[3], flag)
+        script_row = next(line for line in self.text.splitlines()
+                          if line.startswith("| `yt script` |"))
+        for needle in ("`--review`", "`plan-review`", "`plan-2`", "$"):
+            self.assertIn(needle, script_row, needle)
+        walk = self.text[self.text.index("`yt run` (`yt run --title X`) walks"):]
+        walk = walk[:walk.index("\n\n")]
+        self.assertIn("`--quick`", walk)
+        self.assertIn("plan review", walk)
+
     def test_the_manual_keeps_the_delivery_order_and_the_bar(self):
         for needle in ("--quality final --strict", "READY TO PUBLISH", "9.0", "8.5",
                        "docs/production.md", "docs/compute.md", "RS_RENDER_HOSTS"):
