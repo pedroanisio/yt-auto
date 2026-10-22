@@ -222,7 +222,25 @@ class Doctor(unittest.TestCase):
         self.assertNotIn("claude-sonnet-5-5", found[0].message)
         self.assertIn("styles.json", found[0].message)
         self.assertIn("retime.json", found[0].message)
+        # The record does not say which engine ran, so both engines' fixes
+        # are named: a Claude id is booked at $0 when cut off, a Codex id is
+        # recorded without a cost.
         self.assertIn("CLAUDE_PRICES", found[0].fix)
+        self.assertIn("CODEX_PRICES", found[0].fix)
+
+    def test_a_codex_model_its_own_engine_prices_is_quiet(self):
+        # Under YT_ENGINE=codex the CLI reports modelUsage keyed by its own
+        # ids; codex_engine prices them and refuses a budgeted call on one it
+        # cannot, so a gpt row is no warning, and a $CODEX_PRICES row counts.
+        write_json(self.root / "styles.json", {"styles": [], "usage": spend.record(
+            0.4, "gpt-5", 1, by_model={"gpt-5": {"calls": 1, "cost_usd": 0.4}})})
+        self.assertEqual(self.spend_findings(), [])
+        write_json(self.root / "script.json", {"usage": spend.record(
+            0.1, "gpt-9", 1, by_model={"gpt-9": {"calls": 1}})})
+        self.assertEqual([f.level for f in self.spend_findings()], ["warn"])
+        row = {"input": 1, "cached_input": 0.1, "output": 5}
+        with mock.patch.dict(os.environ, {"CODEX_PRICES": json.dumps({"gpt-9": row})}):
+            self.assertEqual(self.spend_findings(), [])
 
     def test_a_harness_report_nested_one_level_down_is_read_too(self):
         # keyframe.json carries two harness reports under `engine` and a

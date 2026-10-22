@@ -994,8 +994,10 @@ memory and the GPU. It reports the toolchain (engine, ffmpeg, the scene SDK,
 the delivery gate, the third-party packages the stages import, which voice
 engines are usable, which keys are set) and then every video,
 with fail, warn and note lines and the command that fixes each; a record that
-bills a model with no price is a warning, since any call on it that times out
-is booked at $0. Exit 1 on any fail, so it works in a script.
+bills a model neither engine priced (`spend.PRICES`, `$CLAUDE_PRICES`,
+`codex_engine.PRICES`, `$CODEX_PRICES`) is a warning, since a Claude call on
+it that times out is booked at $0 and a Codex call on it is recorded without a
+cost. Exit 1 on any fail, so it works in a script.
 
 ### `yt assets`
 

@@ -146,7 +146,8 @@ call cut off by its timeout is billed from it. A short name (`sonnet`) is
 so a session on a short name keeps the CLI's own stop at 80% of its cap beside
 the stream meter. A decision that raised is a `failed` row in the harness report with
 what the engine spent, so the record bills it; `yt doctor` warns when a
-record's `by_model` names an id with no price.
+record's `by_model` names an id neither engine priced (a Codex id is priced
+from `codex_engine.PRICES` and `$CODEX_PRICES`).
 
 **What `yt build` does with a bad number.** A malformed editor or
 sound-designer number (`tail_seconds`, a cue's `fade_in`, `fade_out` or

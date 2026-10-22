@@ -492,6 +492,8 @@ class Staged(unittest.TestCase):
         self.assertAlmostEqual(engine.usage.timed_out_cost_usd, 3.3)
 
     def test_an_id_the_table_lacks_still_has_the_clis_stop_at_the_mark(self):
+        # Pins the policy that predates the table: staging on an unpriced id
+        # is unchanged, the CLI's own stop is what holds the cap.
         engine = Streams([[110_000] * 4], self.dir, model="sonnet", reports="claude-x-9")
         self.run_round(engine)
         self.assertEqual(len(engine.calls), 1)
