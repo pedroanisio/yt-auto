@@ -8,8 +8,10 @@ is replaced.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -170,7 +172,7 @@ class SyncRetry(unittest.TestCase):
         self.addCleanup(render._HOSTS.clear)
         self.addCleanup(render._HEALTH.clear)
 
-    def run_job(self, failing):
+    def run_job(self, failing, code=255, err="ssh: connect to host: timed out"):
         seen = []
 
         def fake(argv, **kw):
@@ -178,7 +180,7 @@ class SyncRetry(unittest.TestCase):
             if argv[0] == "rsync":
                 target = argv[-1].partition(":")[0] if "--delete" in argv else argv[-2].partition(":")[0]
                 if target in failing:
-                    raise subprocess.CalledProcessError(255, argv, "", "ssh: connect to host: timed out")
+                    raise subprocess.CalledProcessError(code, argv, "", err)
                 return done(argv)
             if "rmdir" in argv[-1]:
                 return done(argv)
@@ -207,6 +209,94 @@ class SyncRetry(unittest.TestCase):
         _, seen = self.run_job(set())
         self.assertEqual([a[-2] for a in seen if a[0] == "ssh" and "setsid" in a[-1]], ["small"])
         self.assertNotIn("small", render._HEALTH)                   # nothing marked, nothing re-read
+
+    def test_a_partial_transfer_is_raised_and_marks_nothing_dead(self):
+        # rsync 23 is a file that vanished or could not be read here, not a host
+        # that is away: the host keeps its reading and the job is not moved.
+        with self.assertRaises(subprocess.CalledProcessError) as caught:
+            self.run_job({"small"}, code=23, err="rsync: some files could not be transferred")
+        self.assertEqual(caught.exception.returncode, 23)
+        self.assertNotIn("small", render._HEALTH)
+
+    def test_a_connection_refused_by_name_is_dead_whatever_the_code(self):
+        _, seen = self.run_job({"small"}, code=12, err="ssh: connect to host small port 22: Connection refused")
+        self.assertEqual([a[-2] for a in seen if a[0] == "ssh" and "setsid" in a[-1]], ["big"])
+        self.assertFalse(render._HEALTH["small"].alive)
+
+
+def slice_argv_target(argv) -> str:
+    """The host an rsync argv talks to: the remote side is the one token with a colon."""
+    return next((t.partition(":")[0] for t in (argv[-1], argv[-2]) if ":" in t), "")
+
+
+class SlicedRouting(unittest.TestCase):
+    """The slices' audio mix has host affinity (the slices are sent to it and the
+    join happens there), so a failed sync to its host is raised, never retried on
+    the small host; a slice may move, and its measurement names the host that ran
+    it."""
+
+    def setUp(self):
+        render._HOSTS.clear()
+        render._HEALTH.clear()
+        small, big = small_and_big()
+        render._HOSTS["small"], render._HOSTS["big"] = small, big
+        self.hosts = [small, big]
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name) / "film"
+        self.root.mkdir()
+        (self.root / "scene.xml").write_text("<scene/>")
+        self.env = mock.patch.dict("os.environ", {"RS_RENDER_HOSTS": "small,big"})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        self.addCleanup(render._HOSTS.clear)
+        self.addCleanup(render._HEALTH.clear)
+
+    def run_sliced(self, failing, after_slices=False):
+        """`failing` hosts take no sync; with `after_slices`, only once both slices
+        were launched (the mix shares the mirror the slices synced)."""
+        seen = self.seen = []
+
+        def fake(argv, **kw):
+            seen.append(list(argv))
+            if argv[0] == "rsync":
+                launched = sum(a[0] == "ssh" and "setsid" in a[-1] for a in seen)
+                up = any(t.startswith("--rsync-path") for t in argv)        # a sync, not a pull
+                if up and slice_argv_target(argv) in failing and (launched >= 2 or not after_slices):
+                    raise subprocess.CalledProcessError(255, argv, "", "ssh: connect to host: timed out")
+                if ":" not in argv[-1] and argv[-1].endswith(".mp4"):
+                    Path(argv[-1]).write_bytes(b"\0" * 16)         # the join's pull of the film
+                return done(argv)
+            if "setsid" in argv[-1]:
+                return done(argv, 0, "__YT_JOB_EXIT__=0\n", "__YT_GPU_PEAK_MB__=3000 pmon\n")
+            return done(argv, 0, "LOAD=0\nGPUUSED=0\n")
+        with mock.patch.object(render, "hosts", return_value=self.hosts), \
+                mock.patch.object(render.subprocess, "run", side_effect=fake), \
+                mock.patch.object(render.time, "sleep"):
+            code = render.encode_sliced(str(self.root / "scene.xml"), self.root, slices=2,
+                                        quality=None, start=0.0, end=20.0, strict=False,
+                                        verbose=False)
+        return code, seen
+
+    def launches(self, seen):
+        return [(a[-2], "mix.wav" in a[-1]) for a in seen if a[0] == "ssh" and "setsid" in a[-1]]
+
+    def test_the_audio_mix_never_moves_to_the_small_host(self):
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.run_sliced({"big"}, after_slices=True)
+        # the slices ran on both hosts, then nothing launched the mix: not on
+        # big, whose sync failed, and not on small, which cannot hold it
+        self.assertEqual([host for host, mix in self.launches(self.seen) if mix], [])
+        self.assertCountEqual([host for host, mix in self.launches(self.seen) if not mix], ["small", "big"])
+
+    def test_a_slice_moves_and_its_measurement_names_where_it_ran(self):
+        code, seen = self.run_sliced({"small"})
+        self.assertEqual(code, 0)
+        self.assertEqual([h for h, mix in self.launches(seen) if not mix], ["big", "big"])
+        report = json.loads((self.root / "render.json").read_text())
+        self.assertEqual(report["gpu_memory"]["host"], "big")
+        self.assertEqual(report["gpu_memory"]["host_total_mb"], 8192)
+        self.assertFalse(render._HEALTH["small"].alive)
 
 
 if __name__ == "__main__":

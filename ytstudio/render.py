@@ -769,7 +769,11 @@ def _run_detached(host: str, script: str, remote: str, *, verbose: bool = False
 def _run_remote(cmd: list[str], project_root: Path, host: str, *, verbose: bool,
                 job: str = "encode", remote: str | None = None,
                 keep_remote: bool = False, retry: bool = True) -> subprocess.CompletedProcess:
-    """run_job's body: mirror, link, run, pull back, remove."""
+    """run_job's body: mirror, link, run, pull back, remove. With `retry`, a
+    sync a host does not take sends the job to the host routing picks next,
+    once; the result's `host` names where it ran. A caller whose later steps
+    name this host (the slices' mix: the join happens there) passes
+    `retry=False` and gets the failure instead."""
     remote = remote or remote_dir(project_root.name, job, job_tag())
     mirror = mirror_dir(project_root.name)
     if verbose:
@@ -780,8 +784,14 @@ def _run_remote(cmd: list[str], project_root: Path, host: str, *, verbose: bool,
                        capture_output=True, text=True)
     except subprocess.CalledProcessError as exc:
         # The host took no sync: dead for the next moments, and the job goes
-        # to the host routing picks instead, once.
-        mark_dead(host, f"sync failed: {(exc.stderr or exc.stdout or '').strip()[:120]}")
+        # to the host routing picks instead, once. Only a connection that
+        # failed says so (rsync's 255, or ssh naming itself); a partial
+        # transfer or a full disk is this side's or the job's problem, and the
+        # host keeps its reading.
+        why = (exc.stderr or exc.stdout or "").strip()
+        if exc.returncode != 255 and "ssh:" not in why:
+            raise
+        mark_dead(host, f"sync failed: {why[:120]}")
         other = remote_host(None, job) if retry else ""
         if not other or other == host:
             raise
@@ -801,6 +811,7 @@ def _run_remote(cmd: list[str], project_root: Path, host: str, *, verbose: bool,
         if verbose:
             print(f"  ssh {host} {script}", file=sys.stderr)
         proc, settled = _run_detached(host, script, remote, verbose=verbose)
+        proc.host = host                # where it ran: the retry may have moved it
         proc.gpu_peak_mb = take_gpu_peak(proc)
         if not settled:
             return proc                 # outcome unknown: no pull-back, no removal
@@ -1696,9 +1707,12 @@ def encode_sliced(scene: str, project_root: Path, *, slices: int, quality: str |
             cmd.append("--strict")
         if parallel is not None:
             cmd += ["--parallel", str(parallel)]
+        # A slice has no host affinity (its file comes back here), so a sync
+        # its host does not take moves it; the measurement names where it ran.
         proc = _run_remote(cmd, project_root, host.addr, verbose=verbose)
+        ran = next((h for h in usable if h.addr == getattr(proc, "host", host.addr)), host)
         measured = gpu_measurement(getattr(proc, "gpu_peak_mb", None), rng[1] - rng[0],
-                                   host.addr, host.gpu_mem_mb, getattr(proc, "gpu_source", ""))
+                                   ran.addr, ran.gpu_mem_mb, getattr(proc, "gpu_source", ""))
         if measured:
             peaks[i] = measured
         envelope = _envelope(proc.stdout)
@@ -1718,10 +1732,12 @@ def encode_sliced(scene: str, project_root: Path, *, slices: int, quality: str |
 
     # The mix runs in a directory that is kept until the join; the slices, which
     # the mirror leaves out, are sent there once, and the join happens there.
+    # So the mix never moves: a sync big does not take fails the run, rather
+    # than render the mix on the host that cannot hold it and join nowhere.
     remote = remote_dir(project_root.name, "audio", job_tag())
     mix = _run_remote(["scene-render", "encode", rel_scene, "-o", "mix.wav", "--no-upload", "--json",
                        "--start", str(start), "--end", str(end)], project_root, big.addr,
-                      verbose=verbose, remote=remote, keep_remote=True)
+                      verbose=verbose, remote=remote, keep_remote=True, retry=False)
     try:
         if mix.returncode == 0:
             refuse_remote()
