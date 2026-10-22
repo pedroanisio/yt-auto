@@ -8,6 +8,7 @@ the shape of the schema it is given.
 from __future__ import annotations
 
 import contextlib
+import copy
 import io
 import sys
 import threading
@@ -324,6 +325,428 @@ class ParallelDrafting(unittest.TestCase):
                                                    shot(3, "Fresh 7 km.", "2.2")])]
         rows = script.repeated_figures(secs)
         self.assertEqual([(r["figure"].lower(), r["n"]) for r in rows], [("120 kg", 2)])
+
+
+# --------------------------------------------------------------------------- #
+# AUTO-96: the question ledger, briefed to every writer and balanced after
+# --------------------------------------------------------------------------- #
+
+QPLAN = {"logline": "l", "promise": "p", "payoff": "y",
+         "questions": [
+             {"id": "Q1", "text": "Why did the bridge fall?", "opened_in": 1, "closed_in": 3},
+             {"id": "Q2", "text": "Who saw the bolt first?", "opened_in": 2, "closed_in": 4},
+             {"id": "Q3", "text": "Will the twin bridge stand?", "opened_in": 4,
+              "closed_in": 0, "left_open_why": "the next film"}],
+         "sections": [
+             {"heading": "One", "seconds": 10, "beats": ["b"], "opens": ["Q1"], "closes": []},
+             {"heading": "Two", "seconds": 10, "beats": ["b"], "opens": ["Q2"], "closes": []},
+             {"heading": "Three", "seconds": 10, "beats": ["b"], "opens": [],
+              "closes": ["Q1"]},
+             {"heading": "Four", "seconds": 10, "beats": ["b"], "opens": ["Q3"],
+              "closes": ["Q2"]}]}
+
+#: What a writer who keeps the plan's ledger answers: two shots a section,
+#: each question raised on the first and answered on the second.
+BALANCED = {"One": {"opens": [{"id": "Q1", "opens_at": 1}]},
+            "Two": {"opens": [{"id": "Q2", "opens_at": 1}]},
+            "Three": {"closes": [{"id": "Q1", "closes_at": 2}]},
+            "Four": {"opens": [{"id": "Q3", "opens_at": 1}],
+                     "closes": [{"id": "Q2", "closes_at": 2}]}}
+
+
+def two_shots(head):
+    return [{"visual": "v", "narration": f"{head} first.", "seconds": 5, "asset": "a",
+             "style": "s", "function": "context", "shows": "s"},
+            {"visual": "v", "narration": f"{head} second.", "seconds": 5, "asset": "a",
+             "style": "s", "function": "context", "shows": "s"}]
+
+
+def drafted(marks=BALANCED, plan=QPLAN):
+    """The plan's sections as a writer answered them, numbered as run() does."""
+    sections, n = [], 0
+    for index, spec in enumerate(plan["sections"], 1):
+        section = script.Section.from_spec(spec)
+        shots = [script.Shot.from_raw(r) for r in two_shots(spec["heading"])]
+        script.QuestionLedger.from_plan(plan).mark(index, shots,
+                                                   marks.get(spec["heading"], {}))
+        for i, s in enumerate(shots, 1):
+            n += 1
+            s.n, s.label = n, f"{index}.{i}"
+        section.shots = shots
+        sections.append(section)
+    return sections
+
+
+def rule_ids(flags):
+    return sorted(f["rule"] for f in flags)
+
+
+class QuestionLedger(unittest.TestCase):
+    def test_the_brief_names_what_a_section_opens_and_closes_and_where_the_rest_is(self):
+        ledger = script.QuestionLedger.from_plan(QPLAN)
+        two = ledger.brief_for(2)
+        self.assertIn("You open Q2 (Who saw the bolt first?); section 4 closes it", two)
+        three = ledger.brief_for(3)
+        self.assertIn("You close Q1 (Why did the bridge fall?), opened in section 1", three)
+        four = ledger.brief_for(4)
+        self.assertIn("Q3", four)
+        self.assertIn("left open on purpose", four)
+        self.assertIn("closes_at", three)
+
+    def test_a_closes_at_index_goes_to_that_shot_and_one_past_the_section_is_a_note(self):
+        ledger = script.QuestionLedger.from_plan(QPLAN)
+        shots = [script.Shot.from_raw(r) for r in two_shots("Three")]
+        ledger.mark(3, shots, {"closes": [{"id": "Q1", "closes_at": 2},
+                                          {"id": "Q2", "closes_at": 9}]})
+        self.assertEqual([s.closes for s in shots], [[], ["Q1"]])
+        self.assertEqual(len(ledger.notes), 1)
+        self.assertIn("closes_at 9", ledger.notes[0])
+
+
+class QuestionFindings(unittest.TestCase):
+    def test_a_balanced_ledger_flags_nothing(self):
+        self.assertEqual(script.question_findings(QPLAN, drafted()), [])
+        cold = {"answered": [{"question_id": "Q1", "shot_index": 6},
+                             {"question_id": "Q2", "shot_index": 8}]}
+        self.assertEqual(script.question_findings(QPLAN, drafted(), cold), [])
+
+    def test_a_flag_is_a_rule_flag_in_the_check_shape(self):
+        marks = dict(BALANCED, Four={})
+        flags = script.question_findings(QPLAN, drafted(marks))
+        self.assertTrue(flags)
+        required = script.CHECK_SCHEMA["properties"]["flags"]["items"]["required"]
+        for f in flags:
+            for key in required:
+                self.assertIn(key, f)
+            self.assertTrue(f["problem"].startswith(f["rule"] + ": "), f["problem"])
+            self.assertIn(f["tier"], script.TIERS)
+
+    def test_a_plan_question_no_section_closes_is_an_open_loop_on_its_closing_section(self):
+        marks = dict(BALANCED, Four={"opens": [{"id": "Q3", "opens_at": 1}]})
+        flags = script.question_findings(QPLAN, drafted(marks))
+        self.assertEqual(rule_ids(flags), ["rule:open-loop"])
+        f = flags[0]
+        self.assertEqual((f["severity"], f["tier"], f["question"]),
+                         ("important", "important", "Q2"))
+        self.assertEqual(f["n"], 8)                 # 4.2, the last shot of section 4
+        self.assertIn("Q2", f["problem"])
+
+    def test_a_question_left_open_on_purpose_is_no_loop(self):
+        flags = script.question_findings(QPLAN, drafted())
+        self.assertNotIn("Q3", " ".join(f["problem"] for f in flags))
+
+    def test_an_answer_before_any_opening_is_closed_unopened(self):
+        marks = dict(BALANCED, One={"opens": [{"id": "Q1", "opens_at": 1}],
+                                    "closes": [{"id": "Q2", "closes_at": 2}]})
+        flags = script.question_findings(QPLAN, drafted(marks))
+        self.assertEqual(rule_ids(flags), ["rule:closed-unopened"])
+        self.assertEqual((flags[0]["n"], flags[0]["severity"]), (2, "important"))
+        unknown = dict(BALANCED, Two={"opens": [{"id": "Q2", "opens_at": 1}],
+                                      "closes": [{"id": "Q9", "closes_at": 2}]})
+        self.assertEqual(rule_ids(script.question_findings(QPLAN, drafted(unknown))),
+                         ["rule:closed-unopened"])
+
+    def test_a_section_that_opens_and_closes_nothing_is_a_minor_flag(self):
+        plan = copy.deepcopy(QPLAN)
+        plan["sections"].append({"heading": "Five", "seconds": 10, "beats": ["b"],
+                                 "opens": [], "closes": []})
+        flags = script.question_findings(plan, drafted(plan=plan))
+        self.assertEqual(rule_ids(flags), ["rule:raises-nothing"])
+        self.assertEqual((flags[0]["severity"], flags[0]["tier"], flags[0]["section"]),
+                         ("minor", "minor", 5))
+        self.assertNotIn(flags[0]["severity"], script.REVISABLE)
+
+    def test_a_section_the_plans_questions_place_a_question_in_raises_something(self):
+        # Q4 is opened in section 2 by the question alone, not by the
+        # section's own `opens`; the writer is briefed so, and the section is
+        # measured from the same ledger
+        plan = copy.deepcopy(QPLAN)
+        plan["questions"].append({"id": "Q4", "text": "Who paid?", "opened_in": 5,
+                                  "closed_in": 5})
+        plan["sections"].append({"heading": "Five", "seconds": 10, "beats": ["b"],
+                                 "opens": [], "closes": []})
+        marks = dict(BALANCED, Five={"opens": [{"id": "Q4", "opens_at": 1}],
+                                     "closes": [{"id": "Q4", "closes_at": 2}]})
+        self.assertIn("You open Q4", script.QuestionLedger.from_plan(plan).brief_for(5))
+        self.assertEqual(script.question_findings(plan, drafted(marks, plan=plan)), [])
+
+    def test_a_question_no_writer_answered_is_one_open_loop_not_also_the_readers(self):
+        marks = dict(BALANCED, Four={"opens": [{"id": "Q3", "opens_at": 1}]})
+        cold = {"answered": [{"question_id": "Q1", "shot_index": 6}]}
+        flags = script.question_findings(QPLAN, drafted(marks), cold)
+        self.assertEqual(rule_ids(flags), ["rule:open-loop"])
+
+    def test_a_closed_question_the_cold_reader_did_not_hear_is_unanswered_by_reader(self):
+        cold = {"answered": [{"question_id": "Q1", "shot_index": 6}], "unanswered": ["Q2"]}
+        flags = script.question_findings(QPLAN, drafted(), cold)
+        self.assertEqual(rule_ids(flags), ["rule:unanswered-by-reader"])
+        self.assertEqual((flags[0]["n"], flags[0]["severity"], flags[0]["question"]),
+                         (8, "important", "Q2"))
+        # no reading, or one that failed, measures nothing
+        for none in (None, {}, {"failed": "down"},
+                     {"answered": [], "answers_failed": "down"}):
+            self.assertEqual(script.question_findings(QPLAN, drafted(), none), [], none)
+
+    def test_an_older_plan_without_a_ledger_is_not_measured(self):
+        old = {k: v for k, v in QPLAN.items() if k != "questions"}
+        old["sections"] = [{k: v for k, v in s.items() if k not in ("opens", "closes")}
+                           for s in QPLAN["sections"]]
+        self.assertEqual(script.question_findings(old, drafted({}, plan=old)), [])
+
+    def test_the_questions_block_carries_the_writers_shots_as_labels(self):
+        block = script.questions_record(QPLAN, drafted())
+        self.assertEqual([(q["id"], q["opened_at"], q["closed_at"]) for q in block],
+                         [("Q1", "1.1", "3.2"), ("Q2", "2.1", "4.2"), ("Q3", "4.1", "")])
+        self.assertEqual(block[0]["text"], "Why did the bridge fall?")
+        self.assertEqual(block[2]["left_open_why"], "the next film")
+
+    def test_the_markdown_ledger_names_the_shots(self):
+        lines = script.question_ledger(script.questions_record(QPLAN, drafted()))
+        self.assertIn("| id | question | opened in | answered in | raised at | answered at |",
+                      lines)
+        self.assertIn("| Q1 | Why did the bridge fall? | 1 | 3 | 1.1 | 3.2 |", lines)
+        self.assertIn("| Q2 | Who saw the bolt first? | 2 | 4 | 2.1 | 4.2 |", lines)
+        # an older script.json, with no labels, keeps its four columns
+        old = script.question_ledger(QPLAN["questions"])
+        self.assertIn("| Q1 | Why did the bridge fall? | 1 | 3 |", old)
+
+    def test_every_ledger_rule_cites_its_corpus_rule(self):
+        for rule in script.LEDGER_RULES:
+            bound = script.BOUNDS[rule.bound]
+            self.assertTrue(bound["corpus"], rule.id)
+            self.assertIn(rule.tier, script.TIERS, rule.id)
+            self.assertEqual(rule.corpus, bound["corpus"])
+        self.assertFalse({r.id for r in script.LEDGER_RULES} & {r.id for r in script.RULES})
+
+    def test_the_docs_name_every_ledger_rule(self):
+        root = Path(__file__).resolve().parent.parent
+        for doc in ("README.md", "ytstudio/SKILL.md"):
+            text = (root / doc).read_text(encoding="utf-8")
+            for rule in script.LEDGER_RULES:
+                self.assertIn(f"`{rule.id}`", text, f"{doc} does not name {rule.id}")
+
+
+class LedgerDrafting(unittest.TestCase):
+    """The ledger through the stage: briefed with --jobs 4 and 1 alike, and
+    what the writers leave unbalanced sent to revise-ledger with the figure
+    repeats."""
+
+    def run_writer(self, jobs, marks=BALANCED, fix_targets=(), keep=(), plan=QPLAN,
+                   lines=None, closes=None):
+        """`closes` maps a shot number to the questions the writer's fix or
+        keep names under `closes`; a number it lacks names none."""
+        w = writer(research="", jobs=jobs)
+        w.plan = lambda: copy.deepcopy(plan)
+        lock = threading.Lock()
+        prompts, names = {}, []
+        closes = closes or {}
+
+        def named(n):
+            return {"closes": list(closes[n])} if n in closes else {}
+
+        def ask(name, prompt, schema):
+            with lock:
+                names.append(name)
+            which = kind(schema)
+            if which == "shots":
+                head = prompt.split('Write section ')[1].split('"')[1]
+                with lock:
+                    prompts[head] = prompt
+                shots = two_shots(head)
+                if lines and head in lines:
+                    shots[0]["narration"] = lines[head]
+                return {"shots": shots, **copy.deepcopy(marks.get(head, {}))}
+            if which == "fixes":
+                with lock:
+                    prompts.setdefault("fixes", []).append(prompt)
+                    prompts.setdefault("schemas", []).append(schema)
+                return {"fixes": [{"n": n, "action": "fix", "narration": "Answered here.",
+                                   "why": "ledger", **named(n)} for n in fix_targets]
+                        + [{"n": n, "action": "keep", "why": "answered by the picture",
+                            **named(n)} for n in keep]}
+            raise AssertionError(which)
+        w._ask = ask
+        return w, prompts, names
+
+    def test_every_write_prompt_names_its_opens_and_closes_with_four_jobs_and_one(self):
+        for jobs in (4, 1):
+            with self.subTest(jobs=jobs):
+                w, prompts, _ = self.run_writer(jobs)
+                w.run()
+                self.assertIn("You open Q1 (Why did the bridge fall?); section 3 closes it",
+                              prompts["One"])
+                self.assertIn("You open Q2 (Who saw the bolt first?); section 4 closes it",
+                              prompts["Two"])
+                self.assertIn("You close Q1 (Why did the bridge fall?), opened in section 1",
+                              prompts["Three"])
+                self.assertIn("You close Q2 (Who saw the bolt first?), opened in section 2",
+                              prompts["Four"])
+
+    def test_a_balanced_ledger_asks_no_revision_and_records_the_labels(self):
+        w, prompts, names = self.run_writer(4)
+        data = w.run()
+        self.assertNotIn("fixes", prompts)
+        ledger = tuple(r.id for r in script.LEDGER_RULES)
+        self.assertFalse([f for f in data["findings"] if any(r in f for r in ledger)],
+                         data["findings"])
+        self.assertEqual([(q["id"], q["opened_at"], q["closed_at"])
+                          for q in data["questions"]],
+                         [("Q1", "1.1", "3.2"), ("Q2", "2.1", "4.2"), ("Q3", "4.1", "")])
+        shots = data["sections"][2]["shots"]
+        self.assertEqual([s["closes"] for s in shots], [[], ["Q1"]])
+
+    def test_an_open_loop_goes_to_revise_ledger_and_the_line_the_writer_names_closes_it(self):
+        marks = dict(BALANCED, Four={"opens": [{"id": "Q3", "opens_at": 1}]})
+        w, prompts, names = self.run_writer(4, marks, fix_targets=[8], closes={8: ["Q2"]})
+        data = w.run()
+        self.assertIn("revise-ledger", names)
+        self.assertEqual(len(prompts["fixes"]), 1)
+        self.assertIn("rule:open-loop", prompts["fixes"][0])
+        self.assertIn("Q2", prompts["fixes"][0])
+        # the writer is asked to name the questions its line answers
+        item = prompts["schemas"][0]["properties"]["fixes"]["items"]["properties"]
+        self.assertIn("closes", item)
+        self.assertIn("closes", prompts["fixes"][0].split("flagged by", 1)[1])
+        self.assertEqual(data["sections"][3]["shots"][1]["narration"], "Answered here.")
+        self.assertEqual(data["sections"][3]["shots"][1]["closes"], ["Q2"])
+        self.assertEqual(data["questions"][1]["closed_at"], "4.2")
+        self.assertFalse([f for f in data["findings"] if "rule:open-loop" in f])
+
+    def test_a_changed_line_that_names_no_answer_leaves_the_open_loop_standing(self):
+        # the writer rewords shot 4.2 for the figure it repeats and does not
+        # say the line answers Q2: that the line changed is no answer
+        plan = copy.deepcopy(QPLAN)
+        plan["sections"][0]["beats"] = ["It weighs 120 kg"]
+        marks = dict(BALANCED, Four={"opens": [{"id": "Q3", "opens_at": 1}]})
+        w, prompts, _ = self.run_writer(
+            1, marks, fix_targets=[8], plan=plan,
+            lines={"One": "It weighs 120 kg."})
+        original = w._ask
+
+        def ask(name, prompt, schema):
+            got = original(name, prompt, schema)
+            if name == "write-04":
+                got["shots"][1]["narration"] = "It still weighs 120 kg."
+            return got
+        w._ask = ask
+        data = w.run()
+        self.assertIn("120 kg", prompts["fixes"][0])
+        self.assertIn("rule:open-loop", prompts["fixes"][0])
+        self.assertEqual(data["sections"][3]["shots"][1]["narration"], "Answered here.")
+        self.assertEqual(data["sections"][3]["shots"][1]["closes"], [])
+        self.assertEqual(data["questions"][1]["closed_at"], "")
+        lines = [f for f in data["findings"] if "rule:open-loop" in f]
+        self.assertEqual(len(lines), 1, data["findings"])
+        self.assertIn("Q2", lines[0])
+
+    def test_an_answer_before_the_question_goes_to_revise_ledger_and_an_unnamed_line_clears_it(self):
+        # section 1 answers Q2 at its second shot, before section 2 raises it
+        marks = dict(BALANCED, One={"opens": [{"id": "Q1", "opens_at": 1}],
+                                    "closes": [{"id": "Q2", "closes_at": 2}]})
+        for named, standing in (({2: []}, 0), ({}, 1)):
+            with self.subTest(named=named):
+                w, prompts, names = self.run_writer(4, marks, fix_targets=[2],
+                                                    closes=named)
+                data = w.run()
+                self.assertEqual(names.count("revise-ledger"), 1)
+                self.assertIn("rule:closed-unopened", prompts["fixes"][0])
+                lines = [f for f in data["findings"] if "rule:closed-unopened" in f]
+                # a fix naming the line's answers without Q2 takes the mark
+                # off; one that names none leaves the mark and the flag
+                self.assertEqual(len(lines), standing, data["findings"])
+                self.assertEqual(data["questions"][1]["closed_at"],
+                                 "4.2" if not standing else "1.2")
+
+    def test_an_open_loop_the_writer_keeps_stands_as_a_warning_with_its_reason(self):
+        marks = dict(BALANCED, Four={"opens": [{"id": "Q3", "opens_at": 1}]})
+        w, _, _ = self.run_writer(1, marks, keep=[8])
+        data = w.run()
+        lines = [f for f in data["findings"] if "rule:open-loop" in f]
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].startswith("warning: rule:open-loop: "), lines[0])
+        self.assertIn("kept: answered by the picture", lines[0])
+        self.assertEqual(data["questions"][1]["closed_at"], "")
+
+    def test_the_figure_repeats_and_the_questions_share_one_revise_ledger(self):
+        plan = copy.deepcopy(QPLAN)
+        plan["sections"][0]["beats"] = ["It weighs 120 kg"]
+        w, prompts, names = self.run_writer(
+            4, dict(BALANCED, Four={}), fix_targets=[3, 8], plan=plan,
+            lines={"One": "It weighs 120 kg.", "Two": "Still 120 kg."})
+        w.run()
+        self.assertEqual(names.count("revise-ledger"), 1)
+        self.assertIn("120 kg", prompts["fixes"][0])
+        self.assertIn("rule:open-loop", prompts["fixes"][0])
+
+    def test_a_section_raising_nothing_is_a_warning_and_asks_nothing(self):
+        plan = copy.deepcopy(QPLAN)
+        plan["sections"].append({"heading": "Five", "seconds": 10, "beats": ["b"],
+                                 "opens": [], "closes": []})
+        w, prompts, names = self.run_writer(4, plan=plan)
+        data = w.run()
+        self.assertNotIn("revise-ledger", names)
+        lines = [f for f in data["findings"] if "rule:raises-nothing" in f]
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].startswith("warning: "), lines[0])
+
+    def test_a_note_for_a_shot_index_the_section_does_not_have(self):
+        marks = dict(BALANCED, Three={"closes": [{"id": "Q1", "closes_at": 5}]})
+        w, _, _ = self.run_writer(4, marks, keep=[6])
+        data = w.run()
+        self.assertTrue([f for f in data["findings"]
+                         if f.startswith("note:") and "closes_at 5" in f], data["findings"])
+
+    def test_the_cold_readers_gap_goes_to_revise_ledger_2(self):
+        w, prompts, names = self.run_writer(1, fix_targets=[8])
+        w.run()                                     # balanced: nothing asked yet
+        self.assertNotIn("fixes", prompts)
+        sections = drafted()
+        shots = [s for sec in sections for s in sec.shots]
+        cold = {"answered": [{"question_id": "Q1", "shot_index": 6}]}
+        done = w.revise_ledger(sections, shots, QPLAN, cold_read=cold,
+                               name="revise-ledger-2")
+        self.assertEqual(names[-1], "revise-ledger-2")
+        self.assertIn("rule:unanswered-by-reader", prompts["fixes"][-1])
+        self.assertEqual(shots[7].narration, "Answered here.")
+        # the rewrite named no answer: the reader's gap stands
+        self.assertEqual(rule_ids(done["flags"]), ["rule:unanswered-by-reader"])
+
+    def test_the_cold_readers_gap_is_answered_by_a_rewrite_that_names_the_question(self):
+        w, prompts, names = self.run_writer(1, fix_targets=[8], closes={8: ["Q2"]})
+        sections = drafted()
+        shots = [s for sec in sections for s in sec.shots]
+        cold = {"answered": [{"question_id": "Q1", "shot_index": 6}]}
+        done = w.revise_ledger(sections, shots, QPLAN, cold_read=cold,
+                               name="revise-ledger-2")
+        self.assertEqual(done["flags"], [])
+        # the answer holds for that line only: a section written again in
+        # its place is measured afresh
+        fresh = drafted()
+        sections[3].shots = fresh[3].shots
+        self.assertEqual(rule_ids(w.ledger_flags(QPLAN, sections, cold)),
+                         ["rule:unanswered-by-reader"])
+
+    def test_a_kept_open_loop_holds_for_its_line_only(self):
+        marks = dict(BALANCED, Four={"opens": [{"id": "Q3", "opens_at": 1}]})
+        w, prompts, names = self.run_writer(1, keep=[8])
+        sections = drafted(marks)
+        shots = [s for sec in sections for s in sec.shots]
+        w.revise_ledger(sections, shots, QPLAN)
+        self.assertEqual(names.count("revise-ledger"), 1)
+        self.assertIn("kept: answered by the picture",
+                      " ".join(w.ledger_lines(QPLAN, sections)))
+        # the cold reader did not hear Q2 either: the line the writer
+        # defended is not asked about again under another rule
+        cold = {"answered": [{"question_id": "Q1", "shot_index": 6}]}
+        w.revise_ledger(sections, shots, QPLAN, cold_read=cold, name="revise-ledger-2",
+                        figures=False)
+        self.assertNotIn("revise-ledger-2", names)
+        # the section written again in its place: its new last line is asked
+        sections[3].shots = drafted(marks)[3].shots
+        self.assertNotIn("kept:", " ".join(w.ledger_lines(QPLAN, sections)))
+        w.revise_ledger(sections, sections[3].shots, QPLAN, name="revise-ledger-3",
+                        figures=False)
+        self.assertIn("revise-ledger-3", names)
 
 
 # --------------------------------------------------------------------------- #

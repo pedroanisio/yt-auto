@@ -516,6 +516,23 @@ Each section joins the one before with but, therefore or because, and
 every shot names its function (hook, setup, reveal, rehook, payoff ...) and
 what its picture shows of its line; `script.md` prints the question ledger.
 
+The question ledger is kept across sections drafted side by side
+(`script.QuestionLedger`): each writer is told which questions its section
+opens and which later section answers them, which it answers and where they
+were opened, and names the shot of its own that raises or answers each
+(`opens_at`, `closes_at`, its number inside the section). After drafting,
+the ledger is measured: `rule:open-loop` (a plan question no shot answers,
+unless it is left open on purpose), `rule:closed-unopened` (an answer
+before the question was raised), `rule:raises-nothing` (a section the
+ledger has open and close nothing, minor) and, with `--review`,
+`rule:unanswered-by-reader` (an answer a writer marked that the cold reader
+did not hear). The important ones go back to the writer with the figures
+said twice (`revise-ledger`; the reader's in `revise-ledger-2`), and the
+writer names the questions each flagged line answers as it leaves it
+(`closes`): a line that changed is no answer by itself. What stands is a
+warning, and script.json's `questions` names each question's `opened_at`
+and `closed_at` shot labels.
+
 After the polish the narration is measured against `script.RULES`, each a
 bound in `script.BOUNDS` with the corpus rule it comes from
 (`docs/narrative/`) and that rule's strength. The rules count; they do not

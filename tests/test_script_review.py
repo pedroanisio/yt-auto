@@ -660,6 +660,61 @@ class Revision(unittest.TestCase):
 # the command
 # --------------------------------------------------------------------------- #
 
+class QuestionLedger(unittest.TestCase):
+    """AUTO-96: the cold reader's answers measure the question ledger."""
+
+    def marked(self, n, **marks):
+        return dict(shots_for(n, ("context", "payoff")), **marks)
+
+    def test_a_question_the_writer_answered_and_the_reader_did_not_hear_goes_to_revise_ledger_2(self):
+        w = writer()
+        calls = faked(w, {
+            "write-01": self.marked(1, opens=[{"id": "Q1", "opens_at": 1}]),
+            "write-02": self.marked(2, opens=[{"id": "Q2", "opens_at": 1}]),
+            "write-03": self.marked(3, closes=[{"id": "Q1", "closes_at": 1},
+                                               {"id": "Q2", "closes_at": 2}])})
+        data = w.run(review=True)
+        order = names(calls)
+        self.assertNotIn("revise-ledger", order)       # the writers kept the ledger
+        self.assertLess(order.index("cold-read-answers"), order.index("revise-ledger-2"))
+        prompt = next(c["prompt"] for c in calls if c["name"] == "revise-ledger-2")
+        self.assertIn("rule:unanswered-by-reader", prompt)
+        self.assertIn("Q2", prompt)
+        self.assertNotIn("Q1 (", prompt.split("flagged by", 1)[1])
+        lines = [f for f in data["findings"] if "rule:unanswered-by-reader" in f]
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].startswith("warning: rule:unanswered-by-reader: shot 3.2: "),
+                        lines[0])
+        self.assertEqual([(q["id"], q["opened_at"], q["closed_at"]) for q in data["questions"]],
+                         [("Q1", "1.1", "3.1"), ("Q2", "2.1", "3.2")])
+
+    def test_a_note_from_a_redraft_put_back_is_not_in_the_findings(self):
+        section_flag = flag(n=0, section=2, criterion="open_loops",
+                            problem="section 2 opens Q2 and drops it",
+                            fix="end section 2 on the inspection log")
+        for judged, noted in (("worse", False), ("better", True)):
+            with self.subTest(judged=judged):
+                w = writer()
+                answers = consider_then(("consider" if judged == "worse" else "recommend",
+                                         judged), flags=[section_flag])
+                answers["redraft-02"] = dict(shots_for(2, ("context",)),
+                                             opens=[{"id": "Q2", "opens_at": 7}])
+                faked(w, answers)
+                data = w.run(review=True)
+                self.assertEqual(data["review"]["reverted"], not noted)
+                notes = [f for f in data["findings"] if "opens_at 7" in f]
+                self.assertEqual(bool(notes), noted, data["findings"])
+
+    def test_report_only_records_the_readers_gap_and_revises_nothing(self):
+        w = writer()
+        calls = faked(w, {"write-03": self.marked(3, closes=[{"id": "Q1", "closes_at": 1},
+                                                             {"id": "Q2", "closes_at": 2}])})
+        data = w.run(review=True, fix=False)
+        self.assertFalse([n for n in names(calls) if n.startswith("revise-ledger")])
+        self.assertTrue([f for f in data["findings"]
+                         if "rule:unanswered-by-reader" in f and "--report-only" in f])
+
+
 class Command(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()

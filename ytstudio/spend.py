@@ -223,7 +223,9 @@ def story_review_usd(root: Path | None, argv: Iterable[str] = ()) -> float:
     script's words are the project's own narration when script.json has
     it, else what `--minutes` at `--wpm` would say (script.words_for, at
     the script stage's own defaults). The writer's revisions are left to
-    the base."""
+    the base: `revise-story-N`, `redraft-NN` and the question ledger's
+    `revise-ledger-2` (AUTO-96) are the author's decisions, a few hundred
+    words each against the reviewer's whole-script readings priced here."""
     # script imports this module, so its constants are read here, when the
     # estimate is made, not at import.
     from .script import DEFAULT_MINUTES, DEFAULT_WPM, STORY_SAMPLES, words_for
