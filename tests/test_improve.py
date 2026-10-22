@@ -15,6 +15,8 @@ the files a stage would.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import re
@@ -628,6 +630,17 @@ class Plan(ImproveCase):
         self.assertEqual(runner.stages()[0], "script")
         self.assertEqual(runner.calls[0][runner.calls[0].index("--revise") + 1], "feedback")
 
+    def test_script_written_again_has_its_plan_reviewed(self):
+        # AUTO-92: a script the loop writes again, routed or downstream, is
+        # read by the plan reviewer before its sections are paid for.
+        self.assertEqual(improve.FORCE["script"], ["--polish", "--verify", "--review"])
+        self.assertEqual(improve.REUSE["script"], ["--polish", "--verify", "--review"])
+        base = ["--project", str(self.root), "--model", "sonnet", "--quiet"]
+        for routed in ({"script"}, set()):
+            argv = improve.stage_argvs(["script"], routed, base, quality="final",
+                                       root=self.root)[0]
+            self.assertTrue(cli.build_parser().parse_args(argv).review, routed)
+
 
 # --------------------------------------------------------------------------- #
 # the loop
@@ -827,6 +840,27 @@ class Loop(ImproveCase):
         self.assertEqual(record["best"]["pass"], "pass-02")
         self.assertGreaterEqual(record["spent_usd"], 3.0)               # the earlier spend counts
         self.assertTrue((self.root / "feedback" / "closed" / "pass-01" / "vfx.md").is_file())
+
+    def test_resume_prices_a_script_with_the_flags_it_will_be_handed(self):
+        # AUTO-92: a resumed pass that writes the script again hands it
+        # --review, so its estimate is asked with that argv.
+        self._failed_render()
+        earlier = read_json(self.root / "improve.json")
+        last = earlier["passes"][-1]
+        last.update(stages=["script", *last["stages"]], routed={"script": {"findings": []}},
+                    exit={"script": 1})
+        write_json(self.root / "improve.json", earlier)
+        seen = {}
+
+        def priced(root, stages, sections=None, extras=None):
+            seen.update(extras or {})
+            return [{"stage": s, "usd": 1000.0, "basis": "assumed", "source": "t"}
+                    for s in stages]
+        runner = FakeRunner(self.root, [])
+        with patch.object(improve, "stage_estimates", priced):
+            self.improver(runner, resume=True, max_passes=1).run()
+        self.assertEqual(runner.calls, [])
+        self.assertIn("--review", seen.get("script", []))
 
     def test_resume_without_the_attempts_files_replays_vfx_from_its_cache(self):
         import shutil
@@ -1071,6 +1105,18 @@ class Cli(unittest.TestCase):
         defaults = cli.build_parser().parse_args(["improve", "--title", "x"])
         self.assertEqual((defaults.max_passes, defaults.budget_usd, defaults.target,
                           defaults.quality), (3, 15.0, 9.0, "final"))
+
+    def test_an_author_of_the_reviewers_family_is_refused_before_any_stage(self):
+        # AUTO-92: script (--review), keyframe and vfx are reviewed by
+        # vfx.REVIEWER_MODEL; a loop whose author is that family would reach
+        # one and stop partway, so it is refused up front, as `yt run` does.
+        args = cli.build_parser().parse_args(
+            ["improve", "--title", "x", "--model", "claude-opus-5-5"])
+        with patch.object(improve.workspace, "resolve",
+                               side_effect=AssertionError("resolved")), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(improve.run(args), 2)
+        self.assertIn("does not grade its own work", err.getvalue())
 
     def test_improve_is_not_a_pipeline_stage(self):
         self.assertNotIn("improve", [s for s, _ in workspace.STAGES])

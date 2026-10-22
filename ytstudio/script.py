@@ -43,7 +43,7 @@ import claude_engine
 from claude_engine import ClaudeError
 from .core import Idea, read_json, timecode, wrap, write_json
 from .ideas import CHANNEL_STYLES, style_brief
-from . import harness, house, spend, workspace
+from . import flags, harness, house, narrative, spend, workspace
 
 #: Narration pace. 150 wpm is an unhurried documentary read; 180 is brisk.
 DEFAULT_WPM = 150
@@ -907,6 +907,176 @@ def section_story_lines(spec: dict, plan: dict, *, index: int, total: int) -> li
     return ["\n".join(bits)] if bits else []
 
 
+# --------------------------------------------------------------------------- #
+# the plan review (AUTO-92)
+# --------------------------------------------------------------------------- #
+
+#: Where `yt script` keeps the plan review that stopped it, beside the
+#: script it did not write: script.json's existence marks the stage done
+#: for `yt run`, so a stop cannot be recorded there. Holds the record, the
+#: stage's engine report and its spend; a later run that gets past the plan
+#: removes it, script.json (and its `plan_review`) then being the record.
+PLAN_REVIEW_FILE = "plan_review.json"
+
+#: The rubric rows a plan can be judged on before a line is written. The
+#: hook and honesty are read in the narration, so they wait for it.
+PLAN_CRITERIA = ("train", "stakes", "open_loops", "reveal_setup", "ending")
+
+#: A film longer than this is held to at least one planned re-hook. The
+#: number is judging 5's "films over seven minutes", from one leaked
+#: production memo, and structure 23 is low confidence: a default to tune
+#: from the channel's curves, so its pre-check is `house:`.
+REHOOK_AFTER_SECONDS = 7 * 60
+
+#: What makes a train a question when it has no question mark.
+_ASKS = ("why", "how", "whether")
+
+#: How the reviewer reads a plan, in the shape of styles.Director.critique:
+#: the strongest objection first, then whether the plan still holds. Only
+#: the train, the order, the sections that move nothing and the payoff are
+#: grounds to send it back (judging 13; structure 3, 4).
+PLAN_ATTACK = (
+    "Attack this plan before any line of it is written. Name the single strongest "
+    "objection to each of: its train (one sentence with a pursuer, a question and a "
+    "named obstacle, or only a topic?), its order (could the sections be reordered "
+    "without loss, a list rather than a chain?), each section's move (which sections "
+    "advance the train not at all?) and its payoff (does it pay the promise with "
+    "something the viewer can picture, or is it empty or generic?). Then say whether "
+    "the plan still holds. accept: it does. revise: it is a story with concrete "
+    "problems that planning again can fix; give each problem with its section (0 for "
+    "the whole plan) and the fix. reject: it is not a story: the train names a "
+    "topic, the sections are a list, or the payoff is empty. Only the train, the "
+    "order, a section that moves nothing and the payoff are grounds to revise or "
+    "reject. Leave the plan alone where an objection is weak, and do not send "
+    "everything back to look rigorous.")
+
+#: Said to the reviewer above the pre-checks: they are measured, not judged.
+PRECHECK_NOTE = (
+    "Pre-checks measured from the plan's own fields, before you read it. Confirm "
+    "each in problems or say why it does not matter; none is a verdict on its own. "
+    "A `house:` line is the house's own prior, never on its own a reason to revise "
+    "or reject.")
+
+
+def plan_view(plan: dict) -> dict:
+    """The plan as the reviewer and a second plan read it: the story fields
+    and each numbered section with its beats and story fields."""
+    out = {k: plan[k] for k in ("logline", *STORY_PROPERTIES) if k in plan}
+    out["sections"] = [
+        {"section": n, **{k: spec[k] for k in ("heading", "purpose", "seconds", "beats",
+                                               "claims", *SECTION_STORY) if k in spec}}
+        for n, spec in enumerate(plan.get("sections") or [], 1) if isinstance(spec, dict)]
+    return out
+
+
+def plan_prechecks(plan: dict, seconds: int, title: str = "") -> list[str]:
+    """What a plan's own fields show before anyone reads it, one line each:
+    `rule:` for a corpus rule the fields break (an empty story field, an
+    empty payoff line or one that names nothing the plan names, an AND
+    join, a question with no answer, a reveal before its constraint) and
+    `house:` for the house's priors (a long film with no re-hook, a train
+    with no question). They go to the reviewer to confirm, never decide.
+
+    The plan fields are crew-facing English (STORY_BRIEF), so the English
+    stop words read them. "Names nothing the plan names" is the measurable
+    half of structure 4's "generic": a payoff line sharing no content word
+    with the train, the promise or the title is about nothing the film set
+    up ("we learned a lot"). The `payoff` field is left out on purpose: the
+    model writes the payoff line from it, so a shared word there shows
+    nothing."""
+    lex = LEXICON["en"]
+    out: list[str] = []
+    for key in ("train", "stakes", "viewer_stake"):
+        if not " ".join(str(plan.get(key) or "").split()):
+            out.append(f"rule: {key} is empty (judging 13; attention 8, 10)")
+    ending = plan.get("ending") if isinstance(plan.get("ending"), dict) else {}
+    line = " ".join(str(ending.get("payoff_line") or "").split())
+    named = " ".join(str(plan.get(k) or "") for k in ("train", "promise")) + " " + title
+    if not line:
+        out.append("rule: the payoff line is empty: the ending is locked before any "
+                   "section is written (structure 4)")
+    elif not _found(_content(line, lex), named):
+        out.append(f"rule: the payoff line names nothing the train, the promise or the "
+                   f"title names, so it may be generic (\"{line}\"): it pays the "
+                   "promise with a concrete fact or image (structure 4)")
+    sections = [s for s in plan.get("sections") or [] if isinstance(s, dict)]
+    for n, spec in enumerate(sections, 1):
+        if str(spec.get("connective") or "").strip().lower() == "and":
+            out.append(f"rule: section {n} joins the one before with AND: between beats "
+                       "the honest connective is BUT or THEREFORE, and an AND join is a "
+                       "list (structure 1, 3)")
+    for q in plan.get("questions") or []:
+        if not isinstance(q, dict):
+            continue
+        qid, closed = q.get("id") or "?", q.get("closed_in")
+        if not isinstance(closed, int) or isinstance(closed, bool):
+            out.append(f"rule: question {qid} has no closed_in: every question opened is "
+                       "answered or left open on purpose (structure 8)")
+        elif closed == 0 and not str(q.get("left_open_why") or "").strip():
+            out.append(f"rule: question {qid} is left open with no left_open_why: a "
+                       "question left open is a choice with a reason (structure 8)")
+    reveal = plan.get("reveal") if isinstance(plan.get("reveal"), dict) else {}
+    at, before = reveal.get("section"), reveal.get("constraint_section")
+    if isinstance(at, int) and at > 0:
+        if not isinstance(before, int) or before <= 0:
+            out.append(f"rule: the reveal (section {at}) names no constraint section before "
+                       "it (structure 22)")
+        elif before >= at:
+            out.append(f"rule: the constraint (section {before}) does not come before the "
+                       f"reveal (section {at}): the viewer knows why it is hard first "
+                       "(structure 22)")
+    if seconds > REHOOK_AFTER_SECONDS and not any(str(s.get("rehook") or "").strip()
+                                                  for s in sections):
+        out.append(f"house: a film over seven minutes with no rehook in any section "
+                   f"({timecode(seconds)}): plan one where the opening hands over and at "
+                   "the later drop points (structure 23, judging 5)")
+    train = " ".join(str(plan.get("train") or "").split())
+    if train and "?" not in train and not _has(train, _ASKS):
+        out.append("house: the train asks no question (no question mark, no why, how or "
+                   "whether): a nudge, since punctuation alone satisfies it (judging 13)")
+    return out
+
+
+def review_field_lines(review) -> list[str]:
+    """What a plan review's own fields found against the plan, one line
+    each, so a second plan is told them even when the problems list is
+    thin: the train, the order, the sections that move nothing, the payoff
+    and the questions left unanswered."""
+    if not isinstance(review, dict):
+        return []
+    out = []
+    if review.get("train_ok") is False:
+        out.append("the whole plan: the train is not one sentence with a question and a "
+                   "named obstacle")
+    if review.get("reorder_survives") is True:
+        out.append("the whole plan: the sections could be reordered without loss, a list "
+                   "rather than a chain")
+    for n in review.get("sections_advancing_none") or []:
+        out.append(f"section {n}: it moves the train not at all")
+    if review.get("payoff_concrete") is False:
+        out.append("the whole plan: the payoff does not pay the promise with something the "
+                   "viewer can picture")
+    unanswered = [str(q) for q in review.get("questions_unanswered") or []]
+    if unanswered:
+        out.append(f"the whole plan: question {', '.join(unanswered)} is opened and never "
+                   "closed nor left open on purpose")
+    return out
+
+
+def problem_lines(problems) -> list[str]:
+    """A plan review's problems, one line each, as the second plan and the
+    operator read them."""
+    out = []
+    for p in problems or []:
+        if not isinstance(p, dict):
+            continue
+        where = f"section {p['section']}" if p.get("section") else "the whole plan"
+        fix = str(p.get("fix") or "").strip()
+        out.append(f"{where}: {str(p.get('problem') or '').strip()}"
+                   + (f" (fix: {fix})" if fix else ""))
+    return out
+
+
 class Screenwriter:
     """Plans the beat sheet, writes each section, then polishes and checks."""
 
@@ -917,6 +1087,8 @@ class Screenwriter:
                  lang: str = "", house: str = "",
                  house_digest: dict | None = None,
                  jobs: int = 4, draft_effort: str | None = "medium",
+                 reviewer_model: str | None = None,
+                 review_budget_usd: float | None = None, rounds: int = 2,
                  verbose: bool = True, root: Path | str | None = None) -> None:
         self.idea = idea
         self.root = root            # the project, for its open revision notes
@@ -934,6 +1106,11 @@ class Screenwriter:
         self.house_digest = house_digest or {}
         self.verbose = verbose
         self.jobs = max(1, jobs)
+        #: The fact-check's revision rounds (`--rounds`).
+        self.rounds = max(0, rounds)
+        #: The plan review's record when it stopped the stage, for the
+        #: command to keep where `yt run` does not read it as done.
+        self.plan_review_stop: dict | None = None
         #: Drafting is most of the calls; the fact-check keeps the full effort.
         #: An effort the operator set for the whole run wins over this.
         self.draft_effort = draft_effort
@@ -950,6 +1127,15 @@ class Screenwriter:
             root or ".", "script", model=model, role=SYSTEM, effort=draft_effort,
             house_digest=self.house_digest, verbose=verbose, usage=self.usage,
             decisions=self.harness.decisions, lock=self.harness.lock)
+        #: The plan's reader (AUTO-92): another model family (the command
+        #: refuses the author's own), its own cap a review, the plan's
+        #: reviewer role and the house in its system; on the same books, so
+        #: the stage's record bills it and each of its rows names its model.
+        self.reviewer = harness.Harness(
+            root or ".", "script", model=reviewer_model, role=narrative.reviewer_role(plan=True),
+            house=house, house_digest=self.house_digest, budget_usd=review_budget_usd,
+            verbose=verbose, usage=self.usage, decisions=self.harness.decisions,
+            lock=self.harness.lock) if reviewer_model else None
 
     # -- plumbing ----------------------------------------------------------
 
@@ -958,6 +1144,8 @@ class Screenwriter:
             print(msg, file=sys.stderr)
 
     def _ask(self, name: str, prompt: str, schema: dict) -> dict:
+        if schema is narrative.PLAN_REVIEW_SCHEMA:
+            return self.reviewer.decide(name, prompt, schema)
         drafting = ("shots" in schema.get("properties", {}) and self.draft_effort
                     and not claude_engine.default_for("effort"))
         return (self._drafter if drafting else self.harness).decide(name, prompt, schema)
@@ -1016,9 +1204,25 @@ class Screenwriter:
         nothing otherwise, so a plan from an older idea is asked as before."""
         return [FROZEN_PROMISE] if self.idea.promise else []
 
-    def plan(self) -> dict:
+    def _sent_back(self, previous: dict, review: dict) -> str:
+        """What a second plan is told: the plan it wrote and the reviewer's
+        problems with it. The new plan is the model's to write (invariant 3):
+        nothing here edits the old one."""
+        return (harness.brief("The plan you wrote before", plan_view(previous))
+                + "\n\nA story reviewer of another model read that plan and sent it "
+                "back. Plan again, fixing each problem below and keeping what it did "
+                "not object to:\n"
+                + "\n".join(f"- {line}" for line in (
+                    problem_lines(review.get("problems")) + review_field_lines(review)
+                    or ["(the reviewer named no problem)"])))
+
+    def plan(self, *, previous: dict | None = None, review: dict | None = None) -> dict:
+        """The beat sheet. Given the `previous` plan and the `review` that
+        sent it back, the plan asked once more, as `plan-2` (`plan-fields-2`
+        over an outline), with the problems in the prompt."""
+        again = [self._sent_back(previous, review or {})] if previous is not None else []
         if self.outline.get("sections"):
-            return self._plan_from_outline()
+            return self._plan_from_outline(again)
 
         count = section_count(self.seconds, self.sections)
         self._say(f"[plan] {count} section(s) for {timecode(self.seconds)}")
@@ -1031,15 +1235,15 @@ class Screenwriter:
                  "research is supplied, name the claims each section rests on "
                  "and the assets it shows. Put the weakest material last or "
                  "cut it. Also give the logline.",
-                 STORY_BRIEF, *self._frozen()]
-        data = self._ask("plan", "\n\n".join(parts), PLAN_SCHEMA)
+                 STORY_BRIEF, *self._frozen(), *again]
+        data = self._ask("plan-2" if again else "plan", "\n\n".join(parts), PLAN_SCHEMA)
 
         # The model's section runtimes rarely add up; hold the total.
         fit_sections(data.get("sections") or [], self.seconds)
         self._record_drift(data)
         return data
 
-    def _plan_from_outline(self) -> dict:
+    def _plan_from_outline(self, again: list[str] | None = None) -> dict:
         """The research's outline as the beat sheet, with the story fields
         asked over it (`plan-fields`) rather than left blank: the outline
         holds the sections and their beats, not the train or the ledger."""
@@ -1063,9 +1267,10 @@ class Screenwriter:
                  "Write the story fields for this outline. Answer one entry "
                  f"under sections for each of its {len(sections)} sections, in "
                  "its order.",
-                 STORY_BRIEF, *self._frozen()]
+                 STORY_BRIEF, *self._frozen(), *(again or [])]
         prompt = "\n\n".join(parts)
-        fields_ = self._ask("plan-fields", prompt, PLAN_FIELDS_SCHEMA)
+        name = "plan-fields-2" if again else "plan-fields"
+        fields_ = self._ask(name, prompt, PLAN_FIELDS_SCHEMA)
         rows = fields_.get("sections") or []
         # The count is part of the answer's validity, which the schema cannot
         # state: asked once more with the problem named (invariant 3), under
@@ -1073,17 +1278,17 @@ class Screenwriter:
         if len(rows) != len(sections):
             problem = (f"you answered {len(rows)} section(s) for an outline of "
                        f"{len(sections)}")
-            self._say(f"[plan] plan-fields: asking again ({problem})")
+            self._say(f"[plan] {name}: asking again ({problem})")
             fields_ = self._ask(
-                "plan-fields-retry",
+                f"{name}-retry",
                 prompt + f"\n\nYour previous answer was rejected: {problem}. Answer "
                 f"exactly {len(sections)} entries under sections, one per outline "
                 "section, in its order.", PLAN_FIELDS_SCHEMA)
             rows = fields_.get("sections") or []
         if len(rows) != len(sections):
             # Neither answer is usable; kept, they would fail every rerun.
-            for name in ("plan-fields", "plan-fields-retry"):
-                self.harness.forget(name)
+            for kept in (name, f"{name}-retry"):
+                self.harness.forget(kept)
             raise ClaudeError(f"the plan fields answered {len(rows)} section(s) for "
                               f"an outline of {len(sections)}, after asking again")
         for section, row in zip(sections, rows):
@@ -1107,6 +1312,100 @@ class Screenwriter:
             if connective is not None and connective not in CONNECTIVES:
                 self.findings.append(f"note: section {n}: connective {connective!r} "
                                      "not in the schema; no connective is asked for")
+
+    # -- stage one and a half: the plan is read before it is paid for ------
+
+    def review_plan(self, plan: dict, *,
+                    name: str = "plan-review") -> tuple[dict, list[str], dict]:
+        """One reading of the plan by the reviewer (`plan-review`): the plan,
+        the rubric rows a plan shows, the attack and the pre-checks measured
+        from its fields. A review whose fields contradict its verdict
+        (narrative.check_plan_review) is asked once more, as `<name>-again`,
+        with those lines; the second answer stands whatever it says.
+        Returns the review, the pre-checks and what the again ask found
+        (`again`, and the `unsettled` lines still standing). A failed call
+        raises: the gate is never skipped in silence."""
+        checks = plan_prechecks(plan, self.seconds, self.idea.title)
+        self._say(f"[plan] {name}: {self.reviewer.model} reads the plan"
+                  + (f" ({len(checks)} pre-check(s))" if checks else ""))
+        parts = [self._brief(), harness.brief("The plan", plan_view(plan)),
+                 "The criteria a plan can be judged on before a line is written:\n"
+                 + narrative.rubric_text("reviewer", keys=PLAN_CRITERIA),
+                 PLAN_ATTACK,
+                 (PRECHECK_NOTE + "\n" + "\n".join(f"- {c}" for c in checks)) if checks
+                 else "The pre-checks measured from the plan's fields found nothing."]
+        prompt = "\n\n".join(parts)
+        review = self._ask(name, prompt, narrative.PLAN_REVIEW_SCHEMA)
+        contradictions = (narrative.check_plan_review(review)
+                          if review.get("verdict") in narrative.PLAN_VERDICTS else [])
+        if not contradictions:
+            return review, checks, {"again": False, "unsettled": []}
+        self._say(f"[plan] {name}: asking again ({'; '.join(contradictions)})")
+        review = self._ask(
+            f"{name}-again", prompt + "\n\nYour previous answer contradicted itself:\n"
+            + "\n".join(f"- {line}" for line in contradictions)
+            + "\nAnswer again. Keep the verdict and correct the fields, or change the "
+            "verdict; the verdict is yours.", narrative.PLAN_REVIEW_SCHEMA)
+        unsettled = (narrative.check_plan_review(review)
+                     if review.get("verdict") in narrative.PLAN_VERDICTS else [])
+        return review, checks, {"again": True, "unsettled": unsettled}
+
+    def gate_plan(self, plan: dict, *, fix: bool = True) -> tuple[dict, dict]:
+        """The plan review as a gate, before any section is drafted.
+
+        accept goes on. revise asks the plan once more with the problems
+        (`plan-2`) and reads it again (`plan-review-2`); under report-only
+        (`fix` false) nothing is asked again and the plan goes on as it is.
+        reject, or a second revise, raises before any write-NN, leaving the
+        record on `plan_review_stop`. Only the reviewer's verdict decides:
+        the pre-checks are for it to confirm, and a reading whose fields
+        contradict its verdict is asked once more (`plan-review-again`),
+        what still contradicts kept under `unsettled`. Returns the plan to
+        draft and the record for script.json."""
+        if self.reviewer is None:
+            raise ValueError("the plan review needs a reviewer_model")
+        rounds: list[dict] = []
+        previous: dict | None = None
+        while True:
+            name = "plan-review" if previous is None else "plan-review-2"
+            review, checks, asked = self.review_plan(plan, name=name)
+            verdict = review.get("verdict")
+            rounds.append({"name": name, "verdict": verdict,
+                           "problems": list(review.get("problems") or []), **asked})
+            if verdict not in narrative.PLAN_VERDICTS:
+                # Asked again once by the harness and still off the list: no
+                # verdict was given, so the stage fails rather than guess one.
+                self.reviewer.forget(name)
+                self.reviewer.forget(f"{name}-again")
+                raise ClaudeError(f"the plan review answered verdict {verdict!r}, not one "
+                                  f"of {', '.join(narrative.PLAN_VERDICTS)}")
+            if verdict == "revise" and fix and previous is None:
+                self._say(f"[plan] sent back with {len(review.get('problems') or [])} "
+                          "problem(s); planning once more")
+                # The drift notes so far were the first plan's; the second
+                # plan files its own.
+                self.findings.clear()
+                previous, plan = plan, self.plan(previous=plan, review=review)
+                continue
+            break
+        record = {"verdict": verdict, "problems": list(review.get("problems") or []),
+                  "retried": previous is not None, "model": self.reviewer.model,
+                  "prechecks": checks, "unsettled": rounds[-1]["unsettled"],
+                  "rounds": rounds}
+        if verdict == "reject" or (verdict == "revise" and fix):
+            # script.json is not written on a stop (its existence marks the
+            # stage done for `yt run`), so the command keeps this elsewhere.
+            self.plan_review_stop = record
+            said = "; ".join(problem_lines(record["problems"]) + review_field_lines(review)
+                             ) or "no problem named"
+            raise ClaudeError(
+                f"the beat sheet did not pass review ({verdict}"
+                + (" after planning once more" if record["retried"] else "")
+                + f"): {said}. No section was drafted. Run `yt script` again with "
+                "--notes saying what the plan must change; the reviews are kept in "
+                f"{PLAN_REVIEW_FILE} and under decisions/script/")
+        self._say(f"[plan] review: {verdict}")
+        return plan, record
 
     # -- stage two: write it -----------------------------------------------
 
@@ -1492,11 +1791,18 @@ class Screenwriter:
         return section, shots, failed
 
     def run(self, *, do_polish: bool = False, do_verify: bool = False,
-            fix: bool = True) -> dict:
+            fix: bool = True, review: bool = False) -> dict:
         plan = self.plan()
         specs = plan.get("sections") or []
         if not specs:
             raise ClaudeError("the plan came back with no sections")
+        # The plan is read before any section is paid for (AUTO-92).
+        plan_review = None
+        if review:
+            plan, plan_review = self.gate_plan(plan, fix=fix)
+            specs = plan.get("sections") or []
+            if not specs:
+                raise ClaudeError("the plan came back with no sections")
 
         sourced = bool(self.research)
         ledger = Ledger.from_plan(specs)
@@ -1546,7 +1852,7 @@ class Screenwriter:
         # the check reads the lines the rules changed (AUTO-94).
         ruled = (self.revise_rules(sections, written, plan)
                  if fix and written else {"revisions": [], "kept": {}})
-        check = (self.verify_and_revise(written, fix=fix)
+        check = (self.verify_and_revise(written, rounds=self.rounds, fix=fix)
                  if do_verify and written else {})
         # Read once more on the final text: the fact-check's rewrites count.
         flags = (rule_findings({**plan, "idea": asdict(self.idea)}, sections,
@@ -1570,6 +1876,8 @@ class Screenwriter:
             "failed_sections": failures,
             "lang": self.lang,
             "house": self.house_digest,
+            # The reviewer's reading of the plan, when it was asked (AUTO-92).
+            **({"plan_review": plan_review} if plan_review else {}),
             "check": check,
             # The rules' flags still standing on the final text, what their
             # revision changed and what it kept, with the reason.
@@ -2261,6 +2569,10 @@ def print_script(idea: Idea, data: dict, sections: list[Section]) -> None:
     for key in ("train", "stakes"):
         if data.get(key):
             print(wrap(f"{key}: {data[key]}", "  "))
+    review = data.get("plan_review") if isinstance(data.get("plan_review"), dict) else {}
+    if review.get("verdict"):
+        print(wrap(f"plan review: {review['verdict']}"
+                   + (" (planned once more)" if review.get("retried") else ""), "  "))
 
     for section in sections:
         print(f"\n\n{'=' * 78}\n{section.heading.upper()}  "
@@ -2329,6 +2641,30 @@ def question_ledger(questions) -> list[str]:
                f"| {answered(q)} |" for q in rows] + [""])
 
 
+def plan_review_lines(record) -> list[str]:
+    """script.json's `plan_review` as a Markdown section: who read the plan,
+    the verdict, whether it was planned again, the problems and the
+    pre-checks the reviewer was shown."""
+    if not isinstance(record, dict) or not record.get("verdict"):
+        return []
+    md = ["## Plan review", "",
+          f"**Verdict.** {record['verdict']}"
+          + (f", read by {record['model']}" if record.get("model") else "")
+          + ("; planned once more after the first reading sent it back"
+             if record.get("retried") else ""), ""]
+    rounds = [r for r in record.get("rounds") or [] if isinstance(r, dict)]
+    for r in rounds[:-1]:
+        # what sent the first plan back, kept beside the final reading
+        md += [f"- {r.get('name', 'plan-review')}: {r.get('verdict', '?')}"]
+        md += [f"  - {line}" for line in problem_lines(r.get("problems"))]
+    md += [f"- {line}" for line in problem_lines(record.get("problems"))]
+    md += [f"- pre-check: `{c.split(':', 1)[0]}` {c.split(':', 1)[-1].strip()}"
+           for c in record.get("prechecks") or []]
+    # what the reading still contradicted after it was asked again
+    md += [f"- unsettled: {line}" for line in record.get("unsettled") or []]
+    return md + [""]
+
+
 def write_md(path: str, idea: Idea, data: dict, sections: list[Section]) -> None:
     shots = [s for sec in sections for s in sec.shots]
     md = [f"# {idea.title}", "",
@@ -2385,6 +2721,8 @@ def write_md(path: str, idea: Idea, data: dict, sections: list[Section]) -> None
                f"- **Payoff line:** {ending.get('payoff_line', '')}",
                f"- **Callback:** {ending.get('callback', '')}",
                f"- **Next film:** {ending.get('next_film', '')}", ""]
+
+    md += plan_review_lines(data.get("plan_review"))
 
     check = data.get("check") or {}
     if check.get("flags") or check.get("verdict"):
@@ -2483,8 +2821,26 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                         "important and blocking lines, and re-check them")
     p.add_argument("--report-only", action="store_true",
                    help="report the findings without fixing them: the fact-check's "
-                        "(with --verify) and the narration rules'; a standing "
-                        "`error:` rule finding then does not stop the stage")
+                        "(with --verify), the narration rules' and the plan review's "
+                        "(a revise is recorded, not planned again; a reject still "
+                        "stops); a standing `error:` rule finding then does not stop "
+                        "the stage")
+    # vfx imports this module, so its reviewer defaults are read here, when
+    # the parser is built, not at import.
+    from .vfx import REVIEW_USD, REVIEWER_MODEL
+    p.add_argument("--review", action="store_true",
+                   help="have a reviewer of another model family read the plan before "
+                        "any section is drafted (plan-review): accept drafts, revise "
+                        "plans once more with the problems, reject or a second revise "
+                        "stops the stage with exit 1")
+    flags.reviewer_model(p, default=REVIEWER_MODEL,
+                         help="the model that reviews the plan with --review, never the "
+                              f"author's own (default {REVIEWER_MODEL})")
+    flags.review_budget(p, default=REVIEW_USD,
+                        help=f"what one review may cost (default {REVIEW_USD:g})")
+    flags.rounds(p, default=2,
+                 help="revision rounds of the fact-check with --verify (default 2); "
+                      "the plan review sends a plan back once whatever this says")
     p.add_argument("--revise", default="", metavar="LABELS",
                    help="send these shots back for one revision instead of writing "
                         "the screenplay again: comma-separated labels (1.3,2.1), "
@@ -2514,6 +2870,10 @@ def run(args) -> int:
         for name, brief in sorted(CHANNEL_STYLES.items()):
             print(f"{name:<24} {brief}")
         return 0
+    # A model never grades its own work: refused before anything is paid.
+    if args.review and (own := flags.own_reviewer(args.model, args.reviewer_model)):
+        print(own, file=sys.stderr)
+        return 2
 
     split = lambda s: [p.strip() for p in s.split(",") if p.strip()]  # noqa: E731
     idea, project = workspace.resolve(args, inputs=("dossier", "direction"))
@@ -2542,14 +2902,28 @@ def run(args) -> int:
         research=research_block(dossier) if dossier else "",
         direction=direction_block(direction) if direction else "",
         outline=(dossier or {}).get("outline") if args.outline else None,
+        reviewer_model=args.reviewer_model if args.review else None,
+        review_budget_usd=args.review_budget_usd, rounds=args.rounds,
         verbose=not args.quiet)
 
+    stopped = Path(project.out("script", args.json_out)).with_name(PLAN_REVIEW_FILE)
     try:
         data = writer.run(do_polish=args.polish, do_verify=args.verify,
-                          fix=not args.report_only)
+                          fix=not args.report_only, review=args.review)
     except ClaudeError as exc:
         print(f"error: {exc}", file=sys.stderr)
+        # What was asked before the stop was paid for; say so.
+        print(f"{writer.usage}", file=sys.stderr)
+        if writer.plan_review_stop is not None:
+            write_json(stopped, {"plan_review": writer.plan_review_stop,
+                                 "usage": spend.from_usage(writer.usage, writer.model),
+                                 "engine": writer.harness.report()})
+            print(f"wrote {stopped}", file=sys.stderr)
         return 1
+    if stopped.exists():
+        # The stage got past its plan this time: script.json is the record
+        # now (its `plan_review` when the plan was read), so the stop is gone.
+        stopped.unlink()
 
     sections = [Section.from_spec(s, [Shot(**shot) for shot in s["shots"]])
                 for s in data["sections"]]

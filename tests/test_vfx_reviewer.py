@@ -23,7 +23,7 @@ class Flags(unittest.TestCase):
         return cli.build_parser().parse_args(list(argv))
 
     def test_vfx_and_keyframe_spell_the_reviewer_flags_as_probe_does(self):
-        for stage in ("vfx", "keyframe", "probe"):
+        for stage in ("vfx", "keyframe", "probe", "script"):
             ns = self.parse(stage, "--reviewer-model", "haiku", "--review-budget-usd", "1.5")
             self.assertEqual((ns.reviewer_model, ns.review_budget_usd), ("haiku", 1.5), stage)
 
@@ -184,12 +184,35 @@ class OwnModel(unittest.TestCase):
             ["run", "--title", "T", "--model", "opus", "--reviewer-model", "sonnet",
              "--review-budget-usd", "1.5"])
         extra = cli.run_extras(args, redo=set())
-        for stage in ("vfx", "keyframe"):
+        for stage in ("vfx", "keyframe", "script"):
             ns = cli.build_parser().parse_args(cli.stage_argv(stage, ["--model", "opus"], extra))
             self.assertEqual((ns.reviewer_model, ns.review_budget_usd), ("sonnet", 1.5), stage)
         # without the flags every stage keeps its own default
         extra = cli.run_extras(cli.build_parser().parse_args(["run", "--title", "T"]), redo=set())
-        self.assertNotIn("--reviewer-model", extra["vfx"] + extra["keyframe"])
+        self.assertNotIn("--reviewer-model", extra["vfx"] + extra["keyframe"] + extra["script"])
+
+    def test_the_pipeline_refuses_it_for_the_plan_review_unless_quick(self):
+        # AUTO-92: the script stage reviews its plan unless --quick, so a run
+        # that skips keyframe and vfx is still refused before any stage.
+        args = cli.build_parser().parse_args(
+            ["run", "--title", "T", "--model", "opus", "--skip", "keyframe,vfx"])
+        err = io.StringIO()
+        with patch.object(cli.workspace, "resolve",
+                          lambda *a, **k: self.fail("no stage may start")), \
+                redirect_stderr(err):
+            self.assertEqual(cli._run_pipeline(args), 2)
+        self.assertIn("does not grade its own work", err.getvalue())
+
+        class Started(Exception):
+            pass
+
+        def resolve(*a, **k):
+            raise Started()
+        args = cli.build_parser().parse_args(
+            ["run", "--title", "T", "--model", "opus", "--skip", "keyframe,vfx", "--quick"])
+        with patch.object(cli.workspace, "resolve", resolve), redirect_stderr(io.StringIO()):
+            with self.assertRaises(Started):
+                cli._run_pipeline(args)
 
     def test_the_manual_says_the_reviewer_must_differ_from_the_author(self):
         text = (Path(__file__).resolve().parent.parent / "ytstudio" / "SKILL.md").read_text()

@@ -86,7 +86,8 @@ judging 13; Zeigarnik → attention Contested.
    criterion above Fair or leaves it unflagged. The review that runs it (a
    different model family from the writer, majority of at least three
    runs, validate-retry-fail before voice is paid for) is the script
-   stage's to wire, and is not yet wired (AUTO-92, AUTO-93).
+   stage's to wire, and is not yet wired (AUTO-93). The plan review
+   before any section is drafted is (`yt script --review`, AUTO-92).
 4. **The evidence loop.** `yt improve` ingests the channel's retention curves
    (judging 1–3), maps dips, spikes and the Intro figure to beat ids and
    routes findings to the script stage under the rule they bear on. Every

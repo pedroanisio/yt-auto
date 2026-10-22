@@ -207,5 +207,20 @@ class Delivery(DeliveryCase):
         self.assertTrue(any("--quality final --strict" in s for s in steps), steps)
 
 
+class NextStep(unittest.TestCase):
+    def test_the_next_script_command_has_its_plan_reviewed(self):
+        # AUTO-92: doctor suggests the script as `yt run` would run it.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "a-film"
+            root.mkdir()
+            for name in ("idea.json", "dossier.json", "styles.json"):
+                (root / name).write_text(json.dumps(
+                    {"title": "A film", "genre": "g", "description": "d"}))
+            steps = doctor.check_project(workspace.Project(root)).next_steps
+        step = next(s for s in steps if s.startswith("yt script"))
+        for flag in ("--polish", "--verify", "--review"):
+            self.assertIn(flag, step.split())
+
+
 if __name__ == "__main__":
     unittest.main()

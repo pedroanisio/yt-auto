@@ -26,7 +26,7 @@ PRICES = {"research": 4.0, "styles": 5.0, "script": 3.0, "props": 0.0, "voice": 
           "render": 0.0}
 
 
-def fake_estimates(root, stages, sections=None):
+def fake_estimates(root, stages, sections=None, extras=None):
     rows = [{"stage": s, "usd": PRICES.get(s, 0.1), "basis": "fake", "source": "test"}
             for s in stages]
     return rows + [{"stage": s, "usd": 9.0, "basis": "fake", "source": "test"}
@@ -69,6 +69,22 @@ class Pipeline(unittest.TestCase):
             parsed = parser.parse_args(cli.stage_argv(stage, base, extra))
             self.assertEqual(parsed.stage, stage)
 
+    def test_script_has_its_plan_reviewed_with_the_reviewer_flags_unless_quick(self):
+        # AUTO-92: --quick drops the plan review as it drops --polish --verify.
+        parser = cli.build_parser()
+        base = ["--project", "work/x", "--model", "sonnet", "--quiet"]
+        args = parser.parse_args(["run", "--title", "T", "--reviewer-model", "haiku",
+                                  "--review-budget-usd", "1.5"])
+        extra = cli.run_extras(args, redo=set())
+        ns = parser.parse_args(cli.stage_argv("script", base, extra))
+        self.assertTrue(ns.review)
+        self.assertEqual((ns.reviewer_model, ns.review_budget_usd), ("haiku", 1.5))
+        quick = cli.run_extras(parser.parse_args(["run", "--title", "T", "--quick",
+                                                  "--reviewer-model", "haiku"]), redo=set())
+        self.assertNotIn("--review", quick["script"])
+        self.assertNotIn("--reviewer-model", quick["script"])
+        self.assertNotIn("--polish", quick["script"])
+
 
 class Estimates(unittest.TestCase):
     def test_the_stage_estimates_live_in_spend_and_improve_reads_them_there(self):
@@ -77,6 +93,75 @@ class Estimates(unittest.TestCase):
                      "MANIFEST", "DEFAULT_USD", "VFX_PASS_USD"):
             self.assertIs(getattr(improve, name), getattr(spend, name), name)
         self.assertEqual(spend.stage_estimates.__module__, "ytstudio.spend")
+
+
+class ReviewIncrement(unittest.TestCase):
+    """AUTO-92: a script asked with --review is priced with the plan review:
+    on the default, and on a record that was made without it; a record whose
+    engine rows hold plan-review already counts it."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.work = Path(self._tmp.name)
+        self.root = self.work / "film"
+        self.root.mkdir()
+        self.inc = spend.FLAG_USD["script"]["--review"][0]
+
+    def write(self, root, cost, names):
+        import json
+        root.mkdir(exist_ok=True)
+        (root / "script.json").write_text(json.dumps(
+            {"usage": spend.record(cost, "m", 1),
+             "engine": {"decisions": [{"name": n} for n in names]}}))
+
+    def row(self, extras=None):
+        return spend.stage_estimates(self.root, ["script"], extras=extras)[0]
+
+    def test_the_default_gains_the_increment_only_when_review_is_asked(self):
+        plain = self.row()
+        self.assertEqual(plain["usd"], spend.DEFAULT_USD["script"])
+        self.assertNotIn("--review", plain["source"])
+        self.assertEqual(self.row({"script": ["--polish"]})["usd"], spend.DEFAULT_USD["script"])
+        asked = self.row({"script": ["--polish", "--review"]})
+        self.assertEqual(asked["usd"], round(spend.DEFAULT_USD["script"] + self.inc, 2))
+        self.assertEqual(asked["basis"], "assumed")
+        self.assertIn("--review", asked["source"])
+
+    def test_a_record_made_without_the_review_is_priced_with_it(self):
+        self.write(self.root, 2.0, ["plan", "write-01"])
+        self.assertEqual(self.row()["usd"], 2.0)
+        asked = self.row({"script": ["--review"]})
+        self.assertEqual((asked["usd"], asked["basis"]), (round(2.0 + self.inc, 2), "measured"))
+        self.assertIn("--review", asked["source"])
+
+    def test_a_record_that_holds_the_review_already_counts_it(self):
+        self.write(self.root, 2.4, ["plan", "plan-review", "write-01"])
+        asked = self.row({"script": ["--review"]})
+        self.assertEqual(asked["usd"], 2.4)
+        self.assertNotIn("--review", asked["source"])
+
+    def test_like_projects_are_priced_by_whether_their_record_holds_it(self):
+        self.write(self.work / "reviewed", 2.4, ["plan", "plan-review-2"])
+        asked = self.row({"script": ["--review"]})
+        self.assertEqual((asked["usd"], asked["basis"]), (2.4, "like"))
+        self.write(self.work / "unreviewed", 2.2, ["plan"])
+        asked = self.row({"script": ["--review"]})
+        # the upper median of 2.4 and 2.2 + the increment: the unreviewed
+        # project is priced as if it had been reviewed
+        self.assertEqual(asked["usd"], max(2.4, round(2.2 + self.inc, 2)))
+        self.assertEqual(self.row()["usd"], 2.4)
+
+    def test_a_like_row_names_the_flag_only_when_it_added_to_the_price(self):
+        self.write(self.work / "reviewed", 2.4, ["plan", "plan-review"])
+        asked = self.row({"script": ["--review"]})
+        self.assertEqual(asked["usd"], 2.4)
+        self.assertNotIn("--review", asked["source"])
+        self.write(self.work / "unreviewed", 2.6, ["plan"])
+        asked = self.row({"script": ["--review"]})
+        self.assertEqual(asked["usd"], round(2.6 + self.inc, 2))
+        self.assertIn("--review", asked["source"])
 
 
 class Priced(_RunCase):
@@ -223,18 +308,54 @@ class WalkOrder(_RunCase):
         self.assertEqual(rows["sound"], 0.5, self.out)
         up_to_sound = sum(rows[s] for s in ("research", "styles", "script", "props", "voice",
                                             "retime", "sound"))
-        self.assertEqual(up_to_sound, 13.0)
+        # the script is priced with its plan review (AUTO-92)
+        review = spend.FLAG_USD["script"]["--review"][0]
+        self.assertEqual(up_to_sound, 13.0 + review)
         self.assertEqual(rows["total"], up_to_sound + rows["keyframe"])
         # Each stage reports what it was assumed to cost, so after retime the
-        # run has spent $12.50 and sound's $0.50 is the first that does not fit.
+        # run has spent $12.50 and the review, and sound's $0.50 is the first
+        # that does not fit.
         self.costs.update({s: spend.DEFAULT_USD[s] for s in cli.PIPELINE})
+        self.costs["script"] += review
         self.order.clear()
         self.assertEqual(self.run_yt("--budget-usd", f"{up_to_sound - 0.1:.2f}"),
                          retime.UNSETTLED)
         self.assertIn("== sound: estimated at $0.50", self.err)
-        self.assertIn("$12.50", self.err)
+        self.assertIn(f"${12.5 + review:.2f}", self.err)
         self.assertNotIn("sound:start", self.order)
         self.assertNotIn("keyframe:start", self.order)
+
+    def test_the_cap_prices_the_plan_review_the_dry_run_prices(self):
+        # AUTO-92: research and styles report their defaults ($7); the script
+        # fits a $10.20 cap at its $3 base, not with the review on top, so
+        # the cap stops before it, as the dry run's row says it would.
+        review = spend.FLAG_USD["script"]["--review"][0]
+        self.costs.update({s: spend.DEFAULT_USD[s] for s in cli.PIPELINE})
+        cap = 7.0 + spend.DEFAULT_USD["script"] + review / 2
+        self.assertEqual(self.run_yt("--budget-usd", f"{cap:.2f}"), retime.UNSETTLED)
+        self.assertIn(f"== script: estimated at ${spend.DEFAULT_USD['script'] + review:.2f}",
+                      self.err)
+        self.assertNotIn("script:start", self.order)
+        # --quick hands script no --review, so the base fits
+        self.order.clear()
+        self.run_yt("--budget-usd", f"{cap:.2f}", "--quick")
+        self.assertIn("script:start", self.order)
+
+    def test_the_dry_run_prices_the_plan_review_unless_quick(self):
+        # AUTO-92: the script row names the review increment only when the
+        # walk would hand script --review.
+        def script_row():
+            return next(line for line in self.out.splitlines()
+                        if line.split()[:1] == ["script"])
+        review = spend.FLAG_USD["script"]["--review"][0]
+        self.assertEqual(self.run_yt("--dry-run"), 0)
+        row = script_row()
+        self.assertIn(f"${spend.DEFAULT_USD['script'] + review:.2f}", row)
+        self.assertIn("--review", row)
+        self.assertEqual(self.run_yt("--dry-run", "--quick"), 0)
+        row = script_row()
+        self.assertIn(f"${spend.DEFAULT_USD['script']:.2f}", row)
+        self.assertNotIn("--review", row)
 
 
 class EnvHints(unittest.TestCase):

@@ -1047,7 +1047,7 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
     pending = ""
     for stage, artifact in workspace.STAGES:
         if not project.has(artifact):
-            extra = {"script": ("--polish", "--verify"), "sound": ("--review",),
+            extra = {"script": ("--polish", "--verify", "--review"), "sound": ("--review",),
                      "styles": ("--rich",)}.get(stage, ())
             pending = _cmd(stage, project, *extra)
             break

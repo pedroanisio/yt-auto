@@ -414,6 +414,32 @@ rounds. `--report-only` keeps the old report-without-fixing behaviour.
 `--polish` reads the narration end to end and rewrites only what repeats,
 stumbles or buries its point.
 
+`--review` has a reviewer of another model family (`--reviewer-model`,
+default `opus`, refused with exit 2 when it is the author's own family) read
+the beat sheet before any section is drafted. The `plan-review` decision
+reads five rows of the narrative rubric (the train, the stakes, the open
+loops, the reveal's setup, the ending) under a reviewer role of its own
+(`narrative.reviewer_role(plan=True)`: accept, revise or reject, never the
+story review's recommend or consider) and is told how to attack the plan:
+reorder the sections and see whether the story survives, find a section that
+advances no question, check that the payoff names something concrete. It
+also reads the pre-checks code can count (`rule:` an AND between sections,
+a question never closed, a reveal before its constraint; `house:` a long
+film with no rehook) and decides on its own. A reading whose fields
+contradict its verdict (an accept that finds the order a list, a revise that
+names no problem: `narrative.check_plan_review`) is asked once more as
+`plan-review-again`; what still contradicts is recorded under `unsettled`,
+and the verdict stands. `accept` drafts; `revise`
+sends the plan back once with the problems (`plan-2`, read again as
+`plan-review-2`); `reject`, or a second `revise`, exits 1 before a section
+is written, and no `script.json` is left for `yt run` to take as done: the
+reading, the stage's engine report and its spend go to `plan_review.json`
+instead, removed by the next run that gets past the plan.
+`--report-only` records a revise and drafts on; a reject still stops. No score
+is set as a bar here, as keyframe and vfx set one: the verdict is the bar. The review is capped by
+`--review-budget-usd` (2), adds about $0.50, and is kept in `script.json`
+`plan_review` and the `## Plan review` section of `script.md`.
+
 Sections are drafted in parallel (`--jobs`, default 4; `--jobs 1` drafts in
 order, each reading the one before) against a ledger that reserves each
 figure for the section that owns it; a figure spoken twice is rewritten after
@@ -1185,7 +1211,9 @@ the last failed pass again from the stage that failed, once its cause is fixed) 
 `--rejudge` (put the last pass's kept files back, render, gate and score it again on
 clean evidence, then keep or revert by the same rule). A prose finding that
 `build.json` contradicts (no audio, no narration, a placeholder) is routed nowhere
-and listed in `improve.md` as contradicted.
+and listed in `improve.md` as contradicted. The stages it reruns review with
+`opus` (the script's plan review, keyframe, vfx), so a `--model` of that
+family is refused with exit 2 before any stage runs, as `yt run` refuses it.
 
 ### `yt doctor`
 
@@ -1287,9 +1315,10 @@ read, and the run stops before `yt vfx` until the look is approved (`yt
 keyframe --approve`, then `yt run` again; a rejected look is authored again
 with the notes; `--skip keyframe` runs without one). `--redo stage[,stage]` or `--redo all` forces them, `--skip` leaves
 stages out, and `--quick` drops the quality passes (deliberation, polish,
-fact-check, listen-back) for a cheaper first draft and renders at draft
+fact-check, plan review, listen-back) for a cheaper first draft and renders at draft
 quality. `cli.run_extras` is the flags each stage gets (`--rich` and
-`--deliberate critique` for styles, `--polish --verify` for script,
+`--deliberate critique` for styles, `--polish --verify --review` for script
+(with `--reviewer-model` and `--review-budget-usd`, as keyframe and vfx get them),
 `--fetch --synth` and `--review` for sound), and `cli.stage_argv` builds each
 stage's argv; `yt props` gets no extras, only the flags every model stage
 gets (only `yt render` goes without the model flags). Only the build reads
