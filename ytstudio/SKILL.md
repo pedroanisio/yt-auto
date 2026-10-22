@@ -104,11 +104,11 @@ one-line note.
 
 | Concept | Flag | Stages | Old spelling |
 |---|---|---|---|
-| revision rounds the author gets | `--rounds` | `keyframe` (with `--sheet`), `vfx`, `probe`, `script` (the fact-check's revisions; the plan review sends a plan back once) | `--revisions` (`vfx`) |
-| the review score under which work goes back | `--bar` | `keyframe` (with `--sheet`), `vfx`, `probe`; not `script`, whose plan review has no score: the verdict (accept, revise, reject) is the bar | `--author-bar` (`vfx`) |
-| a spend cap in dollars | `--budget-usd` (`--stage-budget-usd`, `--synth-budget-usd`, `--review-budget-usd` cap the whole stage, the synthesis, a review) | `research`, `keyframe`, `vfx`, `probe`, `assess`, `improve`, `sound`, `run` (the whole run); `--review-budget-usd` on `script` too (the plan review) | `--budget` (`research`) |
+| revision rounds the author gets | `--rounds` | `keyframe` (with `--sheet`), `vfx`, `probe`, `script` (the fact-check's revisions and the story review's, each; the plan review sends a plan back once) | `--revisions` (`vfx`) |
+| the review score under which work goes back | `--bar` | `keyframe` (with `--sheet`), `vfx`, `probe`; not `script`, whose plan review and story review have no score: the verdict (accept, revise, reject; recommend, consider, reject) is the bar | `--author-bar` (`vfx`) |
+| a spend cap in dollars | `--budget-usd` (`--stage-budget-usd`, `--synth-budget-usd`, `--review-budget-usd` cap the whole stage, the synthesis, a review) | `research`, `keyframe`, `vfx`, `probe`, `assess`, `improve`, `sound`, `run` (the whole run); `--review-budget-usd` on `script` too (each plan or story review decision) | `--budget` (`research`) |
 | the model that reviews, never the author's own: it must differ from `--model` by family, or the stage is refused before anything is paid | `--reviewer-model` (default `opus`; `--review-budget-usd` is what one review may cost, 2) | `keyframe`, `vfx`, `probe`, `script` (with `--review`), `run` (handed to script, keyframe and vfx) | |
-| ignore what is cached and do the stage again | `--fresh` | `research`, `keyframe`, `vfx`, `props`, `voice`, `sound`, `build`, `retime`, `review`, `qa`, `gate`, `pilot` | |
+| ignore what is cached and do the stage again | `--fresh` | `research`, `keyframe`, `vfx`, `props`, `script` (every decision asked again: what a story review's plan flag names), `voice`, `sound`, `build`, `retime`, `review`, `qa`, `gate`, `pilot` | |
 | the model, its reasoning effort, its fallbacks | `--model`, `--effort`, `--fallback-model` | every stage that calls a model, `props` included; not `render` | |
 | how many of the stage's independent pieces run at once | `--jobs` | `ideas`, `research`, `styles`, `script`, `keyframe`, `vfx`, `probe`, `sound` (with `--fetch`: cues searched, downloaded and judged at once, default 4) | |
 | the shots sent back to the screenplay for one revision, by label, `retime` or `feedback` | `--revise` (`--why` the reason) | `script` | |
@@ -129,7 +129,7 @@ itself, and `--project DIR` names a directory directly.
 | `yt ideas` | a niche | `work/ideas.json` | yes (`--rich` adds each idea's `question`, `stakes`, `viewer_belief` and `promise`, which `yt script`'s brief prints, holding the promise frozen; `--rank` labels `curiosity` and `title_concrete` beside the score, which alone sorts) |
 | `yt research` | the idea | `dossier.json`, `README.md`, `claims.csv`, `assets.csv`, `raw/`; with `--download`, `downloads/` | yes |
 | `yt styles` | dossier | `styles.json`, `styles.md` | yes |
-| `yt script` | dossier, styles | `script.json`, `script.md`, `narration.txt`, `shotlist.csv` | yes (`yt script --revise 1.3,2.1`, `yt script --revise retime` or `--revise feedback` sends only those lines back, see below; the narrative rubric is in `ytstudio/narrative.py`: seven criteria of four labelled levels, a coverage-shaped story review with the verdict reject, consider or recommend (not yet wired, AUTO-93), and the plan review's schema. `--review` has `--reviewer-model`, never the author's family, read the beat sheet before any section is drafted, about $0.50 more: `plan-review` reads the plan against the train, stakes, open loops, reveal setup and ending and the `rule:`/`house:` pre-checks, under a role of its own (accept, revise or reject, not the story review's verdicts); a reading whose fields contradict its verdict is asked once more as `plan-review-again`; revise sends it back once as `plan-2` and `plan-review-2`; a reject, or a second revise, exits 1 before a section is written and leaves no `script.json`, its reading and spend kept in `plan_review.json` until a run gets past the plan; `--report-only` records a revise and drafts on, but a reject still stops. There is no `--bar`: the verdict is the bar. The record is `script.json` `plan_review` and the `## Plan review` of `script.md`) |
+| `yt script` | dossier, styles | `script.json`, `script.md`, `narration.txt`, `shotlist.csv` | yes (`yt script --revise 1.3,2.1`, `yt script --revise retime` or `--revise feedback` sends only those lines back, see below; the narrative rubric is in `ytstudio/narrative.py`: seven criteria of four labelled levels, the coverage-shaped story review's schema (verdict reject, consider or recommend) and the plan review's. `--review` has `--reviewer-model`, never the author's family, read the beat sheet before any section is drafted, about $0.50 more: `plan-review` reads the plan against the train, stakes, open loops, reveal setup and ending and the `rule:`/`house:` pre-checks, under a role of its own (accept, revise or reject, not the story review's verdicts); a reading whose fields contradict its verdict is asked once more as `plan-review-again`; revise sends it back once as `plan-2` and `plan-review-2`; a reject, or a second revise, exits 1 before a section is written and leaves no `script.json`, its reading and spend kept in `plan_review.json` until a run gets past the plan; `--report-only` records a revise and drafts on, but a reject still stops. There is no `--bar`: the verdict is the bar. The record is `script.json` `plan_review` and the `## Plan review` of `script.md`. `--review` then reads the drafted, polished script before the rules and the fact-check (the story review, AUTO-93), about $0.65 more for 10 minutes at opus, priced from the script's words: three samples on one prompt, `review-r1-s1`, `review-r1-s2`, `review-r1-s3`, each the reviewer's role with the rubric's levels in its own order; a sample whose answer breaks its rubric is asked once more (`review-r1-s2-again`); the grade per criterion and the verdict are the median of the valid samples, two that disagree on the verdict are a consider, and fewer than two valid samples (a failed call is a failed engine row, never a verdict) is `not_evidenced`. `cold-read` hears the narration alone, no research, plan or house in its prompt or system, and restates the premise, the unexplained terms, why each major claim matters and where the plan's questions were answered; `cold-read-match` matches its premise to the train, and a mismatch is a whole-script train flag. A consider's binding flags go back: a shot's to `revise-story-1` (it may restructure the line, never add a fact), a section's to `redraft-02` (the section written again with the flags and its neighbours' closing shots), and a flag on the plan or the whole script stays unresolved with `yt script --fresh --review`; the revision is read again with the review it revises (`review-r2-s1`.., `previous` required) and stands only when the samples call it better, up to `--rounds`. The record is `script.json` `review` (grades, verdict, samples, flags, revisions, redrafts, kept, unresolved, cold_read, previous_verdicts) and the `## Story review` of `script.md`; every verdict is appended to `work/review-log.jsonl` with `label: null` for the calibration set. A reject is an `error: story review: reject` finding doctor fails on, and narration.txt is still written with exit 0; `--gate` leaves narration.txt unwritten and exits 1 on a reject or `not_evidenced`, and is to be turned on once work/review-log.jsonl holds 20 labelled scripts and the seeded-bad fixtures fail under the live reviewer; `yt run` never passes it; `--report-only` reports the review and revises nothing) |
 | `yt props` | script, styles (or phrases given) | `props/<kind>/<id>/`, `props.json` | yes (two decisions: `phrases`, the search phrases picked from the catalogue's vocabulary, and `keep`, the candidates worth building with, each with its `fit` note; the files are Poly Haven, all CC0) |
 | `yt voice` | script | `voice/`, `voice.json`, `narration.vtt`, `.srt` | yes (casting, retakes) |
 | `yt retime` | script, voice | `retime.json`, the screenplay's measured lengths (`script.json.bak` kept) | yes (accept, rerecord, rewrite, keep; a `rerecord` prints `yt voice --redo <labels>` and a `rewrite` prints `yt script --revise retime`) |
@@ -198,8 +198,8 @@ operator (`yt keyframe --approve`, then `yt run` again; a rejected look is
 authored again with the notes; `--skip keyframe` runs without a look) --
 and skips a stage whose output exists unless it is named in
 `--redo` (`--redo all` repeats everything, `--skip` leaves stages out,
-`--quick` drops the deliberation, polish, fact-check, plan review
-(`yt script --review`) and listen-back passes and renders at draft). It always passes `--fetch --synth` to `yt sound`, so
+`--quick` drops the deliberation, polish, fact-check, plan review and
+story review (`yt script --review`, never with `--gate`) and listen-back passes and renders at draft). It always passes `--fetch --synth` to `yt sound`, so
 the sheet never leaves the stage with holes (the synthesis program the agent
 writes runs on this workstation, NumPy only and no ffmpeg; its WAVs are
 levelled on a render host like the fetched ones), and runs that stage beside
@@ -311,6 +311,8 @@ then the vetting decision) and the gap audit run next; the outline last.
 The stage names under `raw/` and `decisions/research/` are the same as when
 they ran in series, so an older dossier replays, and `Dossier.save` lands a
 whole file or none.
+
+**The story review binds voice under `--gate`.** `yt script --review` reads the screenplay before a take is recorded; its verdict is in script.json (`review`) and its reject is an `error:` finding that `yt doctor` fails on with the command that fixes it (`yt script --fresh --review --notes ...`). Without `--gate` narration.txt is still written and the stage exits 0, and the build does not carry the reject to QA: the reviewer is a prior until it is calibrated (judging 9 and 10). With `--gate` a reject or a `not_evidenced` review leaves narration.txt unwritten and exits 1. Every verdict is appended to `work/review-log.jsonl`, and doctor names it as evidence to copy out, since work/ is disposable.
 
 **The fact-check binds the picture.** `yt script --verify` writes its flags into script.json (`check`). Its blocker and important flags reach the people who draw the film, verbatim (`vfx.picture_constraints`): the vfx planner, each section's brief and reviewer (the whole-film flags plus that section's shots), and the keyframe brief. A claim the narration avoids can still be shown wrong by a picture.
 
@@ -617,7 +619,7 @@ a pass older than `video.mp4` or `scene.xml` is scored again first), with
 - **A pass.** The earliest routed stage with the flags that force a new
   decision (`--fresh`; `yt vfx --fresh` opens a new `vfx/vNN/`; a script
   pass whose findings all name a shot runs `yt script --revise feedback`,
-  those lines only, and the full `--polish --verify` otherwise, or when one
+  those lines only, and the full `--polish --verify --review` otherwise, or when one
   of those findings was briefed before and is still there: a revision of
   the line did not fix it, so the screenplay runs whole. A finding that
   needs more than its own line, a hook that does not state its promise or a
@@ -638,8 +640,12 @@ a pass older than `video.mp4` or `scene.xml` is scored again first), with
   else an assumed default (`assumed`), and only a pass with nothing measured
   falls back to the last pass's cost; `--dry-run` prints the table -- when a
   defect survives three briefed passes (a mechanical one by kind, shot and
-  objects; a prose one by a cached model decision), or when only human
-  decisions remain.
+  objects; a prose one by a cached model decision), when only human
+  decisions remain, or when the script the pass wrote is rejected by its
+  story review (`story-review`): the loop does not pass `--gate`, so it
+  reads the verdict in script.json itself, restores the snapshot, keeps
+  the rejected screenplay under `attempt/` and says so with the verdict
+  in `improve.md`, before any voice or authoring is paid for.
 - **Report.** `improve.json` (each pass's routing, briefs, argv, scores
   before and after, keep or revert with the numbers, cost, the stop) and
   `improve.md` in the shape of `docs/production.md` §11. `yt improve

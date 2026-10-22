@@ -124,6 +124,27 @@ class Skill(unittest.TestCase):
         self.assertIn("`--quick`", walk)
         self.assertIn("plan review", walk)
 
+    def test_the_manual_names_the_story_review_where_it_runs(self):
+        # AUTO-93: the script row names each decision of the story review,
+        # what it costs and when --gate is to be turned on; a paragraph
+        # beside the fact-check's says what binds voice; the improvement
+        # loop says what a reject does to a pass.
+        script_row = next(line for line in self.text.splitlines()
+                          if line.startswith("| `yt script` |"))
+        for needle in ("`review-r1-s1`", "-again", "`cold-read`", "`cold-read-match`",
+                       "`revise-story-1`", "`redraft-02`", "`--gate`", "review-log.jsonl",
+                       "20 labelled", "`## Story review`", "not_evidenced"):
+            self.assertIn(needle, script_row, needle)
+        self.assertNotIn("not yet wired", script_row)
+        binds = self.text[self.text.index("**The story review binds voice"):]
+        binds = binds[:binds.index("\n\n")]
+        for needle in ("`--gate`", "`error:`", "narration.txt", "review-log.jsonl"):
+            self.assertIn(needle, binds, needle)
+        loop = self.text[self.text.index("## The improvement loop"):]
+        loop = loop[:loop.index("\n## ")]
+        self.assertIn("story review", loop)
+        self.assertIn("`story-review`", loop)
+
     def test_the_manual_keeps_the_delivery_order_and_the_bar(self):
         for needle in ("--quality final --strict", "READY TO PUBLISH", "9.0", "8.5",
                        "docs/production.md", "docs/compute.md", "RS_RENDER_HOSTS"):

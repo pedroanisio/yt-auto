@@ -71,8 +71,7 @@ judging 13; Zeigarnik → attention Contested.
    coverage's Pass, renamed because doctor, improve and the operator read
    verdict strings. The hook's window is written in words, the house's to
    set. One tuple is to be rendered into the writer's prompt and the
-   reviewer's role, as `framecheck.CHECKLIST` is; nothing renders it or
-   runs the review yet. `tests/test_narrative_rubric.py` holds every cited
+   reviewer's role, as `framecheck.CHECKLIST` is. `tests/test_narrative_rubric.py` holds every cited
    rule id to this corpus, and `tests/fixtures/narrative/` starts the
    calibration set (judging 10): plans and scripts seeded with one known
    fault each, and one good pair. judging 10 asks the calibration run for
@@ -86,8 +85,15 @@ judging 13; Zeigarnik → attention Contested.
    criterion above Fair or leaves it unflagged. The review that runs it (a
    different model family from the writer, majority of at least three
    runs, validate-retry-fail before voice is paid for) is the script
-   stage's to wire, and is not yet wired (AUTO-93). The plan review
-   before any section is drafted is (`yt script --review`, AUTO-92).
+   stage's, wired by `yt script --review` (AUTO-93): three samples
+   `review-r1-s1..s3`, each with the levels in its own order, the median
+   of the valid ones (fewer than two is `not_evidenced`), a cold reader
+   that hears the narration alone (judging 14), and every verdict appended
+   to `work/review-log.jsonl` for the labels this calibration needs. Its
+   reject stops voice only under `--gate`, to be turned on once that log
+   holds 20 labelled scripts and these fixtures fail under the live
+   reviewer. The plan review before any section is drafted is wired too
+   (`yt script --review`, AUTO-92).
 4. **The evidence loop.** `yt improve` ingests the channel's retention curves
    (judging 1–3), maps dips, spikes and the Intro figure to beat ids and
    routes findings to the script stage under the rule they bear on. Every
