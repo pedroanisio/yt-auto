@@ -325,6 +325,10 @@ class Harness:
     timeout: float = 900.0
     usage: Usage = field(default_factory=Usage)
     decisions: list[Decision] = field(default_factory=list)
+    #: Whether the stage's open feedback notes join the system. A reader
+    #: meant to know nothing but the work it is shown (the script's cold
+    #: reader, judging 14) sets this off, as it leaves `house` empty.
+    feedback: bool = True
     #: Held while an answer is booked, so threads may share one harness.
     lock: Any = field(default_factory=threading.Lock, repr=False, compare=False)
 
@@ -359,7 +363,7 @@ class Harness:
         if self.house:
             parts.append("The house standards, which every decision serves:\n"
                          + self.house)
-        notes = feedback_for(self.root, self.stage)
+        notes = feedback_for(self.root, self.stage) if self.feedback else ""
         if notes:
             parts.append(notes)
         return "\n\n".join(parts)
