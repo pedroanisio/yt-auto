@@ -5,8 +5,10 @@ per reader. Each section's comment lists the corpus rules it states, by file
 checks that every id exists, that its Stages: tag names the section's reader,
 that each section stays under 1,500 characters and that none names a look.
 The channel's work/house.md and a project's house.md replace these sections
-by name. Every decision's digest carries this text, so an edit here re-asks
-every cached decision on the next run. Comments never reach a prompt.
+by name. A decision's cache key holds its stage's block (`## all` and its
+own section), so an edit to a section re-asks the cached decisions of the
+stages that read it; comments never reach a prompt, and an edit to one
+re-asks nothing.
 -->
 
 ## all
@@ -19,8 +21,8 @@ The narration carries the message on first listen: a viewer who cannot rewind un
 - Join consecutive beats with but, therefore or because; a beat that only follows "and then" is reworked, cut or moved.
 - Write the promise as one sentence and restate its question within the first 30 seconds; the last section pays it in resolved form. Nothing promised goes unpaid.
 - Within the first 30 seconds the viewer knows why they should care: the consequence for them or people like them.
-- Say what is at risk, and by when, before the mechanism is explained, unless a twist is the point. Later beats put more at risk than earlier ones.
-- Each section opens on the specific question it answers and answers it before it ends, leaving the viewer something they did not have at its start.
+- Say what is at risk, and by when, before the mechanism is explained whenever possible; withhold it only when a twist is the point. Later beats put more at risk than earlier ones.
+- Each section opens on the specific question it answers and answers it before it ends, or names the later section that does, leaving the viewer something they did not have at its start.
 - Open each section on the concrete case and derive the principle from it; never open on a definition.
 - Withhold the central reveal until the viewer understands why it is hard.
 - End within a few seconds of the final payoff: no recap, no sign-off.
@@ -44,7 +46,7 @@ The narration carries the message on first listen: a viewer who cannot rewind un
 ## sound
 <!-- rules: attention 21; structure 35 -->
 - Every effect, sting or insert is tied to a beat of the script; one that serves no claim or step is cut.
-- The last 5 to 20 seconds, where the end screen sits, are a quiet tail: no new narration, and the music continues under it and resolves at the cut.
+- The last 5 to 20 seconds, where the end screen sits, are a quiet tail: no new narration beyond the one hand-off line, and the music continues under it and resolves at the cut.
 
 ## voice
 <!-- rules: direction 27, 28 -->
@@ -53,8 +55,11 @@ The narration carries the message on first listen: a viewer who cannot rewind un
 
 ## format
 <!-- rules: structure 36, 37; attention 18 -->
+<!-- Structure 37 also asks for a thumbnail grammar. That is a look, which
+is styles.json's under invariant 2, so it is left out here on purpose. -->
 The channel is a repeatable format. These are neutral defaults until the channel's own house file states its format.
 - Narrator: one persona across films, the viewer's proxy who is finding out, not the expert who already knows; expertise belongs to named sources.
 - Opening: the same device every film; with none set here, open on this film's question.
 - Ending: the same device every film; with none set here, end on the payoff.
-- Hand-off: one spoken pointer to one specific next film that continues the question, never a generic invitation to watch more.
+- Hand-off: when the channel or the plan names the next film, one spoken pointer to that film, which continues this film's question, never a generic invitation to watch more; with none named, no hand-off.
+- Series: the one connected topic the films share; with none set here, the film stands alone.

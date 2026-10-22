@@ -277,6 +277,27 @@ class TheShippedText(unittest.TestCase):
                     self.assertIsNone(re.search(rf"(?<![A-Za-z0-9]){re.escape(word)}(?![A-Za-z])",
                                                 body, re.I), word)
 
+    def line(self, section: str, starts: str) -> str:
+        found = [l for l in self.parsed[section].splitlines() if l.startswith(starts)]
+        self.assertEqual(len(found), 1, f"## {section}: {starts!r}")
+        return found[0]
+
+    def test_every_format_device_is_neutral_until_the_channel_sets_it(self):
+        # The script stage knows no other film and no series: a device the
+        # default asks for unconditionally is one the writer makes up.
+        for device in ("Opening", "Ending", "Hand-off", "Series"):
+            with self.subTest(device=device):
+                self.assertRegex(self.line("format", f"- {device}:"), r"\bnone\b")
+        self.assertNotRegex(self.line("format", "- Hand-off:"), r"^- Hand-off: one spoken")
+
+    def test_the_strength_is_the_corpus_strength(self):
+        # attention 8 says "whenever possible"; structure 19 lets a section
+        # defer its answer to a named later one; structure 35 allows the one
+        # spoken hand-off inside the quiet tail.
+        self.assertIn("whenever possible", self.line("script", "- Say what is at risk"))
+        self.assertIn("names the later section", self.line("script", "- Each section opens"))
+        self.assertIn("beyond the one hand-off line", self.line("sound", "- The last 5 to 20"))
+
     def test_no_measured_number_is_carried(self):
         # Effect sizes and percentages are evidence, read by maintainers; the
         # unverified ones must not become prompt text either.
