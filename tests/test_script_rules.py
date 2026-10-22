@@ -193,6 +193,19 @@ class Filler(unittest.TestCase):
         flags = by_rule(rules(sheet, plan={}, lang="pt-BR"), "rule:filler")
         self.assertEqual([f["n"] for f in flags], [1])
 
+    def test_a_greeting_that_names_the_subject_is_the_first_content_sentence(self):
+        # structure 11: an in-character greeting that itself sets up the show
+        # is not filler; the title's word in it makes it content
+        sheet = film(["Welcome to Chernobyl, where the forest grew back over the "
+                      "town you know.", "Nobody planted it."])
+        self.assertEqual(by_rule(rules(sheet, plan={"title": "Chernobyl forest"}),
+                                 "rule:filler"), [])
+
+    def test_a_greeting_before_the_subject_is_still_flagged(self):
+        sheet = film(["Welcome back.", "Welcome to Chernobyl, where the forest grew."])
+        flags = by_rule(rules(sheet, plan={"title": "Chernobyl forest"}), "rule:filler")
+        self.assertEqual([f["n"] for f in flags], [1])
+
     def test_a_language_it_does_not_cover_is_not_flagged_but_recorded(self):
         sheet = film(["Welcome back to the channel.", "Die Brücke fiel."])
         self.assertEqual(by_rule(rules(sheet, plan={}, lang="de"), "rule:filler"), [])
@@ -280,6 +293,15 @@ class HookSubject(unittest.TestCase):
         self.assertEqual(len(by_rule(rules(sheet), "rule:hook-subject")), 1)
 
 
+    def test_the_title_s_verb_alone_names_the_subject(self):
+        # The looser reading, on purpose: any content word of the title
+        # counts, verbs included. Telling the key noun from the verb needs a
+        # parser the stage does not have (BOUNDS['hook_window']['note']).
+        sheet = clean(hook=["It fell at dawn, and you were on it.", "Nobody knew why."])
+        self.assertEqual(by_rule(rules(sheet), "rule:hook-subject"), [])
+        self.assertIn("verb", script.BOUNDS["hook_window"]["note"])
+
+
 class HookAnswer(unittest.TestCase):
     def test_the_payoff_line_said_in_the_hook_is_flagged(self):
         sheet = clean(hook=["The bridge you cross fell. One bolt, painted over, held "
@@ -355,6 +377,15 @@ class Pace(unittest.TestCase):
 
     def test_the_same_words_fit_at_a_faster_read(self):
         self.assertEqual(by_rule(rules(self.sheet(), wpm=200), "rule:pace"), [])
+
+    def test_the_bound_is_the_wpm_not_the_corpus_band(self):
+        # direction 25 puts the best recall at 170-190 wpm; this bound only
+        # asks whether the words fit the shots at the film's own --wpm
+        note = script.BOUNDS["pace"]["note"]
+        self.assertIn("--wpm", note)
+        self.assertIn("170-190", note)
+        flags = by_rule(rules(self.sheet(), wpm=150), "rule:pace")
+        self.assertIn("--wpm", flags[0]["problem"])
 
     def test_a_silent_shot_is_not_voiced_time(self):
         sheet = clean(body=["We scraped " + " ".join(["word"] * 18) + ".", ""])

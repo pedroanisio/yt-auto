@@ -1614,7 +1614,10 @@ BOUNDS: dict[str, dict] = {
         "value": "before the first content sentence", "corpus": ("structure 11",),
         "strength": "platform",
         "note": "welcome, subscribe, my name is, in this video I; the channel's "
-                "name is not known to the stage, so it is not in the list"},
+                "name is not known to the stage, so it is not in the list. A "
+                "sentence that also says a word of the title is the first "
+                "content sentence (an in-character greeting that sets up the "
+                "show), not filler"},
     "sentence": {
         "value": 25, "unit": "words in one sentence", "corpus": ("direction 16",),
         "strength": "practitioner",
@@ -1636,7 +1639,11 @@ BOUNDS: dict[str, dict] = {
                             "said or shown", "corpus": ("structure 9", "structure 10",
                                                         "structure 13"),
         "strength": "platform",
-        "note": "YouTube's Intro measure; no vendor window is used"},
+        "note": "YouTube's Intro measure; no vendor window is used. Any "
+                "content word of the title counts, its verb included: telling "
+                "the key noun from the verb needs a parser the stage does not "
+                "have, so a hook that says only 'it fell' passes and is left "
+                "to the judged rubric"},
     "hook_answer": {
         "value": 4, "unit": "words, the shortest payoff sentence matched "
                             "verbatim in the 30 s window", "corpus": ("structure 13",),
@@ -1663,7 +1670,10 @@ BOUNDS: dict[str, dict] = {
         "value": 1.10, "unit": "the section's words read at --wpm, over its "
                                "narrated shots' planned seconds",
         "corpus": ("direction 25",), "strength": "house",
-        "note": "the planned pace; voice and retime measure the read"},
+        "note": "consistency with --wpm, the pace the film is planned at: do "
+                "the words fit the shots at that read? It is not direction "
+                "25's band (170-190 wpm recalled best, warn outside 150-190); "
+                "voice and retime measure the read"},
     "density": {
         "value": 8, "unit": "numerals and new proper nouns per 100 words of a "
                             "section", "corpus": ("direction 26",), "strength": "house"},
@@ -1880,14 +1890,20 @@ def rule_findings(plan: dict, sections: list[Section], wpm: int = DEFAULT_WPM,
     voiced = [(sec, shot, at) for sec, shot, at in timed if spoken(shot.narration)]
     out: list[dict] = []
 
+    title = str(plan.get("title") or (plan.get("idea") or {}).get("title") or "")
+    subject = _content(title, lex)
+
     # -- line by line: filler, sentence, numbers, clause --------------------
+    # A greeting that names the title's subject sets the show up (structure
+    # 11 does not count it against the opening): it is the first content
+    # sentence, not filler before it.
     content_started = False
     for _, shot, _ in voiced:
         for sentence in sentences(spoken(shot.narration)):
             words = sentence.split()
             if not content_started and on["rule:filler"]:
                 hits = _has(sentence, lex["filler"])
-                if hits:
+                if hits and not (subject and _found(subject, sentence)):
                     out.append(_flag("rule:filler", shot,
                                      f"\"{sentence[:60]}\" ({', '.join(hits)}) comes before "
                                      "the first sentence about the subject",
@@ -1939,8 +1955,6 @@ def rule_findings(plan: dict, sections: list[Section], wpm: int = DEFAULT_WPM,
     hook_text = " ".join(spoken(s.narration) + " " + " ".join(s.on_screen_text or [])
                          for _, s, _ in hook)
     first = next((shot for _, shot, at in voiced if at < window), None)
-    title = str(plan.get("title") or (plan.get("idea") or {}).get("title") or "")
-    subject = _content(title, lex)
     if on["rule:hook-subject"] and subject and first is not None \
             and not _found(subject, hook_text):
         out.append(_flag("rule:hook-subject", first,
@@ -1996,7 +2010,8 @@ def rule_findings(plan: dict, sections: list[Section], wpm: int = DEFAULT_WPM,
             if needs > seconds * BOUNDS["pace"]["value"]:
                 out.append(_flag("rule:pace", lines[0],
                                  f"section \"{section.heading}\": {words} words take "
-                                 f"{needs:.0f} s at {wpm} wpm, over the {seconds:.0f} s "
+                                 f"{needs:.0f} s at {wpm} wpm (--wpm), over the "
+                                 f"{seconds:.0f} s "
                                  f"its narrated shots are planned for (a planned pace "
                                  f"of {words * 60 / seconds:.0f} wpm); voice and retime "
                                  "measure the read",
