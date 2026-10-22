@@ -1341,7 +1341,10 @@ A script the pass writes again whose story review rejects it stops the pass
 under `attempt/`, and `improve.md` gives the verdict, before any voice or
 authoring is paid for. The published film's retention findings (`yt
 retention`, below) are routed beside QA's while `scene.xml` is the cut they
-measured.
+measured. A pass that rebuilds the film cannot say whether a dip it was
+briefed on is gone, since no audience has watched the new cut: `improve.md`
+lists it as not re-measured, never as fixed, until the new cut is published
+and `yt retention` reads it.
 
 ### `yt retention`
 

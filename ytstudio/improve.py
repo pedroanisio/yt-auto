@@ -206,6 +206,12 @@ def fingerprint(finding: dict) -> str | None:
     return f"{kind}|{finding.get('shot', '')}|{'+'.join(names)}"
 
 
+def _measured_only_by_an_audience(defect: dict) -> bool:
+    """A retention defect: only a new publish and `yt retention` can say
+    whether it is gone, never a QA pass (AUTO-101)."""
+    return str(defect.get("fingerprint") or "").startswith("retention|")
+
+
 def collect(card: dict, *, gate: dict | None = None,
             doctor: Iterable[tuple] = (), retention: Iterable[dict] = ()) -> list[dict]:
     """Every finding of one pass, numbered F1..: the mechanical ones, the
@@ -1557,12 +1563,18 @@ class Improver:
             new_findings = self._evidence_findings(new)
             self._assign(new["pass"], new_findings, briefed)
             present = set(self.assigned[new["pass"]].values())
-            for did in briefed:
+            # A dip the audience showed is gone from the new pass only because
+            # its curve describes the published cut, not this one: nobody
+            # measured it again, so it is neither fixed nor survived.
+            unmeasured = {did for did in briefed if did not in present
+                          and _measured_only_by_an_audience(self.defects[did])}
+            for did in briefed - unmeasured:
                 d = self.defects[did]
                 d["survived"] = d["survived"] + 1 if did in present else 0
             entry["survivors"] = {did: self.defects[did]["survived"] for did in sorted(briefed)
                                   if self.defects[did]["survived"]}
-            entry["fixed"] = sorted(did for did in briefed if did not in present)
+            entry["fixed"] = sorted(did for did in briefed - unmeasured if did not in present)
+            entry["unmeasured"] = sorted(unmeasured)
             entry["briefed_defects"] = {fid: assigned[fid] for e in routing["stages"].values()
                                         for fid in e["findings"] if fid in assigned}
             if verdict["keep"]:
@@ -1610,7 +1622,8 @@ class Improver:
         routes = routing.get("routes") or {}
         return {stage: {"findings": [{**{k: by_id[fid].get(k) for k in
                                          ("id", "source", "kind", "shot", "timestamp",
-                                          "severity", "problem", "root_cause")},
+                                          "severity", "problem", "root_cause", "tag",
+                                          "corpus_rule")},
                                       **{k: routes[fid][k] for k in ("rule", "plan_declared")
                                          if (routes.get(fid) or {}).get(k)}}
                                      for fid in e["findings"]],
@@ -1743,6 +1756,7 @@ def report_md(record: dict, root: Path) -> str:
                   + (f" Why not kept: {'; '.join(p.get('reasons') or [])}."
                      if p.get("decision") != "keep" else ""), ""]
         fixed = set(p.get("fixed") or [])
+        unmeasured = set(p.get("unmeasured") or [])
         defect_of = p.get("briefed_defects") or {}
         after_fps = None
         if "fixed" not in p and p.get("qa_pass"):
@@ -1755,12 +1769,16 @@ def report_md(record: dict, root: Path) -> str:
             correction = "; ".join(e.get("must_change") or []) or "-"
             for f in e.get("findings") or []:
                 did = defect_of.get(f["id"])
-                fp = fingerprint(f) if after_fps is not None else None
+                audience = f.get("source") == "retention"
+                fp = fingerprint(f) if after_fps is not None and not audience else None
                 if fp is not None:
                     did = f["id"]
                     if fp not in after_fps:
                         fixed.add(did)
-                if after_fps is not None and fp is None:
+                if audience and (did in unmeasured or after_fps is not None):
+                    result = (f"not re-measured: {p.get('qa_pass')} scored a cut no audience "
+                              "has watched; run `yt retention` once the new cut is published")
+                elif after_fps is not None and fp is None:
                     result = (f"not re-checked one by one ({p.get('qa_pass')} was judged "
                               "after a resume); see its findings")
                 elif p.get("decision") == "keep" and did in fixed:
@@ -1773,6 +1791,8 @@ def report_md(record: dict, root: Path) -> str:
                 shot = f" shot {f['shot']}" if f.get("shot") else ""
                 kind = f" [{f['kind']}]" if f.get("kind") else ""
                 kind += f" [rubric: {f['rule']}]" if f.get("rule") else ""
+                if audience and f.get("corpus_rule"):
+                    kind += f" [retention: {f['corpus_rule']}, {f.get('tag') or '?'}]"
                 kind += f" ({f['plan_declared']})" if f.get("plan_declared") else ""
                 lines.append(f"- {when}{shot}{kind} → {f.get('problem', '')} → root cause: "
                              f"{f.get('root_cause') or '-'} → correction ({stage}): "

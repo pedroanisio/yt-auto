@@ -451,7 +451,9 @@ opinion, and makes the regression check mechanical.
 1. **Verdict** — READY TO PUBLISH or NOT READY.
 2. **Scorecard** — all ten categories plus overall.
 3. **Changes implemented** — for each: timestamp or scene → problem → root
-   cause → correction → verified result.
+   cause → correction → verified result. A retention finding has no
+   verified result until the new cut is published and measured: it reads
+   "not re-measured".
 4. **Remaining issues** — only genuine ones, classified **Blocking** or
    **Minor / acceptable**.
 5. **Final artifact** — path, runtime, resolution, frame rate, audio

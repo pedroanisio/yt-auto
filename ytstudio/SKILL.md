@@ -646,6 +646,9 @@ a pass older than `video.mp4` or `scene.xml` is scored again first), with
 and the published film's `retention.json` findings (source `retention`,
 `yt retention`) while `scene.xml` is still the cut the curve measured: a
 pass that rebuilds the film drops them, since nobody watched the new cut.
+A briefed one that is gone for that reason is neither fixed nor survived:
+the pass records it under `unmeasured` and `improve.md` says "not
+re-measured" until a new publish and `yt retention` measure it.
 
 - **Routing.** Each finding goes to exactly one stage of `workspace.STAGES`,
   or to `upstream-fact` (a claim the research or screenplay got wrong) or
