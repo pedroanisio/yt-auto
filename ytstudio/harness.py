@@ -156,13 +156,26 @@ def brief(title: str, data: Any) -> str:
     return f"{title}:\n{json.dumps(data, ensure_ascii=False, indent=1, default=str)}"
 
 
-def missing_fields(result: Any, schema: dict) -> list[str]:
-    """Required top-level fields the answer lacks. The CLI enforces the schema
-    when it can; this is the check that holds when the answer came another way."""
+def missing_fields(result: Any, schema: dict, path: str = "") -> list[str]:
+    """Required fields the answer lacks, as `path` (`previous.verdict`,
+    `rows[1].k`), through nested objects and arrays that are present: a nested
+    object the answer holds must hold its own required fields; one it lacks is
+    named once, by its parent. The CLI enforces the schema when it can; this is
+    the check that holds when the answer came another way. Types are
+    `type_errors`' business."""
     required = list(schema.get("required", []))
-    if not isinstance(result, dict):
+    if not path and not isinstance(result, dict):
         return required
-    return [name for name in required if name not in result]
+    missing: list[str] = []
+    if isinstance(result, dict):
+        missing += [f"{path}.{name}" if path else name for name in required if name not in result]
+        for name, sub in (schema.get("properties") or {}).items():
+            if name in result and isinstance(sub, dict):
+                missing += missing_fields(result[name], sub, f"{path}.{name}" if path else name)
+    elif isinstance(result, list) and isinstance(schema.get("items"), dict):
+        for n, item in enumerate(result):
+            missing += missing_fields(item, schema["items"], f"{path}[{n}]")
+    return missing
 
 
 _JSON_TYPES: dict[str, Callable[[Any], bool]] = {

@@ -119,6 +119,17 @@ class TheBrief(Case):
         self.assertEqual([r["score"] for r in doc["rounds"]], [5, None])
         self.assertEqual(doc["best_round"], 0)
 
+    def test_a_previous_block_without_the_verdict_is_no_review_either(self):
+        # `previous` present but its `verdict` missing: the nested required
+        # field is checked too, so promotion never falls back to the score
+        class Half(FakeEngine):
+            verdict_for = staticmethod(lambda review, prompt: dict(review, previous={"findings": []}))
+        harness.ENGINE = Half
+        FakeEngine.reviews = [review(5), review(8)]
+        doc = self.author(self.planner(revisions=1))
+        self.assertEqual([r["score"] for r in doc["rounds"]], [5, None])
+        self.assertEqual((doc["best_round"], doc["score"]), (0, 5))
+
 
 class Promotion(Case):
     def test_a_revision_is_kept_only_when_judged_better(self):

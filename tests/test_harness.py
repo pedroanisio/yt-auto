@@ -230,6 +230,21 @@ class Helpers(unittest.TestCase):
         self.assertEqual(harness.missing_fields({"a": 1}, schema), ["b"])
         self.assertEqual(harness.missing_fields("not an object", schema), ["a", "b"])
 
+    def test_validate_names_a_required_field_missing_from_a_nested_object(self):
+        # a nested object that is present must hold its own required fields;
+        # one that is absent is its parent's business (the parent names it or not)
+        schema = {"type": "object", "required": ["a"],
+                  "properties": {"a": {"type": "object", "required": ["x"],
+                                       "properties": {"x": {}}},
+                                 "rows": {"type": "array",
+                                          "items": {"type": "object", "required": ["k"],
+                                                    "properties": {"k": {}}}}}}
+        self.assertEqual(harness.missing_fields({"a": {"x": 1}}, schema), [])
+        self.assertEqual(harness.missing_fields({"a": {"y": 1}}, schema), ["a.x"])
+        self.assertEqual(harness.missing_fields({"a": {"x": 1}, "rows": [{"k": 1}, {}]}, schema),
+                         ["rows[1].k"])
+        self.assertEqual(harness.missing_fields({"a": "not an object"}, schema), [])
+
     def test_type_errors_name_each_field_and_its_declared_type(self):
         schema = {"type": "object", "required": ["n", "i", "s", "b", "a", "o"],
                   "properties": {"n": {"type": "number"}, "i": {"type": "integer"},
