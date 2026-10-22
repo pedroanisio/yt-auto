@@ -155,6 +155,20 @@ class Budget(Priced):
             self.assertEqual(self.run_yt("--skip", "keyframe,render"), 0)
         self.assertIsNone(self.seen["vfx"].stage_budget_usd)
 
+    def test_a_re_record_the_editor_asks_for_is_capped_like_any_stage(self):
+        # retime reports $5.60 and sends a take back for a re-record; the
+        # voice's $2.00 does not fit in $6, so it is refused by name before
+        # a take is recorded again, not counted after.
+        self.costs.update(retime=5.6)
+        self.codes["retime"] = retime.UNSETTLED
+        self.records["retime"] = {"decisions": [{"label": "T1", "action": "rerecord"}]}
+        self.assertEqual(self.run_yt("--budget-usd", "6"), retime.UNSETTLED)
+        self.assertEqual(self.started("voice"), ["voice:start", "voice:end"])
+        self.assertIn("== voice: estimated at $2.00", self.err)
+        self.assertIn("$5.60", self.err)
+        self.assertNotIn("sound:start", self.order)
+        self.assertNotIn("retime exited", self.err)
+
     def test_a_sound_stage_beside_is_refused_like_any_other(self):
         # Every estimate up to retime fits in $6; retime then reports $5.60,
         # and sound's $0.50 is the first that does not fit.

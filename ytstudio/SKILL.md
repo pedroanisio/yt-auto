@@ -180,8 +180,9 @@ one row per stage priced by `spend.stage_estimates` (measured, like or
 assumed) and the total, and runs nothing. `yt run --budget-usd N` caps the
 whole run: a stage whose estimate plus what the run's stages have reported
 does not fit is not started, the refusal names the estimate and the run exits
-`retime.UNSETTLED` (3); sound counts at its estimate while it runs beside;
-`yt vfx` is handed what is left as `--stage-budget-usd`. The plan and the
+`retime.UNSETTLED` (3); sound counts at its estimate while it runs beside,
+and the voice re-record a `rerecord` verdict asks for is capped like any
+stage; `yt vfx` is handed what is left as `--stage-budget-usd`. The plan and the
 cap price the stages in the one order the walk reaches them
 (`cli.walk_order`, sound before the keyframe), since an assumed vfx pass
 folds in what follows it.

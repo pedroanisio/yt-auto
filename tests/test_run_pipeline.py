@@ -33,7 +33,7 @@ MODULES = {"research": research, "styles": styles, "script": script, "props": pr
 class RunCase(unittest.TestCase):
     """`yt run` against fake stages: each records when it ran, writes the
     artifact that proves it did and, when `costs` prices it, a manifest that
-    reports that spend."""
+    reports that spend (`records` adds keys to it, such as a verdict)."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -43,6 +43,7 @@ class RunCase(unittest.TestCase):
         self.order: list[str] = []
         self.codes: dict[str, int] = {}
         self.costs: dict[str, float] = {}
+        self.records: dict[str, dict] = {}
         self.hooks: dict[str, callable] = {}
         self.seen: dict[str, object] = {}
         for stage, module in MODULES.items():
@@ -58,7 +59,8 @@ class RunCase(unittest.TestCase):
             self.seen[stage] = args
             if stage in self.hooks:
                 self.hooks[stage]()
-            record = {"usage": spend.record(self.costs.get(stage, 0.0), "fake", 1)}
+            record = {"usage": spend.record(self.costs.get(stage, 0.0), "fake", 1),
+                      **self.records.get(stage, {})}
             (self.root / workspace.ARTIFACTS[artifact]).write_text(json.dumps(record) + "\n")
             if stage in spend.MANIFEST:
                 (self.root / spend.MANIFEST[stage]).write_text(json.dumps(record) + "\n")

@@ -398,13 +398,14 @@ def _run_pipeline(args) -> int:
     if budget is not None:
         priced = {r["stage"]: r for r in spend.stage_estimates(project.root, walk_order(skip))}
     ran: set[str] = set()
-    committed = 0.0
+    committed, over = 0.0, False
 
     def paid(stage: str) -> float:
         rel = spend.MANIFEST.get(stage)
         return (spend.cost_in(read_json(project.root / rel, warn=False)) or 0.0) if rel else 0.0
 
     def refused(stage: str) -> bool:
+        nonlocal over
         if budget is None:
             return False
         spent = sum(paid(s) for s in ran) + committed
@@ -414,17 +415,22 @@ def _run_pipeline(args) -> int:
         say(f"\n== {stage}: estimated at ${row['usd']:.2f} ({row['basis']}) and "
             f"${spent:.2f} of the ${budget:.2f} budget is spent; it does not fit, "
             f"stopping here (a higher --budget-usd, or `yt {stage}` by hand)")
+        over = True
         return True
+
+    def run_capped(stage: str, argv: list[str]) -> int:
+        # The re-record retime asks for is a stage like any other under the cap.
+        return retime.UNSETTLED if refused(stage) else run_stage(stage, {stage: argv})
 
     # Only the build reads the cue sheet, so the sound stage runs beside the
     # keyframe and vfx on its own thread (its own harness, its own files) and
     # is joined before the build; a walk that stops early still waits for it.
     beside: Beside | None = None
-    code, over = 0, False
+    code = 0
     for stage in PIPELINE:
         if stage == "keyframe" and stage_state("sound", project, skip, redo) == "run":
             if refused("sound"):
-                code, over = retime.UNSETTLED, True
+                code = retime.UNSETTLED
                 break
             committed = (priced.get("sound") or {}).get("usd", 0.0)
             say("\n== sound: beside the keyframe and vfx")
@@ -446,7 +452,7 @@ def _run_pipeline(args) -> int:
             say(f"\n== {stage}: already done ({artifacts[stage]}); --redo to run it again")
             continue
         if refused(stage):
-            code, over = retime.UNSETTLED, True
+            code = retime.UNSETTLED
             break
         argv_extra = dict(extra)
         if stage == "vfx" and "keyframe" not in skip and keyframe.approved_keyframe(
@@ -466,10 +472,9 @@ def _run_pipeline(args) -> int:
             argv_extra["vfx"] = [*argv_extra.get("vfx", []), "--stage-budget-usd", f"{left:.2f}"]
         say(f"\n== {stage}")
         code = run_stage(stage, argv_extra)
+        ran.add(stage)  # its report counts before anything it asks for is priced
         if stage == "retime":
-            code = settle_retime(code, project,
-                                 lambda name, argv: run_stage(name, {name: argv}))
-        ran.add(stage)
+            code = settle_retime(code, project, run_capped)
         if code:
             break
     if code and not over:
