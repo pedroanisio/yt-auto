@@ -155,9 +155,21 @@ PULL_BACK = ("*.mp4", "*.png", "*.wav", "render.json", "render-*.json", "pilot*.
              ".estimate-*.json")
 
 
-#: Every ssh this module runs: no prompts, and a dead link is noticed in about a
-#: minute instead of never, so a session that drops is seen as dropped.
-SSH_OPTS = ("-o", "BatchMode=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4")
+#: Seconds a connection may take before it is a no. A host that accepts TCP but
+#: never answers ssh (a hung sshd) otherwise holds every sync, launch, poll and
+#: removal for good: docs/throughput.md's ~45 min of hung stills.
+CONNECT_TIMEOUT = 10
+
+
+def ssh_opts(connect_timeout: int = CONNECT_TIMEOUT) -> tuple[str, ...]:
+    """Every ssh this module runs: no prompts, a bounded connect, and a dead link
+    noticed in about a minute instead of never, so a session that drops is seen
+    as dropped."""
+    return ("-o", "BatchMode=yes", "-o", f"ConnectTimeout={connect_timeout}",
+            "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4")
+
+
+SSH_OPTS = ssh_opts()
 SSH_COMMAND = "ssh " + " ".join(SSH_OPTS)      # rsync -e
 
 
@@ -176,14 +188,15 @@ def refuse_remote(what: str = "ssh") -> None:
         raise RemoteRefused(f"{what} refused: {NO_REMOTE_ENV} is set (tests never reach a render host)")
 
 
-def ssh_argv(host: str, script: str, *extra: str) -> list[str]:
-    """argv for one ssh call: the keepalive options, `extra` (-o ...), the host, the script."""
-    return ["ssh", *SSH_OPTS, *extra, host, script]
+def ssh_argv(host: str, script: str, *extra: str, connect_timeout: int = CONNECT_TIMEOUT) -> list[str]:
+    """argv for one ssh call: `extra` (-o ...) first, so a caller's option wins over
+    the module's (ssh takes the first value), then the options, the host, the script."""
+    return ["ssh", *extra, *ssh_opts(connect_timeout), host, script]
 
 
 def probe_argv(host: str, script: str, timeout: int = 4) -> list[str]:
     """ssh argv for a short check: a connection not made in `timeout` s is a no."""
-    return ssh_argv(host, script, "-o", f"ConnectTimeout={timeout}")
+    return ssh_argv(host, script, connect_timeout=timeout)
 
 
 def job_tag() -> str:

@@ -148,6 +148,26 @@ class Detached(unittest.TestCase):
                 self.assertTrue(any("ServerAliveInterval" in t for t in argv), argv)
         self.assertIn("ServerAliveInterval=15", render.probe_argv("h", "true"))
 
+    def test_every_ssh_and_rsync_carries_a_connect_timeout(self):
+        # AUTO-69: a host that takes TCP but never answers ssh hung every sync,
+        # launch, poll and removal for good; the probe was the only bounded call.
+        _, seen = self.run_job([])
+        self.assertTrue(seen)
+        for argv in seen:
+            if argv[0] == "ssh":
+                self.assertIn("ConnectTimeout=10", argv)
+            else:
+                self.assertTrue(any("ConnectTimeout=10" in t for t in argv), argv)
+        self.assertIn("ConnectTimeout=10", render.ssh_argv("h", "true"))
+        self.assertIn("ConnectTimeout=10", render.SSH_COMMAND)
+
+    def test_a_probe_keeps_its_own_shorter_timeout_and_names_it_once(self):
+        # ssh takes the first value of a repeated option, so the probe's must be
+        # the only one on its argv.
+        argv = render.probe_argv("h", "true", 4)
+        self.assertEqual([t for t in argv if t.startswith("ConnectTimeout=")], ["ConnectTimeout=4"])
+        self.assertEqual(render.CONNECT_TIMEOUT, 10)
+
     def test_the_engine_runs_detached_with_a_status_file(self):
         _, seen = self.run_job([])
         launch = next(a for a in seen if a[0] == "ssh")[-1]
