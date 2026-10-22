@@ -298,9 +298,43 @@ REVIEW_SCHEMA = {
         "fidelity": {"type": "number", "minimum": 0, "maximum": 10},
         "score": {"type": "number", "minimum": 0, "maximum": 10},
         "summary": {"type": "string"},
+        # From round 1 on (`review_schema(delta=True)` requires it): the
+        # revision against the round the section stands on. Promotion follows
+        # the verdict, not the score, whose round-to-round noise is as large
+        # as the gains.
+        "previous": {
+            "type": "object",
+            "properties": {
+                "verdict": {"type": "string", "enum": ["better", "same", "worse"]},
+                "findings": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "problem": {"type": "string"},
+                            "status": {"type": "string",
+                                       "enum": ["resolved", "persists", "regressed"]},
+                        },
+                        "required": ["problem", "status"],
+                    },
+                },
+            },
+            "required": ["verdict", "findings"],
+        },
     },
     "required": ["frames", "score", "summary"],
 }
+
+#: The heading under which a revision's reviewer is handed the round before it.
+PREVIOUS_ROUND = "The previous round, which this round must beat"
+
+
+def review_schema(*, delta: bool) -> dict:
+    """The review's schema: a revision's must carry the verdict on the round
+    it was shown; the first round has nothing to be compared with."""
+    if not delta:
+        return REVIEW_SCHEMA
+    return dict(REVIEW_SCHEMA, required=REVIEW_SCHEMA["required"] + ["previous"])
 
 #: The continuity supervisor: one frame from each section, side by side.
 CONTINUITY_ROLE = (
@@ -1328,6 +1362,33 @@ def passes_gate(record: dict) -> bool:
     """A section record that passed its gate and was reviewed."""
     return (record.get("score") is not None
             and not [f for f in record.get("findings") or [] if str(f).startswith("error")])
+
+
+def verdict_of(review: dict | None) -> str | None:
+    """What a revision's reviewer said of it against the round it was shown:
+    better, same or worse; None for a first round or a review from before
+    the verdict was asked."""
+    previous = (review or {}).get("previous")
+    return previous.get("verdict") if isinstance(previous, dict) else None
+
+
+def best_round(rounds: list[dict]) -> dict | None:
+    """The round a section stands on. The first reviewed round is the
+    incumbent; a later reviewed round replaces it only when its reviewer,
+    shown the incumbent, judged it `better` (a tie keeps the incumbent). A
+    review from before the verdict was asked is judged on its score. A round
+    with errors or cut off has no say."""
+    best = None
+    for r in rounds:
+        if r.get("score") is None or r.get("errors") or r.get("timed_out"):
+            continue
+        if best is None:
+            best = r
+            continue
+        verdict = verdict_of(r.get("review"))
+        if verdict == "better" or (verdict is None and r["score"] > best["score"]):
+            best = r
+    return best
 
 
 def keeps_previous(before: dict, attempt: dict) -> bool:
@@ -2680,9 +2741,12 @@ class VfxPlanner:
         return tools_used, timed_out
 
     def _review(self, reviewer, n: int, name: str, section: dict,
-                worlds: list[dict], round_no: int) -> dict | None:
+                worlds: list[dict], round_no: int, previous: dict | None = None) -> dict | None:
         """The model looks at the proof frames of one document and scores
-        them against the publication bar; None when no frame was rendered."""
+        them against the publication bar; None when no frame was rendered.
+        A revision's reviewer is also handed `previous`, the round the section
+        stands on (its score, findings and kept frames), and must say whether
+        this round is better, same or worse, and what became of each finding."""
         stem = name[:-len(".scene.xml")]
         frames_dir = self.ws.dir / "frames"
         pngs = sorted(frames_dir.glob(f"{stem}__*.png")) if frames_dir.is_dir() else []
@@ -2757,9 +2821,28 @@ class VfxPlanner:
                 "else it does well: name every departure as a finding with the fix being "
                 "to copy the keyframe's construct, and do not score the section above its "
                 "fidelity."])
+        if previous is not None:
+            kept = self.ws.dir / self.ws.ROUNDS_DIR / stem / f"r{previous['round']:02d}" / "frames"
+            prompt += "\n\n" + "\n\n".join([
+                harness.brief(PREVIOUS_ROUND, {
+                    "round": previous["round"], "score": previous.get("score"),
+                    "summary": (previous.get("review") or {}).get("summary", ""),
+                    "findings": [{"frame": fr.get("frame", ""), "shot": fr.get("shot", ""),
+                                  "problem": f.get("problem", ""), "fix": f.get("fix", ""),
+                                  "severity": f.get("severity", "")}
+                                 for fr in (previous.get("review") or {}).get("frames", [])
+                                 for f in fr.get("findings", [])],
+                    "frames": [f"{self.ws.ROUNDS_DIR}/{stem}/r{previous['round']:02d}/frames/"
+                               f"{png.name}" for png in sorted(kept.glob("*.png"))]}),
+                "Read the previous round's frames too, then fill `previous`: `verdict` is "
+                "whether this round reads better, the same or worse than that one as a "
+                "section of the finished film -- `better` only for a visible gain, a tie "
+                "is `same` -- and `findings` says of each of its findings whether it is "
+                "resolved, persists or regressed. Score this round on its own, as before."])
         try:
             return reviewer.inspect(f"review-{self.ws.version or 'v00'}-{n:02d}-r{round_no}",
-                                    prompt, REVIEW_SCHEMA, cwd=self.ws.dir)
+                                    prompt, review_schema(delta=previous is not None),
+                                    cwd=self.ws.dir)
         except harness.HarnessError as exc:
             self._say(f"    [{n}] review failed: {exc}")
             return None
@@ -2772,14 +2855,24 @@ class VfxPlanner:
     @classmethod
     def _review_listing(cls, review: dict | None) -> str:
         """The review's findings as requirements for the next round, verbatim
-        (problem and fix), the material / translucency / shadow ones first."""
+        (problem and fix): what persists or regressed from the round before
+        leads, then this round's, the material / translucency / shadow ones
+        first."""
         if not review:
             return ""
         lines = [f"The reviewer scored the frames {review.get('score', '?')}/10: "
                  f"{review.get('summary', '')}"]
+        verdict = verdict_of(review)
+        if verdict:
+            lines.append(f"Against the round before, the reviewer judged this one {verdict}.")
         if review.get("continuity"):
             lines.append(f"Continuity: {review['continuity']}")
         rows = []
+        for f in ((review.get("previous") or {}).get("findings") or []):
+            status = f.get("status", "")
+            if status in ("persists", "regressed"):
+                rows.append((-1, f"- [{status}] from the previous round: {f.get('problem', '')}"
+                                 "\n  REQUIRED FIX: answer it in the document this time"))
         for fr in review.get("frames", []):
             for f in fr.get("findings", []):
                 text = f"{f.get('category', '')} {f.get('problem', '')} {f.get('fix', '')}"
@@ -2891,8 +2984,10 @@ class VfxPlanner:
                 errors = [f for f in findings if f.startswith("error")]
             still_lost = [f for f in findings if f.startswith("infra")]
             paid = reviewer.usage.cost_usd
+            # A revision is judged against the round the section stands on.
             review = (None if errors or still_lost or not self.review
-                      else self._review(reviewer, n, name, section, worlds, round_no))
+                      else self._review(reviewer, n, name, section, worlds, round_no,
+                                        previous=best_round(rounds)))
             if not errors and not still_lost and self.review:
                 review_costs.append(reviewer.usage.cost_usd - paid)
             score = float(review["score"]) if review and review.get("score") is not None else None
@@ -2915,6 +3010,15 @@ class VfxPlanner:
             score = rounds[-1]["score"]
             short = score is not None and score < self.author_bar
             if not errors and not short:
+                break
+            # A revision its reviewer judged the same or worse than the round
+            # it answered: the listing was answered and nothing was gained, so
+            # no further revision is paid for; the section ends on its incumbent.
+            verdict = verdict_of(review) if not errors else None
+            if verdict in ("same", "worse"):
+                self.spend.stopped[n] = verdict
+                self._say(f"    [{n}] revision {revisions} was judged {verdict} than the round "
+                          "before it; no further revision, the best reviewed round is kept")
                 break
             # The section's and the stage's budgets decide whether another session
             # (and the review after it) can be paid; if not, the section ends here,
@@ -2969,12 +3073,10 @@ class VfxPlanner:
                           "the previous document is kept")
                 break
             symbols, findings, review = gate(revisions)
-        # Keep only a measured improvement: the section ends on its best
-        # reviewed round, so a last revision that crashed, broke the build or
-        # scored lower falls back to it instead of to nothing.
-        best = max((r for r in rounds if r["score"] is not None and not r["errors"]
-                    and not r.get("timed_out")), key=lambda r: (r["score"], r["round"]),
-                   default=None)
+        # Keep only a judged improvement: the section ends on the round the
+        # verdicts promoted, so a last revision that crashed, broke the build
+        # or was judged no better falls back to it instead of to nothing.
+        best = best_round(rounds)
         last = next((r for r in reversed(rounds) if not r.get("timed_out")), None)
         promoted = None
         if best is not None and last is not None and best["round"] != last["round"]:
@@ -3003,7 +3105,7 @@ class VfxPlanner:
                 "review": (best["review"] if promoted is not None
                            else rounds[-1]["review"] if rounds else None),
                 "cost_usd": round(engine.usage.cost_usd + reviewer.usage.cost_usd, 4),
-                "budget": self.spend.row(n),
+                "budget": self.spend.row(n), "stopped": self.spend.stopped.get(n),
                 "timed_out_usage": timed_out_usage(engine.usage),
                 "engine": reviewer.report(), **self._provenance(n, findings)}
 

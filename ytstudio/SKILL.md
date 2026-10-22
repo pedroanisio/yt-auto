@@ -527,10 +527,18 @@ hand-authored world showed the cost.
     the reviewer only sees this round's.
   - Revisions resume the author's own session.
   - Every gated round is kept under `vfx/vNN/rounds/<stem>/rNN/` (program,
-    document, provenance, proof frames). A section ends on its best-reviewed
-    round, so a last revision that crashes, breaks the build or scores lower
-    falls back to that round. A section whose authoring raises becomes an
-    error record; the other sections are kept.
+    document, provenance, proof frames). A revision's reviewer is handed the
+    round the section stands on (its score, findings and kept frames) and
+    says whether the revision is `better`, `same` or `worse` and what became
+    of each finding (`review.previous`); a round replaces the incumbent only
+    on `better`, a tie keeps it, since the score's round-to-round noise is as
+    large as the gains. A revision judged `same` or `worse` ends the loop
+    (`stopped` on the record): the listing was answered and nothing was
+    gained, so no further revision is paid for. The next author's listing
+    leads with what persists or regressed. A section ends on the round the
+    verdicts promoted, so a last revision that crashes, breaks the build or
+    is judged no better falls back to that round. A section whose authoring
+    raises becomes an error record; the other sections are kept.
   - A proof frame the host could not render (unreachable, no engine, or an
     engine that died naming no finding: `vfx.infra_failure`) is retried
     once on the other host and otherwise filed as `infra:`, never

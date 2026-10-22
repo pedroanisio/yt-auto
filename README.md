@@ -535,6 +535,9 @@ frames is a camera pointing at nothing. The model then reviews the frames
 against the publication bar and scores them. An error, or a score under
 `--bar` (7), sends the findings back to the author for up to
 `--rounds` rounds (2); every round and its score are kept in `vfx.json`.
+A revision's reviewer sees the round before it and judges the revision
+`better`, `same` or `worse`: only `better` replaces the round the section
+stands on, and a revision judged `same` or `worse` ends the rounds.
 A frame the host could not render is the host's failure, not the author's:
 it is retried once on the other host, else filed as `infra:`, and a round
 blocked only by such frames is gated again after a bounded wait with no

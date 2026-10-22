@@ -213,16 +213,17 @@ class SectionBudget(Planned):
         world.FakeEngine.reviews = [{"frames": [], "score": s, "summary": "s"} for s in scores]
 
     def test_a_section_stops_before_it_overruns_and_keeps_its_best_round(self):
-        self.reviews(6, 4, 4)
+        # each revision is judged better (AUTO-78), so only the money stops it
+        self.reviews(6, 6.5, 6.5)
         planner = self.planner(budget_usd=7, stage_budget_usd=70)
         doc = self.author(planner)[0]
         # round 0: 3 + 1 of 7; the revision gets 7 - 4 - 1 (the review it still owes) = 2
         self.assertEqual(Costed.caps, [4.0, 2.0])
-        self.assertEqual([r["score"] for r in doc["rounds"]], [6, 4])
+        self.assertEqual([r["score"] for r in doc["rounds"]], [6, 6.5])
         self.assertLessEqual(planner.spend.spent(1), 7 + 1e-9)
         self.assertEqual(doc["budget"]["stopped"], "budget")
-        self.assertEqual(doc["best_round"], 0)          # the section ends on its best reviewed round
-        self.assertEqual(doc["score"], 6)
+        self.assertEqual(doc["best_round"], 1)          # the section ends on its best reviewed round
+        self.assertEqual(doc["score"], 6.5)
 
     def test_a_section_that_is_afforded_all_its_rounds_is_not_stopped(self):
         self.reviews(5, 6, 8)
@@ -232,7 +233,7 @@ class SectionBudget(Planned):
         self.assertIsNone(doc["budget"]["stopped"])
 
     def test_the_stage_budget_stops_a_section_too(self):
-        self.reviews(5, 5, 5)
+        self.reviews(5, 6, 6)                       # judged better: the money stops it
         planner = self.planner(budget_usd=100, stage_budget_usd=6)
         doc = self.author(planner)[0]
         self.assertEqual(Costed.caps, [4.0, 1.0])
