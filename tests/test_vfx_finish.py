@@ -161,6 +161,20 @@ class Finish(Case):
         self.assertEqual(doc["best_round"], 0)
         self.assertEqual(signal.getsignal(signal.SIGUSR1), signal.SIG_DFL)   # restored
 
+    def test_a_handler_not_installed_from_python_is_left_alone(self):
+        # `signal.signal` returns None for a previous handler that Python did
+        # not install (an embedding host's); putting None back raises
+        # TypeError inside work()'s finally, after every section was authored.
+        planner = self.planner(revisions=1, jobs=1)
+        put: list = []
+
+        def install(sig, handler):
+            put.append(handler)
+            return None
+        with patch.object(vfx.signal, "signal", install):
+            planner._unwatch_finish(planner._watch_finish())
+        self.assertEqual(len(put), 1)                        # listened; nothing put back
+
     def test_a_section_at_the_bar_is_done_not_finished(self):
         scored(8)
         Finishing.finish_on = 1

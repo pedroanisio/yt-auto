@@ -3369,7 +3369,9 @@ class VfxPlanner:
             return self._UNWATCHED
 
     def _unwatch_finish(self, previous) -> None:
-        if previous is not self._UNWATCHED:
+        # None is a previous handler Python did not install (an embedding
+        # host's): there is nothing to put back, and putting None raises.
+        if previous is not self._UNWATCHED and previous is not None:
             signal.signal(signal.SIGUSR1, previous)
 
     def _failed_record(self, n: int, section: dict, group: dict, exc: Exception) -> dict:
