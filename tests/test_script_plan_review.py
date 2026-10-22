@@ -39,6 +39,8 @@ def kind(schema):
     """What a schema asks for: the plan review (a verdict and problems),
     the plan, the outline's plan fields, a section's shots, or another pass."""
     props = schema["properties"]
+    if schema is narrative.PICTURE_SCHEMA:
+        return "picture-check"
     if "verdict" in props and "problems" in props:
         return "plan-review"
     if "questions" in props:
@@ -404,7 +406,13 @@ class Reviewer(unittest.TestCase):
         # revise and reject, and nothing in it asks for a synopsis or grades.
         self.assertIn(narrative.reviewer_role(plan=True), review[0]["system"])
         self.assertNotIn("recommend", review[0]["system"])
-        others = {c["model"] for c in ByModel.seen if c["kind"] != "plan-review"}
+        # The same reviewer reads the drafted pictures (AUTO-98), under its cap.
+        pictures = [c for c in ByModel.seen if c["kind"] == "picture-check"]
+        self.assertTrue(pictures)
+        self.assertEqual({(c["model"], c["cap"]) for c in pictures}, {("opus", 1.5)})
+        self.assertIn(narrative.picture_role(), pictures[0]["system"])
+        others = {c["model"] for c in ByModel.seen
+                  if c["kind"] not in ("plan-review", "picture-check")}
         self.assertEqual(others, {"sonnet"})
         kept = json.loads((self.root / "decisions" / "script" / "plan-review.json").read_text())
         self.assertEqual(kept["model"], "opus")
