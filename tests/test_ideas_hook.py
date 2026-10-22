@@ -58,6 +58,13 @@ class Decider:
         return {"ranked": self.rows}
 
 
+def clause(prompt: str, name: str) -> str:
+    """The rank prompt's one-line clause for the label `name`."""
+    lines = [line for line in prompt.splitlines() if line.startswith(f"- {name}:")]
+    assert len(lines) == 1, (name, prompt)
+    return lines[0]
+
+
 class RichSchema(unittest.TestCase):
     def test_the_rich_schema_requires_the_four_plan_fields(self):
         item = ideas.idea_schema(True)["properties"]["ideas"]["items"]
@@ -127,6 +134,27 @@ class RankLabels(unittest.TestCase):
         # the gap is judged against what the idea plans, so it is shown
         self.assertIn("What made a steady 40 mph wind", prompt)
         self.assertIn("Bridges fall because they are overloaded", prompt)
+
+    def test_brief_is_judged_against_the_stated_length_not_a_clock(self):
+        # a 45-second short fits inside any fixed minute, so a clock time
+        # cannot tell a sustained gap from a brief one (finding on AUTO-100)
+        decider = Decider([])
+        ideas.rank(decider, [planned_idea()])
+        curiosity = clause(decider.prompts[0], "curiosity")
+        self.assertNotIn("minute", curiosity)
+        self.assertIn("length the idea states", curiosity)
+        self.assertIn("before the end", curiosity)
+
+    def test_title_concrete_judges_concreteness_alone(self):
+        # withholding one thing is the curiosity label's judgement; a title
+        # that names a subject and withholds nothing must still fit a label
+        decider = Decider([])
+        ideas.rank(decider, [planned_idea()])
+        concrete = clause(decider.prompts[0], "title_concrete")
+        self.assertNotIn("withhold", concrete)
+        self.assertIn("specific thing, place, person or event", concrete)
+        self.assertIn("cannot close from the title", clause(decider.prompts[0],
+                                                             "curiosity"))
 
     def test_labels_are_recorded_and_the_sort_stays_on_score(self):
         a = Idea(title="A", genre="g", description="d")

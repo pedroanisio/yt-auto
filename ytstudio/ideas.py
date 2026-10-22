@@ -404,13 +404,12 @@ def rank(decider: harness.Harness, ideas: list[Idea], *, niche: str | None = Non
         "Also label each idea; the labels do not change the score.\n"
         "- curiosity: does its question open a gap a viewer feels and cannot "
         "close from the title? sustained if the gap holds for the length the "
-        "idea states, brief if it is closed or guessed within the first "
-        "minute, none if there is no gap (the title already answers it, or "
-        "nobody watching would wonder).\n"
+        "idea states, brief if it is closed or easy to guess well before the "
+        "end of the length the idea states, none if there is no gap (the "
+        "title already answers it, or nobody watching would wonder).\n"
         "- title_concrete: concrete if the title names a specific thing, "
-        "place, person or event and withholds one thing about it (the "
-        "mechanism or the outcome); abstract if it names no concrete subject "
-        f"or leans on an empty tease.\n\n{listing}",
+        "place, person or event; abstract if it names no concrete subject (an "
+        f"abstraction or an empty tease).\n\n{listing}",
         RANK_SCHEMA,
     )
     for row in data.get("ranked", []):
