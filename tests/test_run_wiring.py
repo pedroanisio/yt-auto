@@ -311,6 +311,22 @@ class WalkOrder(_RunCase):
         self.assertNotIn("sound:start", self.order)
         self.assertNotIn("keyframe:start", self.order)
 
+    def test_the_cap_prices_the_plan_review_the_dry_run_prices(self):
+        # AUTO-92: research and styles report their defaults ($7); the script
+        # fits a $10.20 cap at its $3 base, not with the review on top, so
+        # the cap stops before it, as the dry run's row says it would.
+        review = spend.FLAG_USD["script"]["--review"][0]
+        self.costs.update({s: spend.DEFAULT_USD[s] for s in cli.PIPELINE})
+        cap = 7.0 + spend.DEFAULT_USD["script"] + review / 2
+        self.assertEqual(self.run_yt("--budget-usd", f"{cap:.2f}"), retime.UNSETTLED)
+        self.assertIn(f"== script: estimated at ${spend.DEFAULT_USD['script'] + review:.2f}",
+                      self.err)
+        self.assertNotIn("script:start", self.order)
+        # --quick hands script no --review, so the base fits
+        self.order.clear()
+        self.run_yt("--budget-usd", f"{cap:.2f}", "--quick")
+        self.assertIn("script:start", self.order)
+
     def test_the_dry_run_prices_the_plan_review_unless_quick(self):
         # AUTO-92: the script row names the review increment only when the
         # walk would hand script --review.

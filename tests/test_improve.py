@@ -772,6 +772,27 @@ class Loop(ImproveCase):
         self.assertGreaterEqual(record["spent_usd"], 3.0)               # the earlier spend counts
         self.assertTrue((self.root / "feedback" / "closed" / "pass-01" / "vfx.md").is_file())
 
+    def test_resume_prices_a_script_with_the_flags_it_will_be_handed(self):
+        # AUTO-92: a resumed pass that writes the script again hands it
+        # --review, so its estimate is asked with that argv.
+        self._failed_render()
+        earlier = read_json(self.root / "improve.json")
+        last = earlier["passes"][-1]
+        last.update(stages=["script", *last["stages"]], routed=["script"],
+                    exit={"script": 1})
+        write_json(self.root / "improve.json", earlier)
+        seen = {}
+
+        def priced(root, stages, sections=None, extras=None):
+            seen.update(extras or {})
+            return [{"stage": s, "usd": 1000.0, "basis": "assumed", "source": "t"}
+                    for s in stages]
+        runner = FakeRunner(self.root, [])
+        with patch.object(improve, "stage_estimates", priced):
+            self.improver(runner, resume=True, max_passes=1).run()
+        self.assertEqual(runner.calls, [])
+        self.assertIn("--review", seen.get("script", []))
+
     def test_resume_without_the_attempts_files_replays_vfx_from_its_cache(self):
         import shutil
         self._failed_render()
