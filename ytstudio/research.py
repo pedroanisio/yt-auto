@@ -26,14 +26,16 @@ import argparse
 import csv
 import json
 import mimetypes
+import os
 import re
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import asdict
 from pathlib import Path
 from urllib.parse import urlparse
@@ -539,7 +541,18 @@ class Dossier:
             return None
 
     def save(self, name: str, data: object) -> None:
-        write_json(self._path(name), data)
+        # Written whole beside the target, then moved over it: the levels
+        # save at the same time, and a reader never meets a half-written
+        # stage.
+        target = self._path(name)
+        fd, tmp = tempfile.mkstemp(dir=self.raw, prefix=f".{name}.", suffix=".tmp")
+        os.close(fd)
+        try:
+            write_json(tmp, data)
+            os.replace(tmp, target)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
 
     def drop(self, name: str) -> None:
         """Forget a cached stage, so the next run computes it again."""
@@ -783,15 +796,19 @@ class Researcher:
                 "allow_sa": self.allow_sa, "per_shot": self.per_shot,
                 "agentic": self.agentic_assets}
 
-    def assets(self, notes: list[dict], sources: dict | None = None) -> dict:
+    def assets(self, notes: list[dict], sources: dict | None = None, *,
+               plan: dict | None = None) -> dict:
         """Fill the shot list from the catalogues, verified live, and add the
         research's own open-access citations.
 
-        The cached search is replayed only when it was made the same way:
-        one made with other catalogues, another licence policy or an older
-        searcher never looked for what this one would find.
+        `plan` is the shot list already decided; without one it is decided
+        (or served) here. The cached search is replayed only when it was
+        made the same way: one made with other catalogues, another licence
+        policy or an older searcher never looked for what this one would
+        find.
         """
-        plan = self.shots(notes)
+        if plan is None:
+            plan = self.shots(notes)
         key = self._asset_search_key()
         cached = None if self.fresh else self.dossier.load("05-assets")
         if isinstance(cached, dict) and cached.get("search") == key:
@@ -943,13 +960,31 @@ class Researcher:
 
     # -- run ---------------------------------------------------------------
 
+    @staticmethod
+    def _level(pool: ThreadPoolExecutor, works) -> list:
+        """Run one dependency level at once. Every stage in it finishes (or
+        fails) before the first failure is raised, so the ones that finished
+        are on disk for the next run."""
+        futures = [pool.submit(work) for work in works]
+        wait(futures)
+        return [future.result() for future in futures]
+
     def run(self) -> dict:
         plan = self.questions()
         notes = self.research(plan.get("questions", []))
-        claims = self.claims(notes)
-        sources = self.sources(notes)
-        assets = self.assets(notes, sources)
-        gaps = self.gaps(claims, sources)
+        # The decisions run in dependency levels on one pool, --jobs wide:
+        # claims, sources and the shot list need only the notes; the asset
+        # search needs the shots and the sources, the gap audit the claims
+        # and the sources; the outline needs all three. The stage names are
+        # unchanged, so a dossier researched in series replays.
+        with ThreadPoolExecutor(max_workers=self.jobs) as pool:
+            claims, sources, shots = self._level(pool, (
+                lambda: self.claims(notes),
+                lambda: self.sources(notes),
+                lambda: self.shots(notes)))
+            assets, gaps = self._level(pool, (
+                lambda: self.assets(notes, sources, plan=shots),
+                lambda: self.gaps(claims, sources)))
         outline = self.outline(claims, assets, gaps)
         return {
             "idea": asdict(self.idea),
@@ -1445,7 +1480,8 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                         f"{SCOPES['cinematic']['depth']} for a wordless or "
                         "cinematic piece; fewer for a film under ten minutes)")
     p.add_argument("--jobs", type=int, default=3,
-                   help="questions researched in parallel (default 3)")
+                   help="questions researched, then decisions made, in "
+                        "parallel (default 3)")
     flags.budget(p, default=None, dest="budget", metavar="USD", old=("--budget",),
                  help="hard spend cap in dollars per engine call")
     p.add_argument("--download", action="store_true",

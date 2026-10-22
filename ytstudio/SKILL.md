@@ -239,6 +239,14 @@ question depth, the shot count and the claim ceiling linearly (a 60 s film:
 length, plans as before. `--depth` or `--shots` given on the command line
 always wins.
 
+**Research decides in levels.** After the web passes, the decisions run on
+one pool, `--jobs` wide, in dependency order: claims, sources and the shot
+list need only the notes and run at once; the asset search (the catalogues,
+then the vetting decision) and the gap audit run next; the outline last.
+The stage names under `raw/` and `decisions/research/` are the same as when
+they ran in series, so an older dossier replays, and `Dossier.save` lands a
+whole file or none.
+
 **The fact-check binds the picture.** `yt script --verify` writes its flags into script.json (`check`). Its blocker and important flags reach the people who draw the film, verbatim (`vfx.picture_constraints`): the vfx planner, each section's brief and reviewer (the whole-film flags plus that section's shots), and the keyframe brief. A claim the narration avoids can still be shown wrong by a picture.
 
 Beside the chain:
