@@ -121,3 +121,59 @@ class PlaceholderCard(_Project):
         start = source.index("An honest placeholder")
         card = source[start:start + 900]
         self.assertIsNone(re.search(r"#[0-9A-Fa-f]{6}", card))
+
+
+def _beat_sections():
+    """The fixture film with the screenplay's functions (AUTO-90): the payoff
+    is 1.2, not the last shot."""
+    sections = _sections()
+    for shot, function in zip([s for sec in sections for s in sec.shots],
+                              ("hook", "payoff", "handoff")):
+        shot.function = function
+    return sections
+
+
+SCRIPT = {"promise": "You will see why it turns.",
+          "ending": {"payoff_line": "It turns because it must.", "callback": "c",
+                     "next_film": "n"}}
+
+
+class Story(_Project):
+    """The shot rows carry each shot's function, and the editor is told which
+    shot pays the promise, so the hold after it is the editor's call and a
+    missing payoff picture is named in `blocking` (structure 33, 35)."""
+
+    def test_the_shot_rows_carry_the_function(self):
+        _, manifest = build.SceneBuilder(_idea(), _beat_sections(), self.root, vfx=self.vfx,
+                                         edit=_edit(), verbose=False, audio=False).build()
+        self.assertEqual([s["function"] for s in manifest["shots"]],
+                         ["hook", "payoff", "handoff"])
+
+    def test_the_story_names_the_payoff_shot_by_function(self):
+        story = build.story_of(SCRIPT, _beat_sections())
+        self.assertEqual(story, {"promise": "You will see why it turns.",
+                                 "payoff_line": "It turns because it must.",
+                                 "payoff_shot": "1.2", "payoff_from": "function"})
+
+    def test_without_functions_the_last_shot_stands_for_the_payoff(self):
+        story = build.story_of({"promise": "p"}, _sections())
+        self.assertEqual(story["payoff_shot"], "2.1")
+        self.assertEqual(story["payoff_from"], "position")
+        self.assertEqual(build.story_of({}, _sections()), {})
+
+    def test_the_editor_sees_the_payoff_shot_and_the_promise(self):
+        builder = build.SceneBuilder(_idea(), _beat_sections(), self.root, vfx=self.vfx,
+                                     verbose=False, audio=False,
+                                     story=build.story_of(SCRIPT, _beat_sections()))
+        prompt = build.edit_prompt(builder.brief())
+        for text in ("You will see why it turns.", "It turns because it must.",
+                     '"payoff_shot": "1.2"', "0.5", "1.5", "blocking", "end screen"):
+            self.assertIn(text, prompt)
+        self.assertIn('"function": "payoff"', prompt)
+
+    def test_an_older_film_asks_the_editor_the_same_question(self):
+        builder = build.SceneBuilder(_idea(), _sections(), self.root, vfx=self.vfx,
+                                     verbose=False, audio=False)
+        prompt = build.edit_prompt(builder.brief())
+        self.assertNotIn("payoff", prompt)
+        self.assertNotIn("function", prompt)
