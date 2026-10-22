@@ -16,7 +16,7 @@ from unittest import mock
 
 from PIL import Image, ImageDraw
 
-from ytstudio import improve, qa
+from ytstudio import improve, proofframes, qa
 
 W, H = 640, 360
 
@@ -156,6 +156,28 @@ class ProofFrames(unittest.TestCase):
         ImageDraw.Draw(im).rectangle([0, 0, W, 40], fill=255)
         im.save(b)
         self.assertLess(qa.proof_diff(a, b), qa.PROOF_DIFF)
+
+
+class Shared(unittest.TestCase):
+    """AUTO-70: the plan and the comparison are one module, used by build and qa."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_qa_reads_the_plan_and_the_difference_from_the_shared_module(self):
+        self.assertIs(qa.proof_plan, proofframes.proof_plan)
+        self.assertIs(qa.proof_diff, proofframes.proof_diff)
+        self.assertEqual(qa.PROOF_DIFF, proofframes.PROOF_DIFF)
+        self.assertEqual(qa.PROOF_LIMIT, proofframes.PROOF_LIMIT)
+
+    def test_a_plan_row_names_the_worlds_shots(self):
+        _png(self.home / "vfx" / "v02" / "frames" / "open__fx-open__2s.png", 50)
+        rows = proofframes.proof_plan(_vfx(WORLD), self.home, SHOTS)
+        self.assertEqual(rows[0]["shots"], ["1.1", "1.2"])
 
 
 if __name__ == "__main__":
