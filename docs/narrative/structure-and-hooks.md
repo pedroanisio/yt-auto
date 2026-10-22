@@ -50,6 +50,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
    beats; any AND fails; two or more consecutive THEREFORE links with no BUT
    is a warning (no complication). Automatable once `PLAN_SCHEMA` carries the
    connective.
+   Stages: script, qa, plan.beats
 
 2. **Draft the whole film as one ABT sentence — "[setup] AND [more setup],
    BUT [the problem], THEREFORE [what the film does]" — as a planning check
@@ -76,6 +77,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
    whose THEREFORE is not what the film delivers. Optional soft lint: count
    but/however/yet against and in the narration and warn under ~0.1; warning
    only.
+   Stages: script, qa, plan.abt
 
 3. **The spine is a chain of cause and effect over time with an agent at its
    centre; a plan whose beats could be reordered without loss is a list and
@@ -97,6 +99,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
    axis, (c) at least two "because" links between beats, and (d) the point
    of attack, with the reason for entering there. The reviewer applies the
    reorder test and fails a plan that survives it.
+   Stages: research, script, qa, plan.beats
 
 4. **Lock the payoff beat and the final line before any section is written;
    sections are then written backward from the ending.** "Come up with your
@@ -112,6 +115,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
    Check: `payoff` must be a concrete sentence containing a specific fact,
    number or image from research; the script stage refuses to run while
    `payoff` is empty or generic ("we learned a lot").
+   Stages: script, plan.payoff
 
 ## Promise and payoff
 
@@ -134,6 +138,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
    Check: `plan.promise` (title plus thumbnail concept) is frozen before the
    script stage runs; the script reviewer receives it and fails a hook that
    does not reference its key claim.
+   Stages: ideas, script, plan.promise
 
 6. **Write the promise into the plan as one sentence, restate its question
    within the first 30 seconds, and make the final section its explicit
@@ -155,6 +160,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
    Check: a paraphrase of `promise` occurs in the first 30 s of narration;
    the last section contains the `payoff` sentence; every noun phrase in the
    title appears somewhere in the narration. Fail on any miss.
+   Stages: script, qa, plan.promise, plan.payoff
 
 7. **The last beat pays the title promise in resolved form and mirrors the
    opening image or question, so the viewer can see the distance
@@ -176,6 +182,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
    final section references a noun phrase or question from the first section
    (callback test); the final keyframe references the opening frame's subject
    in a changed state.
+   Stages: script, keyframe, qa, plan.payoff
 
 8. **Keep a payoff ledger: the presiding questions the hook and section
    openers pose are answered before the end, every late reveal was planted
@@ -195,6 +202,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
    `answered_at`; fail if a macro question has no answering beat, or if the
    final payoff references a fact or object never introduced; setups never
    referenced again are cut candidates.
+   Stages: script, qa, plan.questions_raised
 
 ## The opening
 
@@ -218,6 +226,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
    question (the ABT's BUT clause) is ≤ 30 s; the first 30 s contain a noun
    phrase from the title. Improve stage: an Intro figure below the channel's
    own median routes a finding to script with this rule.
+   Stages: script, qa, improve
 
 10. **Deliver on the title and thumbnail in the initial seconds: the
     opening's first job is to confirm the viewer clicked the right video.**
@@ -238,6 +247,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     Check: the title's key noun or claim is spoken or on screen within the
     first 15 s; the first keyframe shows the thumbnail subject; fail if the
     first 15 s contain only a channel intro, greeting or unrelated context.
+    Stages: script, keyframe, qa
 
 11. **No pre-content filler before the hook — no logo sting or intro
     graphics, no rundown of what the video will cover, no self-introduction
@@ -272,6 +282,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     "subscribe", "my name is", "in this video I"} occurs before the first
     content sentence; the plan is rejected if a logo or title-card beat is
     scheduled before 0:10.
+    Stages: script, qa
 
 12. **Before explaining details, tell the viewer why the topic matters to
     them: the stakes, or a context they recognise.** An SEO explainer that
@@ -293,6 +304,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     Check: the reviewer locates target (who this is for), transformation
     (what they will know) and stakes (the cost of not knowing) each in a
     specific sentence inside the first 30 s; missing stakes fails.
+    Stages: script, qa
 
 13. **Confirm the subject within the first 5–10 seconds but never enumerate
     the conclusions: the hook withholds the answer, not the topic.**
@@ -313,6 +325,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     Check: the subject noun is present by 0:10; none of the film's section
     conclusions (from `payoff` or section summaries) is stated verbatim in
     the hook; fail on a bullet-list preview ("first we'll ..., then ...").
+    Stages: script, qa
 
 14. **Open a specific question the title did not answer, and build the body
     as a chain of questions opened and then closed.** Curiosity is "a form of
@@ -341,6 +354,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     is not answerable from the title alone; each section carries `opens[]`
     and `closes[]` question ids; a section that closes nothing and opens
     nothing fails.
+    Stages: script, qa, plan.hook
 
 15. **Voice the common intuitive-but-wrong belief explicitly and refute it,
     rather than giving only the clean exposition; where the film can, make
@@ -391,6 +405,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     may not be empty for a science or explainer topic. Reviewer: is the
     belief stated or implied in the first 30 s, and contradicted or put in
     doubt before the explanation starts?
+    Stages: research, script, qa, plan.misconception
 
 16. **A story-driven film cold-opens at its most dramatic moment and gives
     context afterwards; an explainer opens on the subject itself, never on a
@@ -412,6 +427,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     inciting incident, not the chronological start; if "explainer", the
     first beat contains the subject noun. Either way, context beats may not
     precede the first subject or incident beat.
+    Stages: script, plan.mode
 
 17. **The first spoken sentence addresses the viewer or their situation
     concretely; a vague first-person opener fails even with strong
@@ -427,17 +443,21 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     Check: lint — the first sentence of narration contains "you"/"your" or a
     concrete noun from the title, and does not begin with "I"/"my"/"this is"
     plus an abstraction.
+    Stages: script, qa
 
 18. **Narration starts within a second and the hero subject is in the first
     frame; no wordless establishing shot or title card.** Blackman would
     have cut the six seconds before the narrator spoke in one hook and
     praised frequent angle changes in another, which still dropped because
     the first sentence was vague — visuals do not rescue a weak line
-    (Blackman, *RR#8*, above — practitioner). The ad-research figure of
+    (Blackman, *RR#8*,
+    https://georgeblackman.substack.com/p/rr8-study-this-hook-edit —
+    practitioner). The ad-research figure of
     "more than two frames in the first five seconds" comes from a PDF that
     could not be read and is listed under Folklore.
     Check: at build, narration onset ≤ 1.0 s; the first keyframe contains
     the face or object named in the title. Automatable from the timeline.
+    Stages: script, keyframe, build
 
 ## Sections and the middle
 
@@ -460,6 +480,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     section, or is explicitly deferred to a named later section. The
     reviewer keeps the question ledger (rule 8); any question never answered
     fails.
+    Stages: script, qa
 
 20. **Every section stands on its own with its own payoff — a fact, reversal
     or image the viewer did not have at its start; a section that only sets
@@ -478,6 +499,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     at the end of this section that they did not have at its start"; a blank
     line fails. Improve stage: map retention dips to section boundaries and
     route the dipped section's beat to this rule.
+    Stages: script, qa, improve
 
 21. **Introduce the concrete case or visual first and derive the general
     principle from it; never open a section with the abstract definition and
@@ -497,14 +519,16 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     place, number, event, person) or ABSTRACT (definition, category, "X is
     the study of"); fail a section that opens ABSTRACT and introduces its
     first concrete instance more than ~20 s later.
+    Stages: script, keyframe
 
 22. **Withhold the central reveal until the viewer understands why it is hard
     or surprising; put the scale, constraint or failed attempt before the
     result.** "I didn't want the photo to be the first thing that people
     see"; "if you don't have a sense of how small and how far away this
     thing is, you're not going to be impressed"; around the reveal "I needed
-    to create a bit of a reflective moment" (Fong, The Open Notebook, above —
-    practitioner). The mechanism is Loewenstein's: curiosity requires some
+    to create a bit of a reflective moment" (Fong, The Open Notebook,
+    https://www.theopennotebook.com/2020/01/07/videogram-how-a-vox-video-explains-the-science-behind-the-first-photo-of-a-black-hole/
+    — practitioner). The mechanism is Loewenstein's: curiosity requires some
     prior knowledge to notice the gap (Loewenstein 1994, above —
     peer-reviewed; characterisation from the abstract and citation record,
     the PDF being a scan). The setup is what manufactures the stakes.
@@ -512,6 +536,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     and confirms that at least one preceding beat establishes a constraint,
     scale or failed attempt that makes it non-obvious; fail if the payoff
     fact appears in full before any difficulty is established.
+    Stages: script, qa
 
 23. **Plan explicit re-hooks: one where the opening's promise hands over to
     the body (around 1:00) and one at each later predictable drop point,
@@ -521,8 +546,9 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     you will have what we call minutes 1 thru 3 ... this is where you have to
     transition from hype to execution"; "a 3 minute re-engagement"; "usually
     at the 6 minute mark we will include another re-engagement" (MrBeast
-    memo via Jarvis, above — other, unauthenticated, 10–20 minute spectacle
-    format). Hooking is "a game of hooking people nonstop" and "I just write
+    memo via Jarvis,
+    https://www.alexanderjarvis.com/memo-how-to-succeed-in-mrbeast-production/
+    — other, unauthenticated, 10–20 minute spectacle format). Hooking is "a game of hooking people nonstop" and "I just write
     another hook at the end" (Lawrence, Creators on Air transcript, above).
     Blackman treats each listicle segment as a mini video with its own hook,
     stakes and resolution (*Retention Review #5*, above). YouTube: if top
@@ -534,6 +560,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     and at least once per three minutes of runtime; each rehook beat opens a
     question id. Post-publish: a dip with no planned rehook in the 20 s
     before it becomes a finding for script.
+    Stages: script, improve, plan.beats
 
 24. **Keep the narration moving between ideas without sprawling across
     topics, and put the biggest jumps and widest coverage toward the end — a
@@ -555,6 +582,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     the bottom decile of speed (dwelling) or top decile of volume (sprawl)
     relative to the channel's own corpus, and flag a last quarter that is the
     slowest segment. Thresholds come from the improve stage.
+    Stages: script, improve
 
 25. **Front-load scene-setting, move the middle through consequences and
     actors, and concentrate reasoning and realisation in the final third, so
@@ -574,6 +602,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     section has the highest ratio or the ratio does not rise across
     sections. Reviewer: does each section raise the stakes or the
     explanatory depth over the previous one?
+    Stages: script, qa
 
 26. **Give the back half a cost: after the first answer, a complication the
     viewer pays for, and an ending that returns to the opening situation
@@ -590,6 +619,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     Check: plan beats tagged with circle steps 1–8; fail if step 2 (the
     want/question), step 6 (a cost or complication after the first answer)
     or step 8 (return changed) has no beat.
+    Stages: script, plan.beats
 
 ## The ending
 
@@ -616,6 +646,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     introduces new information or resolves a promise; flag over ~10 s or 25
     words. Lexical flag on "thanks for watching", "that's it for today", "in
     this video we saw".
+    Stages: script, build, qa
 
 28. **Never signal that the ending is coming except to build toward the
     final payoff.** "Don't ever signal the end of the video unless it's to
@@ -623,11 +654,13 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     handbook, above, p. 8 — other). "Don't use phrases like 'in summary,'
     'that's about it,' or 'to wrap things up.' This is an indicator that the
     good information is over" (Wistia, *Understanding Audience Retention*,
-    above — vendor). "Finally" and "before we go" are house extensions, not
+    https://wistia.com/learn/marketing/understanding-audience-retention —
+    vendor). "Finally" and "before we go" are house extensions, not
     in either source, and "finally" must be exempted when it enumerates.
     Check: regex over the last 20% of the script for end-signal phrases; any
     hit must be followed by a payoff beat (promise resolution), not a recap
     or a call to action.
+    Stages: script, qa
 
 29. **Put the biggest promised payoff last; if the payoff viewers clicked
     for lands early or in the middle, foreshadow a further one or end the
@@ -652,6 +685,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     stake within one section of it. Reviewer rubric: "what concrete thing is
     the viewer waiting for at minute N?" must have an answer for every
     section after the promise is paid.
+    Stages: script, qa, plan.promise
 
 30. **The final narrated beat is at or near the film's peak intensity:
     memory of the whole is dominated by its peak and its end, not its
@@ -677,6 +711,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     beat scores at or above the film's median and within one point of the
     peak. Sound and VFX: the strongest music cue and the key image belong on
     the final beat, not on a sponsor read or an administrative outro.
+    Stages: script, sound, vfx, qa
 
 31. **Do not pad the ending for watch time: duration barely affects
     remembered satisfaction, longer videos complete less, and YouTube
@@ -698,6 +733,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     Check: narration after the payoff beat ≤ 5% of runtime; retime inserts no
     stretched pauses in the final section to hit a length target. Improve:
     compare average percentage viewed of films with short and long tails.
+    Stages: script, retime, improve
 
 32. **End with full closure and a concrete next question, not a cliffhanger
     tease.** In a lab experiment (N = 133, serial drama with and without
@@ -715,6 +751,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     forward-pointing final line may raise a new question only when it is
     labelled as the next film's promise (`next_film`), never as this film's
     unresolved loop.
+    Stages: script, plan.next_film
 
 33. **Close the final section with one short takeaway line and take the
     music out on it; hold a beat after the central idea so it lands.** Song
@@ -724,12 +761,14 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     beat after the big idea stays in because "you can't really afford to be
     too clever or beautiful when you're doing voice-over" and "there's a
     really high risk of charging forward and not realizing that the viewer
-    is not with you" (Fong, The Open Notebook, above — practitioner). Single
-    practitioner; low confidence.
+    is not with you" (Fong, The Open Notebook,
+    https://www.theopennotebook.com/2020/01/07/videogram-how-a-vox-video-explains-the-science-behind-the-first-photo-of-a-black-hole/
+    — practitioner). Single practitioner; low confidence.
     Check: the final section's last narrated sentence is ≤ 20 words and
     contains the answer to the promise; the sound stage ends the music bed
     within 1 s of that line; retime inserts a 0.5–1.5 s hold after the
     central-idea line.
+    Stages: script, sound, retime
 
 34. **For bleak or cosmic-scale subjects, return to the viewer's own scale
     with an earned, specific reason to care — after the hard part, never
@@ -749,6 +788,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     contains a sentence addressed to the viewer's scale ("you", "your", daily
     life) and it comes after, not instead of, the hardest claim; flag endings
     whose last three sentences are generic positivity with no specific fact.
+    Stages: script
 
 35. **Reserve the last 5–20 seconds as a quiet picture-and-music tail for
     the end screen: no new narration or on-screen text, one spoken hand-off
@@ -769,6 +809,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     in the end-screen element zones during it; the script's tail contains at
     most one sentence and it names a specific next film; the music continues
     under the tail and resolves at the cut.
+    Stages: script, keyframe, vfx, sound, build
 
 36. **Hand off to one specific next film that continues the question.**
     YouTube optimises "not only on the next view, but also successive views
@@ -786,6 +827,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     single spoken hand-off reference it; the reviewer rejects a generic
     "check out our other videos". Improve: track end-screen element click
     rate per film.
+    Stages: script, build, improve, plan.next_film
 
 37. **Keep the channel a repeatable format — same narrator persona, same
     opening and ending device, same thumbnail grammar, one connected topic
@@ -808,6 +850,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     topic); the reviewer checks each plan against it; the build stage adds
     the upload to the series playlist or show and sets serial or non-serial
     order.
+    Stages: ideas, styles, script, voice, build
 
 ## Reading the retention curve back into the script
 
@@ -835,6 +878,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     the share of views from search or external traffic is below a threshold
     (or when it reads per-traffic-source retention); `yt qa` reports
     retention at 30 s and 60 s and the 0:30–1:00 slope as separate fields.
+    Stages: qa, improve
 
 39. **Spend more drafting passes and the strictest review on the first 60
     seconds than on any other minute.** "The first minute of each video is
@@ -850,6 +894,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     channel-specific.
     Check: the script reviewer runs at least two passes on the first 60 s,
     one for promise match and one for question and stakes.
+    Stages: script, qa
 
 40. **Read the ending's tail as a QA metric: a final-5% cliff steeper than
     the preceding slope is an outro problem, a late spike is a payoff that
@@ -858,7 +903,8 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     skipping at that specific part of your video"; "Spikes appear when more
     viewers are watching, rewatching, or sharing those parts"; "Videos on
     YouTube generally taper off during the playback period" (YouTube Help,
-    *Measure key moments*, above — platform documentation). A spike at ~8
+    *Measure key moments*, https://support.google.com/youtube/answer/9314415 — platform
+    documentation). A spike at ~8
     minutes "is the second payoff we've been looking for, but weren't told
     about" (Blackman, *Retention Review #4*, above); a video "cruising on a
     nice 60% until the final point we made, where retention dropped off
@@ -872,6 +918,7 @@ rules 14 and 22 only by reference; the Zeigarnik objection is stated once in
     script ("outro too long / recap") when it is ≥ 2× steeper; any spike
     after the promise is paid becomes an "un-foreshadowed payoff" finding;
     the final point is checked against the film's median difficulty.
+    Stages: qa, improve
 
 ---
 
