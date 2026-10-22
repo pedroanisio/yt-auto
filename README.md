@@ -663,7 +663,10 @@ the file's resolved value and the three sections dropped, so the engine
 raises no E12 warning. The authored document is read, never written.
 `build.json` records what was hoisted, which copy was cut from which file,
 and the editor's decisions under `editorial`. A hoisted light keeps its own
-`<animate>`, re-timed by the include's start, and a `downloads/` image an
+`<animate>` verbatim (its `defaultInterpolation` and every key attribute),
+re-timed by the include's start; the gate keys that hold it at 0 outside the
+include's span are explicit holds, so an authored ramp stays a ramp and no
+light fades into the neighbouring section. A `downloads/` image an
 included document embeds is credited from `raw/08-downloads.json` (a file the
 manifest does not list is a build error).
 

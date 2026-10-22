@@ -1630,23 +1630,33 @@ class SceneBuilder:
                                          **attrs)
                 on = str(row.get("intensity", "1"))
                 # The light's own animation, keyed at section time t, arrives
-                # at include start + t; the gate keeps it inside the span.
+                # at include start + t, its curve and every key attribute
+                # kept; the gate keeps it inside the span. A key's curve
+                # governs the segment to the next key and the schema's
+                # default is linear, so each gate segment is an explicit hold:
+                # 0 until the first carried key, the last carried key until
+                # the include's end, 0 from there. The author's extrapolation
+                # is what the gate replaces, so it is the one thing not carried.
                 own = [ElementTree.fromstring(x) for x in row.get("animate", ())]
                 keyed = [a for a in own if a.get("property") == "intensity"]
-                gate = light.add_animate(
-                    property="intensity",
-                    defaultInterpolation=(keyed[0].get("defaultInterpolation", "hold")
-                                          if keyed else "hold"))
+                curve = {k: v for k, v in (keyed[0].attrib if keyed else {}).items()
+                         if k not in ("extrapolateBefore", "extrapolateAfter")}
+                gate = light.add_animate(**dict(curve, property="intensity"))
                 if start > 0:
-                    gate.add_key(time=0, value="0")
+                    gate.add_key(time=0, value="0", interpolation="hold")
                 keys = sorted(((float(k.get("time", 0)), k) for a in keyed
                                for k in a.iter("key")), key=lambda tk: tk[0])
+                carried = [(round(start + t, 3), dict(k.attrib))
+                           for t, k in keys if start + t < end]
                 if not keys or keys[0][0] > 0:
-                    gate.add_key(time=start, value=on)
-                for t, k in keys:
-                    if start + t < end:
-                        gate.add_key(time=round(start + t, 3),
-                                     value=k.get("value", on))
+                    # Before its first key the authored document holds that
+                    # key's value; with no key it is the light's intensity.
+                    first = keys[0][1].get("value", on) if keys else on
+                    carried.insert(0, (start, {"value": first}))
+                if carried:
+                    carried[-1][1]["interpolation"] = "hold"
+                for t, attrs in carried:
+                    gate.add_key(**dict(attrs, time=t))
                 gate.add_key(time=end, value="0")
                 for a in own:
                     if a in keyed:
