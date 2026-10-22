@@ -50,6 +50,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -612,6 +613,14 @@ def mark_dead(addr: str, why: str) -> None:
     _HEALTH[addr] = Health(alive=False, error=why[:160], at=time.monotonic())
 
 
+def marked_dead(addr: str) -> bool:
+    """Is `addr` under a dead reading younger than ALIVE_TTL? Reads nothing: a
+    caller choosing among hosts it already holds (the slices) passes the host
+    over while the mark is fresh and tries it again once it is old."""
+    seen = _HEALTH.get(addr)
+    return seen is not None and not seen.alive and time.monotonic() - seen.at < ALIVE_TTL
+
+
 def ssh_alive(addr: str, *, timeout: int = 4) -> bool:
     """Does the host answer ssh right now? The same reading as `host_health`."""
     return host_health(addr, timeout=timeout).alive
@@ -772,8 +781,9 @@ def _run_remote(cmd: list[str], project_root: Path, host: str, *, verbose: bool,
     """run_job's body: mirror, link, run, pull back, remove. With `retry`, a
     sync a host does not take sends the job to the host routing picks next,
     once; the result's `host` names where it ran. A caller whose later steps
-    name this host (the slices' mix: the join happens there) passes
-    `retry=False` and gets the failure instead."""
+    name this host (the slices' mix: the join happens there), or that moves
+    the job itself (a slice, which waits for its turn on the other host),
+    passes `retry=False` and gets the failure instead."""
     remote = remote or remote_dir(project_root.name, job, job_tag())
     mirror = mirror_dir(project_root.name)
     if verbose:
@@ -793,7 +803,9 @@ def _run_remote(cmd: list[str], project_root: Path, host: str, *, verbose: bool,
             raise
         mark_dead(host, f"sync failed: {why[:120]}")
         other = remote_host(None, job) if retry else ""
-        if not other or other == host:
+        # with no live candidate the routing falls back to the first host
+        # configured; under a fresh mark that one costs only another timeout
+        if not other or other == host or marked_dead(other):
             raise
         if verbose:
             print(f"  sync to {host} failed; {job} goes to {other}", file=sys.stderr)
@@ -1688,8 +1700,12 @@ def encode_sliced(scene: str, project_root: Path, *, slices: int, quality: str |
     rel_dir = f".slices/{key}"
     slice_dir = project_root / rel_dir
 
+    # One slice at a time per host: plan_slices sized a slice for the smallest
+    # GPU alone, so a slice that moves waits for its turn there rather than
+    # render beside the one already running.
+    turns = {h.addr: threading.Lock() for h in usable}
+
     def one(i: int, rng: tuple[float, float]) -> tuple[int, int, str, dict]:
-        host = usable[i % len(usable)]
         out = f"{rel_dir}/slice-{i:02d}.mp4"
         done = project_root / out
         kept = done.with_suffix(".json")             # the slice's own report, written once it succeeded
@@ -1708,11 +1724,27 @@ def encode_sliced(scene: str, project_root: Path, *, slices: int, quality: str |
         if parallel is not None:
             cmd += ["--parallel", str(parallel)]
         # A slice has no host affinity (its file comes back here), so a sync
-        # its host does not take moves it; the measurement names where it ran.
-        proc = _run_remote(cmd, project_root, host.addr, verbose=verbose)
-        ran = next((h for h in usable if h.addr == getattr(proc, "host", host.addr)), host)
+        # its host does not take moves it to a host not marked dead, and the
+        # slices after it pass the marked host over while the mark is fresh;
+        # the measurement names where it ran.
+        tried: set[str] = set()
+        while True:
+            rest = [h for h in usable if h.addr not in tried]
+            live = [h for h in rest if not marked_dead(h.addr)] or rest
+            host = live[i % len(live)]
+            with turns[host.addr]:
+                try:
+                    proc = _run_remote(cmd, project_root, host.addr, verbose=verbose, retry=False)
+                except subprocess.CalledProcessError:
+                    tried.add(host.addr)
+                    if not marked_dead(host.addr) or len(tried) == len(usable):
+                        raise               # not a lost connection, or no host left
+                    if verbose:
+                        print(f"  sync to {host.addr} failed; slice {i} moves", file=sys.stderr)
+                    continue
+            break
         measured = gpu_measurement(getattr(proc, "gpu_peak_mb", None), rng[1] - rng[0],
-                                   ran.addr, ran.gpu_mem_mb, getattr(proc, "gpu_source", ""))
+                                   host.addr, host.gpu_mem_mb, getattr(proc, "gpu_source", ""))
         if measured:
             peaks[i] = measured
         envelope = _envelope(proc.stdout)

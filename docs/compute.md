@@ -165,9 +165,11 @@ by hand. What `yt` itself runs is scoped by job, not by project:
     GPU, the live free disk, the one-minute load and the GPU memory in use,
     and the routing it gets. It warns when free disk is under 10 GB, when
     the host is saturated (load over its cores, or under 1 GB of GPU memory
-    free: stills go to the other host), and when the host has no ffprobe
-    (`yt gate` cannot run there). The "14 GB" in the table is a dated
-    measurement; doctor's number is the one to trust.
+    free: stills go to the other host), when the live reading cannot reach a
+    host the probe cached as usable (`answered the probe but not ssh now`:
+    the routing shown passes it over, as `yt render` does), and when the
+    host has no ffprobe (`yt gate` cannot run there). The "14 GB" in the
+    table is a dated measurement; doctor's number is the one to trust.
   - **TCP-only**: the warning reads `accepts TCP on the ssh port but not
     SSH (<error>); jobs sent there would hang`. sshd is hung or
     half-started, not the machine unplugged. Fix: restart sshd on that

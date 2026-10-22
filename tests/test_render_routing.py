@@ -12,6 +12,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -172,8 +173,8 @@ class SyncRetry(unittest.TestCase):
         self.addCleanup(render._HOSTS.clear)
         self.addCleanup(render._HEALTH.clear)
 
-    def run_job(self, failing, code=255, err="ssh: connect to host: timed out"):
-        seen = []
+    def run_job(self, failing, code=255, err="ssh: connect to host: timed out", host="small"):
+        seen = self.last_seen = []
 
         def fake(argv, **kw):
             seen.append(list(argv))
@@ -188,7 +189,7 @@ class SyncRetry(unittest.TestCase):
         with mock.patch.object(render.subprocess, "run", side_effect=fake), \
                 mock.patch.object(render.time, "sleep"):
             proc = render._run_remote(["scene-render", "render", "/w/m/s.xml", "-o", "/w/m/o.png"],
-                                      Path("/w/m"), "small", verbose=False, job="still")
+                                      Path("/w/m"), host, verbose=False, job="still")
         return proc, seen
 
     def test_the_job_runs_on_the_other_host_and_the_first_is_dead(self):
@@ -204,6 +205,16 @@ class SyncRetry(unittest.TestCase):
     def test_a_second_failure_is_raised_not_retried_again(self):
         with self.assertRaises(subprocess.CalledProcessError):
             self.run_job({"small", "big"})
+
+    def test_a_host_already_marked_dead_is_not_synced_again(self):
+        # with no live candidate remote_host falls back to the first configured
+        # host; under a fresh dead mark that one would only cost another connect
+        # timeout, so the failure is raised instead of synced there
+        render.mark_dead("small", "sync failed: away")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.run_job({"big", "small"}, host="big")
+        syncs = [a[-1].partition(":")[0] for a in self.last_seen if a[0] == "rsync" and "--delete" in a]
+        self.assertEqual(syncs, ["big"])
 
     def test_a_sync_that_works_retries_nothing(self):
         _, seen = self.run_job(set())
@@ -297,6 +308,53 @@ class SlicedRouting(unittest.TestCase):
         self.assertEqual(report["gpu_memory"]["host"], "big")
         self.assertEqual(report["gpu_memory"]["host_total_mb"], 8192)
         self.assertFalse(render._HEALTH["small"].alive)
+
+    def test_a_moved_slice_waits_its_turn_and_a_later_one_skips_the_dead_host(self):
+        # plan_slices sized a slice for the smallest GPU alone, so the slice that
+        # leaves the dead host must not render beside the one already on big; and
+        # a later slice due on the dead host goes straight to big rather than pay
+        # another failed sync. The first launch on big holds until small's sync
+        # has failed and the moved slice had every chance to arrive beside it.
+        small_failed, another, guard = threading.Event(), threading.Event(), threading.Lock()
+        on_big, most = [0], [0]
+        seen = []
+
+        def fake(argv, **kw):
+            seen.append(list(argv))
+            if argv[0] == "rsync":
+                up = any(t.startswith("--rsync-path") for t in argv)
+                if up and slice_argv_target(argv) == "small":
+                    small_failed.set()
+                    raise subprocess.CalledProcessError(255, argv, "", "ssh: connect to host: timed out")
+                if ":" not in argv[-1] and argv[-1].endswith(".mp4"):
+                    Path(argv[-1]).write_bytes(b"\0" * 16)
+                return done(argv)
+            if "setsid" in argv[-1] and "mix.wav" not in argv[-1] and argv[-2] == "big":
+                with guard:
+                    on_big[0] += 1
+                    most[0] = max(most[0], on_big[0])
+                    if on_big[0] > 1:
+                        another.set()
+                small_failed.wait(5)
+                another.wait(0.3)
+                with guard:
+                    on_big[0] -= 1
+                return done(argv, 0, "__YT_JOB_EXIT__=0\n", "__YT_GPU_PEAK_MB__=3000 pmon\n")
+            if "setsid" in argv[-1]:
+                return done(argv, 0, "__YT_JOB_EXIT__=0\n")
+            return done(argv, 0, "LOAD=0\nGPUUSED=0\n")
+        with mock.patch.object(render, "hosts", return_value=self.hosts), \
+                mock.patch.object(render.subprocess, "run", side_effect=fake), \
+                mock.patch.object(render.time, "sleep"):
+            code = render.encode_sliced(str(self.root / "scene.xml"), self.root, slices=3,
+                                        quality=None, start=0.0, end=30.0, strict=False,
+                                        verbose=False)
+        self.assertEqual(code, 0)
+        self.assertEqual([h for h, mix in self.launches(seen) if not mix], ["big"] * 3)
+        self.assertEqual(most[0], 1, "two slices rendered on big at once")
+        to_small = [a for a in seen if a[0] == "rsync" and any(t.startswith("--rsync-path") for t in a)
+                    and slice_argv_target(a) == "small"]
+        self.assertEqual(len(to_small), 1, "a later slice was synced to the host marked dead")
 
 
 if __name__ == "__main__":

@@ -145,6 +145,23 @@ class Doctor(unittest.TestCase):
         doctor.check_hosts(rep, [host], {"root@h": render.Health(alive=False, error="timed out")})
         self.assertNotIn("GPU 0/8192", " ".join(f.message for f in rep.findings))
 
+    def test_a_usable_host_that_stopped_answering_is_routed_around_and_named(self):
+        # the probe cached it as usable; the live reading says it is gone now, so
+        # the routing shown is the one remote_host takes, and the line says why
+        small = render.Host("root@small", engine="/e", version="sr 0.6", ram_gb=8, cores=8)
+        big = render.Host("root@big", engine="/e", version="sr 0.6", ram_gb=125, cores=12)
+        health = {"root@small": render.Health(alive=False, error="timed out"),
+                  "root@big": render.Health(alive=True, load1=1.0)}
+        rep = doctor.Report("t")
+        doctor.check_hosts(rep, [small, big], health)
+        lines = {f.message.split(" on ")[1].split(" ")[0]: f.message for f in rep.findings if f.level == "ok"}
+        self.assertNotIn("stills", lines["root@small"])
+        self.assertIn("stills", lines["root@big"])
+        warn = [f for f in rep.findings if f.level == "warn" and "root@small" in f.message]
+        self.assertEqual(len(warn), 1, [f.message for f in rep.findings])
+        self.assertIn("not ssh now", warn[0].message)
+        self.assertIn("timed out", warn[0].message)
+
     def test_without_readings_the_line_is_as_before(self):
         host = render.Host("root@h", engine="/e", version="sr 0.6", ram_gb=8, cores=8)
         rep = doctor.Report("t")

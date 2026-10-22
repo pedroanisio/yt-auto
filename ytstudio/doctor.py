@@ -241,8 +241,10 @@ def check_hosts(report: Report, hosts: list, health: dict | None = None) -> None
     hung or half-started sshd, not an unplugged machine: it is named as such."""
     health = health or {}
     usable = [h for h in hosts if h.usable]
-    big = render.pick_host(usable, "encode", health)
-    small = render.pick_host(usable, "still", health)
+    # the routing remote_host takes: a host whose live reading is gone is passed over
+    answering = [h for h in usable if h.addr not in health or health[h.addr].alive]
+    big = render.pick_host(answering, "encode", health)
+    small = render.pick_host(answering, "still", health)
     for h in hosts:
         if h.usable:
             roles = []
@@ -260,6 +262,11 @@ def check_hosts(report: Report, hosts: list, health: dict | None = None) -> None
                     live += f", GPU {now.gpu_used_mb}/{h.gpu_mem_mb} MB used"
             report.add("ok", "engine", f"{h.version} on {h.addr} ({h.ram_gb} GB, "
                        f"{h.cores} cores, {h.gpu or 'no gpu'}{disk}{live}) -> {'; '.join(roles) or 'slices'}")
+            if now is not None and not now.alive:
+                report.add("warn", "engine", f"{h.addr} answered the probe but not ssh now "
+                           f"({_clip(now.error, 80) or 'no answer'}); jobs pass it over for "
+                           f"{render.ALIVE_TTL:g} s",
+                           "check sshd there, or take it out of RS_RENDER_HOSTS")
             busy = render.saturated(h, now)
             if busy:
                 report.add("warn", "engine", f"{h.addr} is saturated ({busy}); stills, frames and "

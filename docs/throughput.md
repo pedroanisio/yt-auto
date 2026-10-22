@@ -179,8 +179,9 @@ every stage on opus, started 2026-10-19 20:47 (-03).
     gives up on a connection after 10 s (the pre-routing check sooner); it reads the
     host's load and GPU memory in use, and a saturated host (load over its
     cores, under 1 GB of GPU free) loses the stills to the quiet one; a
-    lost connection on a sync sends the job to the other host once; doctor prints both
-    numbers beside the routing.
+    lost connection on a sync sends the job to the other host once (a slice
+    waits for its turn there, one per host at a time, and later slices pass
+    the dead host over); doctor prints both numbers beside the routing.
 19. **A stopped keyframe run leaves a mixed record.** The record
     (`keyframe.json`) is written only when a run finishes; stopping the
     second run after its review to save the remaining rounds left the first

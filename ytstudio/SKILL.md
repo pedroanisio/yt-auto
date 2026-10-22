@@ -324,10 +324,13 @@ hosts with the mix rendered once (more slices, and slices even without `--slices
   nothing for long, and a sync the host does not take (a lost connection,
   not a partial transfer) marks it dead for `render.ALIVE_TTL` and sends
   the job to the other host, once (never the slices' mix: the join happens
-  on its host);
+  on its host). A slice that moves waits for its turn there, one slice per
+  host at a time, since `plan_slices` sized it for the GPU alone, and the
+  slices after it pass the marked host over while the mark is fresh.
   `yt doctor` warns `accepts TCP on the ssh port but not SSH` for a host
-  that answers the port and not the login: restart sshd there or take it
-  out of `RS_RENDER_HOSTS`.
+  that answers the port and not the login, and `answered the probe but not
+  ssh now` for a usable one the live reading cannot reach: restart sshd
+  there or take it out of `RS_RENDER_HOSTS`.
 - **Mix once.** `--audio-only` builds the whole mix and tells you whether
   the audio graph fits in memory. A `--start/--end` range does not make it
   cheaper; the mix is assembled entire either way.
