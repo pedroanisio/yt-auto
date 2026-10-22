@@ -85,6 +85,30 @@ def cited(comment: str) -> list[tuple[str, int]]:
     return out
 
 
+def stage_problems(raw: dict[str, str], corpus: dict[str, dict]) -> list[str]:
+    """Each cited rule whose Stages: tag does not name the section's reader.
+
+    A file with no tag at all is not judged yet (AUTO-88 tags the corpus);
+    once a file has any, a cited rule of it without one is a problem. The
+    script stage also reads the plan and shot fields its rules name, and
+    `## all` reaches every stage, so any tag will do there."""
+    tagged = {file: any(rule["stages"] is not None for rule in rules.values())
+              for file, rules in corpus.items()}
+    out = []
+    for name, body in raw.items():
+        stage = READ_BY.get(name, name)
+        for file, number in cited(COMMENT.search(body).group(1)):
+            if not tagged[file]:
+                continue
+            stages = corpus[file][number]["stages"]
+            if stages is None:
+                out.append(f"## {name}: {file} {number} has no Stages: tag")
+            elif name != "all" and not (stage in stages or (stage == "script" and any(
+                    s.startswith(("plan.", "shot.")) for s in stages))):
+                out.append(f"## {name}: {file} {number} is tagged {sorted(stages)}")
+    return out
+
+
 def args(**kw):
     return SimpleNamespace(**({"work": None, "house": None, "no_house": False} | kw))
 
@@ -238,19 +262,28 @@ class TheShippedText(unittest.TestCase):
                     self.assertIn(file, self.corpus, f"## {name}: unknown file {file}")
                     self.assertIn(number, self.corpus[file], f"## {name}: {file} {number}")
 
-    def test_every_cited_rule_that_carries_a_stages_tag_names_the_reader(self):
-        for name, body in self.raw.items():
-            if name == "all":
-                continue
-            stage = READ_BY.get(name, name)
-            for file, number in cited(COMMENT.search(body).group(1)):
-                stages = self.corpus[file][number]["stages"]
-                if stages is None:
-                    continue            # the corpus file is not tagged yet
-                with self.subTest(section=name, rule=f"{file} {number}"):
-                    fields = any(s.startswith(("plan.", "shot.")) for s in stages)
-                    self.assertTrue(stage in stages or (stage == "script" and fields),
-                                    f"{file} {number} is tagged {sorted(stages)}")
+    def test_every_cited_rule_is_tagged_for_the_reader(self):
+        # docs/narrative/ gets its Stages: tags from AUTO-88; until a file
+        # carries any, there is nothing to hold the default to, and the suite
+        # says so rather than passing with no assertion. When AUTO-88 adds
+        # test_doc_narrative.rules_of, this file's reader gives way to it.
+        if not any(rule["stages"] is not None
+                   for rules in self.corpus.values() for rule in rules.values()):
+            self.skipTest("docs/narrative/ carries no Stages: tags yet (AUTO-88)")
+        self.assertEqual(stage_problems(self.raw, self.corpus), [])
+
+    def test_the_stages_check_is_strict_per_file(self):
+        # Once a file is tagged, a cited rule of it without a tag fails: a
+        # dropped tag is drift, not a rule still waiting for one.
+        corpus = {"structure": {1: {"stages": {"script"}}, 2: {"stages": None}},
+                  "attention": {8: {"stages": None}}}
+        raw = {"script": "<!-- rules: structure 1, 2; attention 8 -->",
+               "sound": "<!-- rules: structure 1 -->",
+               "all": "<!-- rules: structure 2 -->"}
+        self.assertEqual(stage_problems(raw, corpus),
+                         ["## script: structure 2 has no Stages: tag",
+                          "## sound: structure 1 is tagged ['script']",
+                          "## all: structure 2 has no Stages: tag"])
 
     def test_the_check_reads_the_corpus(self):
         self.assertEqual(len(self.corpus["structure"]), 40)
