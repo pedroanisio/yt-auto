@@ -28,7 +28,7 @@ import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from . import env, house, keyframe, render, spend, workspace
+from . import env, house, keyframe, narrative, render, spend, workspace
 from .assets import licence_tier
 from .core import read_json, timecode, write_json
 
@@ -247,21 +247,15 @@ REVIEW_LOG = "review-log.jsonl"
 
 def review_log(report: Report, work: Path) -> None:
     """How many story-review verdicts work/review-log.jsonl holds and how
-    many a person has labelled. It is the calibration set's raw material
-    (judging 10: --gate waits for 20 labelled scripts), and work/ is
-    disposable, so the note says to copy it out."""
+    many a person has labelled with a verdict (narrative.labelled). It is
+    the calibration set's raw material (judging 9: --gate waits for
+    narrative.GATE_LABELLED labelled verdicts), and work/ is disposable, so
+    the note says to copy it out."""
     path = Path(work) / REVIEW_LOG
     if not path.is_file():
         return
-    rows, labelled = 0, 0
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(row, dict):
-            rows += 1
-            labelled += row.get("label") is not None
+    log = narrative.read_review_log(path)
+    rows, labelled = len(log), narrative.labelled(log)
     report.metrics["review_log"] = {"verdicts": rows, "labelled": labelled}
     report.add("note", "review log", f"{rows} verdict(s) in {path}, {labelled} labelled "
                "by a person; it is evidence, and work/ is disposable",
@@ -789,6 +783,19 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
                            "read the Findings section of script.md")
             elif level == "not_evidenced":
                 report.add("note", "script", f"not checked: {text}")
+        if script.get("gate"):
+            # AUTO-97: --gate trusts the reviewer, which is a prior until a
+            # person has labelled enough of its verdicts (judging 9).
+            log = narrative.read_review_log(Path(work or project.root.parent) / REVIEW_LOG)
+            count = narrative.labelled(log)
+            if count < narrative.GATE_LABELLED:
+                report.add("warn", "script",
+                           f"gate on with {count} labelled verdicts "
+                           f"({narrative.GATE_LABELLED} needed): the story review stopped "
+                           "voice before it was calibrated",
+                           "label rows of work/review-log.jsonl (reject, consider or "
+                           "recommend), run `python -m ytstudio.narrative calibrate "
+                           "tests/fixtures/narrative`, and until both hold drop --gate")
         if dossier and not flags and not check:
             report.add("note", "script", "written without --verify; no fact-check "
                        "against the research", _cmd("script", project, "--verify"))
