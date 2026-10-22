@@ -194,6 +194,26 @@ class Cli(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertTrue((root / "vfx" / "v03" / vfx.FINISH_FILE).is_file())
             self.assertIn("v03", out.getvalue() + err.getvalue())
+            self.assertNotIn("finished", err.getvalue())
+
+    def test_the_command_says_when_the_newest_version_is_already_finished(self):
+        # a run still planning has not opened its version: the file lands in
+        # the last run's, whose record the dossier holds, and is never read
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "vfx" / "v03").mkdir(parents=True)
+            Dossier(root, Idea(title="T", genre="g", description="d"),
+                    at=root).save("12-author", [{"n": 1, "version": "v03", "score": 8}])
+            args = cli.build_parser().parse_args(
+                ["vfx", "--project", tmp, "--finish-now", "--quiet"])
+            out, err = io.StringIO(), io.StringIO()
+            with patch.object(vfx, "planner_from_args",
+                              lambda *a, **k: self.fail("the planner must not run")), \
+                    redirect_stdout(out), redirect_stderr(err):
+                code = vfx.run(args)
+            self.assertEqual(code, 0)
+            self.assertIn("v03 (finished)", err.getvalue())
+            self.assertIn("will not read", err.getvalue())
 
 
 if __name__ == "__main__":

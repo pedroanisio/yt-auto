@@ -2467,6 +2467,16 @@ def finish_now(root: Path) -> Path:
     return path
 
 
+def finished_versions(dossier: Dossier) -> set[str]:
+    """The versions whose authoring ended: the ones the dossier's record
+    (12-author, saved when every section resolved) was authored in. A run
+    still planning has not opened its version yet, so a FINISH written into
+    one of these goes unread."""
+    records = dossier.load("12-author") or []
+    return {str(r["version"]) for r in records
+            if isinstance(r, dict) and r.get("version")}
+
+
 class VfxPlanner:
     """Plans the visuals, then has the model author them, section by section."""
 
@@ -4108,6 +4118,14 @@ def run(args) -> int:
         except ValueError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
+        version = path.parent.name
+        if version in finished_versions(Dossier(project.root, idea, at=project.root)):
+            # The newest version is the last run's: a run still planning has
+            # not opened its own yet, and the file persists where it landed.
+            print(f"warning: the file went to {version} (finished): its authoring record is in "
+                  "the dossier, and a run still planning has not opened its version yet, so "
+                  "it will not read this file; ask again once a round has been gated",
+                  file=sys.stderr)
         print(f"finish asked: {path}\n  the run reads it between rounds; every section ends on "
               "its best reviewed round, then continuity, reach and plan run", file=sys.stderr)
         return 0
