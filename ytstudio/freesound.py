@@ -222,9 +222,11 @@ def rank(hits: list[Hit], *, want: float) -> list[Hit]:
 # --------------------------------------------------------------------------- #
 
 def search(query: str, *, want_seconds: float, token: str,
-           limit: int = 15) -> list[Hit]:
+           limit: int = 15, say=None) -> list[Hit]:
     """Allowed hits for a query, unranked. No token asks nothing; a network
-    failure is an empty result the caller reports as an unfilled cue."""
+    failure is an empty result the caller reports as an unfilled cue, said
+    through `say` (stderr by default) so a caller on a thread can place it."""
+    say = say or (lambda line: print(line, file=sys.stderr))
     query = " ".join(str(query or "").split())
     if not token or not query:
         return []
@@ -236,8 +238,8 @@ def search(query: str, *, want_seconds: float, token: str,
     try:
         data = fetch_json(url)
     except (urllib.error.URLError, OSError, ValueError) as exc:
-        print(f"  freesound: search failed at {describe(url)} "
-              f"({type(exc).__name__})", file=sys.stderr)
+        say(f"  freesound: search failed at {describe(url)} "
+            f"({type(exc).__name__})")
         return []
     hits = []
     for row in (data.get("results") or []) if isinstance(data, dict) else []:
@@ -247,12 +249,12 @@ def search(query: str, *, want_seconds: float, token: str,
     return hits
 
 
-def ranked(queries: list[str], *, want_seconds: float, token: str
+def ranked(queries: list[str], *, want_seconds: float, token: str, say=None
            ) -> tuple[list[Hit], str]:
     """Every allowed hit of the first query that has any, best first, and
     that query. One search serves every fallback a caller may need."""
     for query in queries:
-        hits = rank(search(query, want_seconds=want_seconds, token=token),
+        hits = rank(search(query, want_seconds=want_seconds, token=token, say=say),
                     want=want_seconds)
         if hits:
             return hits, query

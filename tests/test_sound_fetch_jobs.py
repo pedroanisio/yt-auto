@@ -18,6 +18,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -174,6 +175,26 @@ class Overlap(FetchCase):
         self.assertEqual(len(writes), 1)
         self.assertEqual([c["judgement"]["verdict"] for c in data["cues"]],
                          ["accept", "accept"])
+
+    def test_a_failed_search_is_told_with_the_cues_lines_not_printed_from_its_thread(self):
+        # Freesound's own "search failed" line would interleave with the other
+        # cues' progress from a pool thread; it joins the cue's lines instead.
+        inner, lines = freesound.fetch_json, []
+
+        def fake_json(url, **kw):
+            if "hum" in url:
+                time.sleep(0.05)        # the failing search is the slower one
+                raise urllib.error.URLError("no route")
+            return inner(url, **kw)
+        freesound.fetch_json = fake_json
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            data = self.fetch(say=lines.append,
+                              measure=lambda paths: [levels() for _ in paths])
+        self.assertEqual(err.getvalue(), "")
+        self.assertEqual([line.split()[0] for line in lines], ["freesound:", "A1", "S1"])
+        self.assertIn("search failed at https://freesound.org/apiv2/search/text/ (URLError)",
+                      lines[0])
+        self.assertEqual([m["cue_id"] for m in data["unfilled"]], ["A1"])
 
     def test_a_rounds_judgements_overlap(self):
         wait = self.meeting("judge")

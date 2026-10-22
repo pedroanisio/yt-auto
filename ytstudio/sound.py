@@ -1381,7 +1381,7 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
         file's own id left out, `FETCH_TRIES` at most."""
         want = max(1, int(job.cue.get("seconds") or 1))
         found, job.used = freesound.ranked(job.miss["queries"], want_seconds=want,
-                                           token=token)
+                                           token=token, say=lambda line: tell(job, line))
         job.hits = [h for h in found if h.id != job.old_id][:FETCH_TRIES]
 
     def advance(job: _Job) -> None:
