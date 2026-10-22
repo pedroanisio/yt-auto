@@ -188,6 +188,22 @@ class Loading(unittest.TestCase):
         for name in SHIPPED[1:]:
             self.assertNotIn(self.shipped[name], qa_block, name)
 
+    def test_the_keyframe_reads_the_vfx_section_until_the_channel_writes_its_own(self):
+        # The keyframe authors the lead section's animation, which the vfx
+        # stage then follows, so it is held to the animation rules.
+        from ytstudio import keyframe
+        film = SimpleNamespace(root=self.project)
+        block, digest = keyframe.house_rules(args(), film)
+        self.assertEqual((block, digest), house.for_args(args(), film, "keyframe"))
+        self.assertIn(self.shipped["all"], block)
+        self.assertIn(self.shipped["vfx"], block)
+        self.assertEqual(digest["stage"], "keyframe")
+        (self.project / "house.md").write_text("## keyframe\nLock the look first.\n",
+                                              encoding="utf-8")
+        own = house.load(self.work, self.project).for_stage("keyframe")
+        self.assertIn("Lock the look first.", own)
+        self.assertNotIn(self.shipped["vfx"], own)
+
     def test_the_provenance_comment_never_reaches_a_prompt(self):
         loaded = house.load(self.work, self.project)
         for name in SHIPPED:

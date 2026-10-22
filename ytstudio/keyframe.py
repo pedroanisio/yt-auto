@@ -934,7 +934,9 @@ class KeyframeStage:
                             elements=chosen, roles=roles, tokens=tokens, facts=facts,
                             assets=asset_rows(self.dossier), notes=self.notes,
                             constraints=vfx.picture_constraints(self.script))
-        inputs = _digest(chosen, self.notes, tokens, self.house_digest)
+        # The brief carries the house block, so the block is the input: an
+        # edit to another stage's section does not author the document again.
+        inputs = _digest(chosen, self.notes, tokens, self.house)
         engine = harness.ENGINE(EngineConfig(
             **sdkkit.author_config(ws.dir, project_root=self.root, programs=[PROGRAM_NAME]),
             model=self.model, max_turns_budget_usd=self.budget_usd, timeout=AUTHOR_TIMEOUT))
@@ -1361,17 +1363,9 @@ def _write_section_sheet(root: Path, record: dict, lines: list[str]) -> Path:
 
 def house_rules(args, project) -> tuple[str, dict]:
     """`## all` plus `## keyframe`; with no keyframe section the `## vfx`
-    section applies, because the keyframe is the look the vfx inherits."""
-    work = workspace.work_dir(args) if getattr(args, "work", None) else None
-    loaded = house.load(work, project.root, explicit=getattr(args, "house", None),
-                        enabled=not getattr(args, "no_house", False))
-    own = loaded.sections.get("keyframe") or loaded.sections.get("vfx") or ""
-    parts = [p for p in (loaded.sections.get(house.ALL, ""), own) if p]
-    if not parts:
-        return "", loaded.digest()
-    return ("The standards this channel holds every video to. They bind what you make "
-            "here, and the operator's own notes for this run outrank them:\n\n"
-            + "\n\n".join(parts)), loaded.digest()
+    section applies, because the keyframe is the look the vfx inherits
+    (house.FALLBACK)."""
+    return house.for_args(args, project, "keyframe")
 
 
 def register(sub, parents=()) -> argparse.ArgumentParser:

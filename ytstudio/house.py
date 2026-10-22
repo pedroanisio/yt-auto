@@ -69,6 +69,11 @@ STAGES = (ALL, "script", "styles", "vfx", "sound", "voice", "format")
 #: reads it before the script rules.
 READS = {"script": ("format", "script")}
 
+#: A stage with no section of its own reads another's. The keyframe authors
+#: the lead section's animation, the look the vfx stage then follows, so
+#: until a house writes `## keyframe` it is held to `## vfx`.
+FALLBACK = {"keyframe": "vfx"}
+
 
 def parse(text: str) -> dict[str, str]:
     """Markdown into {section: body}, with the preamble as `all`. Comments
@@ -99,8 +104,9 @@ class House:
 
     def for_stage(self, stage: str) -> str:
         """The block this stage is held to, or "" when there is nothing."""
-        parts = [self.sections[name] for name in (ALL, *READS.get(stage, (stage,)))
-                 if self.sections.get(name)]
+        parts = [self.sections.get(name) or self.sections.get(FALLBACK.get(name, ""), "")
+                 for name in (ALL, *READS.get(stage, (stage,)))]
+        parts = [part for part in parts if part]
         if not parts:
             return ""
         return ("The standards this channel holds every video to. They bind "
