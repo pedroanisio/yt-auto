@@ -417,16 +417,24 @@ stumbles or buries its point.
 `--review` has a reviewer of another model family (`--reviewer-model`,
 default `opus`, refused with exit 2 when it is the author's own family) read
 the beat sheet before any section is drafted. The `plan-review` decision
-grades five rows of the narrative rubric (the train, the stakes, the open
-loops, the reveal's setup, the ending) and is told how to attack the plan:
+reads five rows of the narrative rubric (the train, the stakes, the open
+loops, the reveal's setup, the ending) under a reviewer role of its own
+(`narrative.reviewer_role(plan=True)`: accept, revise or reject, never the
+story review's recommend or consider) and is told how to attack the plan:
 reorder the sections and see whether the story survives, find a section that
 advances no question, check that the payoff names something concrete. It
 also reads the pre-checks code can count (`rule:` an AND between sections,
 a question never closed, a reveal before its constraint; `house:` a long
-film with no rehook) and decides on its own. `accept` drafts; `revise`
+film with no rehook) and decides on its own. A reading whose fields
+contradict its verdict (an accept that finds the order a list, a revise that
+names no problem: `narrative.check_plan_review`) is asked once more as
+`plan-review-again`; what still contradicts is recorded under `unsettled`,
+and the verdict stands. `accept` drafts; `revise`
 sends the plan back once with the problems (`plan-2`, read again as
 `plan-review-2`); `reject`, or a second `revise`, exits 1 before a section
-is written, and no `script.json` is left for `yt run` to take as done.
+is written, and no `script.json` is left for `yt run` to take as done: the
+reading, the stage's engine report and its spend go to `plan_review.json`
+instead, removed by the next run that gets past the plan.
 `--report-only` records a revise and drafts on; a reject still stops. No score
 is set as a bar here, as keyframe and vfx set one: the verdict is the bar. The review is capped by
 `--review-budget-usd` (2), adds about $0.50, and is kept in `script.json`
