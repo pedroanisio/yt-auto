@@ -579,7 +579,8 @@ changed. `--report-only` reports the findings and changes nothing.
 
 `--review` · `--report-only` · `--free-only` (CC0, public domain, CC-BY or self-recorded only) · `--library
 "epidemic sound"` · `--no-music` · `--mood` · `--inspo` · `--minutes` when there
-is no screenplay yet (floored at 10 seconds)
+is no screenplay yet (floored at 10 seconds) · `--jobs` cues fetched at once with
+`--fetch` (default 4)
 
 Every cue except silence also carries a `query`: the few plain words a
 library search would want, naming the sound rather than its purpose.
@@ -595,7 +596,10 @@ which is what `yt build` places. A preview is fine for a scratch mix and for
 placing against picture, and the manifest says so. `sound/index.json` maps
 each Freesound id to its file, so a re-spotted sheet that lands on the same
 sound downloads nothing; a cue nothing matched keeps no file and is listed
-under `unfilled[]` with the queries tried. With a `sound.json` already in the
+under `unfilled[]` with the queries tried. Cues are searched, downloaded and
+judged `--jobs` at a time (default 4; none of it runs on this machine), the
+index written under a lock and the verdicts applied in cue order, so the
+progress lines and the record read as a serial run. With a `sound.json` already in the
 project `--fetch` reuses it and asks the model nothing; `--fresh` spots again
 first. The keys are `FREESOUND_CLIENT_ID` and `FREESOUND_CLIENT_SECRET`
 (the secret is the token the API wants); without one nothing is fetched and

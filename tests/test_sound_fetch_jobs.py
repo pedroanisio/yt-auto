@@ -10,11 +10,17 @@ overlap; and the progress lines come out one cue at a time, in cue order,
 however the threads interleave.
 """
 
+import contextlib
+import io
 import json
+import tempfile
 import threading
 import unittest
+from pathlib import Path
+from unittest import mock
 
-from ytstudio import cli, flags, freesound, harness, sound
+from ytstudio import cli, flags, freesound, harness, sound, workspace
+from ytstudio.core import Idea
 
 from tests.test_sound_fetch import FetchCase, cue, row
 
@@ -30,6 +36,20 @@ class Flag(unittest.TestCase):
         ns = cli.build_parser().parse_args(["sound", "--fetch"])
         self.assertEqual(ns.jobs, 4)
         self.assertEqual(cli.build_parser().parse_args(["sound", "--jobs", "2"]).jobs, 2)
+
+    def test_the_stage_hands_jobs_to_the_fetch(self):
+        args = cli.build_parser().parse_args(["sound", "--fetch", "--jobs", "2", "--quiet"])
+        got = {}
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(sound, "fetch", lambda root, data, **kw: got.update(kw)), \
+                mock.patch.object(sound, "harness_judge", lambda root, **kw: None), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            data = {"runtime": 20, "cues": [cue("silence", "Q1", "Hold", 2)],
+                    "coverage": {}, "unfilled": []}
+            sound._finish(args, Idea(title="t", genre="g", description="d"),
+                          workspace.Project(root=Path(tmp)), data)
+        self.assertEqual(got.get("jobs"), 2)
 
 
 class Overlap(FetchCase):

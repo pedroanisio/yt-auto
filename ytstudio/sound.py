@@ -2179,7 +2179,8 @@ def _finish(args, idea: Idea, project, data: dict) -> int:
             print(f"[fetch] freesound -> {project.root / SOUND_DIR}",
                   file=sys.stderr)
         fetch(project.root, data, say=(lambda m: None) if args.quiet else None,
-              judge=harness_judge(project.root, model=args.model))
+              judge=harness_judge(project.root, model=args.model),
+              jobs=getattr(args, "jobs", FETCH_JOBS))
     if getattr(args, "synth", False):
         if not args.quiet:
             print(f"[synth] original sound -> {project.root / SYNTH_DIR}",

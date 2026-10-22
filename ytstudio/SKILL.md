@@ -634,7 +634,9 @@ hand-authored world showed the cost.
   or a reason in sound.json's `normalize`). The fetch measures each file on a render host, by
   loudness for beds and peak for effects, writes the cue's `gain_db`, and refuses a source the
   track's gain cannot reach or whose noise floor the lift would put within 12 dB of the
-  narration, trying the next-ranked hit; with no host it says `NOT LEVELLED`. A cue
+  narration, trying the next-ranked hit; with no host it says `NOT LEVELLED`. Cues
+  are searched, downloaded and judged `--jobs` at a time (default 4), the verdicts
+  applied in cue order. A cue
   nothing matched stays `unfilled`, shows under `audio_missing` in
   `build.json`, and a design of which nothing could be placed makes the
   build unpublishable. `yt sound --synth` realises every cue still without
