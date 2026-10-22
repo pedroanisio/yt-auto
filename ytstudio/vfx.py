@@ -1628,8 +1628,21 @@ class Workspace:
             json.dumps({"width": frame[0], "height": frame[1], "fps": 30}), encoding="utf-8")
         # The author composes by program: srkit.py, kit.py and kit/ (the SDK's
         # guide, what the engine does per renderer, proven example programs).
+        # A section author's workspace (a version) also gets the approved look's
+        # program as `look.py`, importable; the keyframe and assess workspaces
+        # inherit no look. Every new version copies it again, --relook included.
         from .probes import latest_measured
-        sdkkit.install(self.dir, measured=latest_measured(self.root.parent) or None)
+        sdkkit.install(self.dir, measured=latest_measured(self.root.parent) or None,
+                       look=self.look_program() if self.version else None)
+
+    def look_program(self) -> Path | None:
+        """The approved look's program (`keyframe/look.py`, the approved bytes)
+        when the look came from the film and the file is there; else None."""
+        look = approved_look(self.root)
+        if not look or look.get("source") != "section" or not look.get("look_program"):
+            return None
+        program = self.root / look["look_program"]
+        return program if program.is_file() else None
 
     @staticmethod
     def program_name(doc: str) -> str:
@@ -1859,7 +1872,8 @@ class Workspace:
             if look.get("sheet"):
                 shown.append(f"`{rel('sheet')}` (all its proof frames)")
             # The author may read its own directory and keyframe/, never another
-            # version's; keyframe/look.py is the approved program, byte for byte.
+            # version's; keyframe/look.py is the approved program, byte for byte,
+            # and prepare() copied it into the workspace as look.py to import.
             program_ref = rel("look_program") if look.get("look_program") else ""
             lines += [f"## The approved look (section {look.get('section')} of this film, "
                       f"approved {look.get('approved_at', '')})", "",
@@ -1868,12 +1882,12 @@ class Workspace:
                       + (f"Read its program `{program_ref}` first, " if program_ref
                          else "")
                       + (f"look at {' and '.join(shown)}. " if shown else "")
-                      + "Reuse its constructions: copy into your program its palette and type "
-                      "constants, the helper functions that build its labels, formulas, "
-                      "cards, materials, lights and recurring objects, and its camera "
-                      "language, and change only what your shots require. Do not import or "
-                      "run that program; copy what you need. The review scores fidelity "
-                      "to it.", ""]
+                      + (sdkkit.LOOK_BRIEF + " " if program_ref
+                         else "Reuse its constructions -- its palette and type constants, "
+                         "the helper functions that build its labels, formulas, cards, "
+                         "materials, lights and recurring objects, and its camera language "
+                         "-- and change only what your shots require. ")
+                      + "The review scores fidelity to it.", ""]
         elif look:
             doc_rel = os.path.relpath(self.root / look["document"], self.dir)
             png_rel = os.path.relpath(self.root / look["frame"], self.dir)

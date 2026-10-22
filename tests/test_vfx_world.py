@@ -373,6 +373,101 @@ def approve_keyframe(root: Path, state: str = "approved") -> None:
                      "at": "2026-10-19T10:00:00"}}))
 
 
+LOOK_PROGRAM = '''from srkit import S, FRAME, save
+INK = "#F2F5F7"
+scene = S.Scene(version="auto")
+save(scene, "01-open.scene.xml")
+'''
+
+
+def approve_section_look(root: Path, state: str = "approved") -> None:
+    """A keyframe.json for a look taken from the film (`yt keyframe` on section
+    1), with the approved program kept at keyframe/look.py."""
+    from ytstudio import keyframe
+    (root / "keyframe").mkdir(exist_ok=True)
+    (root / "vfx" / "v01").mkdir(parents=True, exist_ok=True)
+    doc = root / "vfx" / "v01" / "01-open.scene.xml"
+    doc.write_text("<scene/>")
+    (root / "vfx" / "v01" / "01-open.py").write_text(LOOK_PROGRAM)
+    (root / "keyframe" / "look.py").write_text(LOOK_PROGRAM)
+    (root / "keyframe" / "keyframe.png").write_bytes(b"png")
+    (root / "keyframe.json").write_text(json.dumps({
+        "source": "section", "section": 1, "document": "vfx/v01/01-open.scene.xml",
+        "program": "vfx/v01/01-open.py", "frame": "keyframe/keyframe.png",
+        "look_program": "keyframe/look.py", "frame_size": [1920, 1080], "elements": [],
+        "record": {"n": 1, "file": "vfx/v01/01-open.scene.xml", "program": "vfx/v01/01-open.py",
+                   "version": "v01", "findings": []},
+        "approval": {"state": state, "notes": "", "digest": keyframe.document_digest(doc),
+                     "at": "2026-10-20T10:00:00"}}))
+
+
+class LookModule(Brief):
+    """AUTO-77: the approved look is an importable module in every section
+    workspace, the brief says to import it, and `--relook` copies it again."""
+
+    def test_prepare_copies_the_approved_look_into_the_version(self):
+        approve_section_look(self.root)
+        ws = vfx.Workspace(self.root, version="v02")
+        ws.prepare(tokens={"ink": "#FFFFFF"}, frame=(1920, 1080))
+        self.assertEqual((ws.dir / "look.py").read_bytes(),
+                         (self.root / "keyframe" / "look.py").read_bytes())
+        self.assertTrue((ws.dir / "srkit.py").is_file())      # beside the kit
+
+    def test_no_approved_section_look_means_no_module(self):
+        ws = vfx.Workspace(self.root, version="v01")
+        ws.prepare(tokens={"ink": "#FFFFFF"}, frame=(1920, 1080))
+        self.assertFalse((ws.dir / "look.py").exists())
+        approve_section_look(self.root, state="pending")
+        ws = vfx.Workspace(self.root, version="v02")
+        ws.prepare(tokens={"ink": "#FFFFFF"}, frame=(1920, 1080))
+        self.assertFalse((ws.dir / "look.py").exists())
+        approve_keyframe(self.root)                            # a sheet: no program to import
+        ws = vfx.Workspace(self.root, version="v03")
+        ws.prepare(tokens={"ink": "#FFFFFF"}, frame=(1920, 1080))
+        self.assertFalse((ws.dir / "look.py").exists())
+
+    def test_the_keyframe_and_assess_workspaces_inherit_no_look(self):
+        approve_section_look(self.root)
+        for dirname in ("keyframe", "assess"):
+            ws = vfx.Workspace(self.root, dirname)
+            ws.prepare(tokens={"ink": "#FFFFFF"}, frame=(1920, 1080))
+            self.assertTrue((ws.dir / "srkit.py").is_file())
+        self.assertFalse((self.root / "assess" / "look.py").exists())
+        # keyframe/look.py is the approved bytes, untouched
+        self.assertEqual((self.root / "keyframe" / "look.py").read_text(), LOOK_PROGRAM)
+
+    def test_the_brief_says_import_the_look_and_redefine_nothing(self):
+        approve_section_look(self.root)
+        text = self.brief(vfx.Workspace(self.root, version="v02"))
+        self.assertIn("## The approved look (section 1 of this film", text)
+        self.assertIn("`look.py` in your workspace is that program, byte for byte", text)
+        self.assertIn("from look import", text)
+        self.assertIn("redefine nothing it provides", text)
+        self.assertIn("../../keyframe/look.py", text)         # where the bytes come from
+        self.assertNotIn("Do not import", text)
+        self.assertNotIn("copy into your program", text)
+
+    def test_a_relook_and_the_first_animation_carry_the_module_into_the_new_version(self):
+        from tests import test_look_section as look
+        base = look.Provenance("test_relook_needs_an_approved_look")
+        base.setUp()
+        self.addCleanup(base.tearDown)
+        lead = base.author(base.planner(lead=1))[0]
+        self.assertFalse((base.root / "vfx" / "v01" / "look.py").exists())   # nothing approved yet
+        base.look_record(lead, "pending")
+        base.vfx_run([look.WORLD_DOC.replace("#AAAAAA", "#CCCCCC"), look.TWO_DOC])
+        self.assertFalse((base.root / "vfx" / "v02" / "look.py").exists())   # still pending
+        from ytstudio import keyframe
+        keyframe.approve(base.root)
+        FakeEngine.stream_calls = []
+        base.vfx_run([look.TWO_DOC], relook=True)
+        approved = (base.root / "keyframe" / "look.py").read_bytes()
+        self.assertEqual((base.root / "vfx" / "v03" / "look.py").read_bytes(), approved)
+        self.assertEqual((base.root / lead["program"]).read_bytes(), approved)
+        brief = (base.root / "vfx" / "v03" / "brief-02.md").read_text()
+        self.assertIn("from look import", brief)
+
+
 class PropsRule(unittest.TestCase):
     """A listed prop is used, or declined with a reason the operator sees."""
 

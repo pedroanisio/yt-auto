@@ -189,10 +189,15 @@ authors it again. `--approve` refuses a record whose digests no longer match
 the files (the document or program changed after the record was written, a
 stopped run): run `yt keyframe` again before approving. Once approved, `yt vfx` carries that section forward
 (`vfx.look_section`, `carried_from`, $0) and every other author's brief and
-review name its program as the look to copy -- palette and type constants,
+review name its program as the look -- palette and type constants,
 the helpers that build labels, formulas and recurring objects, the camera
-language -- with `fidelity` scored against it; they read `keyframe/look.py`
-(the approved bytes), never another version's directory. The look's section
+language -- with `fidelity` scored against it. The approved bytes,
+`keyframe/look.py`, are copied into every section workspace as `look.py`
+beside `srkit.py` (`sdkkit.install(look=)`, again on every new version and
+`--relook`); the brief says `from look import ...` and redefine nothing it
+provides, importing it writes no document (srkit's `save` writes only for the
+program), and the build records its hash in the document's provenance. An
+author reads `keyframe/` and its own directory, never another version's. The look's section
 enters the film in two places only: the first animation after the approval,
 and `yt vfx --relook`, which carries it into an existing animation and
 authors every other section again on the same plan (a broken attempt keeps
@@ -496,9 +501,10 @@ hand-authored world showed the cost.
   refused: seed every random choice. Every document it saved then goes
   through the SDK's checks, the harness's rules (`rule:shadow`: a 3D world
   in which no light casts a shadow) and the engine's validation, and gets
-  `<doc>.provenance.json` (program and document hashes, schema release).
-  `sdkkit.provenance_of(doc)` lapses the moment the document is edited by
-  hand.
+  `<doc>.provenance.json` (program and document hashes, the hash of every
+  workspace module the program imported -- `imports`: `srkit.py`, `look.py`
+  -- and the schema release). `sdkkit.provenance_of(doc)` lapses the moment
+  the document, or a module it imported, is edited by hand.
 - **Who uses it.** Every authoring agent: `yt vfx` (one program per
   section, `vfx/vNN/<section>.py` saving `<section>.scene.xml`), `yt
   keyframe` (`keyframe/keyframe.py`), `yt assess` (`proof.py`) and `yt

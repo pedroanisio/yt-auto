@@ -173,7 +173,10 @@ class CarryTheLook(Case):
         # the approved bytes, where the author may read: never another version
         self.assertIn("Read its program `../../keyframe/look.py`", brief)
         self.assertNotIn("../v01/", brief)
-        self.assertIn("copy into your program its palette and type constants", brief)
+        # the same bytes are `look.py` in the workspace, to import rather than copy
+        self.assertIn("`from look import ...` its palette and type constants", brief)
+        self.assertEqual((self.root / "vfx" / "v02" / "look.py").read_bytes(),
+                         (self.root / "keyframe" / "look.py").read_bytes())
         review = self.reviews()[0]["prompt"]
         self.assertIn("approved section 1", review)
         self.assertIn(str(self.root / "keyframe" / "look.py"), review)
