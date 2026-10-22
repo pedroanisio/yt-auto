@@ -70,14 +70,23 @@ judging 13; Zeigarnik → attention Contested.
    a consider with no flag and a flag on no criterion. `reject` is
    coverage's Pass, renamed because doctor, improve and the operator read
    verdict strings. The hook's window is written in words, the house's to
-   set. One tuple is rendered into the writer's prompt and the reviewer's
-   role, as `framecheck.CHECKLIST` is. `tests/test_narrative_rubric.py`
-   holds every cited rule id to this corpus, and `tests/fixtures/narrative/`
-   starts the calibration set (judging 10): plans and scripts seeded with
-   one known fault each, and one good pair. The review that runs it (a
+   set. One tuple is to be rendered into the writer's prompt and the
+   reviewer's role, as `framecheck.CHECKLIST` is; nothing renders it or
+   runs the review yet. `tests/test_narrative_rubric.py` holds every cited
+   rule id to this corpus, and `tests/fixtures/narrative/` starts the
+   calibration set (judging 10): plans and scripts seeded with one known
+   fault each, and one good pair. judging 10 asks the calibration run for
+   reject on every seeded case; the cases whose one fault is a Fair, or a
+   Poor on a criterion that does not decide a film (a hook that lists its
+   conclusions, a recap ending, a reveal before its constraint), are held
+   to consider instead, because judging 11 and 12 make a fixable fault a
+   consider, and a gate that rejects them would regenerate a film one
+   flag would mend. Their `expected.json` says so in `judging_10`: the
+   calibration fails a reviewer that recommends them, grades the named
+   criterion above Fair or leaves it unflagged. The review that runs it (a
    different model family from the writer, majority of at least three
-   runs, validate-retry-fail before voice is paid for) is the script stage's
-   to wire.
+   runs, validate-retry-fail before voice is paid for) is the script
+   stage's to wire, and is not yet wired (AUTO-92, AUTO-93).
 4. **The evidence loop.** `yt improve` ingests the channel's retention curves
    (judging 1–3), maps dips, spikes and the Intro figure to beat ids and
    routes findings to the script stage under the rule they bear on. Every

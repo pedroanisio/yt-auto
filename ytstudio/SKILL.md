@@ -128,7 +128,7 @@ itself, and `--project DIR` names a directory directly.
 | `yt ideas` | a niche | `work/ideas.json` | yes |
 | `yt research` | the idea | `dossier.json`, `README.md`, `claims.csv`, `assets.csv`, `raw/`; with `--download`, `downloads/` | yes |
 | `yt styles` | dossier | `styles.json`, `styles.md` | yes |
-| `yt script` | dossier, styles | `script.json`, `script.md`, `narration.txt`, `shotlist.csv` | yes (the story is judged by the narrative rubric in `ytstudio/narrative.py`: seven criteria of four labelled levels, a coverage-shaped review with the verdict reject, consider or recommend, and the plan review's schema; one tuple feeds the writer's prompt and the reviewer's role) |
+| `yt script` | dossier, styles | `script.json`, `script.md`, `narration.txt`, `shotlist.csv` | yes (the narrative rubric the story will be graded on is in `ytstudio/narrative.py`: seven criteria of four labelled levels, a coverage-shaped review with the verdict reject, consider or recommend, and the plan review's schema; not yet wired into the stage, see AUTO-92, AUTO-93) |
 | `yt props` | script, styles (or phrases given) | `props/<kind>/<id>/`, `props.json` | yes (two decisions: `phrases`, the search phrases picked from the catalogue's vocabulary, and `keep`, the candidates worth building with, each with its `fit` note; the files are Poly Haven, all CC0) |
 | `yt voice` | script | `voice/`, `voice.json`, `narration.vtt`, `.srt` | yes (casting, retakes) |
 | `yt retime` | script, voice | `retime.json`, the screenplay's measured lengths (`script.json.bak` kept) | yes (accept, rerecord, rewrite, keep) |
