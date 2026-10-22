@@ -217,13 +217,15 @@ replaced by an original drawing until the licence exists.
 **Story.** House craft defaults, from `docs/narrative/`, each a prior until
 the retention loop replaces it; the number after each is its rule there.
 The film's train fits in one sentence: who or what pursues what, against
-what, and which question the film answers (judging 13). The viewer is told
-what is at risk, and by when, before the mechanism is explained (attention
-8). Each section states the one question it answers in its first line and
-closes it before the section ends (structure 19). The last section pays the
-title's promise in resolved form (structure 7). Nothing follows the payoff
-but the cut: no recap (structure 27, which that file's Contested section
-lists as a default, not a law).
+what, and which question the film answers (judging 13). Where the film can,
+the viewer is told what is at risk, and by when, before the mechanism is
+explained, unless a twist is the point (attention 8). Each section states
+the one question it answers in its opening sentences and closes it in that
+section or in a later section it names (structure 19). The last section
+pays the title's promise in resolved form (structure 7). After the payoff,
+at most a one-line pointer to the next film, then the cut; no recap
+(structure 27, which that file's Contested section lists as a default, not
+a law).
 
 ---
 

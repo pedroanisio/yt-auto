@@ -49,8 +49,9 @@ class ProductionDoc(unittest.TestCase):
     def test_narrative_clarity_names_the_story_the_corpus_asks_for(self):
         row = next(line for line in _section("## 2. The publication bar").splitlines()
                    if "Narrative clarity" in line)
-        for word in ("hook", "stakes", "escalation", "payoff", "visual support"):
-            self.assertIn(word, row)
+        for words in ("hook", "stakes", "open questions closed", "escalation",
+                      "payoff on the promise", "visual support"):
+            self.assertIn(words, row)
 
     def test_the_story_criteria_are_house_priors_with_rule_numbers(self):
         text = _section("## 6. Craft criteria")
@@ -61,6 +62,23 @@ class ProductionDoc(unittest.TestCase):
         for rule in ("judging 13", "attention 8", "structure 19", "structure 7",
                      "structure 27"):
             self.assertIn(rule, story)
+
+    def test_the_story_criteria_keep_the_corpus_strength(self):
+        # Each sentence says no more than the rule it cites: attention 8 is
+        # "whenever possible" with a twist exemption, structure 19's check
+        # accepts an answer deferred to a named later section, and structure
+        # 27 allows a one-line pointer to the next film (so §7's call to
+        # action is not a defect).
+        text = _section("## 6. Craft criteria")
+        story = " ".join(text[text.index("**Story.**"):].split("\n\n")[0].split())
+        sentence = {rule: next(s for s in story.split(". ") if f"({rule}" in s)
+                    for rule in ("attention 8", "structure 19", "structure 27")}
+        self.assertIn("twist", sentence["attention 8"])
+        self.assertIn("where the film can", sentence["attention 8"].lower())
+        self.assertIn("later section it names", sentence["structure 19"])
+        self.assertNotIn("first line", sentence["structure 19"])
+        self.assertIn("one-line pointer to the next film", sentence["structure 27"])
+        self.assertNotIn("Nothing follows the payoff", story)
 
     def test_the_narrative_beats_are_the_plans_beat_fields(self):
         self.assertIn("`sections[].beats`", _section("## 7. Evidence sampling"))
