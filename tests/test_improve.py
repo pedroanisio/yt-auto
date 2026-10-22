@@ -1528,10 +1528,11 @@ class RetentionFindings(ImproveCase):
 
     def test_the_router_decides_them_and_they_reach_the_script_brief_with_their_rule(self):
         found = improve.collect(card(5.0), retention=self.rows())
+        # The fake answers script; what is pinned is that the model was asked
+        # (with the clause and the corpus rule in its prompt), not the answer.
         FakeEngine.route = route_all_to("script")
         routing = improve.route(harness.Harness(self.root, "improve", verbose=False), found,
                                 name="route-pass-01")
-        self.assertEqual(routing["routes"]["F1"]["stage"], "script")
         self.assertEqual(routing["routes"]["F1"]["by"], "model")       # never a lookup
         prompt = FakeEngine.json_calls[0]["prompt"]
         self.assertIn("A finding from `retention`", prompt)
@@ -1548,6 +1549,16 @@ class RetentionFindings(ImproveCase):
         _, lines, _ = script.sent_back("feedback", self.root)
         self.assertEqual(lines[0]["label"], "2.1")
         self.assertIn("judging 3", lines[0]["problem"])
+
+    def test_a_router_that_sends_one_to_the_picture_is_honoured(self):
+        # A dip on a shot whose picture is the problem is the router's call
+        # (invariant 3): nothing turns it back toward script by lookup.
+        found = improve.collect(card(5.0), retention=self.rows())
+        FakeEngine.route = route_all_to("vfx")
+        routing = improve.route(harness.Harness(self.root, "improve", verbose=False), found,
+                                name="route-pass-01")
+        self.assertEqual(routing["routes"]["F1"]["stage"], "vfx")
+        self.assertEqual(list(routing["stages"]), ["vfx"])
 
     def test_the_loop_reads_retention_json_while_the_film_is_the_one_measured(self):
         from ytstudio import retention
