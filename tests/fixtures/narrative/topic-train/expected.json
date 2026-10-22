@@ -1,0 +1,52 @@
+{
+  "criterion": "train",
+  "verdict": "reject",
+  "why": "The train names a topic: no pursuer, no obstacle, no question (judging 13).",
+  "evidence": {
+    "in": "plan.train",
+    "says": "about comets and their tails"
+  },
+  "review": {
+    "logline": "A comet's tail leads it away from the Sun because sunlight and a wind from the Sun push it, not because it trails behind.",
+    "synopsis": "A comet leaves the Sun tail first; sunlight is too weak to explain the gas tail; Biermann proposes a wind from the Sun and Mariner 2 measures it; the opening comet is seen again.",
+    "grades": {
+      "train": "Poor",
+      "hook": "Excellent",
+      "stakes": "Excellent",
+      "open_loops": "Excellent",
+      "reveal_setup": "Excellent",
+      "ending": "Excellent",
+      "honesty": "Excellent"
+    },
+    "verdict": "reject",
+    "flags": [
+      {
+        "n": 0,
+        "section": 0,
+        "criterion": "train",
+        "problem": "The train names a topic, not a pursuit with an obstacle.",
+        "severity": "blocker",
+        "fix": "Restate it as who pursues what against which obstacle, ending on the question the film answers."
+      }
+    ],
+    "first_minute": {
+      "promise_match": "From the plan (no script yet): section 1 opens on a comet leaving the Sun tail first, the subject the title promised.",
+      "question_and_stakes": "From the plan: why the tail leads, and section 1 says the same wind reaches Earth."
+    }
+  },
+  "plan_review": {
+    "verdict": "reject",
+    "train_ok": false,
+    "reorder_survives": false,
+    "sections_advancing_none": [],
+    "payoff_concrete": true,
+    "questions_unanswered": [],
+    "problems": [
+      {
+        "section": 0,
+        "problem": "The train is a topic.",
+        "fix": "Name the pursuer, the obstacle and the question."
+      }
+    ]
+  }
+}

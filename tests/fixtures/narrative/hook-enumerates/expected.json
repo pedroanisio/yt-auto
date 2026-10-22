@@ -1,0 +1,38 @@
+{
+  "criterion": "hook",
+  "verdict": "consider",
+  "why": "The first line lists the conclusions, so no question is left open (structure 13).",
+  "judging_10": "judging 10 asks the calibration run for reject on every seeded case. This case's one fault is a Poor hook, and the hook is not one of the four criteria that decide a film, so by judging 12 it is a consider: a concrete problem to fix before voicing, not a film that fails in most areas. The calibration fails a reviewer that says recommend here, grades hook above Fair or leaves it without a flag.",
+  "evidence": {
+    "in": "script.sections.0.shots.0.narration",
+    "says": "in this video"
+  },
+  "review": {
+    "logline": "A comet's tail leads it away from the Sun because sunlight and a wind from the Sun push it, not because it trails behind.",
+    "synopsis": "A comet leaves the Sun tail first; sunlight is too weak to explain the gas tail; Biermann proposes a wind from the Sun and Mariner 2 measures it; the opening comet is seen again.",
+    "grades": {
+      "train": "Excellent",
+      "hook": "Poor",
+      "stakes": "Excellent",
+      "open_loops": "Excellent",
+      "reveal_setup": "Fair",
+      "ending": "Excellent",
+      "honesty": "Excellent"
+    },
+    "verdict": "consider",
+    "flags": [
+      {
+        "n": 1,
+        "section": 1,
+        "criterion": "hook",
+        "problem": "The opening line gives away every answer the film reaches.",
+        "severity": "important",
+        "fix": "Open on the comet leaving the Sun tail first and ask why; keep the answers for sections 2 and 3."
+      }
+    ],
+    "first_minute": {
+      "promise_match": "The comet and its tail are on screen and named at once.",
+      "question_and_stakes": "Why the tail leads; the same wind reached Quebec in 1989."
+    }
+  }
+}

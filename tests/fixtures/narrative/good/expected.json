@@ -1,0 +1,32 @@
+{
+  "verdict": "recommend",
+  "why": "The train is a question with an obstacle, the stakes reach the viewer before the mechanism, both questions close, the constraint precedes the reveal and the last line pays the promise and calls back the opening.",
+  "review": {
+    "logline": "A comet's tail leads it away from the Sun because sunlight and a wind from the Sun push it, not because it trails behind.",
+    "synopsis": "A comet leaves the Sun tail first; sunlight is too weak to explain the gas tail; Biermann proposes a wind from the Sun and Mariner 2 measures it; the opening comet is seen again.",
+    "grades": {
+      "train": "Excellent",
+      "hook": "Excellent",
+      "stakes": "Excellent",
+      "open_loops": "Good",
+      "reveal_setup": "Excellent",
+      "ending": "Excellent",
+      "honesty": "Excellent"
+    },
+    "verdict": "recommend",
+    "flags": [],
+    "first_minute": {
+      "promise_match": "The comet and its tail are on screen and named at once.",
+      "question_and_stakes": "Why the tail leads; the same wind reached Quebec in 1989."
+    }
+  },
+  "plan_review": {
+    "verdict": "accept",
+    "train_ok": true,
+    "reorder_survives": false,
+    "sections_advancing_none": [],
+    "payoff_concrete": true,
+    "questions_unanswered": [],
+    "problems": []
+  }
+}

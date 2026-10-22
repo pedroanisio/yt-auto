@@ -1451,6 +1451,7 @@ ytstudio/
 ├── assets.py           the open-catalogue search (NASA, Openverse, Commons, Archive)
 ├── styles.py           Director, the style library, the deliberation stages
 ├── script.py           Screenwriter, Section, Shot
+├── narrative.py        the narrative rubric: criteria, levels, the review's and the plan review's schemas
 ├── voice.py            VoiceOver, the TTS engines, captions and drift
 ├── props.py            CC0 models, HDRIs and textures from Poly Haven, into props/
 ├── vfx.py              the model authors each section's world, versioned under vfx/vNN/

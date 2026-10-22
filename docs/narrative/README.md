@@ -57,13 +57,36 @@ judging 13; Zeigarnik → attention Contested.
    `work/house.md` and a project's `house.md` replace sections by name.
    There is no generator: when a rule changes, the section that cites it is
    edited, and the test catches a citation that drifts.
-3. **The narrative rubric.** `yt script --review` scores a plan and script
-   against criteria drawn from the `Check:` lines, in the shape set by
-   `judging-narrative.md` rules 7–13: absolute per-criterion labels of five
-   or fewer levels, a different model family from the writer, majority of
-   at least three runs, verdict Pass / Consider / Recommend, every Consider
-   problem tied to a beat id. Validate-retry-fail runs before voice is paid
-   for.
+3. **The narrative rubric.** `ytstudio/narrative.py` holds it, in the
+   shape set by `judging-narrative.md` rules 7–13: `RUBRIC`, seven criteria
+   (train, hook, stakes, open loops, reveal setup, ending, honesty) drawn
+   from the `Check:` lines, each with four labelled levels (Excellent, Good,
+   Fair, Poor) of one line, a worked example, the corpus rules it cites and
+   the strength of its lead rule from the table below; the review's schema
+   (a logline and a synopsis before the grades, a grade per criterion, a
+   verdict reject / consider / recommend, every problem a flag tied to a
+   section and a shot); the plan review's schema; the level order permuted
+   per sample; and `check_review`, which names a recommend carrying a Poor,
+   a consider with no flag and a flag on no criterion. `reject` is
+   coverage's Pass, renamed because doctor, improve and the operator read
+   verdict strings. The hook's window is written in words, the house's to
+   set. One tuple is to be rendered into the writer's prompt and the
+   reviewer's role, as `framecheck.CHECKLIST` is; nothing renders it or
+   runs the review yet. `tests/test_narrative_rubric.py` holds every cited
+   rule id to this corpus, and `tests/fixtures/narrative/` starts the
+   calibration set (judging 10): plans and scripts seeded with one known
+   fault each, and one good pair. judging 10 asks the calibration run for
+   reject on every seeded case; the cases whose one fault is a Fair, or a
+   Poor on a criterion that does not decide a film (a hook that lists its
+   conclusions, a recap ending, a reveal before its constraint), are held
+   to consider instead, because judging 11 and 12 make a fixable fault a
+   consider, and a gate that rejects them would regenerate a film one
+   flag would mend. Their `expected.json` says so in `judging_10`: the
+   calibration fails a reviewer that recommends them, grades the named
+   criterion above Fair or leaves it unflagged. The review that runs it (a
+   different model family from the writer, majority of at least three
+   runs, validate-retry-fail before voice is paid for) is the script
+   stage's to wire, and is not yet wired (AUTO-92, AUTO-93).
 4. **The evidence loop.** `yt improve` ingests the channel's retention curves
    (judging 1–3), maps dips, spikes and the Intro figure to beat ids and
    routes findings to the script stage under the rule they bear on. Every
