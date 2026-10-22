@@ -295,16 +295,24 @@ def contradicted_by(finding: dict, build: dict | None) -> str | None:
 #: deliver is still a finding. It is annotated, so the writer reads that the
 #: line was there and did not land.
 PLAN_CLAIMS = (
-    (re.compile(r"\bno (?:clear |real )?payoff\b|\bpayoff (?:is )?(?:missing|absent)\b|"
-                r"\bnever pa(?:ys|id)\b|\bpromise is (?:never|not) paid\b", re.I),
+    # A payoff "missing its picture" is a picture defect, not a missing payoff.
+    (re.compile(r"\bno (?:clear |real )?payoff\b|"
+                r"\bpayoff (?:line )?(?:is )?(?:missing|absent)\b"
+                r"(?! (?:its|a|an|the) (?:picture|image|visual|shot|frame))|"
+                r"\bnever pays? off\b|\bpromise is (?:never|not) paid\b", re.I),
      "ending.payoff_line"),
     (re.compile(r"\bno (?:clear |real )?stakes\b|\bstakes (?:are )?(?:missing|absent)\b|"
                 r"\bnothing (?:is )?at (?:risk|stake)\b", re.I), "stakes"),
+    # Only a claim that a question is left without its answer: a finding that
+    # merely names the open question (closed too early, repeated) is not one.
     (re.compile(r"\bno (?:clear )?(?:central )?question\b|"
-                r"\bquestions? (?:is |are )?never (?:answered|closed)\b|"
-                r"\b(?:open|unanswered) questions?\b", re.I), "questions"),
+                r"\b(?:questions?|Q\d+) (?:is|are) (?:left |still )?(?:open|unanswered)\b|"
+                r"\b(?:questions?|Q\d+) (?:is|are) (?:never|not) (?:answered|closed)\b|"
+                r"\bleaves? (?:\w+ ){0,3}questions? (?:open|unanswered)\b", re.I),
+     "questions"),
     (re.compile(r"\bno re-?hooks?\b", re.I), "sections[].rehook"),
-    (re.compile(r"\bno (?:clear )?(?:hook|promise)\b", re.I), "promise"),
+    (re.compile(r"\bno (?:clear )?hook\b", re.I), "sections[].shots[function=hook]"),
+    (re.compile(r"\bno (?:clear )?promise\b", re.I), "promise"),
 )
 
 
@@ -318,6 +326,12 @@ def _declared(plan: dict, field: str) -> str:
                          + (f"closed in section {q.get('closed_in')}" if q.get("closed_in")
                             else "left open")
                          for q in plan.get("questions") or [] if isinstance(q, dict))
+    if field == "sections[].shots[function=hook]":
+        return "; ".join(f"shot {shot.get('label', '?')}: "
+                         + " ".join(str(shot.get("narration") or "").split())
+                         for sec in plan.get("sections") or [] if isinstance(sec, dict)
+                         for shot in sec.get("shots") or []
+                         if isinstance(shot, dict) and shot.get("function") == "hook")
     if field == "sections[].rehook":
         return ", ".join(f"section {n} re-opens {s['rehook']}"
                          for n, s in enumerate(plan.get("sections") or [], 1)
@@ -490,12 +504,18 @@ def route(h: Harness, findings: list[dict], *, name: str,
     for b in answer.get("briefs") or []:
         if isinstance(b, dict) and b.get("stage") in ROUTABLE and b["stage"] not in briefs:
             briefs[b["stage"]] = b
-    # The rubric key a story finding bears on, as the brief named it. A key
-    # the rubric does not have is kept apart under `rule_outside`, so it is
+    # The rubric key a story finding bears on, as the brief named it. Only a
+    # brief's own findings take a key: a row naming a finding routed to
+    # another stage is the label of a finding that is not about the story,
+    # or not this stage's, and is dropped. The schema's enum is asked again
+    # once by the harness and then let through (invariant 3), so a word the
+    # rubric still does not have is kept apart under `rule_outside`,
     # recorded rather than passed off as a criterion.
-    for b in briefs.values():
+    for stage, b in briefs.items():
         for row in b.get("rules") or []:
             if not isinstance(row, dict) or str(row.get("finding", "")) not in routes:
+                continue
+            if routes[str(row["finding"])]["stage"] != stage:
                 continue
             rule = str(row.get("rule") or "").strip()
             if rule in narrative.KEYS:

@@ -1161,6 +1161,26 @@ class StoryFindings(ImproveCase):
         self.assertNotIn("rule", routing["routes"]["F1"])
         self.assertEqual(routing["routes"]["F1"]["rule_outside"], "pacing")
 
+    def test_a_rule_named_in_another_stages_brief_is_not_attached(self):
+        # "a finding that is not about the story gets no rule": a key in the
+        # vfx brief, or for a finding routed to vfx, is not the screenplay's
+        self.plan_script()
+        two = card(5.0, findings=[prose("the ending is a recap", t=14.0, owner="script"),
+                                  prose("the glow is flat", t=3.0, owner="vfx")])
+        findings = improve.collect(two)
+        FakeEngine.route = lambda prompt: {
+            "routes": [], "briefs": [
+                {"stage": "script", "must_change": ["pay it"], "check": "paid",
+                 "rules": [{"finding": "F1", "rule": "ending"},
+                           {"finding": "F2", "rule": "stakes"}]},
+                {"stage": "vfx", "must_change": ["light it"], "check": "lit",
+                 "rules": [{"finding": "F1", "rule": "hook"}]}]}
+        routing = improve.route(harness.Harness(self.root, "improve", verbose=False),
+                                findings, name="route-pass-01")
+        self.assertEqual(routing["routes"]["F1"]["rule"], "ending")
+        self.assertNotIn("rule", routing["routes"]["F2"])
+        self.assertNotIn("rule_outside", routing["routes"]["F2"])
+
     def test_the_router_is_told_a_story_finding_is_the_screenplays_though_expensive(self):
         from ytstudio import narrative
         findings = improve.collect(self.story_card(owner="story"))
@@ -1175,7 +1195,7 @@ class StoryFindings(ImproveCase):
     def test_a_finding_the_plan_contradicts_is_annotated_and_still_routed(self):
         self.plan_script()
         c = self.story_card("there is no payoff: the film stops without answering",
-                            owner="story")
+                            owner="story", shot="1.2")
         findings = improve.collect(c)
         FakeEngine.route = self.routed_with([{"finding": "F1", "rule": "ending"}])
         routing = improve.route(harness.Harness(self.root, "improve", verbose=False),
@@ -1193,6 +1213,9 @@ class StoryFindings(ImproveCase):
         self.assertIn("the plan declared ending.payoff_line", md)
         twin = read_json(self.root / "feedback" / "script.json")
         self.assertIn("ending.payoff_line", twin["findings"][0]["plan_declared"])
+        # and a line sent back alone (--revise feedback) is told what the plan held
+        _, rows, _ = script.sent_back("feedback", self.root)
+        self.assertIn("the plan declared ending.payoff_line", rows[0]["problem"])
 
     def test_the_record_and_the_report_carry_the_key_and_the_annotation(self):
         self.plan_script()
@@ -1217,7 +1240,26 @@ class StoryFindings(ImproveCase):
         self.assertIn("questions", improve.plan_declared(
             {"problem": "the question is never answered"}, plan))
         self.assertIn("rehook", improve.plan_declared({"problem": "there is no re-hook"}, plan))
+        self.assertIn("promise", improve.plan_declared({"problem": "there is no promise"},
+                                                       dict(plan, promise="why it leads")))
+        hooked = dict(plan, sections=[{"rehook": "", "shots": [
+            {"label": "1.1", "function": "hook", "narration": "This comet is leaving."}]}])
+        declared = improve.plan_declared({"problem": "there is no hook"}, hooked)
+        self.assertIn("This comet is leaving.", declared)
+        self.assertIn("hook", declared)
         self.assertIsNone(improve.plan_declared({"problem": "the light is flat"}, plan))
+        # a finding that names a story element without saying it is missing
+        for problem in ("the open question is closed too early",
+                        "the open question is answered too late",
+                        "the narration repeats the open question too often",
+                        "the payoff is missing its picture: shot 3.2 shows a grid",
+                        "the payoff line is missing a visual anchor"):
+            self.assertIsNone(improve.plan_declared({"problem": problem}, hooked), problem)
+        for problem in ("the question is never answered", "Q1 is left unanswered",
+                        "the film leaves its question unanswered",
+                        "the questions are still open at the end",
+                        "the payoff is missing", "the payoff line is absent"):
+            self.assertIsNotNone(improve.plan_declared({"problem": problem}, plan), problem)
         self.assertIsNone(improve.plan_declared({"problem": "no payoff"},
                                                 {"ending": {"payoff_line": ""}}))
         self.assertIsNone(improve.plan_declared({"problem": "no payoff"}, None))
