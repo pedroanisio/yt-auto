@@ -175,7 +175,7 @@ work/
     ├── sound/       index.json          the fetched cue files, and which Freesound id each is
     ├── sound.json   sound.md   cues.csv
     ├── scene.xml    build.json          the compiled document, and its report
-    │   └── build/proof/                the film's frames the build compared with the proof frames
+    ├── build/proof/                    the film's frames the build compared with the proof frames
     ├── pilot.scene.xml  pilot.json      the approval cuts
     ├── retime.json  gate.json  review.json  review.pdf
     ├── video.mp4    render.json         the film's encode; other jobs write render-<job>.json
@@ -943,7 +943,8 @@ drops by 0.5 is a regression. `qa.json` at the project root carries the
 latest verdict. The exit code is 0 only when the film is ready.
 
 `--frames N` for more evidence · `--quality` of the stills · `--reuse PASS` to
-score an earlier pass's frames again, measuring them again without rendering ·
+score an earlier pass's frames again, measuring them again and rendering
+nothing but proof frames that were rendered graded ·
 `--host` / `--local` · `--fresh`
 
 ### `yt improve`

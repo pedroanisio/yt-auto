@@ -155,11 +155,14 @@ and the scene is not written without `--force`. After building, `yt build`
 checks each world against its proof frame before the encode, the gate and QA
 are paid for (`build.proof_check`, recorded as `proof_check` in build.json):
 the built document is rendered at each world's proof-frame time by the still
-renderer (cached) on a render host and the stage bands are compared as `yt
-qa` does; a mismatch is an `error:` finding naming the world, the time and
-the difference, the build is not publishable, and the film's frame is kept
-under `build/proof/`. With no render host reachable the worlds are `not
-checked` and a `warning:` says so.
+renderer (cached) on the host the look check probed, or for a path-traced
+film or one with a medium on the host an encode would use, one kit render
+per host at a time as the vfx gate's proof frames go, and the stage bands
+are compared as `yt qa` does; a mismatch is an `error:` finding naming the
+world, the time and the difference, the build is not publishable, and the
+film's frame is kept under `build/proof/`. With no render host reachable
+the worlds are `not checked`, a frame that did not come back is `unread`,
+and a `warning:` says so either way.
 
 `yt run` (`yt run --title X`) walks research, styles, script, props,
 voice, retime, keyframe, vfx, sound, build, render in that order -- `yt

@@ -174,16 +174,19 @@ VERDICT_SCHEMA = {
 }
 
 
-def look_host() -> str:
-    """The render host a look can be seen on, or "" when none is reachable.
+def look_host(text: str = "") -> str:
+    """The render host a look can be seen on, or "" when none is reachable:
+    the still host, or for a heavy document (`text` path traced or with a
+    medium, `sdkkit.HEAVY`) the host an encode would use, as the kit's
+    `frame` chooses.
 
     Under YT_NO_REMOTE (the suite) there is none, and so no look is applied.
     """
-    from . import render
+    from . import render, sdkkit
     if os.environ.get(render.NO_REMOTE_ENV):
         return ""
     try:
-        return render.remote_host(None, "still") or ""
+        return sdkkit.frame_host(text) or ""
     except Exception:
         return ""
 
@@ -315,16 +318,21 @@ def proof_check(data: bytes, manifest: dict, vfx: dict | None, root: Path, *,
     gate and QA are paid for: the record for build.json's `proof_check`.
 
     The built document is rendered at each world's proof-frame time (the
-    plan and the comparison are qa's, in proofframes) by the still renderer
-    on the host a look is seen on, and the stage bands are compared. A
-    mismatch is an `error:` finding naming the world, the time and the
-    difference, and the build is not publishable: this is what a world split
-    into includes, moved, or composed differently from the proof render
-    looks like. The film's frame is kept under PROOF_DIR, which holds this
-    build's frames and no other's. With no host reachable nothing is
-    compared, and the manifest says so.
+    plan and the comparison are qa's, in proofframes) by the still renderer,
+    and the stage bands are compared. The host is the one the look check
+    probed, when it did; a heavy film (path traced, or with a medium) goes to
+    the host an encode would use, as the gate's proof frames do, and each
+    still waits for the host's render lock, one kit render per host at a
+    time. A mismatch is an `error:` finding naming the world, the time and
+    the difference, and the build is not publishable: this is what a world
+    split into includes, moved, or composed differently from the proof
+    render looks like. The film's frame is kept under PROOF_DIR, which holds
+    this build's frames and no other's, so a build that compares nothing
+    leaves it empty. With no host reachable nothing is compared, and a frame
+    that did not come back is compared with nothing: the manifest says so
+    either way, as a `warning:`.
     """
-    from . import render
+    from . import render, sdkkit
     frames = Path(root) / PROOF_DIR
     for stale in frames.glob("*.png") if frames.is_dir() else []:
         stale.unlink()
@@ -333,7 +341,19 @@ def proof_check(data: bytes, manifest: dict, vfx: dict | None, root: Path, *,
         return {"status": "no proof frames", "worlds": []}
     skipped = max(0, len(plan) - PROOF_LIMIT)
     plan = plan[:PROOF_LIMIT]
-    host = look_host() if host is None else host
+    # The proof frame has no colour pipeline, so neither has the frame
+    # compared with it (AUTO-72): the look is not a mismatch.
+    document = ungraded(data)
+    text = document.decode("utf-8", "replace")
+    files = shipped_with(text, root)
+    # The worlds are in the include copies the film ships, so a path-traced
+    # camera or a medium there makes the film heavy as it did the section.
+    film = "\n".join([text] + [body.decode("utf-8", "replace")
+                               for rel, body in files.items() if rel.endswith(".scene.xml")])
+    # The look check's host is the still host; a heavy film does not fit
+    # there, whatever the look was seen on. "" is a probe that found none.
+    if host is None or (host and sdkkit.HEAVY.search(film)):
+        host = look_host(film)
     if not host:
         manifest["findings"].append(
             f"warning: {len(plan)} world(s) not checked against their proof frames: "
@@ -342,22 +362,22 @@ def proof_check(data: bytes, manifest: dict, vfx: dict | None, root: Path, *,
                 "worlds": [{"world": row["world"], "t": row["t"], "status": "not checked"}
                            for row in plan]}
     render_still = render_still or render.engine_render_still
-    # The proof frame has no colour pipeline, so neither has the frame
-    # compared with it (AUTO-72): the look is not a mismatch.
-    document = ungraded(data)
-    files = shipped_with(document.decode("utf-8", "replace"), root)
     rows: list[dict] = []
     mismatched: list[str] = []
     unread = 0
     for row in plan:
         record = {"world": row["world"], "t": row["t"], "shots": row["shots"],
                   "proof": row["proof"], "frame": row["frame"], "graded": False}
-        png, note = render_still(document, row["t"], host=host, files=files)
+        with sdkkit.host_lock(host):
+            png, note = render_still(document, row["t"], host=host, files=files)
         diff = proof_diff(row["proof"], png) if png is not None else None
         if diff is None:
             unread += 1
-            rows.append(record | {"status": "unread",
-                                  "reason": (note or "the frame could not be read").splitlines()[0]})
+            reason = re.sub(r"^(?:error|warning|note):\s*", "",
+                            (note or "the frame could not be read").splitlines()[0])
+            rows.append(record | {"status": "unread", "reason": reason})
+            manifest["findings"].append(
+                f"warning: world {row['world']} not compared with its proof frame: {reason}")
             continue
         frames.mkdir(parents=True, exist_ok=True)
         (frames / row["frame"]).write_bytes(png)

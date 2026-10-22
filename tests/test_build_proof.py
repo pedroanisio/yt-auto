@@ -162,6 +162,9 @@ class ProofCheck(_Project):
 
     def test_no_render_host_is_not_checked_and_said(self):
         self.proof()
+        stale = self.root / build.PROOF_DIR / "open__fx-1-1__2s.png"
+        stale.parent.mkdir(parents=True)
+        stale.write_bytes(_frame(400))
         data, manifest = self.built()
         record = self.check(data, manifest, host="")
         self.assertEqual(record["status"], "not checked")
@@ -169,6 +172,74 @@ class ProofCheck(_Project):
         self.assertTrue(manifest["publishable"])
         warned = [f for f in manifest["findings"] if f.startswith("warning") and "proof" in f]
         self.assertEqual(len(warned), 1, manifest["findings"])
+        # the folder holds this build's frames: none, not an earlier build's
+        self.assertFalse(stale.exists())
+
+    def test_a_heavy_film_renders_on_the_host_an_encode_would_whatever_host_the_look_saw(self):
+        # a path-traced world, or one with a medium, is the kit's HEAVY case: its
+        # stills go to the encode host, as the gate's proof frames do, not to the
+        # still host the look check probed. The world is in the include copy the
+        # film ships, not in scene.xml itself.
+        import os
+        from ytstudio import render
+        self.proof()
+        (self.root / "vfx" / "open.scene.xml").write_text(AUTHORED.replace(
+            '<symbol id="fx-1-1">', '<symbol id="fx-1-1"><camera id="c" renderer="pathtrace"/>'))
+        data, manifest = self.built()
+        self.assertNotIn(b"pathtrace", data)
+        asked = []
+
+        def remote_host(args, job="encode"):
+            asked.append(job)
+            return {"encode": "big", "still": "small"}[job]
+        with mock.patch.dict(os.environ, {render.NO_REMOTE_ENV: ""}), \
+                mock.patch.object(render, "remote_host", remote_host):
+            record = self.check(data, manifest, host="small")
+        self.assertEqual(asked, ["encode"])
+        self.assertEqual([r["host"] for r in self.renders], ["big"])
+        self.assertEqual(record["host"], "big")
+        self.assertEqual(record["status"], "ok")
+
+    def test_a_plain_film_with_no_host_handed_over_asks_for_the_still_host_once(self):
+        import os
+        from ytstudio import render
+        self.proof()
+        data, manifest = self.built()
+        asked = []
+
+        def remote_host(args, job="encode"):
+            asked.append(job)
+            return "small"
+        with mock.patch.dict(os.environ, {render.NO_REMOTE_ENV: ""}), \
+                mock.patch.object(render, "remote_host", remote_host):
+            record = self.check(data, manifest, host=None)
+        self.assertEqual(asked, ["still"])
+        self.assertEqual(record["host"], "small")
+        self.assertEqual([r["host"] for r in self.renders], ["small"])
+
+    def test_each_still_is_rendered_under_the_hosts_render_lock(self):
+        # one kit render per host at a time: the still host is shared with work
+        # that is not ours, and the lock is the machine's, not this process's
+        import fcntl
+        from ytstudio import sdkkit
+        self.proof()
+        data, manifest = self.built()
+        held = []
+
+        def still(data, at, *, host, files, **kw):
+            with open(sdkkit.host_lock(host).path, "w") as other:
+                try:
+                    fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    held.append(False)
+                    fcntl.flock(other, fcntl.LOCK_UN)
+                except BlockingIOError:
+                    held.append(True)
+            return _frame(50), "rendered"
+        build.proof_check(data, manifest, _vfx(WORLD), self.root, host="h", render_still=still)
+        self.assertEqual(held, [True])
+        with open(sdkkit.host_lock("h").path, "w") as other:      # and released after
+            fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(other, fcntl.LOCK_UN)
 
     def test_no_proof_frames_is_no_check_and_no_finding(self):
         data, manifest = self.built()
@@ -190,6 +261,13 @@ class ProofCheck(_Project):
         self.assertIn("fell over", record["worlds"][0]["reason"])
         self.assertFalse([f for f in manifest["findings"] if f.startswith("error")])
         self.assertTrue(manifest["publishable"])
+        # the manifest says so, not only the record: a heavy world whose still
+        # ran out of memory or time is otherwise a silent pass
+        warned = [f for f in manifest["findings"] if f.startswith("warning")]
+        self.assertEqual(len(warned), 1, manifest["findings"])
+        self.assertIn("fx-1-1 not compared with its proof frame", warned[0])
+        self.assertIn("the engine fell over", warned[0])
+        self.assertNotIn("error:", warned[0])
 
 
 class FakeHarness:
@@ -241,7 +319,7 @@ class Run(_Project):
             ["build", "--project", str(self.root), "--no-audio", "--quiet", *extra])
         self.probes = 0
 
-        def look_host():
+        def look_host(text=""):
             self.probes += 1
             return "h"
         with mock.patch.object(build, "Harness", harness), \

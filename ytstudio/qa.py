@@ -1053,7 +1053,8 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                    choices=["draft", "preview", "final"],
                    help="render quality of the stills (default preview)")
     p.add_argument("--reuse", metavar="PASS",
-                   help="score the frames of this earlier pass again, rendering nothing")
+                   help="score the frames of this earlier pass again, rendering nothing "
+                        "but proof frames that were rendered graded")
     p.add_argument("--host", help="ssh target of the render host")
     p.add_argument("--local", action="store_true", help="render the stills here")
     p.add_argument("--fresh", action="store_true",

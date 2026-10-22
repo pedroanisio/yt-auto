@@ -153,7 +153,8 @@ Plus `build.json`, whose keys are: `idea`; `scene` (size, frame rate,
 duration, background, codec, language, the output and loudness settings);
 `look` (the colour look applied, or null), `look_check` (the verdict on the
 rendered still: `applied`, `revised`, `dropped`, `not checked` or `none
-chosen`, and the `host` probed, which `proof_check` reuses) and
+chosen`, and the `host` probed, which `proof_check` reuses unless the film
+is path traced or has a medium and goes where an encode would) and
 `look_declined` (the look the model chose when it was not
 applied); `timeline`; `layers` (what was drawn, what remains placeholder);
 `placeholders`; `publishable`; `timing`; `editorial`; `design`; `hoisted`,
@@ -162,7 +163,8 @@ include, which restarts it at each cut: an `error:` finding, and the build
 is not publishable); `proof_check` (each world's proof frame against the
 built document at the same film time, rendered on a host before the encode:
 `ok`, `mismatch` (an `error:` finding per world, not publishable),
-`incomplete`, `not checked` with no host, or `no proof frames`); `fonts`; the audio placed (`audio_tracks`,
+`incomplete` (a frame that did not come back is `unread`, a `warning:`
+naming the world), `not checked` with no host, or `no proof frames`); `fonts`; the audio placed (`audio_tracks`,
 `narration_tracks`, `buses`, `silence_windows`), the cues it could not place
 (`audio_missing`), the transient staging (`audio_staging`: the bed level,
 the headroom derived from the loudness and true-peak targets, the shift and
