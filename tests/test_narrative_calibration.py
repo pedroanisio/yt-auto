@@ -44,11 +44,21 @@ from ytstudio import cli, doctor, harness, narrative, script, workspace  # noqa:
 from tests.test_narrative_rubric import FIXTURES, load, problems  # noqa: E402
 from tests import test_script_review as review_tests  # noqa: E402
 
-#: The seeded faults the card names, each with the criterion it is graded on.
+#: The seeded faults the story review catches, each with the criterion it
+#: is graded on.
 SEEDED = {"list-plan": "train", "topic-train": "train", "empty-payoff": "ending",
           "and-chain": "train", "reveal-first": "reveal_setup",
-          "recap-ending": "ending", "hook-enumerates": "hook",
-          "no-premise": "train", "jargon": "open_loops"}
+          "recap-ending": "ending", "hook-enumerates": "hook"}
+
+#: The seeded faults only the cold read catches (judging 14): the story
+#: review is read on them and not judged.
+COLD_READ = ("no-premise", "jargon")
+
+
+def first_names(terms) -> list[str]:
+    """Each seeded term by its first name: an entry is a term or the list of
+    names a reader may give it."""
+    return [t if isinstance(t, str) else t[0] for t in terms or []]
 
 
 def cases() -> dict[str, Path]:
@@ -88,7 +98,7 @@ def answered_from_fixtures(override=None):
         cold = expected.get("cold_read") or {}
         if kind == "cold-read":
             return {"premise": "a comet's tail and what pushes it",
-                    "unexplained_terms": list(cold.get("terms") or []), "claims": []}
+                    "unexplained_terms": first_names(cold.get("terms")), "claims": []}
         if kind == "answers":
             return {"answered": []}
         return {"verdict": cold.get("match", "match"),
@@ -129,10 +139,14 @@ class Hermetic(unittest.TestCase):
 class TheSet(unittest.TestCase):
     def test_every_seeded_fault_and_one_good_pair(self):
         names = cases()
-        self.assertEqual(sorted(names), sorted([*SEEDED, "good"]))
+        self.assertEqual(sorted(names), sorted([*SEEDED, *COLD_READ, "good"]))
         for name, path in names.items():
             with self.subTest(case=name):
                 expected = load(path / "expected.json")
+                if name in COLD_READ:
+                    self.assertIs(expected["story"], False)
+                    self.assertNotIn("criterion", expected)
+                    continue
                 self.assertIn(expected["verdict"], narrative.VERDICTS)
                 if name == "good":
                     self.assertEqual(expected["verdict"], "recommend")
@@ -158,7 +172,7 @@ class TheSet(unittest.TestCase):
                 if "cold_read" in expected:
                     cold = expected["cold_read"]
                     got["cold_read"] = {"match": cold.get("match", "match"),
-                                        "unexplained_terms": list(cold.get("terms") or [])}
+                                        "unexplained_terms": first_names(cold.get("terms"))}
                 self.assertEqual(narrative.judge_case(expected, got), [])
 
     def test_a_new_case_is_held_below_reject_only_with_its_reason(self):
@@ -166,14 +180,18 @@ class TheSet(unittest.TestCase):
             expected = load(FIXTURES / name / "expected.json")
             with self.subTest(case=name):
                 self.assertTrue(expected["why"].strip())
-                if expected["verdict"] != "reject":
+                if name in COLD_READ:
+                    # why the story review is not judged: judging 14
+                    self.assertIn("judging 14", expected["judging_10"])
+                    self.assertIn("cold read", expected["judging_10"])
+                elif expected["verdict"] != "reject":
                     self.assertIn("judging 10", expected["judging_10"])
                     self.assertIn("recommend", expected["judging_10"])
 
     def test_the_cold_read_cases_say_what_the_cold_reader_must_find(self):
         self.assertEqual(load(FIXTURES / "no-premise" / "expected.json")["cold_read"],
                          {"match": "mismatch"})
-        terms = load(FIXTURES / "jargon" / "expected.json")["cold_read"]["terms"]
+        terms = first_names(load(FIXTURES / "jargon" / "expected.json")["cold_read"]["terms"])
         self.assertGreaterEqual(len(terms), 2)
         narration = " ".join(s["narration"] for sec in
                              load(FIXTURES / "jargon" / "script.json")["sections"]
@@ -218,6 +236,43 @@ def got_for(name: str, **change) -> dict:
 
 
 class JudgeCase(unittest.TestCase):
+    def test_a_cold_read_case_does_not_judge_the_story_review(self):
+        # The rubric has no criterion for a premise the narration never
+        # voices or for jargon; the stage leaves the story verdict alone and
+        # files the cold read's mismatch itself. Whatever the story review
+        # says here, only the cold read is held to the case.
+        for name in COLD_READ:
+            expected = load(FIXTURES / name / "expected.json")
+            cold = expected["cold_read"]
+            read = {"match": cold.get("match", "match"),
+                    "unexplained_terms": first_names(cold.get("terms"))}
+            with self.subTest(case=name):
+                for story in (got_for("good"), {"verdict": "not_evidenced"},
+                              got_for("good", verdict="consider")):
+                    self.assertEqual(narrative.judge_case(expected,
+                                                          dict(story, cold_read=read)), [])
+        expected = load(FIXTURES / "no-premise" / "expected.json")
+        failed = narrative.judge_case(expected, dict(got_for("good"),
+                                                     cold_read={"match": "match"}))
+        self.assertEqual(len(failed), 1, failed)
+        self.assertIn("cold read", failed[0])
+
+    def test_a_reader_may_name_a_term_in_its_own_words(self):
+        # An exact phrase would fail a reader for a correct reading: the
+        # case lists the names a reader may give each term.
+        jargon = load(FIXTURES / "jargon" / "expected.json")
+        terms = jargon["cold_read"]["terms"]
+        self.assertTrue(any(isinstance(t, list) and len(t) > 1 for t in terms), terms)
+        said = ["Plasma", "IMF", "the magnetic field between the planets",
+                "corpuscular radiation (what is it?)"]
+        self.assertEqual(narrative.judge_case(jargon, {"cold_read": {
+            "match": "match", "unexplained_terms": said}}), [])
+        failed = narrative.judge_case(jargon, {"cold_read": {
+            "match": "match", "unexplained_terms": ["plasma"]}})
+        self.assertEqual(len(failed), 1, failed)
+        self.assertIn("interplanetary magnetic field", failed[0])
+        self.assertIn("corpuscular radiation", failed[0])
+
     def test_a_recommend_on_a_seeded_case_fails_the_reviewer(self):
         for name in SEEDED:
             expected = load(FIXTURES / name / "expected.json")
@@ -265,7 +320,7 @@ class JudgeCase(unittest.TestCase):
                                                         cold_read={"match": "match"}))
         self.assertTrue(any("cold read" in line for line in failed), failed)
         jargon = load(FIXTURES / "jargon" / "expected.json")
-        terms = jargon["cold_read"]["terms"]
+        terms = first_names(jargon["cold_read"]["terms"])
         failed = narrative.judge_case(jargon, got_for("jargon", cold_read={
             "match": "match", "unexplained_terms": terms[:1]}))
         self.assertTrue(any(terms[1] in line for line in failed), failed)
@@ -318,12 +373,13 @@ class Calibrate(Hermetic):
     def test_a_reviewer_that_says_what_each_case_expects_passes_every_row(self):
         report, asked = self.calibrate()
         rows = {r["name"]: r for r in report["cases"]}
-        self.assertEqual(sorted(rows), sorted([*SEEDED, "good"]))
+        self.assertEqual(sorted(rows), sorted([*SEEDED, *COLD_READ, "good"]))
         for name, row in rows.items():
             with self.subTest(case=name):
                 self.assertTrue(row["passed"], row)
                 self.assertEqual(row["expected"],
-                                 load(FIXTURES / name / "expected.json")["verdict"])
+                                 load(FIXTURES / name / "expected.json").get("verdict"))
+                self.assertIs(row["story"], name not in COLD_READ)
         self.assertTrue(report["audit"]["passed"])
         self.assertGreaterEqual(report["audit"]["pairs"], 3)
         self.assertTrue(report["passed"])
@@ -360,6 +416,36 @@ class Calibrate(Hermetic):
                 self.assertFalse(rows[name]["passed"])
                 self.assertEqual(rows[name]["got"], "recommend")
         self.assertFalse(report["passed"])
+
+    def test_a_cold_read_case_is_passed_or_failed_by_its_cold_reader(self):
+        def recommends(case, kind):
+            if kind == "review":
+                return load(FIXTURES / "good" / "expected.json")["review"]
+            return None
+        report, _ = self.calibrate(recommends)
+        rows = {r["name"]: r for r in report["cases"]}
+        for name in COLD_READ:
+            with self.subTest(case=name):
+                self.assertEqual(rows[name]["got"], "recommend")
+                self.assertTrue(rows[name]["passed"], rows[name])
+
+        def blind(case, kind):
+            if kind == "cold-read":
+                return {"premise": "a comet's tail and what pushes it",
+                        "unexplained_terms": [], "claims": []}
+            if kind == "match":
+                return {"verdict": "match", "difference": ""}
+            return None
+        report, _ = self.calibrate(blind)
+        rows = {r["name"]: r for r in report["cases"]}
+        for name in COLD_READ:
+            with self.subTest(case=name, reader="blind"):
+                self.assertFalse(rows[name]["passed"])
+                self.assertTrue(all("cold read" in f for f in rows[name]["failures"]),
+                                rows[name]["failures"])
+        lines = narrative.calibration_lines(report)
+        row = next(line for line in lines if line.split() and line.split()[0] == "jargon")
+        self.assertIn("cold read", row)
 
     def test_a_reviewer_won_by_length_fails_the_audit(self):
         def longer_wins(case, kind):
@@ -411,7 +497,7 @@ class Entry(Hermetic):
         header = next(line for line in lines if line.startswith("fixture"))
         for column in ("expected", "got", "result"):
             self.assertIn(column, header)
-        for name in [*SEEDED, "good"]:
+        for name in [*SEEDED, *COLD_READ, "good"]:
             row = next((line for line in lines if line.split() and line.split()[0] == name),
                        None)
             self.assertIsNotNone(row, name)

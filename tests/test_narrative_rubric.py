@@ -371,11 +371,18 @@ def at(doc: dict, dotted: str):
     return value
 
 
-#: The faults the card names, each with the criterion it fails on.
+#: The faults the card names that the story review catches, each with the
+#: criterion it fails on.
 SEEDED = {"list-plan": "train", "topic-train": "train", "empty-payoff": "ending",
           "and-chain": "train", "reveal-first": "reveal_setup",
-          "recap-ending": "ending", "hook-enumerates": "hook",
-          "no-premise": "train", "jargon": "open_loops"}
+          "recap-ending": "ending", "hook-enumerates": "hook"}
+
+#: The faults only the cold read catches: a premise a first-time viewer
+#: could not restate, and terms a lay audience is never given. judging 14
+#: puts them under the pre-voice checks that are not story checks, and the
+#: stage files the cold read's mismatch as a flag of its own without
+#: touching the story verdict, so the story review is not judged on them.
+COLD_READ = ("no-premise", "jargon")
 
 #: The cases with no script: the plan is the whole of what is read.
 PLAN_ONLY = ("list-plan", "topic-train", "empty-payoff", "and-chain")
@@ -384,7 +391,7 @@ PLAN_ONLY = ("list-plan", "topic-train", "empty-payoff", "and-chain")
 class Fixtures(unittest.TestCase):
     def test_the_set_holds_every_seeded_fault_and_one_good_pair(self):
         names = cases()
-        self.assertEqual(sorted(names), sorted([*SEEDED, "good"]))
+        self.assertEqual(sorted(names), sorted([*SEEDED, *COLD_READ, "good"]))
         good = names["good"]
         self.assertTrue((good / "plan.json").is_file() and (good / "script.json").is_file())
         for name, criterion in SEEDED.items():
@@ -393,6 +400,21 @@ class Fixtures(unittest.TestCase):
                 self.assertEqual(expected["criterion"], criterion)
                 self.assertIn(expected["verdict"], ("reject", "consider"))
                 self.assertTrue(expected["why"].strip())
+                self.assertNotIn("story", expected)
+
+    def test_a_cold_read_case_holds_the_story_review_to_nothing(self):
+        # The rubric has no criterion for these faults, so a case that named
+        # one would fail a reviewer for following the rubric.
+        for name in COLD_READ:
+            expected = load(FIXTURES / name / "expected.json")
+            with self.subTest(case=name):
+                self.assertIs(expected["story"], False)
+                self.assertNotIn("criterion", expected)
+                self.assertNotIn("verdict", expected)
+                self.assertTrue(expected["cold_read"])
+                self.assertTrue(expected["why"].strip())
+                self.assertIn("judging 14", expected["judging_10"])
+                self.assertTrue((FIXTURES / name / "script.json").is_file())
 
     def test_every_plan_and_script_is_shaped_like_the_screenplay(self):
         for name, path in cases().items():

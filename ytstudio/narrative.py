@@ -699,7 +699,12 @@ PICTURE_SCHEMA = {
 # observable. tests/fixtures/narrative/ is that floor: one case per seeded
 # fault, each `expected.json` naming the criterion the fault is graded on
 # and the best verdict a correct reviewer may give, and one good plan and
-# script with a padded copy for the length audit. The fixtures are not the
+# script with a padded copy for the length audit. Two faults are not the
+# story review's: a premise the narration never voices and terms a lay
+# viewer is never given have no rubric criterion, judging 14 puts them in
+# the cold read, and the stage files the cold read's mismatch without
+# touching the verdict. Their cases say `"story": false` and are judged on
+# the cold read alone. The fixtures are not the
 # channel's scripts: the twenty a person labels in work/review-log.jsonl
 # are the set, these are what any reviewer must clear first.
 #
@@ -753,6 +758,23 @@ def labelled(rows: Iterable[Any]) -> int:
     return sum(1 for r in rows if isinstance(r, dict) and r.get("label") in VERDICTS)
 
 
+def story_judged(expected: Mapping) -> bool:
+    """Whether a case holds the story review to anything. A case whose fault
+    only the cold read can catch says `"story": false`: the review is read
+    and shown, and a reviewer is never failed for following a rubric that
+    has no criterion for the fault."""
+    return expected.get("story", True) is not False
+
+
+def _term_named(names: Any, listed: Iterable[str]) -> bool:
+    """Whether a reader's list of unexplained terms names a seeded term. The
+    term is one name or the list of names a reader may give it ("IMF" for
+    the interplanetary magnetic field); one of them inside one listed entry
+    is enough, so a reader is not failed for its own words."""
+    names = [names] if isinstance(names, str) else list(names or [])
+    return any(str(n).lower() in t for n in names for t in listed)
+
+
 def judge_case(expected: Mapping, got: Mapping) -> list[str]:
     """What the reviewer got wrong on one calibration case, one line each;
     empty when it caught what the case seeds.
@@ -762,7 +784,8 @@ def judge_case(expected: Mapping, got: Mapping) -> list[str]:
     (`plan_review`) and the cold read (`cold_read`). A seeded case fails the
     reviewer when the verdict is better than the case allows, the named
     criterion is graded above Fair, or no flag names it (judging 10 and the
-    case's `judging_10`); the good case when it is not recommended. A plan
+    case's `judging_10`); the good case when it is not recommended; a case
+    with `"story": false` holds the story review to nothing. A plan
     case's plan review must send a bad plan back and accept the good one; a
     cold-read case's reader must find the mismatch or the terms it hides. A
     reading that gave no verdict (`not_evidenced`, a failed call) is a
@@ -771,7 +794,9 @@ def judge_case(expected: Mapping, got: Mapping) -> list[str]:
     rank = {v: i for i, v in enumerate(VERDICTS)}
     want, verdict = expected.get("verdict"), got.get("verdict")
     key = expected.get("criterion")
-    if verdict not in rank:
+    if not story_judged(expected):
+        pass                    # the cold read below is all this case judges
+    elif verdict not in rank:
         failed.append(f"the story review gave no verdict ({verdict or 'none'}): a reading "
                       "that cannot judge is never a pass")
     elif key is None:
@@ -803,8 +828,9 @@ def judge_case(expected: Mapping, got: Mapping) -> list[str]:
         if cold_want.get("match") and cold.get("match") != cold_want["match"]:
             failed.append(f"the cold read was {cold.get('match') or 'not matched'} against "
                           f"the train; this case is a {cold_want['match']}")
-        named = " | ".join(str(t).lower() for t in cold.get("unexplained_terms") or [])
-        missing = [t for t in cold_want.get("terms") or [] if t.lower() not in named]
+        listed = [str(t).lower() for t in cold.get("unexplained_terms") or []]
+        missing = [t if isinstance(t, str) else t[0] for t in cold_want.get("terms") or []
+                   if not _term_named(t, listed)]
         if missing:
             failed.append(f"the cold read did not list {', '.join(missing)} among the "
                           "unexplained terms")
@@ -912,6 +938,7 @@ def calibrate(directory: Any, *, work: Any, model: str = "sonnet",
     for case in cases:
         expected = case["expected"]
         row = {"name": case["name"], "criterion": expected.get("criterion"),
+               "story": story_judged(expected),
                "expected": expected.get("verdict"), "got": None, "plan_review": None,
                "cold_read": None, "ran": False, "passed": False, "failures": []}
         rows.append(row)
@@ -977,7 +1004,9 @@ def calibration_lines(report: Mapping) -> list[str]:
            + "result"]
     for r in rows:
         cold = r.get("cold_read") or {}
-        cells = (r.get("criterion") or "-", r.get("expected") or "-", r.get("got") or "-",
+        # a case judged on the cold read alone says so where the criterion is
+        criterion = r.get("criterion") or ("-" if r.get("story", True) else "cold read")
+        cells = (criterion, r.get("expected") or "-", r.get("got") or "-",
                  r.get("plan_review") or "-",
                  cold.get("match") or ("failed" if cold.get("failed") else "-"))
         result = "pass" if r.get("passed") else "fail" if r.get("ran") else "not run"
@@ -993,8 +1022,8 @@ def calibration_lines(report: Mapping) -> list[str]:
     else:
         out.append(f"length audit: fail: no pair was read (it fails above {limit}; a "
                    "padded.json beside a good script is needed)")
-    seeded = [r for r in rows if r.get("criterion")]
-    good = [r for r in rows if not r.get("criterion")]
+    good = [r for r in rows if r.get("story", True) and not r.get("criterion")]
+    seeded = [r for r in rows if r not in good]
     out.append(f"seeded-bad caught: {sum(1 for r in seeded if r.get('passed'))} of "
                f"{len(seeded)}; good recommended: {sum(1 for r in good if r.get('passed'))} "
                f"of {len(good)}; spent ${float(report.get('cost_usd') or 0):.2f}")

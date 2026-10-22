@@ -1,8 +1,7 @@
 {
-  "criterion": "train",
-  "verdict": "consider",
+  "story": false,
   "why": "The plan's train holds, but the narration never voices it: the tail leading, the question what pushes it and the push of sunlight falling short are all cut, so a first-time viewer cannot restate the premise (judging 13, 14).",
-  "judging_10": "judging 10 asks the calibration run for reject on every seeded case. The plan behind this script holds and the sections are in its order; what fails is the narration, which revised lines can mend, so it is held to consider (a reject is allowed too). The calibration fails a reviewer that says recommend here, grades train above Fair or leaves it without a flag, and a cold reader whose premise matches the train.",
+  "judging_10": "judging 10 asks the calibration run to fail the reviewer on every seeded case; this fault is not the story review's to catch. The plan behind this script holds and the sections are in its order, so the rubric's train grades well, and judging 14 puts a premise a first-time viewer cannot restate among the pre-voice checks that are not story checks. The stage agrees: the cold read's mismatch becomes a train flag of its own (by: cold-read-match) and the story verdict is left alone. So the story review is read here and not judged, and the calibration fails a cold read whose premise matches the train.",
   "evidence": {
     "in": "script.sections.0.shots.2.narration",
     "says": "fascinated people for centuries"
@@ -14,7 +13,7 @@
     "logline": "A comet's tail leads it away from the Sun because sunlight and a wind from the Sun push it, not because it trails behind.",
     "synopsis": "Comets are beautiful; a storm from the Sun cut Quebec's power; a comet has a gas tail; Biermann studied comets; the Sun sheds particles; Mariner 2 measured them; comets are remarkable.",
     "grades": {
-      "train": "Fair",
+      "train": "Good",
       "hook": "Fair",
       "stakes": "Excellent",
       "open_loops": "Fair",
@@ -24,14 +23,6 @@
     },
     "verdict": "consider",
     "flags": [
-      {
-        "n": 3,
-        "section": 1,
-        "criterion": "train",
-        "problem": "Shot 3 should ask what pushes the tail; it says comets have fascinated people, and no line ever says the tail leads or asks why.",
-        "severity": "blocker",
-        "fix": "Restore the question in shot 3: what is pushing the tail out in front?"
-      },
       {
         "n": 1,
         "section": 1,
