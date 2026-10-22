@@ -440,6 +440,20 @@ is set as a bar here, as keyframe and vfx set one: the verdict is the bar. The r
 `--review-budget-usd` (2), adds about $0.50, and is kept in `script.json`
 `plan_review` and the `## Plan review` section of `script.md`.
 
+The same reviewer reads the drafted screenplay with the sound off. After the
+polish, `picture-check` is shown each shot's picture (`visual`), what it must
+demonstrate (`shows`) and its on-screen text, with the plan's beat for each
+section, and never the narration. It writes the claim each section's
+pictures carry on their own and says whether that is the beat, then names
+the shots with a large number left bare, a mechanism the picture does not
+show, or a list nothing signposts. Each is a flag for one `revise-picture`
+decision, the only revision allowed to change a shot's picture (the
+fact-check's revise still rewrites only the narration). What stands goes to
+`script.json` `picture`, a `warning:` in the findings and `## Picture check`
+in `script.md`, and its important flags, with the story review's, reach the
+vfx planner, every section author and reviewer and the keyframe brief as
+`## Story constraints`, beside the fact-check's.
+
 Sections are drafted in parallel (`--jobs`, default 4; `--jobs 1` drafts in
 order, each reading the one before) against a ledger that reserves each
 figure for the section that owns it; a figure spoken twice is rewritten after
@@ -468,7 +482,10 @@ judge. Four tiers:
   `rule:sentence` (a sentence over 25 words).
 - **important**: `rule:unspoken-number` and `rule:legibility` (the two
   older checks, still recorded under their old script.json keys
-  `unspoken_numbers` and `legibility` too), `rule:numbers` (two or more
+  `unspoken_numbers` and `legibility` too), `rule:wall-of-text` (an
+  on-screen string over six words, or one that prints more than four words
+  of its own line: on-screen text is labels and keywords, never the
+  narration), `rule:numbers` (two or more
   numerals in one sentence), `rule:hook-subject` (no content word of the
   title said or shown in the first 30 seconds; the title's verb counts, since
   telling the key noun from it needs a parser), `rule:hook-answer` (the payoff said in
@@ -483,8 +500,8 @@ judge. Four tiers:
 
 The error and important flags go to one revision (`revise-rules`, a second
 round for a line still breaking its rule): the smallest change to the
-narration or, for `rule:legibility` and `rule:unspoken-number`, to the
-shot's on-screen text, or a reason to keep it. The rules
+narration or, for `rule:legibility`, `rule:unspoken-number` and
+`rule:wall-of-text`, to the shot's on-screen text, or a reason to keep it. The rules
 are read again on the final text, after `--verify`. What stands is written
 to script.json's `findings` and script.md's Findings section: an error-tier
 rule as `error: rule:x: ...`, the rest as `warning: rule:x: ...` (`warning:
