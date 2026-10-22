@@ -73,6 +73,22 @@ class Rows(unittest.TestCase):
         self.assertIn("40,000 tonnes", two.split("## Story constraints")[1])
         self.assertNotIn("labels a model", two.split("## Story constraints")[1])
 
+    def test_a_section_level_story_flag_binds_its_section_only(self):
+        # narrative.REVIEW_SCHEMA allows a flag on a section (n 0, section k)
+        data = copy.deepcopy(SCRIPT)
+        data["review"]["flags"].append(
+            {"n": 0, "section": 2, "criterion": "stakes", "severity": "important",
+             "problem": "section two never shows who pays", "fix": "show the toll"})
+        rows = vfx.picture_constraints(data)
+        one = "\n".join(vfx.constraint_lines(rows, {"1.1", "1.2", "1.3", "1.4"}))
+        two = "\n".join(vfx.constraint_lines(rows, {"2.1"}))
+        every = "\n".join(vfx.constraint_lines(rows))
+        self.assertNotIn("never shows who pays", one)
+        self.assertIn("section 2: section two never shows who pays", two)
+        self.assertIn("section 2: section two never shows who pays", every)
+        self.assertIn("whole film: the stakes are never shown", one)   # section 0 still is
+        self.assertIn("whole film: the stakes are never shown", two)
+
     def test_a_script_without_them_reads_as_before(self):
         plain = {"sections": SCRIPT["sections"], "check": SCRIPT["check"]}
         rows = vfx.picture_constraints(plain)

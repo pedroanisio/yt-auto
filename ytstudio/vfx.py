@@ -589,12 +589,19 @@ def picture_constraints(script: dict | str | Path | None) -> list[dict]:
     (`check`), the story review's (`review`) and the picture-check's still
     standing (`picture`). They reach every author who draws the film: a
     claim the narration avoids can still be shown wrong by a picture, and a
-    claim the picture never shows is not told at all."""
+    claim the picture never shows is not told at all.
+
+    A flag on no shot but on a section (n 0, `section` k, as
+    narrative.REVIEW_SCHEMA allows) carries that section's number and its
+    shots' labels (`scope`), so it binds that section and not the film."""
     data = script if isinstance(script, dict) else (read_json(script, warn=False) or {}
                                                      if script else {})
+    sections = [sec for sec in data.get("sections") or [] if isinstance(sec, dict)]
     labels = {sh.get("n"): str(sh.get("label") or "")
-              for sec in data.get("sections") or [] if isinstance(sec, dict)
+              for sec in sections
               for sh in sec.get("shots") or [] if isinstance(sh, dict) and "n" in sh}
+    scopes = [[str(sh.get("label") or "") for sh in sec.get("shots") or []
+               if isinstance(sh, dict)] for sec in sections]
     out = []
     for source in CONSTRAINT_SOURCES:
         block = data.get(source)
@@ -605,18 +612,36 @@ def picture_constraints(script: dict | str | Path | None) -> list[dict]:
                 n = int(f.get("n") or 0)
             except (TypeError, ValueError):
                 n = 0
-            out.append({"label": labels.get(n, "") if n else "", "severity": f["severity"],
-                        "problem": str(f.get("problem", "")), "fix": str(f.get("fix", "")),
-                        "source": source})
+            row = {"label": labels.get(n, "") if n else "", "severity": f["severity"],
+                   "problem": str(f.get("problem", "")), "fix": str(f.get("fix", "")),
+                   "source": source}
+            try:
+                k = int(f.get("section") or 0)
+            except (TypeError, ValueError):
+                k = 0
+            if not n and 1 <= k <= len(scopes):
+                row |= {"section": k, "scope": scopes[k - 1]}
+            out.append(row)
     return out
 
 
 def constraint_lines(constraints: list[dict], labels: set[str] | None = None) -> list[str]:
-    """The binding flags for some shots (with the whole-film ones), as brief
-    sections: the fact-check's, then the story's; [] when none applies. A
-    row without a `source` is the fact-check's, as rows were before."""
-    rows = [c for c in constraints or []
-            if labels is None or not c["label"] or c["label"] in labels]
+    """The binding flags for some shots (with the whole-film ones, and a
+    section's when one of its shots is among them), as brief sections: the
+    fact-check's, then the story's; [] when none applies. A row without a
+    `source` is the fact-check's, as rows were before."""
+    def applies(c: dict) -> bool:
+        if labels is None:
+            return True
+        if c["label"]:
+            return c["label"] in labels
+        return not c.get("scope") or bool(set(c["scope"]) & set(labels))
+
+    def where(c: dict) -> str:
+        return ("shot " + c["label"] if c["label"]
+                else f"section {c['section']}" if c.get("scope") else "whole film")
+
+    rows = [c for c in constraints or [] if applies(c)]
     lines: list[str] = []
     for sources, heading in CONSTRAINT_BLOCKS:
         block = [c for c in rows if c.get("source", "check") in sources]
@@ -624,9 +649,8 @@ def constraint_lines(constraints: list[dict], labels: set[str] | None = None) ->
             continue
         lines += [heading, ""]
         for c in block:
-            lines += [f"- [{c['severity']}] "
-                      f"{'shot ' + c['label'] if c['label'] else 'whole film'}: "
-                      f"{c['problem']}", f"  REQUIRED: {c['fix']}"]
+            lines += [f"- [{c['severity']}] {where(c)}: {c['problem']}",
+                      f"  REQUIRED: {c['fix']}"]
         lines.append("")
     return lines
 
