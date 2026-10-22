@@ -642,7 +642,10 @@ credits in rows 0 to 230, the stage in 230 to 820, and captions in 820 to
 QA names an owner for every finding; `yt improve --title X` routes them
 back. It starts from the latest QA pass (`--from-pass pass-NN` to pick one;
 a pass older than `video.mp4` or `scene.xml` is scored again first), with
-`gate.json`'s blocking rows and `yt doctor`'s fails and warnings beside it.
+`gate.json`'s blocking rows and `yt doctor`'s fails and warnings beside it,
+and the published film's `retention.json` findings (source `retention`,
+`yt retention`) while `scene.xml` is still the cut the curve measured: a
+pass that rebuilds the film drops them, since nobody watched the new cut.
 
 - **Routing.** Each finding goes to exactly one stage of `workspace.STAGES`,
   or to `upstream-fact` (a claim the research or screenplay got wrong) or
@@ -665,7 +668,13 @@ a pass older than `video.mp4` or `scene.xml` is scored again first), with
   plan declares (a payoff line, stakes, questions, re-hooks, a promise:
   `improve.PLAN_CLAIMS`) is not routed away: it is annotated "the plan
   declared ..." after the routing, since the reviewer watched the film and
-  the plan is the writer's own report (AUTO-99).
+  the plan is the writer's own report (AUTO-99). A `retention` finding is
+  fingerprinted by its shot and tag, decided by the router (never a
+  lookup: invariant 3), which is told to send it to `script` by its corpus
+  rule unless it names a picture at that timestamp; `feedback/script.md`
+  prints it as `[retention: judging 3, dip-skipped; hypothesis: open_loops]`
+  with its `sanity_bound` reasons, and the `.json` twin keeps `corpus_rule`
+  apart from the brief's rubric `rule` (AUTO-101).
 - **Feedback.** `feedback/<stage>.md` (and `.json`) holds the brief with
   the findings verbatim, timestamps and the pass they came from, a story
   finding's `[rubric: <key>]` and its plan annotation (which `yt script

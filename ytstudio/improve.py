@@ -69,6 +69,7 @@ from typing import Any, Callable, Iterable
 from . import flags, house, narrative, qa, spend, workspace
 from .core import read_json, write_json
 from .harness import FEEDBACK_DIR, Harness, HarnessError, brief
+from .retention import current as measured_retention
 # A stage's price is one thing, for `yt improve` and `yt run` alike: it lives
 # in spend and is read from here by the names it always had.
 from .spend import (DEFAULT_USD, MANIFEST, VFX_PASS_USD,  # noqa: F401
@@ -194,7 +195,10 @@ _TICKED = re.compile(r"`([^`]+)`")
 
 def fingerprint(finding: dict) -> str | None:
     """A mechanical finding's identity across passes: kind, shot and the
-    objects it names. A prose finding has none; the model judges it."""
+    objects it names; a retention finding's, its shot and tag (the same dip
+    read twice is one defect). A prose finding has none; the model judges it."""
+    if finding.get("source") == "retention":
+        return f"retention|{finding.get('shot') or ''}|{finding.get('tag') or ''}"
     kind = finding.get("kind")
     if kind not in MECHANICAL_KINDS:
         return None
@@ -203,10 +207,13 @@ def fingerprint(finding: dict) -> str | None:
 
 
 def collect(card: dict, *, gate: dict | None = None,
-            doctor: Iterable[tuple] = ()) -> list[dict]:
+            doctor: Iterable[tuple] = (), retention: Iterable[dict] = ()) -> list[dict]:
     """Every finding of one pass, numbered F1..: the mechanical ones, the
-    reviewer's, the gate's blocking rows, and doctor's fails and warnings
-    for a stage."""
+    reviewer's, the gate's blocking rows, doctor's fails and warnings for a
+    stage, and the published film's retention findings (`yt retention`,
+    AUTO-101), each with its tag, the corpus rule it applies (`corpus_rule`,
+    kept apart from the rubric key a brief names as `rule`) and its
+    hypothesis."""
     rows: list[dict] = []
 
     def add(source: str, f: dict, **over) -> None:
@@ -216,7 +223,8 @@ def collect(card: dict, *, gate: dict | None = None,
                "why": str(f.get("why", "")), "root_cause": str(f.get("root_cause", "")),
                "fix": str(f.get("fix", ""))}
         row.update(over)
-        row["fingerprint"] = fingerprint(row) if source == "mechanical" else None
+        row["fingerprint"] = (fingerprint(row) if source in ("mechanical", "retention")
+                              else None)
         rows.append(row)
 
     for f in card.get("mechanical") or []:
@@ -231,6 +239,12 @@ def collect(card: dict, *, gate: dict | None = None,
         if level in ("fail", "warn") and area in ROUTABLE:
             add("doctor", {"owner": area, "problem": message, "fix": fix,
                            "severity": "blocking" if level == "fail" else "minor"})
+    for f in retention or ():
+        if isinstance(f, dict):
+            add("retention", f, kind=None, tag=f.get("tag"), corpus_rule=f.get("rule"),
+                hypothesis=f.get("hypothesis"), section=f.get("section"),
+                heading=f.get("heading"), delta_vs_typical=f.get("delta_vs_typical"),
+                sanity_bound=list(f.get("sanity_bound") or []))
     for n, row in enumerate(rows, 1):
         row["id"] = f"F{n}"
     return rows
@@ -359,7 +373,8 @@ def plan_declared(finding: dict, plan: dict | None) -> str | None:
 
 def _shown(f: dict) -> dict:
     return {k: f.get(k) for k in ("id", "source", "kind", "shot", "timestamp", "severity",
-                                  "owner", "problem", "why", "root_cause", "fix")
+                                  "owner", "problem", "why", "root_cause", "fix", "tag",
+                                  "corpus_rule", "hypothesis", "section")
             if f.get(k) not in (None, "")}
 
 
@@ -390,6 +405,13 @@ def _route_prompt(findings: list[dict], fixed: dict[str, str], context: dict | N
         "a story the screenplay does not tell. In that brief's `rules`, name for each "
         "such finding the key of the narrative rubric below it bears on; a finding "
         "that is not about the story gets no rule.\n"
+        "- A finding from `retention` is the published film's measured audience curve "
+        "(a dip, a late top moment, the Intro, the tail, a spike after the payoff), "
+        "placed on the shot that was on screen at that moment. Route it to `script` by "
+        "its `corpus_rule`, unless its problem names a picture at that timestamp, in "
+        "which case to the stage that owns that picture. Its `hypothesis` is a rubric "
+        "key guessed from its `tag`, not a cause: name a rule for it only if it bears "
+        "on one.\n"
         "- A finding whose fix is the operator's approval or sign-off (approving a "
         "keyframe, waiving a requirement, choosing between options) is `external`: "
         "running the stage again does not approve anything. The project's state below "
@@ -582,11 +604,17 @@ def feedback_md(stage: str, entry: dict, findings: list[dict], *, from_pass: str
         shot = f"shot {f['shot']} " if f.get("shot") else ""
         what = f"{f['source']}" + (f" {f['kind']}" if f.get("kind") else "")
         rule = f" [rubric: {f['rule']}]" if f.get("rule") else ""
+        if f.get("source") == "retention" and f.get("corpus_rule"):
+            rule += (f" [retention: {f['corpus_rule']}, {f.get('tag') or '?'}; "
+                     f"hypothesis: {f.get('hypothesis') or '?'}]")
         lines.append(f"- **{f['id']}** {where}{shot}[{f.get('severity', '?')}] ({what}, "
                      f"QA owner: {f.get('owner') or '?'}){rule}: {f['problem']}")
         for label, key in (("why", "why"), ("root cause", "root_cause"), ("fix", "fix")):
             if f.get(key):
                 lines.append(f"  - {label}: {f[key]}")
+        if f.get("sanity_bound"):
+            lines.append("  - sanity_bound (a prior, not yet the channel's measure): "
+                         + "; ".join(str(b) for b in f["sanity_bound"]))
         if f.get("plan_declared"):
             lines.append(f"  - {f['plan_declared']}; QA watched the film and still found "
                          "this, so what the plan declares did not land on screen")
@@ -1317,7 +1345,8 @@ class Improver:
         self.states[str(card.get("pass"))] = [
             {"area": area, "note": message, "command": fix}
             for level, area, message, fix in rows if level == "note"]
-        return collect(card, gate=gate, doctor=rows)
+        # The published film's curve, while the film is still the cut it measured.
+        return collect(card, gate=gate, doctor=rows, retention=measured_retention(self.root))
 
     # -- one pass -------------------------------------------------------------
 

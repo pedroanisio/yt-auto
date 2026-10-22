@@ -1494,5 +1494,73 @@ class StoryReview(ImproveCase):
         self.assertNotEqual(record["stop"]["reason"], "story-review")
 
 
+class RetentionFindings(ImproveCase):
+    """AUTO-101: the published film's retention findings (`yt retention`) are
+    a source of their own, fingerprinted by shot and tag, decided by the
+    router (told to send them to the screenplay by their rule unless they
+    name a picture), and reach `feedback/script.md` with the corpus rule
+    they apply and the rubric key as a labelled guess."""
+
+    PROBLEM = ("viewers skipped at 0:48, during shot 2.1 (section 2, \"Light is too "
+               "weak\"), 5.2 points under the channel's typical curve [judging 3]; "
+               "hypothesis, a guess and not a cause: open_loops")
+
+    def rows(self):
+        return [{"source": "retention", "owner": "script", "timestamp": 48, "shot": "2.1",
+                 "section": 2, "heading": "Light is too weak", "tag": "dip-skipped",
+                 "rule": "judging 3", "delta_vs_typical": -5.2, "hypothesis": "open_loops",
+                 "sanity_bound": ["channel baseline of 3 film(s), under 10 (judging 1)"],
+                 "severity": "minor", "problem": self.PROBLEM,
+                 "fix": "cut the beat, shorten it, or give the viewer a live question "
+                        "through it"}]
+
+    def test_collect_adds_them_as_a_source_fingerprinted_by_shot_and_tag(self):
+        found = improve.collect(card(5.0, findings=[prose("flat")]), retention=self.rows())
+        self.assertEqual([f["source"] for f in found], ["qa", "retention"])
+        row = found[1]
+        self.assertEqual(row["id"], "F2")
+        self.assertEqual(row["fingerprint"], "retention|2.1|dip-skipped")
+        self.assertEqual((row["tag"], row["corpus_rule"], row["hypothesis"], row["section"],
+                          row["timestamp"], row["owner"]),
+                         ("dip-skipped", "judging 3", "open_loops", 2, 48, "script"))
+        self.assertIsNone(found[0]["fingerprint"])
+        self.assertEqual(improve.fingerprint(dict(row, timestamp=50)), row["fingerprint"])
+
+    def test_the_router_decides_them_and_they_reach_the_script_brief_with_their_rule(self):
+        found = improve.collect(card(5.0), retention=self.rows())
+        FakeEngine.route = route_all_to("script")
+        routing = improve.route(harness.Harness(self.root, "improve", verbose=False), found,
+                                name="route-pass-01")
+        self.assertEqual(routing["routes"]["F1"]["stage"], "script")
+        self.assertEqual(routing["routes"]["F1"]["by"], "model")       # never a lookup
+        prompt = FakeEngine.json_calls[0]["prompt"]
+        self.assertIn("A finding from `retention`", prompt)
+        self.assertIn("names a picture", prompt)
+        self.assertIn('"corpus_rule": "judging 3"', prompt)
+        self.assertIn('"tag": "dip-skipped"', prompt)
+        improve.write_feedback(self.root, routing, found, from_pass="pass-01", card=card(5.0),
+                               improve_pass="pass-01")
+        md = (self.root / "feedback" / "script.md").read_text()
+        self.assertIn("[retention: judging 3, dip-skipped; hypothesis: open_loops]", md)
+        self.assertIn("(retention, QA owner: script)", md)
+        twin = read_json(self.root / "feedback" / "script.json")
+        self.assertEqual(twin["findings"][0]["corpus_rule"], "judging 3")
+        _, lines, _ = script.sent_back("feedback", self.root)
+        self.assertEqual(lines[0]["label"], "2.1")
+        self.assertIn("judging 3", lines[0]["problem"])
+
+    def test_the_loop_reads_retention_json_while_the_film_is_the_one_measured(self):
+        from ytstudio import retention
+        write_json(self.root / "retention.json", {"film": retention.film(self.root),
+                                                  "findings": self.rows()})
+        imp = self.improver(FakeRunner(self.root))
+        found = imp._evidence_findings(card(5.0, findings=[prose("flat")]))
+        self.assertEqual([f["source"] for f in found], ["qa", "retention"])
+        # a pass that rebuilt the film is no longer the cut the audience watched
+        (self.root / "scene.xml").write_text("<scene rebuilt='1'/>")
+        found = imp._evidence_findings(card(5.0, findings=[prose("flat")]))
+        self.assertEqual([f["source"] for f in found], ["qa"])
+
+
 if __name__ == "__main__":
     unittest.main()
