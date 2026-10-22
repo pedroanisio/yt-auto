@@ -475,12 +475,17 @@ reviewer is not calibrated yet. `--gate` makes a reject or `not_evidenced`
 leave `narration.txt` unwritten and exit 1, and script.json then records
 `gate: true`. Turn it on only when `python -m ytstudio.narrative calibrate
 tests/fixtures/narrative` shows the seeded-bad fixtures all fail, the good one
-passes and the length audit passes (the padded copy of the good script may
-not win more than 60% of its pairs), and work/review-log.jsonl holds at least
-20 rows a person has labelled reject, consider or recommend. The calibration
-reads every case with the plan review, the three samples and the cold read on
-the real models, about $1 a case at opus, revises nothing and logs nothing,
-and prints a pass/fail table; `yt doctor` warns `gate on with N labelled
+passes and the length audit passes (the padded copies of the good script and
+of the recap ending may not win more than 60% of their pairs, and an audit
+whose every pair was read at the ceiling fails), and work/review-log.jsonl
+holds at least 20 rows a person has labelled reject, consider or recommend
+(coverage's Pass counts as reject). The calibration reads the cases on the
+real models with the plan review where the case names a plan verdict, the
+three samples on every case, and the cold read where there is narration;
+the premise and jargon cases are judged on the cold read alone, since the
+rubric has no criterion for them. It costs about $1 a case at opus, revises
+nothing and logs nothing, and prints a pass/fail table and how often the
+reviewer agreed with the labels; `yt doctor` warns `gate on with N labelled
 verdicts (20 needed)` for a gated script.json below that count. `yt run` never
 passes it, and it is refused without `--review` or with `--revise`, which
 never reads the story again. The record is `script.json` `review` and the

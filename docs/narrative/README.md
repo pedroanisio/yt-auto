@@ -77,17 +77,21 @@ judging 13; Zeigarnik → attention Contested.
    fault each (a list-shaped plan, a topic-only train, an empty payoff, an
    AND chain, a reveal before its constraint, a recap ending, a hook that
    enumerates its conclusions, a premise a cold reader could not restate,
-   terms a lay audience is never given), and one good pair with a padded
-   copy of its script. judging 10 asks the calibration run for reject on
-   every seeded case; the cases whose one fault is a Fair, or a Poor on a
-   criterion that does not decide a film (a hook that lists its
-   conclusions, a recap ending, a reveal before its constraint, an AND
-   chain, a narration that never voices its train, unexplained terms), are held
-   to consider instead, because judging 11 and 12 make a fixable fault a
+   terms a lay audience is never given), and one good pair; the good
+   script and the recap ending each have a padded copy. judging 10 asks
+   the calibration run for reject on every seeded case; the cases whose
+   one fault is a Fair, or a Poor on a criterion that does not decide a
+   film (a hook that lists its conclusions, a recap ending, a reveal
+   before its constraint, an AND chain), are held to consider instead, because judging 11 and 12 make a fixable fault a
    consider, and a gate that rejects them would regenerate a film one
    flag would mend. Their `expected.json` says so in `judging_10`: the
    calibration fails a reviewer that recommends them, grades the named
-   criterion above Fair or leaves it unflagged. The review that runs it (a
+   criterion above Fair or leaves it unflagged. A premise the narration
+   never voices and unexplained terms have no rubric criterion: judging 14
+   puts them among the pre-voice checks that are not story checks, so
+   their cases say `"story": false` and are judged on the cold read alone
+   (the mismatch; the terms, by any of the names a reader may give them).
+   The review that runs it (a
    different model family from the writer, majority of at least three
    runs, validate-retry-fail before voice is paid for) is the script
    stage's, wired by `yt script --review` (AUTO-93): three samples
@@ -99,13 +103,17 @@ judging 13; Zeigarnik → attention Contested.
    only when `python -m ytstudio.narrative calibrate tests/fixtures/narrative`
    (AUTO-97) shows the condition judging 9 and 10 set: the seeded-bad
    fixtures all fail, the good one passes, the length audit passes (the
-   padded copy of the good script, the same content at about twice the
-   words, may not win more than 60% of its sample pairs), and
+   padded copies, the same content at about twice the words, may not win
+   more than 60% of their sample pairs, and an audit whose every pair was
+   read at the ceiling, recommend with every grade Excellent, fails), and
    work/review-log.jsonl holds at least 20 rows with a human `label`. The
    fixtures are the floor, never the channel's scripts; the 20 labelled
-   rows are the set. A live run reads every case with the plan review, the
-   three samples and the cold read on the real models, at about $1 a case
-   at opus, about $11 for the shipped set, capped by `--budget-usd`; `yt
+   rows are the set, and the run reports how many of them carry the
+   reviewer's own verdict. A live run reads the cases on the real models
+   with the plan review where the case names a plan verdict, the three
+   samples on every case, and the cold read where there is narration, at
+   about $1 a case at opus, about $12 for the shipped set with its two
+   padded reads, capped by `--budget-usd`; `yt
    doctor` warns `gate on with N labelled verdicts (20 needed)` for a
    script written under `--gate` below that count. The plan review before
    any section is drafted is wired too (`yt script --review`, AUTO-92).
