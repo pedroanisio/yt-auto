@@ -538,8 +538,9 @@ class Docs(unittest.TestCase):
     def test_the_docs_say_judging_10_is_not_the_bar_for_every_case(self):
         readme = (CORPUS / "README.md").read_text(encoding="utf-8")
         item = readme[readme.index("3. **The narrative rubric.**"):readme.index("4. **The evidence loop.**")]
-        self.assertIn("judging 10", item)
-        self.assertIn("consider", item)
+        item = " ".join(item.split())
+        self.assertIn("judging 10 asks the calibration run for reject", item)
+        self.assertIn("held to consider", item)
 
     def test_no_doc_says_the_stage_judges_the_story_before_it_does(self):
         # The stage table is the operator's contract: until script.py renders
