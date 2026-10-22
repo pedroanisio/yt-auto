@@ -447,8 +447,10 @@ def check_renders(project: workspace.Project, report: Report) -> None:
 def check_spend(project: workspace.Project, report: Report) -> None:
     """Warn when a record bills a model nobody priced (AUTO-73): a stage's
     `usage.by_model` (or a harness stage's `engine.by_model`) names the ids
-    the CLI reported, and every timed-out call on an id with no row in
-    `spend.PRICES` or `$CLAUDE_PRICES` was booked at $0."""
+    the CLI reported, and a call on an id with no row in `spend.PRICES` or
+    `$CLAUDE_PRICES` is booked at $0 when it times out. keyframe.json keeps
+    its two harness reports one level down (`engine.elements`,
+    `engine.review`), so an account without a breakdown is opened once."""
     unpriced: dict[str, list[str]] = {}
     for path in sorted(project.root.glob("*.json")):
         rec = read_json(path, warn=False)
@@ -456,13 +458,16 @@ def check_spend(project: workspace.Project, report: Report) -> None:
             continue
         for key in ("usage", "engine"):
             account = rec.get(key)
-            by_model = account.get("by_model") if isinstance(account, dict) else None
-            for model in (by_model or {}):
+            if not isinstance(account, dict):
+                continue
+            accounts = [account] if "by_model" in account else [
+                v for v in account.values() if isinstance(v, dict)]
+            for model in (m for a in accounts for m in (a.get("by_model") or {})):
                 if spend.price_for(model) is None:
                     unpriced.setdefault(str(model), []).append(path.name)
     for model, names in sorted(unpriced.items()):
         report.add("warn", "spend", f"{model} has no price; {', '.join(sorted(set(names)))} "
-                   "bill calls on it, and a call that timed out was booked at $0",
+                   "bill calls on it; any call on it that times out is booked at $0",
                    "add its row to ytstudio/spend.PRICES or $CLAUDE_PRICES")
 
 

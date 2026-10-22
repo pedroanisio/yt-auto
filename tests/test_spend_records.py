@@ -224,6 +224,22 @@ class Doctor(unittest.TestCase):
         self.assertIn("retime.json", found[0].message)
         self.assertIn("CLAUDE_PRICES", found[0].fix)
 
+    def test_a_harness_report_nested_one_level_down_is_read_too(self):
+        # keyframe.json carries two harness reports under `engine` and a
+        # `usage` with no breakdown; the stage that streams is the one most
+        # likely to be cut off, so its unpriced id must not stay invisible.
+        write_json(self.root / "keyframe.json", {
+            "engine": {"elements": {"model": "sonnet", "cost_usd": 0.2,
+                                    "by_model": {"claude-x-9": {"calls": 1}}},
+                       "review": {"model": "sonnet", "cost_usd": 0.1,
+                                  "by_model": {"claude-sonnet-5-5": {"calls": 1}}}},
+            "usage": spend.record(0.3, "sonnet", 2)})
+        found = self.spend_findings()
+        self.assertEqual([f.level for f in found], ["warn"])
+        self.assertIn("claude-x-9", found[0].message)
+        self.assertNotIn("claude-sonnet-5-5", found[0].message)
+        self.assertIn("keyframe.json", found[0].message)
+
     def test_priced_models_and_records_without_a_breakdown_are_quiet(self):
         write_json(self.root / "styles.json", {"styles": [], "usage": spend.record(
             0.4, "sonnet", 1, by_model={"claude-sonnet-5-5": {"calls": 1}})})

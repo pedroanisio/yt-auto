@@ -994,8 +994,8 @@ memory and the GPU. It reports the toolchain (engine, ffmpeg, the scene SDK,
 the delivery gate, the third-party packages the stages import, which voice
 engines are usable, which keys are set) and then every video,
 with fail, warn and note lines and the command that fixes each; a record that
-bills a model with no price is a warning, since its timed-out calls were booked
-at $0. Exit 1 on any fail, so it works in a script.
+bills a model with no price is a warning, since any call on it that times out
+is booked at $0. Exit 1 on any fail, so it works in a script.
 
 ### `yt assets`
 
