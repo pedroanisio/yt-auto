@@ -121,6 +121,23 @@ class Beside(RunCase):
         self.assertEqual(self.run_yt(), 1)
         self.assertEqual(self.started("sound"), ["sound:start", "sound:end"])
 
+    def test_a_sound_stage_that_failed_before_the_walk_stopped_early_still_counts(self):
+        # The usual fresh run: the walk stops before vfx while the look awaits
+        # the operator, and the sound stage has already failed by then. Its
+        # thread is no longer alive, which is no reason not to read its code.
+        self.codes["sound"] = 2
+        with mock.patch.object(keyframe, "approval_state", lambda root: {"state": "pending"}):
+            self.assertEqual(self.run_yt(), 2)
+        self.assertIn("sound exited 2", self.err)
+        self.assertEqual(self.started("sound"), ["sound:start", "sound:end"])
+        self.assertEqual(self.started("vfx"), [])
+
+    def test_a_sound_failure_is_reported_beside_the_failure_that_stopped_the_walk(self):
+        self.codes.update(sound=2, vfx=1)
+        self.assertEqual(self.run_yt("--skip", "keyframe"), 1)
+        self.assertIn("vfx exited 1", self.err)
+        self.assertIn("sound exited 2", self.err)
+
     def test_a_ctrl_c_in_the_keyframe_ends_the_run_without_waiting_for_sound(self):
         # The interpreter waits on a non-daemon thread, so before this a
         # Ctrl-C printed the traceback and the sound stage spent on for the

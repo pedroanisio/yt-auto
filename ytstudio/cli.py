@@ -480,8 +480,9 @@ def _run_pipeline(args) -> int:
             break
     if code and not over:
         say(f"\n{stage} exited {code}; stopping here")
-    if beside is not None and beside.is_alive():
-        # The walk stopped before the sound slot; what sound did still counts.
+    if beside is not None and "sound" not in ran:
+        # The walk stopped before the sound slot; what sound did still counts,
+        # whether the thread is still at it or already failed and gone.
         sound_code = beside.join_for(say)
         if sound_code:
             say(f"\nsound exited {sound_code}")
