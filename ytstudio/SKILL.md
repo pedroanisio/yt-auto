@@ -125,7 +125,7 @@ itself, and `--project DIR` names a directory directly.
 
 | Stage | Reads | Writes | Model |
 |---|---|---|---|
-| `yt ideas` | a niche | `work/ideas.json` | yes |
+| `yt ideas` | a niche | `work/ideas.json` | yes (`--rich` adds each idea's `question`, `stakes`, `viewer_belief` and `promise`, which `yt script`'s brief prints, holding the promise frozen; `--rank` labels `curiosity` and `title_concrete` beside the score, which alone sorts) |
 | `yt research` | the idea | `dossier.json`, `README.md`, `claims.csv`, `assets.csv`, `raw/`; with `--download`, `downloads/` | yes |
 | `yt styles` | dossier | `styles.json`, `styles.md` | yes |
 | `yt script` | dossier, styles | `script.json`, `script.md`, `narration.txt`, `shotlist.csv` | yes |

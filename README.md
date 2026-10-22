@@ -328,6 +328,17 @@ runs accumulate one growing, duplicate-free backlog. Ideas generated past
 voice brief; `--list-styles` prints them) · `--rich` for hooks and keywords ·
 `--rank` to score 1–10 on effort-to-value · `--genres` · `--no-store`
 
+`--rich` also plans each idea past its title, so a script starts from a
+premise rather than a headline: `question` (what the title raises and does not
+answer), `stakes`, `viewer_belief` (what a typical viewer already believes,
+the half-knowledge the question is pitched at) and `promise` (title plus
+thumbnail concept in one sentence). `yt script` prints the first three in its
+brief and holds the promise frozen: the plan is told to write its hook to it
+and pay it off, never to change it. `--rank` also labels each idea's
+`curiosity` (`sustained`, `brief`, `none`) and `title_concrete` (`concrete`,
+`abstract`) beside the score; they are the model's judgements, and the order is
+the score's alone (docs/narrative: attention 1, 3, 4; structure 5, 6, 13).
+
 ### `yt research`
 
 Staged, cached web research: it plans the questions, researches them in
