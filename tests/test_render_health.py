@@ -131,6 +131,20 @@ class Doctor(unittest.TestCase):
         self.assertEqual(len(warn), 1, [f.message for f in rep.findings])
         self.assertIn("saturated", warn[0].message)
 
+    def test_an_idle_gpu_is_printed_as_zero_used_not_left_out(self):
+        # 0 used is a reading like any other: the line says so rather than
+        # looking like a host whose GPU was never read.
+        host = render.Host("root@h", engine="/e", version="sr 0.6", ram_gb=8, cores=8,
+                           gpu="3070", gpu_mem_mb=8192)
+        rep = doctor.Report("t")
+        doctor.check_hosts(rep, [host], {"root@h": render.Health(alive=True, load1=0.3)})
+        ok = [f.message for f in rep.findings if f.level == "ok"]
+        self.assertIn("GPU 0/8192 MB used", ok[0])
+        # a host that did not answer has no reading to print
+        rep = doctor.Report("t")
+        doctor.check_hosts(rep, [host], {"root@h": render.Health(alive=False, error="timed out")})
+        self.assertNotIn("GPU 0/8192", " ".join(f.message for f in rep.findings))
+
     def test_without_readings_the_line_is_as_before(self):
         host = render.Host("root@h", engine="/e", version="sr 0.6", ram_gb=8, cores=8)
         rep = doctor.Report("t")

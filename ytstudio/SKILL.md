@@ -321,8 +321,10 @@ hosts with the mix rendered once (more slices, and slices even without `--slices
   checked again before routing (the same round trip reads its load) and a
   refusing host is skipped for the next; every ssh and rsync carries
   `ConnectTimeout=10`, so a host that takes TCP but never answers ssh holds
-  nothing for long, and a sync that fails marks the host dead for
-  `render.ALIVE_TTL` and sends the job to the other host, once;
+  nothing for long, and a sync the host does not take (a lost connection,
+  not a partial transfer) marks it dead for `render.ALIVE_TTL` and sends
+  the job to the other host, once (never the slices' mix: the join happens
+  on its host);
   `yt doctor` warns `accepts TCP on the ssh port but not SSH` for a host
   that answers the port and not the login: restart sshd there or take it
   out of `RS_RENDER_HOSTS`.

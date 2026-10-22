@@ -253,9 +253,10 @@ def check_hosts(report: Report, hosts: list, health: dict | None = None) -> None
             disk = f", {h.disk_free_gb} GB free" if h.disk_free_gb else ""
             now = health.get(h.addr)
             live = ""
-            if now is not None:
+            if now is not None and now.alive:
+                # 0 MB used is a reading (an idle GPU), so it is printed too
                 live = f", load {now.load1:g}"
-                if h.gpu_mem_mb and now.gpu_used_mb:
+                if h.gpu_mem_mb:
                     live += f", GPU {now.gpu_used_mb}/{h.gpu_mem_mb} MB used"
             report.add("ok", "engine", f"{h.version} on {h.addr} ({h.ram_gb} GB, "
                        f"{h.cores} cores, {h.gpu or 'no gpu'}{disk}{live}) -> {'; '.join(roles) or 'slices'}")
