@@ -44,6 +44,7 @@ standards produced it.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -106,9 +107,20 @@ class House:
                 "what you write here, and the creator's own notes for this run "
                 "outrank them:\n\n" + "\n\n".join(parts))
 
-    def digest(self) -> dict:
-        return {"sources": self.sources, "sha256": self.sha256,
-                "sections": sorted(self.sections)}
+    def digest(self, stage: str = "") -> dict:
+        """What was loaded, and with a stage, the digest of the block that
+        stage is handed. The block is what a decision's cache key holds, so
+        `block_sha256` is what tells doctor whether the stage asks again."""
+        out = {"sources": self.sources, "sha256": self.sha256,
+               "sections": sorted(self.sections)}
+        if stage:
+            block = self.for_stage(stage)
+            out |= {"stage": stage, "block_sha256": _sha(block) if block else ""}
+        return out
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 def files(work: Path | None, project_root: Path | None,
@@ -129,7 +141,7 @@ def load(work: Path | None = None, project_root: Path | None = None, *,
     if not enabled:
         return House()
     sections: dict[str, str] = {}
-    sources, digest = [], hashlib.sha256()
+    sources = []
     for path in files(work, project_root, explicit):
         try:
             text = path.read_text(encoding="utf-8")
@@ -138,9 +150,10 @@ def load(work: Path | None = None, project_root: Path | None = None, *,
         # A later file replaces a section by name and leaves the rest alone.
         sections.update(parse(text))
         sources.append(DEFAULT_SOURCE if path == DEFAULT else str(path))
-        digest.update(text.encode("utf-8"))
-    return House(sections=sections, sources=sources,
-                 sha256=digest.hexdigest()[:16] if sources else "")
+    # The digest is of the sections a prompt can be handed, so an edit to a
+    # provenance comment, or a section a later file replaces, changes nothing.
+    sha = _sha(json.dumps(sections, sort_keys=True, ensure_ascii=False)) if sources else ""
+    return House(sections=sections, sources=sources, sha256=sha)
 
 
 def for_args(args, project=None, stage: str = "") -> tuple[str, dict]:
@@ -151,4 +164,4 @@ def for_args(args, project=None, stage: str = "") -> tuple[str, dict]:
     root = getattr(project, "root", None)
     house = load(work, root, explicit=getattr(args, "house", None),
                  enabled=not getattr(args, "no_house", False))
-    return house.for_stage(stage or ""), house.digest()
+    return house.for_stage(stage or ""), house.digest(stage or "")

@@ -65,15 +65,15 @@ STALE_PAIRS = (("script", "voice", "yt voice"), ("script", "build", "yt build"),
                ("voice", "build", "yt build"), ("sound", "build", "yt build"),
                ("build", "video", "yt render"))
 
-#: The manifests that record the house they were decided under. Every cached
-#: decision's digest carries the house digest, so a manifest whose house
-#: differs from what loads now is one whose stage asks its model again, and
-#: pays again, on the next run (house.py).
+#: The manifests that record the house they were decided under. A decision's
+#: cache digest holds the house block its stage was handed (`## all` and its
+#: own section), so a manifest whose block differs from the one that loads now
+#: is one whose stage asks its model again, and pays again, on the next run
+#: (house.py).
 HOUSE_MANIFESTS = ("styles.json", "script.json", "voice.json", "retime.json",
                    "props.json", "keyframe.json", "vfx.json", "sound.json",
                    "build.json", "gate.json", "review.json", "qa.json",
-                   "improve.json")
-
+                   "improve.json", "pilot.json")
 
 @dataclass
 class Finding:
@@ -334,36 +334,57 @@ def _cmd(stage: str, project: workspace.Project, *extra: str) -> str:
     return " ".join(["yt", stage, "--project", str(project.root), *extra])
 
 
-def _house_of(record, depth: int = 2) -> dict | None:
-    """The house digest a manifest was decided under: its own `house`, or the
-    one inside a report it carries (`engine`, `director`, `engine.review`)."""
+def _houses_of(record, depth: int = 2) -> list[dict]:
+    """Every house digest a manifest records: its own `house`, and those of
+    the reports it carries (`engine`, `director`, `engine.review`), since one
+    manifest can hold the reports of more than one engine."""
     if not isinstance(record, dict):
-        return None
-    if isinstance(record.get("house"), dict) and "sha256" in record["house"]:
-        return record["house"]
-    for value in record.values() if depth else ():
-        found = _house_of(value, depth - 1)
-        if found is not None:
-            return found
-    return None
+        return []
+    found = [record["house"]] if (isinstance(record.get("house"), dict)
+                                  and "sha256" in record["house"]) else []
+    for key, value in record.items() if depth else ():
+        if key != "house":
+            found += _houses_of(value, depth - 1)
+    return found
 
 
-def check_house(project: workspace.Project, report: Report) -> None:
+def _stale(decided: dict, now: house.House) -> tuple[str, str] | None:
+    """(was, is) when a recorded digest is not what loads now. A digest that
+    names its stage is compared by the block that stage is handed, which is
+    what its cache keys on; one from before stages were named, by the whole
+    house."""
+    if decided.get("stage") and "block_sha256" in decided:
+        was, current = decided["block_sha256"], now.digest(decided["stage"])["block_sha256"]
+    else:
+        was, current = decided.get("sha256", ""), now.sha256
+    return None if was == current else (was or "none", current or "none")
+
+
+def check_house(project: workspace.Project, report: Report,
+                work: Path | None = None) -> None:
     """Warn for each manifest decided under another house than the one that
     loads now (the shipped default, the channel's and the project's own).
-    The work directory is the project's parent, as `workspace.projects`
-    lays it out; a run that named `--house` or `--no-house` shows up here
-    too, which is the truth: its decisions are not what the next plain run
-    would ask."""
-    now = house.load(project.root.parent, project.root).sha256
+    `work` is the directory the stages read `house.md` from (`--work`); with
+    none, the project's parent, as `workspace.projects` lays it out. A run
+    that named `--house` or `--no-house` shows up here too, which is the
+    truth: its decisions are not what the next plain run would ask."""
+    now = house.load(work if work is not None else project.root.parent, project.root)
     for name in HOUSE_MANIFESTS:
         path = project.root / name
-        decided = _house_of(read_json(path, warn=False)) if path.is_file() else None
-        if decided is None or decided.get("sha256", "") == now:
+        if not path.is_file():
             continue
-        report.add("warn", "house", f"{name} was decided under a different house digest "
-                   f"({decided.get('sha256') or 'none'}; now {now or 'none'}): its stage "
-                   "asks every cached decision again on its next run")
+        for decided in _houses_of(read_json(path, warn=False)):
+            stale = _stale(decided, now)
+            if stale is None:
+                continue
+            stage = decided.get("stage")
+            report.add("warn", "house", f"{name} was decided under a different house "
+                       f"digest ({stale[0]}; now {stale[1]}): "
+                       + (f"{stage} asks its cached decisions again on its next run, "
+                          "because `## all` or its own section changed" if stage else
+                          "its decisions are asked again where its own section or "
+                          "`## all` changed"))
+            break
 
 
 #: The verdict `yt qa` writes into qa.json when the bar is met (qa.READY;
@@ -549,7 +570,7 @@ def check_spend(project: workspace.Project, report: Report) -> None:
                    "codex_engine.PRICES or $CODEX_PRICES (a Codex one)")
 
 
-def check_project(project: workspace.Project) -> Report:
+def check_project(project: workspace.Project, work: Path | None = None) -> Report:
     report = Report(project.root.name)
     done = project.done()
     report.metrics["stages_done"] = done
@@ -991,7 +1012,7 @@ def check_project(project: workspace.Project) -> Report:
 
     if (project.root / "house.md").is_file():
         report.add("note", "house", "this video has its own house.md")
-    check_house(project, report)
+    check_house(project, report, work)
 
     # -- next steps --------------------------------------------------------
     # Commands only: what fixes a fail, what fixes a warn, then the stage that
@@ -1072,7 +1093,7 @@ def run(args) -> int:
                 print(f"error: no video matches {args.title!r} in {work}", file=sys.stderr)
                 return 1
         for project in found:
-            reports.append(check_project(project))
+            reports.append(check_project(project, work))
 
     print_report(reports[0], title="ENVIRONMENT")
     for report in reports[1:]:

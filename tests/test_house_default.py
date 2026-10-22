@@ -143,10 +143,39 @@ class Loading(unittest.TestCase):
                          ["ytstudio/house/default.md", str(self.work / "house.md")])
         self.assertNotEqual(channel["sha256"], bare["sha256"])
 
+    def test_a_comment_only_edit_is_not_a_changed_house(self):
+        # The digest is of what a prompt can see; a provenance comment is not.
+        channel = self.work / "house.md"
+        channel.write_text("## voice\n<!-- rules: direction 27 -->\nRead slowly.\n",
+                           encoding="utf-8")
+        before = house.load(self.work, self.project).digest("voice")
+        channel.write_text("## voice\n<!-- rules: direction 27, 28 -->\nRead slowly.\n",
+                           encoding="utf-8")
+        after = house.load(self.work, self.project).digest("voice")
+        self.assertEqual(after, before)
+
+    def test_the_digest_names_the_stage_and_the_block_it_was_handed(self):
+        bare = house.load(self.work, self.project)
+        script_before, voice_before = bare.digest("script"), bare.digest("voice")
+        self.assertEqual(script_before["stage"], "script")
+        self.assertTrue(script_before["block_sha256"])
+        (self.work / "house.md").write_text("## voice\nThe channel's pacing.\n",
+                                           encoding="utf-8")
+        edited = house.load(self.work, self.project)
+        # The whole house changed; the screenplay's block did not, so its
+        # cached decisions are not asked again, and the read's are.
+        self.assertNotEqual(edited.sha256, bare.sha256)
+        self.assertEqual(edited.digest("script")["block_sha256"],
+                         script_before["block_sha256"])
+        self.assertNotEqual(edited.digest("voice")["block_sha256"],
+                            voice_before["block_sha256"])
+        self.assertEqual(house.load(enabled=False).digest("voice")["block_sha256"], "")
+
     def test_for_args_hands_a_stage_the_default(self):
         block, digest = house.for_args(args(), SimpleNamespace(root=self.project), "script")
         self.assertIn(self.shipped["script"], block)
         self.assertEqual(digest["sources"], ["ytstudio/house/default.md"])
+        self.assertEqual(digest["stage"], "script")
 
     def test_the_script_stage_reads_the_format_and_a_reader_without_a_section_reads_all(self):
         loaded = house.load(self.work, self.project)
@@ -253,9 +282,14 @@ class Doctor(unittest.TestCase):
         self.root.mkdir()
         write_json(self.root / "idea.json", {"title": "T", "genre": "g", "description": "d"})
 
-    def house_findings(self):
-        report = doctor.check_project(workspace.Project(self.root))
+    def house_findings(self, work=None):
+        report = doctor.check_project(workspace.Project(self.root), work=work)
         return [f.message for f in report.findings if f.area == "house" and f.level == "warn"]
+
+    def decided(self, name, stage, work=None, nested=False):
+        digest = house.load(work or self.root.parent, self.root).digest(stage)
+        write_json(self.root / name, {"engine": {"house": digest}} if nested
+                   else {"house": digest})
 
     def test_a_manifest_under_another_house_digest_is_a_warning(self):
         write_json(self.root / "script.json", {"house": {"sources": [], "sha256": "0123"}})
@@ -266,6 +300,51 @@ class Doctor(unittest.TestCase):
 
     def test_the_digest_inside_the_engine_report_counts_too(self):
         write_json(self.root / "qa.json", {"engine": {"house": {"sha256": "0123"}}})
+        self.assertEqual(len(self.house_findings()), 1)
+
+    def test_only_the_stage_whose_block_changed_is_warned(self):
+        # Every decision's digest holds the stage's block, not the whole
+        # house: an edit to `## voice` re-asks the read and nothing else.
+        self.decided("script.json", "script")
+        self.decided("voice.json", "voice")
+        (self.root.parent / "house.md").write_text("## voice\nRead slowly.\n",
+                                                   encoding="utf-8")
+        self.addCleanup((self.root.parent / "house.md").unlink)
+        found = self.house_findings()
+        self.assertEqual(len(found), 1)
+        self.assertIn("voice.json", found[0])
+        self.assertIn("decided under a different house digest", found[0])
+
+    def test_a_comment_only_edit_is_quiet(self):
+        channel = self.root.parent / "house.md"
+        self.addCleanup(lambda: channel.unlink(missing_ok=True))
+        channel.write_text("## voice\n<!-- rules: direction 27 -->\nRead slowly.\n",
+                           encoding="utf-8")
+        self.decided("voice.json", "voice")
+        channel.write_text("## voice\n<!-- rules: direction 27, 28 -->\nRead slowly.\n",
+                           encoding="utf-8")
+        self.assertEqual(self.house_findings(), [])
+
+    def test_a_stale_report_beside_a_current_one_is_a_warning(self):
+        now = house.load(self.root.parent, self.root).digest("build")
+        write_json(self.root / "build.json",
+                   {"house": now, "engine": {"review": {"house": {"sha256": "0123"}}}})
+        found = self.house_findings()
+        self.assertEqual(len(found), 1)
+        self.assertIn("build.json", found[0])
+
+    def test_the_pilot_counts(self):
+        write_json(self.root / "pilot.json", {"engine": {"house": {"sha256": "0123"}}})
+        self.assertEqual(len(self.house_findings()), 1)
+
+    def test_the_house_is_read_from_the_work_directory_doctor_was_given(self):
+        # A film kept outside ./work is still run with --work's house.md.
+        work = self.root.parent / "elsewhere"
+        work.mkdir()
+        (work / "house.md").write_text("## script\nThe channel's own rule.\n",
+                                       encoding="utf-8")
+        self.decided("script.json", "script", work=work)
+        self.assertEqual(self.house_findings(work=work), [])
         self.assertEqual(len(self.house_findings()), 1)
 
     def test_a_manifest_under_the_current_house_is_quiet(self):
