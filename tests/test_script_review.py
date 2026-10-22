@@ -775,6 +775,18 @@ class Command(unittest.TestCase):
         self.assertEqual(rows[-1]["verdict"], "reject")
         self.assertEqual(len(rows), 3)
 
+    def test_gate_without_review_is_refused_before_anything_is_asked(self):
+        # --gate reads the story review; with no review to read, or on
+        # --revise, which never reads the story again, it would gate on a
+        # verdict about lines that are no longer there
+        for flags_ in (("--gate",), ("--revise", "1.1", "--why", "w", "--gate"),
+                       ("--revise", "1.1", "--why", "w", "--review", "--gate")):
+            code, asked, said = self.run_stage(*flags_)
+            self.assertEqual(code, 2, (flags_, said))
+            self.assertEqual(asked, [], flags_)
+            self.assertIn("--gate", said)
+            self.assertEqual(len(said.strip().splitlines()), 1, said)
+
     def test_fresh_asks_every_decision_again(self):
         seen = {}
         real = script.Screenwriter.__init__

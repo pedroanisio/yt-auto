@@ -3552,7 +3552,8 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
     p.add_argument("--gate", action="store_true",
                    help="with --review: a story review that rejects, or that has too "
                         "few valid samples to judge (not_evidenced), leaves "
-                        f"narration.txt unwritten and exits 1. Off by default: {GATE_WHEN}")
+                        "narration.txt unwritten and exits 1; refused without --review "
+                        f"and with --revise. Off by default: {GATE_WHEN}")
     flags.fresh(p, help="ask every decision again instead of reusing the ones on disk")
     flags.reviewer_model(p, default=REVIEWER_MODEL,
                          help="the model that reviews the plan and the story with "
@@ -3595,6 +3596,14 @@ def run(args) -> int:
     # A model never grades its own work: refused before anything is paid.
     if args.review and (own := flags.own_reviewer(args.model, args.reviewer_model)):
         print(own, file=sys.stderr)
+        return 2
+    # --gate reads the verdict of the review this run makes. Without
+    # --review there is none, and --revise never reads the story again, so
+    # it would gate changed lines on a verdict about the old ones.
+    if getattr(args, "gate", False) and (not args.review or args.revise):
+        print("error: --gate stops voice on this run's story review: give it with "
+              "--review on a run that drafts the script, not with --revise",
+              file=sys.stderr)
         return 2
 
     split = lambda s: [p.strip() for p in s.split(",") if p.strip()]  # noqa: E731
@@ -4002,10 +4011,6 @@ def run_revise(args, idea: Idea, project) -> int:
             print(f"error: {len(errors)} narration rule finding(s) of the error tier "
                   "stand; narration.txt was not written. Revise those shots again "
                   "(--revise with --why), or --report-only to record them and go on.",
-                  file=sys.stderr)
-        if story_gate(args, data):
-            print(f"error: {story_gate(args, data)} stands from the last review; "
-                  f"narration.txt was not written (--gate). Run `{REPLAN_FIX}`.",
                   file=sys.stderr)
         return 1
     return 0
