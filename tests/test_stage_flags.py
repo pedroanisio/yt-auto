@@ -1,4 +1,4 @@
-"""One vocabulary for the stage flags: each concept (rounds, bar, budget, fresh) has one
+"""One vocabulary for the stage flags: each concept (rounds, bar, budget, fresh, jobs) has one
 spelling across stages, the old spellings still work as hidden aliases that say so, and
 every stage that calls a model accepts --model, --effort and --fallback-model."""
 
@@ -25,6 +25,8 @@ CONCEPTS = {
     "budget": ("--budget-usd", {"--budget": "research"},
                ("keyframe", "vfx", "probe", "research", "assess", "improve", "run")),
     "fresh": ("--fresh", {}, ("research", "keyframe", "vfx", "props")),
+    "jobs": ("--jobs", {}, ("ideas", "research", "styles", "script", "keyframe", "vfx",
+                            "probe", "sound")),
 }
 #: Stages that author with or ask a model; render and the local fetchers do not.
 MODEL_STAGES = ("ideas", "research", "styles", "script", "keyframe", "voice", "vfx", "sound",

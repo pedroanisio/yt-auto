@@ -48,7 +48,9 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
 import wave
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
@@ -56,7 +58,7 @@ from claude_engine import ClaudeError, EngineConfig, Usage
 from .core import (Idea, read_json, slugify, timecode, wrap,
                    write_json)
 from .ideas import CHANNEL_STYLES, style_brief
-from . import freesound, harness, house, workspace
+from . import flags, freesound, harness, house, workspace
 from .script import Section, load_script, sections_of
 
 #: What a cue can be. `silence` is a cue too: scored silence is a decision,
@@ -918,6 +920,10 @@ LOUDNESS_KINDS = ("music", "ambience")
 NOISE_BELOW_NARRATION_DB = 12.0
 #: Candidates tried for one cue (its first hit included) before it is left unfilled.
 FETCH_TRIES = 3
+#: Cues searched, downloaded and judged at once (`--jobs`): a search and a
+#: download take ~13 s a cue and a judge session 30-90 s, none of it on
+#: this machine, so the round's cues wait side by side.
+FETCH_JOBS = 4
 #: The measurement definitions. ebur128 reports a momentary loudness (M) over
 #: a 400 ms window every 100 ms; a window is complete once 400 ms have been
 #: heard, and the floor is the level the quietest tenth of them reaches.
@@ -1240,17 +1246,19 @@ class _Job:
     miss: dict
     used: str = ""
     old_id: object = None           # the Freesound id of a kept file
-    hits: list | None = None        # hits still to try (kept files: searched on refusal)
+    hits: list | None = None        # hits still to try; None: not searched yet
     rel: str | None = None          # the file now under test
     hit: object = None              # its Freesound hit (None for a kept file)
     refusals: list = field(default_factory=list)
     rejected: list = field(default_factory=list)    # candidates the judge turned down
     tries: int = 0
     done: bool = False
+    lost: dict | None = None        # its `unfilled` entry, when nothing fit
+    lines: list = field(default_factory=list)       # progress not yet said
 
 
 def fetch(root: str | Path, data: dict, *, token: str | None = None,
-          say=None, measure=None, judge=None) -> dict:
+          say=None, measure=None, judge=None, jobs: int = FETCH_JOBS) -> dict:
     """Fill the cue sheet in `data` with files under `<root>/sound/`.
 
     Mutates `data`: each filled cue gains the contract fields (`file`,
@@ -1277,12 +1285,22 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
     `judgement` (verdict, reason, confidence, the evidence shown, and the
     candidates rejected before it), and a cue every candidate failed is
     unfilled with the reasons. A judge that errors leaves the file `unjudged`.
+
+    A round's cues are searched, downloaded and judged `jobs` at a time
+    (`FETCH_JOBS`), none of it on this machine; the index and the counts
+    change under one lock, each Freesound id is fetched under its own (two
+    cues landing on one id share the file), and the verdicts are applied on
+    the calling thread in cue order, so the record reads as a serial run. An
+    interrupt drops the round's queued jobs and waits only for those in
+    flight.
     """
     root = Path(root)
     measure = measure or measure_remote
     say = say or (lambda msg: print(msg, file=sys.stderr))
     token = freesound.token() if token is None else token
     index = read_json(_index_path(root), warn=False) or {}
+    book = threading.Lock()          # held while the index or the counts change
+    claims: dict[str, threading.Lock] = {}   # one lock per Freesound id on its way in
     narration, narration_from = narration_level(data)
     summary: dict = {"source": "freesound", "quality": FETCH_QUALITY,
                      "dir": SOUND_DIR, "filled": 0, "cached": 0, "bytes": 0,
@@ -1290,7 +1308,7 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
                      "refused": [], "narration_db": narration,
                      "narration_from": narration_from}
     unfilled: list[dict] = []
-    jobs: list[_Job] = []
+    work: list[_Job] = []
     if not token:
         # The name of the variable, never a value.
         summary["error"] = (f"no Freesound token: set {freesound.TOKEN_VARS[0]} "
@@ -1317,7 +1335,7 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
             else:
                 # A fetched file nobody measured (an older run, or no host
                 # then): measured now, in the same batch as the new ones.
-                jobs.append(_Job(cue, cid, n, miss, rel=existing, tries=1,
+                work.append(_Job(cue, cid, n, miss, rel=existing, tries=1,
                                  used=cue.get("query_used") or "",
                                  old_id=cue.get("freesound_id")))
             continue
@@ -1327,53 +1345,82 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
             unfilled.append(miss | {"reason": f"no token ({freesound.TOKEN_VARS[0]} "
                                               "not set)"})
             continue
-        want = max(1, int(cue.get("seconds") or 1))
-        hits, used = freesound.ranked(queries, want_seconds=want, token=token)
-        if not hits:
-            reason = "no CC0 or CC-BY hit on Freesound for any query"
-            if cue.get("kind") == "music":
-                reason += ("; a composition brief with no library stand-in "
-                           "stays unfilled")
-            unfilled.append(miss | {"reason": reason})
-            say(f"  {cid} unfilled: tried {', '.join(repr(q) for q in queries)}")
-            continue
-        jobs.append(_Job(cue, cid, n, miss, used=used, hits=hits[:FETCH_TRIES]))
+        work.append(_Job(cue, cid, n, miss))
 
     levels: dict[str, Levels | None] = {}
     taken: set[str] = set()          # files a cue now uses
+    drawn: set[int] = set()          # hits whose spectrogram this run wrote
+
+    def tell(job: _Job, line: str) -> None:
+        """A progress line for the job, said by `said` in cue order: the jobs
+        run side by side, and the operator reads one cue at a time."""
+        job.lines.append(line)
+
+    def said(batch: list[_Job]) -> None:
+        for job in batch:
+            for line in job.lines:
+                say(line)
+            job.lines.clear()
 
     def give_up(job: _Job) -> None:
         job.done = True
-        why = (" | ".join(f"{label}: {reason}" for label, reason in job.refusals)
-               if job.refusals else "no CC0 or CC-BY hit on Freesound for any query")
-        if len(job.refusals) > 1:
-            why = f"{len(job.refusals)} sources refused, {why}"
-        unfilled.append(job.miss | {"reason": why}
-                        | ({"rejected": job.rejected} if job.rejected else {}))
-        say(f"  {job.cid} unfilled: {why}")
+        if job.refusals:
+            why = " | ".join(f"{label}: {reason}" for label, reason in job.refusals)
+            if len(job.refusals) > 1:
+                why = f"{len(job.refusals)} sources refused, {why}"
+            tell(job, f"  {job.cid} unfilled: {why}")
+        else:
+            why = "no CC0 or CC-BY hit on Freesound for any query"
+            if job.cue.get("kind") == "music":
+                why += "; a composition brief with no library stand-in stays unfilled"
+            tell(job, f"  {job.cid} unfilled: tried "
+                      f"{', '.join(repr(q) for q in job.miss['queries'])}")
+        job.lost = job.miss | {"reason": why} | ({"rejected": job.rejected}
+                                                 if job.rejected else {})
+
+    def search(job: _Job) -> None:
+        """The job's candidates: the first query with any allowed hit, a kept
+        file's own id left out, `FETCH_TRIES` at most."""
+        want = max(1, int(job.cue.get("seconds") or 1))
+        found, job.used = freesound.ranked(job.miss["queries"], want_seconds=want,
+                                           token=token, say=lambda line: tell(job, line))
+        job.hits = [h for h in found if h.id != job.old_id][:FETCH_TRIES]
 
     def advance(job: _Job) -> None:
-        """Give the job its next file to test, or end it."""
+        """Give the job its next file to test, or end it: the search when it
+        has none yet, then a download per candidate. Runs on a pool thread,
+        so the index and the counts change only under the lock."""
         while job.rel is None and not job.done:
+            if job.hits is None:
+                search(job)
             if job.tries >= FETCH_TRIES or not job.hits:
                 give_up(job)
                 return
             hit = job.hits.pop(0)
-            rel = index.get(str(hit.id))
-            if rel and (root / rel).is_file():
-                summary["cached"] += 1
-            else:
-                rel = (f"{SOUND_DIR}/{job.n:02d}-"
-                       f"{slugify(job.cue.get('name') or job.cue.get('kind', 'cue'), 40)}"
-                       f".{hit.ext}")
-                try:
-                    freesound.download(hit, root / rel)
-                except freesound.FreesoundError as exc:
-                    job.refusals.append((f"hit {hit.id}", str(exc)))
-                    job.tries += 1
-                    continue
-                index[str(hit.id)] = rel
-                write_json(_index_path(root), index)
+            # Two cues of one round can land on the same id: the lookup, the
+            # download and the index write happen under the id's own lock,
+            # so the second finds the first's file and downloads nothing.
+            with book:
+                claim = claims.setdefault(str(hit.id), threading.Lock())
+            with claim:
+                with book:
+                    rel = index.get(str(hit.id))
+                    cached = bool(rel) and (root / rel).is_file()
+                    if cached:
+                        summary["cached"] += 1
+                if not cached:
+                    rel = (f"{SOUND_DIR}/{job.n:02d}-"
+                           f"{slugify(job.cue.get('name') or job.cue.get('kind', 'cue'), 40)}"
+                           f".{hit.ext}")
+                    try:
+                        freesound.download(hit, root / rel)
+                    except freesound.FreesoundError as exc:
+                        job.refusals.append((f"hit {hit.id}", str(exc)))
+                        job.tries += 1
+                        continue
+                    with book:
+                        index[str(hit.id)] = rel
+                        write_json(_index_path(root), index)
             job.rel, job.hit = rel, hit
 
     def refuse(job: _Job, why: str) -> None:
@@ -1381,32 +1428,35 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
         job.refusals.append((label, why))
         summary["refused"].append({"cue_id": job.cid, "file": job.rel, "reason": why,
                                    "freesound_id": job.hit.id if job.hit else job.old_id})
-        say(f"  {job.cid} refused {job.rel}: {why}")
+        tell(job, f"  {job.cid} refused {job.rel}: {why}")
         job.tries += 1
         if job.hit is None:
-            # A kept file refused: forget it, and look for others to try.
+            # A kept file refused: forget it, and look for others to try
+            # (the next round's advance searches; with no token there are none).
             for key in FETCHED_FIELDS:
                 job.cue.pop(key, None)
-            if token:
-                want = max(1, int(job.cue.get("seconds") or 1))
-                found, job.used = freesound.ranked(
-                    job.miss["queries"], want_seconds=want, token=token)
-                job.hits = [h for h in found if h.id != job.old_id][:FETCH_TRIES]
+            job.hits = None if token else []
         job.rel = job.hit = None
 
     def judged(job: _Job, got: Levels) -> dict:
         """The judge's verdict on the candidate under test, with the evidence
         it was shown. A judge that fails leaves the file `unjudged`: the
-        fetch does not die for a model outage, and the record says so."""
+        fetch does not die for a model outage, and the record says so.
+        Runs on a pool thread; it writes only the job and the hit's image,
+        under the lock and once: a second cue on the same hit may be reading
+        it, and a write truncates first."""
         hit = job.hit
         evidence = judge_facts(hit, got)
         image = None
         if got.spectrogram:
             image = root / SOUND_DIR / "judge" / str(hit.id) / "spectrogram.png"
-            image.parent.mkdir(parents=True, exist_ok=True)
-            image.write_bytes(got.spectrogram)
             evidence["spectrogram"] = image.relative_to(root).as_posix()
-        summary["judged"] = summary.get("judged", 0) + 1
+        with book:
+            if image is not None and hit.id not in drawn:
+                image.parent.mkdir(parents=True, exist_ok=True)
+                image.write_bytes(got.spectrogram)
+                drawn.add(hit.id)
+            summary["judged"] = summary.get("judged", 0) + 1
         try:
             answer = judge(job.cue, {"hit": {k: evidence[k] for k in (
                 "name", "tags", "description", "duration", "licence")} | {"id": hit.id},
@@ -1419,7 +1469,7 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
         except (harness.HarnessError, ClaudeError, KeyError, TypeError, ValueError) as exc:
             record = {"verdict": "unjudged", "reason": f"the judge failed: {exc}",
                       "confidence": None}
-            say(f"  {job.cid} {job.rel}: {record['reason']}")
+            tell(job, f"  {job.cid} {job.rel}: {record['reason']}")
         return record | {"evidence": evidence}
 
     def accept(job: _Job, fields: dict | None, verdict: dict | None = None) -> None:
@@ -1444,52 +1494,70 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
         how = (f"<- {hit.licence} {hit.duration:.1f}s (query {job.used!r})"
                if hit is not None else "kept")
         gain = f", gain {fields['gain_db']:+.1f} dB" if fields else ""
-        say(f"  {job.cid} {rel} {how}{gain}")
+        tell(job, f"  {job.cid} {rel} {how}{gain}")
 
-    while True:
-        active = [j for j in jobs if not j.done]
-        for job in active:
-            advance(job)
-        testing = [j for j in active if not j.done]
-        if not testing:
-            break
-        wanted = sorted({j.rel for j in testing} - set(levels))
-        if wanted and "measure_error" not in summary:
-            try:
-                got = measure([root / rel for rel in wanted])
-                levels.update(zip(wanted, got))
-            except MeasureError as exc:
-                summary["measure_error"] = str(exc)
-        discard: set[str] = set()
-        for job in testing:
-            got = levels.get(job.rel)
-            if got is None:
-                accept(job, None)
-                continue
-            fields, why = level_to_design(job.cue, got, narration)
-            verdict: dict | None = None
-            if not why and judge is not None and job.hit is not None:
-                verdict = judged(job, got)
-                if verdict["verdict"] == "reject":
-                    why = f"judged not to fit the cue: {verdict['reason']}"
-            if why:
-                discard.add(job.rel)
-                if verdict is not None:
-                    job.rejected.append({
-                        "freesound_id": job.hit.id, "name": job.hit.name,
-                        "reason": verdict["reason"],
-                        "confidence": verdict.get("confidence"),
-                        "evidence": verdict["evidence"]})
-                refuse(job, why)
-            else:
-                accept(job, fields, verdict)
-        for rel in discard - taken - {j.rel for j in jobs if not j.done}:
-            (root / rel).unlink(missing_ok=True)
-            levels.pop(rel, None)
-            for key in [k for k, v in index.items() if v == rel]:
-                index.pop(key)
-        if discard:
-            write_json(_index_path(root), index)
+    with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+        try:
+            while True:
+                active = [j for j in work if not j.done]
+                list(pool.map(advance, active))
+                said(active)
+                testing = [j for j in active if not j.done]
+                if not testing:
+                    break
+                wanted = sorted({j.rel for j in testing} - set(levels))
+                if wanted and "measure_error" not in summary:
+                    try:
+                        got = measure([root / rel for rel in wanted])
+                        levels.update(zip(wanted, got))
+                    except MeasureError as exc:
+                        summary["measure_error"] = str(exc)
+                # The level checks are instant and run here; the judge is a
+                # session each, so the round's candidates are judged in the pool
+                # and the verdicts applied here, in cue order.
+                checked, asked = [], {}
+                for job in testing:
+                    got = levels.get(job.rel)
+                    fields, why = (level_to_design(job.cue, got, narration)
+                                   if got is not None else (None, ""))
+                    checked.append((job, got, fields, why))
+                    if got is not None and not why and judge is not None and job.hit is not None:
+                        asked[job.n] = pool.submit(judged, job, got)
+                discard: set[str] = set()
+                for job, got, fields, why in checked:
+                    if got is None:
+                        accept(job, None)
+                        continue
+                    verdict: dict | None = None
+                    if job.n in asked:
+                        verdict = asked[job.n].result()
+                        if verdict["verdict"] == "reject":
+                            why = f"judged not to fit the cue: {verdict['reason']}"
+                    if why:
+                        discard.add(job.rel)
+                        if verdict is not None:
+                            job.rejected.append({
+                                "freesound_id": job.hit.id, "name": job.hit.name,
+                                "reason": verdict["reason"],
+                                "confidence": verdict.get("confidence"),
+                                "evidence": verdict["evidence"]})
+                        refuse(job, why)
+                    else:
+                        accept(job, fields, verdict)
+                said(testing)
+                for rel in discard - taken - {j.rel for j in work if not j.done}:
+                    (root / rel).unlink(missing_ok=True)
+                    levels.pop(rel, None)
+                    for key in [k for k, v in index.items() if v == rel]:
+                        index.pop(key)
+                if discard:
+                    write_json(_index_path(root), index)
+        except KeyboardInterrupt:
+            # The pool's exit waits for every queued job; an interrupt keeps
+            # only the ones in flight (a download, a judge session) and
+            # drops the rest of the round.
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
 
     if summary.get("unmeasured") or "measure_error" in summary:
         host = next((v.host for v in levels.values() if v), "")
@@ -1500,6 +1568,8 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
             + "; the cues keep their sheet level and no noise check was made")
         say("  WARNING: " + summary["warning"])
 
+    # The jobs gave up on their own threads; the record keeps cue order.
+    unfilled.extend(job.lost for job in work if job.lost)
     data["unfilled"] = unfilled
     summary["unfilled"] = len(unfilled)
     data["fetch"] = summary
@@ -2026,6 +2096,8 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                    help="download CC0/CC-BY audio for every cue from Freesound "
                         "into <project>/sound/ and write the files into the "
                         "cue sheet (reuses an existing sound.json)")
+    flags.jobs(p, default=FETCH_JOBS,
+               help="with --fetch: cues searched, downloaded and judged at once")
     p.add_argument("--synth", action="store_true",
                    help="realise every cue still without a file as original "
                         "procedural sound: an agent writes and runs "
@@ -2131,7 +2203,8 @@ def _finish(args, idea: Idea, project, data: dict) -> int:
             print(f"[fetch] freesound -> {project.root / SOUND_DIR}",
                   file=sys.stderr)
         fetch(project.root, data, say=(lambda m: None) if args.quiet else None,
-              judge=harness_judge(project.root, model=args.model))
+              judge=harness_judge(project.root, model=args.model),
+              jobs=getattr(args, "jobs", FETCH_JOBS))
     if getattr(args, "synth", False):
         if not args.quiet:
             print(f"[synth] original sound -> {project.root / SYNTH_DIR}",
