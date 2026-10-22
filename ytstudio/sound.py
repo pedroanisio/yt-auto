@@ -417,7 +417,7 @@ def rule_findings(cues: list[Cue], runtime: int) -> list[dict]:
                 cue, "rule:clock", "blocker",
                 f"{cue.cue_id} starts at {timecode(cue.at)}, after the film ends "
                 f"at {timecode(runtime)}",
-                "move it inside the film or drop it"))
+                "move it inside the film, or keep it with the reason"))
         elif cue.out > runtime:
             out.append(flag(
                 cue, "rule:clock", "important",
@@ -836,7 +836,8 @@ class SoundDesigner:
             f"{c.cue_id} [{c.kind}] {timecode(c.at)}-{timecode(c.out)} "
             f"({c.seconds}s) {c.name} -- {c.purpose} | level: {c.level or '?'} "
             f"| source: {c.source}" for c in cues)
-        now = {k: getattr(cue, k) for k in REVISE_TEXT}
+        # the timing and the fades too: a fix may overwrite them
+        now = {k: getattr(cue, k) for k in REVISE_TEXT + REVISE_FADES + ("at", "seconds")}
         who = "A rule of the sheet" if flag.get("rule") else "The listen-back"
         parts = [self._brief(), self._palette_recap(),
                  f"The cue sheet:\n\n{sheet}",

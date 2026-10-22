@@ -42,6 +42,21 @@ class Shape(unittest.TestCase):
         self.assertEqual(flag["rule"], "rule:overlap")
         self.assertTrue(flag["problem"].startswith("rule:overlap: "))
         self.assertIn(flag["severity"], sound.REVISABLE)
+        self.assertIn(flag["rule"], sound.RULES)
+
+    def test_every_rule_is_in_the_set_and_named_by_the_docs(self):
+        # one sheet breaks every rule; the docs name each one the build may warn about
+        sheet = [cue("music", "M1", 0, 30), cue("music", "M2", 20, 20, level=""),
+                 cue("sfx", "S1", 61, 1)]
+        sheet.append(sound.Cue(kind="ambience", name="A1", at=0, seconds=60,
+                               purpose="p", level="-40 dBFS", cue_id="A1"))
+        found = {f["rule"] for f in rules(sheet)}
+        self.assertEqual(found, set(sound.RULES))
+        root = Path(__file__).resolve().parent.parent
+        for doc in ("README.md", "ytstudio/SKILL.md"):
+            text = (root / doc).read_text(encoding="utf-8")
+            for rule in sound.RULES:
+                self.assertTrue(f"`{rule}`" in text, f"{doc} does not name {rule}")
 
     def test_a_clean_sheet_has_no_findings(self):
         sheet = [cue("ambience", "A1", 0, 60), cue("music", "M1", 0, 30),
@@ -95,6 +110,9 @@ class Clock(unittest.TestCase):
                         "rule:clock")
         self.assertEqual([(f["cue"], f["severity"]) for f in flags], [("S1", "blocker")])
         self.assertIn("1:00", flags[0]["problem"])
+        # revise answers fix or keep; the suggestion offers nothing else
+        self.assertNotIn("drop", flags[0]["fix"])
+        self.assertIn("keep", flags[0]["fix"])
 
     def test_a_cue_running_past_the_end_is_important(self):
         flags = by_rule(rules([cue("music", "M1", 50, 20)]), "rule:clock")

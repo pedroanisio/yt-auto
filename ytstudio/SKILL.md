@@ -642,9 +642,10 @@ hand-authored world showed the cost.
   `build.json`, and a design of which nothing could be placed makes the
   build unpublishable. `yt sound --review` checks the sheet's own rules
   before the model listens back (`rule:overlap`, `rule:level`, `rule:clock`,
-  `rule:no-bed`); the model answers each through `revise`, and a rule flag
-  it keeps stands in `review.unresolved` with its reason, which `yt build`
-  records as a `warning:` naming the cues. `yt sound --synth` realises every cue still without
+  `rule:no-bed`, and `rule:fade` for a bed with no fade out); the model
+  answers each through `revise`, and a rule flag it keeps stands in
+  `review.unresolved` with its reason, which `yt build` records as a
+  `warning:` naming the cues. `yt sound --synth` realises every cue still without
   a file as original procedural sound: an agent writes and runs
   `sound/synth/make_audio.py` (NumPy and SciPy, no samples, a fixed seed),
   every WAV must pass `check.py` -- the pipeline's own check: 48 kHz stereo

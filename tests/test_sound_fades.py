@@ -87,6 +87,22 @@ class Revise(unittest.TestCase):
         self.assertEqual(out["applied"]["before"]["fade_out"], 1.0)
         self.assertEqual(out["applied"]["after"]["fade_out"], 3.0)
 
+    def test_the_model_sees_the_cues_fades_and_timing_before_it_answers(self):
+        d = sound.SoundDesigner(Idea(title="T", description="d", genre="g"),
+                                runtime=60, verbose=False)
+        prompts = []
+
+        def ask(name, prompt, schema):
+            prompts.append(prompt)
+            return {"action": "keep", "why": "fine"}
+        d._ask = ask
+        cues = sound.number_cues([sound.Cue.from_raw(raw(at=5, seconds=20,
+                                                         fade_in=1.5, fade_out=4))])
+        d.revise(cues, {"cue": "M1", "problem": "p", "severity": "important", "fix": "f"})
+        now = prompts[0].split("Its fields now: ")[1].split("\n")[0]
+        for text in ("'fade_in': 1.5", "'fade_out': 4.0", "'at': 5", "'seconds': 20"):
+            self.assertIn(text, now)
+
     def test_a_fade_longer_than_the_cue_is_held_to_it(self):
         d = sound.SoundDesigner(Idea(title="T", description="d", genre="g"),
                                 runtime=60, verbose=False)
