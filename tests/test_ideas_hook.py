@@ -21,11 +21,13 @@ import contextlib
 import io
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from claude_engine import EngineConfig  # noqa: E402
 from ytstudio import ideas, script  # noqa: E402
 from ytstudio.core import Idea, compact  # noqa: E402
 
@@ -216,6 +218,63 @@ class Printed(unittest.TestCase):
         for value in (idea.question, idea.stakes, idea.viewer_belief, idea.promise,
                       "sustained", "concrete"):
             self.assertIn(value, text)
+
+
+    def test_the_terminal_listing_shows_the_plan_and_the_labels(self):
+        idea = planned_idea(score=7, why="w", curiosity="sustained",
+                            title_concrete="concrete")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ideas.print_ideas([idea])
+        text = " ".join(out.getvalue().split())     # undo the wrapping
+        for value in (idea.question, idea.stakes, idea.viewer_belief, idea.promise):
+            self.assertIn(" ".join(value.split()), text)
+        self.assertIn("curiosity: sustained", text)
+        self.assertIn("title: concrete", text)
+
+    def test_a_plain_idea_lists_no_plan_or_labels(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ideas.print_ideas([Idea(title="t", genre="g", description="d")])
+        for word in ("question:", "stakes:", "promise:", "curiosity:"):
+            self.assertNotIn(word, out.getvalue())
+
+
+class GeneratorCarriesThem(unittest.TestCase):
+    """A rich row from a batch reaches the Idea the generator returns."""
+
+    class Batch:
+        lock = threading.Lock()
+
+        def __init__(self, rows: list[dict]) -> None:
+            self.rows = rows
+            self.schemas: list[dict] = []
+
+        def decide(self, name: str, prompt: str, schema: dict) -> dict:
+            self.schemas.append(schema)
+            return {"ideas": self.rows}
+
+    def test_a_rich_batch_fills_the_plan_fields(self):
+        row = {"title": "Why the Tacoma Narrows bridge twisted itself apart",
+               "genre": "explainer", "description": "d", "hook": "h",
+               "length": "10 min", "keywords": ["bridge"],
+               "question": "What made a steady wind tear it apart?",
+               "stakes": "Every long span since.",
+               "viewer_belief": "Bridges fall when overloaded.",
+               "promise": "The deck twisting mid-air."}
+        with tempfile.TemporaryDirectory() as tmp:
+            generator = ideas.Generator(EngineConfig(tools=()), rich=True,
+                                        root=tmp, verbose=False, jobs=1)
+            generator.harness = self.Batch([row])
+            got = generator.run(1, 1)
+        self.assertEqual(len(got), 1)
+        idea = got[0]
+        self.assertEqual(idea.question, row["question"])
+        self.assertEqual(idea.stakes, row["stakes"])
+        self.assertEqual(idea.viewer_belief, row["viewer_belief"])
+        self.assertEqual(idea.promise, row["promise"])
+        item = generator.harness.schemas[0]["properties"]["ideas"]["items"]
+        self.assertIn("promise", item["required"])
 
 
 class ScriptBrief(unittest.TestCase):
