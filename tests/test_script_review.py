@@ -52,6 +52,8 @@ def kind(schema):
         return "review"
     if "premise" in props:
         return "cold-read"
+    if "answered" in props:
+        return "answers"
     if "verdict" in props and "problems" in props:
         return "plan-review"
     if "questions" in props:
@@ -85,8 +87,8 @@ def flag(n=1, section=1, criterion="hook", severity="important",
 
 COLD = {"premise": "A bridge fell because of one bolt nobody could see.",
         "unexplained_terms": ["gusset"],
-        "claims": [{"claim": "one bolt held four lanes", "why_care": "you drive on one"}],
-        "answered": [{"question_id": "Q1", "shot_index": 5}]}
+        "claims": [{"claim": "one bolt held four lanes", "why_care": "you drive on one"}]}
+ANSWERS = {"answered": [{"question_id": "Q1", "shot_index": 5}]}
 
 ACCEPT = {"verdict": "accept", "train_ok": True, "reorder_survives": False,
           "sections_advancing_none": [], "payoff_concrete": True,
@@ -124,6 +126,8 @@ def faked(w, answers=None):
             return sample("recommend")
         if which == "cold-read":
             return copy.deepcopy(COLD)
+        if which == "answers":
+            return copy.deepcopy(ANSWERS)
         if which == "match":
             return {"verdict": "match", "difference": ""}
         if which == "fixes":
@@ -281,6 +285,8 @@ class Engine(FakeEngine):
             return sample("recommend")
         if which == "cold-read":
             return copy.deepcopy(COLD)
+        if which == "answers":
+            return copy.deepcopy(ANSWERS)
         if which == "match":
             return {"verdict": "match", "difference": ""}
         if which == "plan-review":
@@ -358,28 +364,53 @@ class ColdReader(EngineCase):
     def test_the_cold_reader_sees_the_narration_and_no_research_plan_or_house(self):
         (self.root / "feedback").mkdir()
         (self.root / "feedback" / "script.md").write_text("FEEDBACK-ONLY-TEXT")
-        w = self.writer(house="HOUSE-ONLY-TEXT", research="RESEARCH-ONLY-TEXT")
+        brief = script.Idea(title="Why the bridge fell", genre="explainer",
+                            description="IDEA-PREMISE-TEXT", hook="IDEA-HOOK-TEXT",
+                            question="IDEA-QUESTION-TEXT", stakes="IDEA-STAKES-TEXT",
+                            promise="IDEA-PROMISE-TEXT")
+        w = script.Screenwriter(brief, root=self.root, verbose=False, minutes=1, jobs=1,
+                                model="sonnet", reviewer_model="opus",
+                                house="HOUSE-ONLY-TEXT", research="RESEARCH-ONLY-TEXT")
         data = w.run(review=True)
         cold = [c for c in Engine.seen if c["kind"] == "cold-read"]
         self.assertEqual(len(cold), 1)
         seen = cold[0]["prompt"] + "\n" + cold[0]["system"]
         self.assertIn("line 1.1", cold[0]["prompt"])
-        for text in ("HOUSE-ONLY-TEXT", "RESEARCH-ONLY-TEXT", "FEEDBACK-ONLY-TEXT",
-                     PLAN["train"], PLAN["stakes"], PLAN["logline"], PLAN["promise"],
-                     PLAN["ending"]["payoff_line"], "The paint", "paint hides steel",
-                     "v1.1", "shows 1.1"):
+        private = ("HOUSE-ONLY-TEXT", "RESEARCH-ONLY-TEXT", "FEEDBACK-ONLY-TEXT",
+                   "IDEA-PREMISE-TEXT", "IDEA-HOOK-TEXT", "IDEA-QUESTION-TEXT",
+                   "IDEA-STAKES-TEXT", "IDEA-PROMISE-TEXT",
+                   PLAN["train"], PLAN["stakes"], PLAN["logline"], PLAN["promise"],
+                   PLAN["ending"]["payoff_line"], "The paint", "paint hides steel",
+                   "v1.1", "shows 1.1")
+        for text in private:
             self.assertNotIn(text, seen, text)
-        # the plan's questions are listed for `answered`, without where they close
-        self.assertIn("What brought the bridge down?", cold[0]["prompt"])
-        self.assertNotIn("closed_in", cold[0]["prompt"])
+        # the reader restates the premise before it is shown the plan's
+        # questions: they would prime the premise the match then reads
+        for q in PLAN["questions"]:
+            self.assertNotIn(q["text"], seen, q["text"])
+        # a second reading on the same cold reader maps the questions to the
+        # shots that answer them, listed without where the plan closes them
+        answers = [c for c in Engine.seen if c["kind"] == "answers"]
+        self.assertEqual(len(answers), 1)
+        self.assertIn("What brought the bridge down?", answers[0]["prompt"])
+        self.assertIn("line 1.1", answers[0]["prompt"])
+        self.assertNotIn("closed_in", answers[0]["prompt"])
+        self.assertEqual(answers[0]["system"], cold[0]["system"])
+        for text in private:
+            self.assertNotIn(text, answers[0]["prompt"] + answers[0]["system"], text)
+        self.assertNotIn(COLD["premise"], answers[0]["prompt"])
         # the story reviewers keep the house
         story = next(c for c in Engine.seen if c["kind"] == "review")
         self.assertIn("HOUSE-ONLY-TEXT", story["system"])
         record = data["review"]["cold_read"]
         self.assertEqual(record["premise"], COLD["premise"])
         self.assertEqual(record["unexplained_terms"], ["gusset"])
+        self.assertEqual(record["answered"], ANSWERS["answered"])
         self.assertEqual(record["match"], "match")
         self.assertEqual(record["unanswered"], ["Q2"])
+        for name in ("cold-read", "cold-read-answers", "cold-read-match"):
+            self.assertTrue((self.root / "decisions" / "script" / f"{name}.json").is_file(),
+                            name)
 
     def test_a_premise_that_misses_the_train_is_a_plan_flag_left_unresolved(self):
         w = writer()
@@ -455,12 +486,14 @@ class Revision(unittest.TestCase):
         self.assertNotIn("revise-story-2", names(calls))
         self.assertNotIn("review-r3-s1", names(calls))
 
-    def test_a_section_flag_is_redrafted_with_the_flags_and_the_neighbours_closing_shots(self):
+    def test_a_section_flag_is_redrafted_between_how_the_one_before_ends_and_the_next_opens(self):
         w = writer()
         section_flag = flag(n=0, section=2, criterion="open_loops",
                             problem="section 2 opens Q2 and drops it",
                             fix="end section 2 on the inspection log")
         answers = consider_then(("recommend", "better"), flags=[section_flag])
+        # the section after has three shots, so its opening and its close differ
+        answers["write-03"] = shots_for(3, ("context", "context", "payoff"))
 
         def redraft(prompt, schema):
             return {"shots": [{"visual": "v", "narration": "a redrafted line", "seconds": 5,
@@ -476,15 +509,117 @@ class Revision(unittest.TestCase):
         self.assertIn("section 2 opens Q2 and drops it", prompt)
         self.assertIn("end section 2 on the inspection log", prompt)
         self.assertIn("line 1.2", prompt)      # the section before ends on it
-        self.assertIn("line 3.2", prompt)      # the section after ends on it
+        self.assertIn("line 3.1", prompt)      # the section after opens on it
+        self.assertNotIn("line 3.3", prompt)   # and its close is not this one's business
+        self.assertIn("opens with these shots", prompt)
         record = data["review"]
         self.assertEqual(record["redrafts"][0]["section"], 2)
         self.assertEqual([s["narration"] for s in data["sections"][1]["shots"]],
                          ["a redrafted line"])
         labels = [s["label"] for sec in data["sections"] for s in sec["shots"]]
-        self.assertEqual(labels, ["1.1", "1.2", "2.1", "3.1", "3.2"])
+        self.assertEqual(labels, ["1.1", "1.2", "2.1", "3.1", "3.2", "3.3"])
         self.assertEqual([s["n"] for sec in data["sections"] for s in sec["shots"]],
-                         [1, 2, 3, 4, 5])
+                         [1, 2, 3, 4, 5, 6])
+
+    def test_a_flag_on_a_shot_the_script_does_not_have_is_asked_again_not_redrafted(self):
+        # one sample's off-by-one shot number is a broken answer, not a
+        # reason to write a whole section again or to plan the film again
+        for stray in (flag(n=99, section=2), flag(n=99, section=0), flag(n=0, section=9)):
+            w = writer()
+            answers = {"review-r1-s1": sample("consider", flags=[stray]),
+                       "review-r1-s1-again": sample("recommend")}
+            calls = faked(w, answers)
+            record = w.run(review=True)["review"]
+            order = names(calls)
+            self.assertIn("review-r1-s1-again", order, stray)
+            again = next(c for c in calls if c["name"] == "review-r1-s1-again")
+            self.assertIn(str(stray["n"] or stray["section"]), again["prompt"], stray)
+            self.assertFalse([n for n in order if n.startswith(("redraft-", "revise-story"))],
+                             stray)
+            self.assertEqual(record["unresolved"], [], stray)
+            self.assertEqual(record["verdict"], "recommend", stray)
+        # still stray after the again: the sample is not valid
+        w = writer()
+        stray = sample("consider", flags=[flag(n=99, section=2)])
+        faked(w, {"review-r1-s1": stray, "review-r1-s1-again": stray})
+        record = w.run(review=True)["review"]
+        first = next(s for s in record["samples"] if s["name"] == "review-r1-s1")
+        self.assertFalse(first["valid"])
+        self.assertTrue(any("99" in p for p in first["unsettled"]), first)
+
+    def test_the_story_rewrite_is_what_the_fact_check_reads(self):
+        w = writer(research="R")
+        answers = consider_then(("recommend", "better"))
+        answers["revise-story-1"] = {"fixes": [{"n": 1, "action": "fix",
+                                                "narration": "The river is empty now.",
+                                                "why": "opens on the picture"}]}
+        answers["verify"] = {"flags": [], "verdict": "fine"}
+        calls = faked(w, answers)
+        w.run(review=True, do_verify=True)
+        verify = next(c for c in calls if c["name"] == "verify")
+        self.assertIn("The river is empty now.", verify["prompt"])
+        self.assertNotRegex(verify["prompt"], r"\] line 1\.1(\n|$)")
+
+    def test_the_cold_reader_reads_the_draft_that_stands(self):
+        w = writer()
+        answers = consider_then(("recommend", "better"))
+        answers["revise-story-1"] = {"fixes": [{"n": 1, "action": "fix",
+                                                "narration": "The river is empty now.",
+                                                "why": "opens on the picture"}]}
+        answers["cold-read-match"] = {"verdict": "mismatch", "difference": "rust"}
+        answers["cold-read-match-r2"] = {"verdict": "match", "difference": ""}
+        calls = faked(w, answers)
+        record = w.run(review=True)["review"]
+        order = names(calls)
+        for name in ("cold-read-r2", "cold-read-answers-r2", "cold-read-match-r2"):
+            self.assertIn(name, order)
+        reread = next(c for c in calls if c["name"] == "cold-read-r2")
+        self.assertIn("The river is empty now.", reread["prompt"])
+        self.assertEqual(record["cold_read"]["round"], 2)
+        self.assertEqual(record["cold_read"]["match"], "match")
+        self.assertEqual([f for f in record["unresolved"] if f["criterion"] == "train"], [])
+        # a revision put back leaves the first reading standing
+        w = writer()
+        answers = consider_then(("consider", "same"))
+        answers["revise-story-1"] = {"fixes": [{"n": 1, "action": "fix",
+                                                "narration": "A rewrite.", "why": "w"}]}
+        calls = faked(w, answers)
+        record = w.run(review=True)["review"]
+        self.assertNotIn("cold-read-r2", names(calls))
+        self.assertEqual(record["cold_read"]["round"], 1)
+
+    def test_a_reverted_rounds_keeps_and_superseded_plan_flags_are_not_the_records(self):
+        plan_flag = flag(n=0, section=0, criterion="train",
+                         problem="the train names a topic", fix="name the obstacle")
+        shot_flags = [flag(), flag(n=2, problem="the second line restates the first")]
+        keep_and_fix = {"fixes": [{"n": 1, "action": "fix", "narration": "A rewrite.",
+                                   "why": "w"},
+                                  {"n": 2, "action": "keep", "why": "it is right as written"}]}
+        # put back: the keep spoke of a round that no longer stands
+        w = writer()
+        answers = consider_then(("consider", "same"), flags=shot_flags)
+        answers["revise-story-1"] = keep_and_fix
+        faked(w, answers)
+        record = w.run(review=True)["review"]
+        self.assertTrue(record["reverted"])
+        self.assertEqual(record["kept"], [])
+        self.assertEqual(record["rounds"][-1]["kept"][0]["why"], "it is right as written")
+        # stands: the keep is the record's
+        w = writer()
+        answers = consider_then(("recommend", "better"), flags=shot_flags)
+        answers["revise-story-1"] = keep_and_fix
+        faked(w, answers)
+        record = w.run(review=True)["review"]
+        self.assertEqual([k["why"] for k in record["kept"]], ["it is right as written"])
+        # a plan flag the better draft's review no longer raises is not unresolved
+        w = writer()
+        answers = consider_then(("recommend", "better"), flags=[flag(), plan_flag])
+        answers["revise-story-1"] = {"fixes": [{"n": 1, "action": "fix",
+                                                "narration": "A rewrite.", "why": "w"}]}
+        faked(w, answers)
+        record = w.run(review=True)["review"]
+        self.assertEqual(record["verdict"], "recommend")
+        self.assertEqual(record["unresolved"], [])
 
     def test_a_plan_flag_is_unresolved_with_the_named_fix_and_nothing_replans(self):
         w = writer()
@@ -556,6 +691,8 @@ class Command(unittest.TestCase):
                 return sample("recommend")
             if which == "cold-read":
                 return copy.deepcopy(COLD)
+            if which == "answers":
+                return copy.deepcopy(ANSWERS)
             if which == "match":
                 return {"verdict": "match", "difference": ""}
             if which == "fixes":
@@ -648,6 +785,35 @@ class Command(unittest.TestCase):
         with mock.patch.object(script.Screenwriter, "__init__", init):
             self.run_stage("--fresh")
         self.assertEqual(seen["fresh"], [True, True])
+
+
+class ReviewLog(unittest.TestCase):
+    def rnd(self):
+        return {"round": 1, "grades": {}, "verdict": "consider",
+                "samples": [{"name": "review-r1-s1", "again": False},
+                            {"name": "review-r1-s2", "again": True},
+                            {"name": "review-r1-s3", "again": False}]}
+
+    def logged(self, cached: dict) -> int:
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / script.REVIEW_LOG
+            w = writer(review_log=log)
+            w.harness.decisions[:] = [mock.Mock(cached=c) for c in cached.values()]
+            for d, name in zip(w.harness.decisions, cached):
+                d.name = name
+            w._log_verdict(self.rnd())
+            return len(log.read_text().splitlines()) if log.exists() else 0
+
+    def test_a_round_is_replayed_only_when_every_decision_it_used_was_cached(self):
+        every = {"review-r1-s1": True, "review-r1-s2": True, "review-r1-s2-again": True,
+                 "review-r1-s3": True}
+        self.assertEqual(self.logged(every), 0)
+        # the sample was served, its again asked afresh: a new verdict
+        self.assertEqual(self.logged(dict(every, **{"review-r1-s2-again": False})), 1)
+        # a cached again does not stand for its sample asked afresh
+        self.assertEqual(self.logged(dict(every, **{"review-r1-s2": False})), 1)
+        self.assertEqual(self.logged(dict(every, **{"review-r1-s1": False,
+                                                    "review-r1-s1-again": True})), 1)
 
 
 def _failing_sample(failing):
