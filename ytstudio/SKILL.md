@@ -383,7 +383,9 @@ blocking editorial note. It is not a delivery verdict. The order is:
    above `qa.PROOF_DIFF` (4; measured: 0.12 for a matching pair, 7.9 for a
    sparse world's opening state against 24 s on, 24.6 for another world) is a
    `proof-mismatch`, owned by `build` and always blocking: it caps
-   `visual_quality` and `animation_vfx` and blocks READY. A film with no proof
+   `visual_quality` and `animation_vfx` and blocks READY, and every other
+   mechanical finding on that world's shots names `build` as owner too
+   (`reowned` says why). A film with no proof
    frames gets a note in the scorecard. The film's frame is kept under
    `qa/pass-NN/proof/`; the author's stays in `vfx/vNN/frames/`;
    with no audio track in `build.json`, `sound_design` and `music_score`

@@ -387,7 +387,8 @@ with an owner and a fix, blocking on the hook, the ending or when repeated
 across shots; and `proof-mismatch`, owned by `build` and always blocking: the
 film at a world's proof-frame time differs from the author's proof frame by
 more than `qa.PROOF_DIFF` in the stage band, which is what a world split into
-includes that restart at t=0 looks like), has the model read the frames and the contact sheet as images
+includes that restart at t=0 looks like; the other mechanical findings on
+that world's shots are re-owned to `build`), has the model read the frames and the contact sheet as images
 and file the scorecard, applies the bar of section 2 mechanically (a blocking
 mechanical finding caps `visual_quality` and `animation_vfx` at 6; no audio
 track in `build.json` fixes `sound_design` and `music_score` at 2.0), and

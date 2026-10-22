@@ -446,6 +446,24 @@ def _on_edge(row: dict) -> bool:
 #: Mechanical kinds that block on their own, wherever they sit.
 ALWAYS_BLOCKING = ("penetration", "reads-merged", "proof-mismatch")
 
+def reown_by_proof(mechanical: list[dict], proof_found: list[dict]) -> int:
+    """A mechanical finding on a shot of a world that fails its proof-frame
+    check is the build's, whatever draws the shot: the film does not show
+    what the author built, so vfx cannot fix a frozen or off-camera shot
+    in it. Each finding moved names the world under `reowned`; returns how
+    many moved."""
+    by_shot = {label: f["world"] for f in proof_found for label in f.get("shots") or []}
+    moved = 0
+    for f in mechanical:
+        world = by_shot.get(str(f.get("shot", "")))
+        if not world or f.get("kind") == "proof-mismatch" or f.get("owner") == "build":
+            continue
+        f["owner"] = "build"
+        f["reowned"] = f"world {world} fails its proof-frame check, so the build owns this"
+        moved += 1
+    return moved
+
+
 def proof_frame_findings(args, project, scene: str, vfx: dict | None, home: Path,
                          shots: list[dict], out_dir: Path) -> tuple[list[dict], str]:
     """The film at each world's proof-frame time against the proof frame.
@@ -1091,8 +1109,12 @@ def run(args) -> int:
         args, project, scene, read_json(project.source("vfx"), warn=False)
         if project.source("vfx") else None, home, build.get("shots", []), pass_dir)
     mechanical += proof_found
+    reowned = reown_by_proof(mechanical, proof_found)
     if proof_note and not args.quiet:
         print(f"note: {proof_note}", file=sys.stderr)
+    if reowned and not args.quiet:
+        print(f"note: {reowned} mechanical finding(s) on a mismatched world's shots "
+              "now name build as owner", file=sys.stderr)
     sheet = contact_sheet(samples, frames_dir, pass_dir / "contact-sheet.png")
     if not args.quiet:
         for f in mechanical:

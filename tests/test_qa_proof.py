@@ -158,6 +158,39 @@ class ProofFrames(unittest.TestCase):
         self.assertLess(qa.proof_diff(a, b), qa.PROOF_DIFF)
 
 
+class Reowned(unittest.TestCase):
+    """AUTO-70: a frozen or off-camera shot inside a world that fails its
+    proof-frame check is the build's defect, not the author's."""
+
+    def mismatch(self, world="fx-open", shots=("1.1", "1.2")):
+        return {"kind": "proof-mismatch", "owner": "build", "severity": "blocking",
+                "shot": "1.1", "world": world, "shots": list(shots), "timestamp": 12.0,
+                "problem": "differs"}
+
+    def test_a_mechanical_finding_on_a_mismatched_worlds_shot_names_build(self):
+        frozen = {"kind": "frozen", "owner": "vfx", "shot": "1.2", "severity": "blocking",
+                  "timestamp": 15.0, "problem": "nothing moves"}
+        elsewhere = {"kind": "frozen", "owner": "vfx", "shot": "2.1", "severity": "minor",
+                     "timestamp": 30.0, "problem": "nothing moves"}
+        mechanical = [frozen, elsewhere, self.mismatch()]
+        self.assertEqual(qa.reown_by_proof(mechanical, [mechanical[-1]]), 1)
+        self.assertEqual(frozen["owner"], "build")
+        self.assertIn("fx-open", frozen["reowned"])
+        self.assertEqual(elsewhere["owner"], "vfx")
+        self.assertNotIn("reowned", elsewhere)
+
+    def test_no_mismatch_changes_nothing(self):
+        frozen = {"kind": "frozen", "owner": "vfx", "shot": "1.2", "severity": "blocking",
+                  "timestamp": 15.0, "problem": "nothing moves"}
+        self.assertEqual(qa.reown_by_proof([frozen], []), 0)
+        self.assertEqual(frozen["owner"], "vfx")
+
+    def test_the_mismatch_itself_is_not_counted(self):
+        found = [self.mismatch()]
+        self.assertEqual(qa.reown_by_proof(found, found), 0)
+        self.assertNotIn("reowned", found[0])
+
+
 class Shared(unittest.TestCase):
     """AUTO-70: the plan and the comparison are one module, used by build and qa."""
 
