@@ -615,7 +615,8 @@ under `unfilled[]` with the queries tried. With a `sound.json` already in the
 project `--fetch` reuses it and asks the model nothing; `--fresh` spots again
 first. The keys are `FREESOUND_CLIENT_ID` and `FREESOUND_CLIENT_SECRET`
 (the secret is the token the API wants); without one nothing is fetched and
-only the name is reported. `yt run` always passes `--fetch`. Each fetched file is
+only the name is reported. `yt run` always passes `--fetch --synth`, so a cue
+Freesound cannot fill is synthesised rather than built as silence. Each fetched file is
 measured on a render host (one ssh per batch; ffmpeg's ebur128: integrated
 loudness, true peak, and the noise floor, the level of the quietest tenth of
 400 ms windows) and the cue gets the `gain_db` that brings it to its design
@@ -1116,9 +1117,28 @@ stages out, and `--quick` drops the quality passes (deliberation, polish,
 fact-check, listen-back) for a cheaper first draft and renders at draft
 quality. `cli.run_extras` is the flags each stage gets (`--rich` and
 `--deliberate critique` for styles, `--polish --verify` for script,
-`--fetch` and `--review` for sound), and `cli.stage_argv` builds each
+`--fetch --synth` and `--review` for sound), and `cli.stage_argv` builds each
 stage's argv; `yt props` gets no extras, only the flags every model stage
-gets (only `yt render` goes without the model flags).
+gets (only `yt render` goes without the model flags). Only the build reads
+the cue sheet, so `yt sound` runs beside `yt keyframe` and `yt vfx` on its
+own thread (`cli.Beside`, a daemon, so a Ctrl-C ends the run and the sound
+stage with it; the terminal's interrupt reaches the stage's engine through
+the process group, where a `kill -INT` of `yt` alone leaves that engine to
+finish on its own) and is joined before `yt build`; a sound stage that
+failed fails the run there, and a walk that stops earlier still waits for it
+and reports its code. The synthesis `--synth` asks for runs on this
+workstation (the agent's NumPy program, no ffmpeg); its WAVs are levelled on
+a render host like the fetched ones. `core.write_json` writes every record
+beside the file and moves it into place, so a write an interrupt cut short
+leaves the old record whole rather than a truncated one.
+`--dry-run` prints the stages the walk would take from the project as it
+stands, one row per stage with its estimated cost (`spend.stage_estimates`:
+measured from the project's own report, else a like project's, else
+assumed) and the total, and runs nothing (the project is planted, as for any
+stage). `--budget-usd N` caps the whole
+run: a stage whose estimate plus what the run has spent does not fit is not
+started, the refusal names the estimate and the run exits 3
+(`retime.UNSETTLED`), and `yt vfx` gets what is left as `--stage-budget-usd`.
 
 ### `yt ls`
 

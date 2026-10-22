@@ -37,7 +37,8 @@ class Stale(unittest.TestCase):
 
     def test_the_improve_estimate_is_measured(self):
         self.assertNotIn("or $10 for a vfx pass", FLAT)
-        self.assertIn("`improve.stage_estimates`", FLAT)
+        # The pricing moved to spend so `yt run` reads it too (AUTO-81).
+        self.assertIn("`spend.stage_estimates`", FLAT)
 
 
 class Missing(unittest.TestCase):

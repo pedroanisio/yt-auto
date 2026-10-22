@@ -106,7 +106,7 @@ one-line note.
 |---|---|---|---|
 | revision rounds the author gets | `--rounds` | `keyframe` (with `--sheet`), `vfx`, `probe` | `--revisions` (`vfx`) |
 | the review score under which work goes back | `--bar` | `keyframe` (with `--sheet`), `vfx`, `probe` | `--author-bar` (`vfx`) |
-| a spend cap in dollars | `--budget-usd` (`--stage-budget-usd`, `--synth-budget-usd`, `--review-budget-usd` cap the whole stage, the synthesis, a review) | `research`, `keyframe`, `vfx`, `probe`, `assess`, `improve`, `sound` | `--budget` (`research`) |
+| a spend cap in dollars | `--budget-usd` (`--stage-budget-usd`, `--synth-budget-usd`, `--review-budget-usd` cap the whole stage, the synthesis, a review) | `research`, `keyframe`, `vfx`, `probe`, `assess`, `improve`, `sound`, `run` (the whole run) | `--budget` (`research`) |
 | ignore what is cached and do the stage again | `--fresh` | `research`, `keyframe`, `vfx`, `props`, `voice`, `sound`, `build`, `retime`, `review`, `qa`, `gate`, `pilot` | |
 | the model, its reasoning effort, its fallbacks | `--model`, `--effort`, `--fallback-model` | every stage that calls a model, `props` included; not `render` | |
 
@@ -192,10 +192,34 @@ authored again with the notes; `--skip keyframe` runs without a look) --
 and skips a stage whose output exists unless it is named in
 `--redo` (`--redo all` repeats everything, `--skip` leaves stages out,
 `--quick` drops the deliberation, polish, fact-check and listen-back passes
-and renders at draft). It always passes `--fetch` to `yt sound`;
+and renders at draft). It always passes `--fetch --synth` to `yt sound`, so
+the sheet never leaves the stage with holes (the synthesis program the agent
+writes runs on this workstation, NumPy only and no ffmpeg; its WAVs are
+levelled on a render host like the fetched ones), and runs that stage beside
+`yt keyframe` and `yt vfx` on its own thread (only `yt build` reads the cue
+sheet), joining it before the build and failing the run there if it failed,
+a walk that stops earlier still reading its code (`cli.Beside`, a daemon
+thread: a Ctrl-C ends the run at once and the sound stage with it, since the
+terminal's interrupt reaches the stage's engine through the process group,
+where a `kill -INT` of `yt` alone leaves that engine to finish on its own;
+an exit on that thread counts with its code; `core.write_json` moves the
+sheet into place whole, so an interrupted write leaves the old one);
 `cli.run_extras` lists what each stage gets and `cli.stage_argv` builds the
 argv (`yt render` is the only stage handed no model flags, `cli.NO_MODEL`;
-`yt props` asks a model and takes them like the rest).
+`yt props` asks a model and takes them like the rest). `yt run --dry-run`
+prints the stages the walk would take from the project as it stands
+(`cli.run_plan`: the same skip, done and look judgement, `cli.stage_state`),
+one row per stage priced by `spend.stage_estimates` (measured, like or
+assumed) and the total, and runs nothing (the project is planted, as for any
+stage). `yt run --budget-usd N` caps the
+whole run: a stage whose estimate plus what the run's stages have reported
+does not fit is not started, the refusal names the estimate and the run exits
+`retime.UNSETTLED` (3); sound counts at its estimate while it runs beside,
+and the voice re-record a `rerecord` verdict asks for is capped like any
+stage; `yt vfx` is handed what is left as `--stage-budget-usd`. The plan and the
+cap price the stages in the one order the walk reaches them
+(`cli.walk_order`, sound before the keyframe), since an assumed vfx pass
+folds in what follows it.
 
 **The look-lock.** `yt keyframe` takes the look from the film itself, so
 nothing made for it is thrown away. It builds `yt vfx`'s own planner
@@ -490,7 +514,7 @@ a pass older than `video.mp4` or `scene.xml` is scored again first), with
   `vfx.json`'s active version; the new `vfx/vNN/` stays on disk).
 - **Stops** at READY TO PUBLISH (or `--target` with nothing blocking), at
   `--max-passes` (3), when the next pass's estimate exceeds what is left of
-  `--budget-usd` (15) -- `improve.stage_estimates` prices each stage of the
+  `--budget-usd` (15) -- `spend.stage_estimates` prices each stage of the
   pass from its own report (`measured`), else from a like project (`like`),
   else an assumed default (`assumed`), and only a pass with nothing measured
   falls back to the last pass's cost; `--dry-run` prints the table -- when a

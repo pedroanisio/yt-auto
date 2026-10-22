@@ -8,6 +8,7 @@ is, how a timecode reads, or what a project directory is called.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import textwrap
@@ -104,10 +105,21 @@ def read_json(path: str | Path | None, *, warn: bool = True,
 
 
 def write_json(path: str | Path, data: object) -> Path:
-    """Pretty, UTF-8, trailing newline: the one way every stage writes JSON."""
+    """Pretty, UTF-8, trailing newline: the one way every stage writes JSON.
+
+    Written beside the file and moved into place, so a write cut short (a
+    crash, a Ctrl-C ending the interpreter under the sound thread) leaves the
+    old record whole rather than a truncated one the next run counts as done.
+    """
     target = Path(path)
-    target.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-                      encoding="utf-8")
+    tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                       encoding="utf-8")
+        os.replace(tmp, target)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     return target
 
 

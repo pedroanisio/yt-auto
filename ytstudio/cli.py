@@ -53,13 +53,15 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
+import traceback
 
 import claude_engine
 
 from .core import read_json
-from . import (assess, assets, build, doctor, env, gate, harness, house, ideas, improve,
+from . import (assess, assets, build, doctor, env, flags, gate, harness, house, ideas, improve,
                inhibit, keyframe, pilot, probes, props, qa, render, research, retime, review, script,
-               sound, styles, vfx, voice, workspace)
+               sound, spend, styles, vfx, voice, workspace)
 
 #: The stages `yt run` walks, in order.
 PIPELINE = tuple(stage for stage, _ in workspace.STAGES)
@@ -142,6 +144,16 @@ def _register_run(sub, parents: list) -> None:
     p.add_argument("--quick", action="store_true",
                    help="skip the quality passes (deliberation, polish, "
                         "fact-check, listen-back) for a cheaper first draft")
+    p.add_argument("--dry-run", action="store_true", dest="dry_run",
+                   help="print the stages this run would walk, each with its "
+                        "estimated cost (measured, like or assumed) and the "
+                        "total, and run nothing (the project is planted, as "
+                        "for any stage)")
+    flags.budget(p, default=None, metavar="USD",
+                 help="spend cap for the whole run: a stage whose estimate plus "
+                      "what the run has spent does not fit is not started "
+                      f"(exit {retime.UNSETTLED}), and vfx gets the remainder as "
+                      "--stage-budget-usd (default: no cap)")
     p.set_defaults(run=_run_pipeline)
 
 #: Stages that call no model: `yt run` hands them the project and the quiet
@@ -173,7 +185,9 @@ def run_extras(args, *, redo: set) -> dict[str, list[str]]:
         # vfx caches its own stages by name, so a redo without --fresh would
         # replay the earlier authoring against the clock it was asked to fix.
         "vfx": ["--fresh"] if redo & {"vfx", "all"} else [],
-        "sound": ["--fetch"] + ([] if quick else ["--review"]),
+        # A cue Freesound cannot fill is synthesised, so the sheet never
+        # leaves the stage with holes the build would play as silence.
+        "sound": ["--fetch", "--synth"] + ([] if quick else ["--review"]),
         "build": [],
         "render": ["--quality", "draft"] if quick else [],
     }
@@ -258,6 +272,92 @@ def look_gate(stage: str, project: workspace.Project, skip: set, redo: set = fro
     return ""
 
 
+class Beside(threading.Thread):
+    """One stage run beside the walk, on its own thread. `code` is what it
+    exited once joined; a crash is printed and counts as a failure, so the
+    walk never waits on a stage that is gone. A daemon: a Ctrl-C ends the
+    run at once, and the stage with the process, instead of the interpreter
+    waiting on the thread while it spends on."""
+
+    def __init__(self, stage: str, run) -> None:
+        super().__init__(name=f"yt {stage}", daemon=True)
+        self.stage, self._run, self.code = stage, run, 1
+
+    def run(self) -> None:
+        try:
+            self.code = int(self._run() or 0)
+        except SystemExit as exc:  # argparse's refusal would otherwise vanish with the thread
+            self.code = int(exc.code) if isinstance(exc.code, int) and exc.code else 1
+        except BaseException:  # noqa: BLE001 -- reported here, not lost with the thread
+            traceback.print_exc()
+            self.code = 1
+
+    def join_for(self, say) -> int:
+        if self.is_alive():
+            say(f"\n== {self.stage}: waiting for it to finish")
+        self.join()
+        return self.code
+
+
+def stage_state(stage: str, project: workspace.Project, skip: set, redo: set, *,
+                say=lambda msg: print(msg, file=sys.stderr)) -> str:
+    """What `yt run` does at a stage's slot, from the project as it stands:
+    "skip", "stop" (the look awaits the operator), "done" (its output exists
+    and it was not named in --redo) or "run"."""
+    if stage in skip:
+        return "skip"
+    look = look_gate(stage, project, skip, redo, say=say)
+    if look == "stop":
+        return "stop"
+    if (project.has(dict(workspace.STAGES)[stage]) and "all" not in redo
+            and stage not in redo and look not in ("again", "relook")):
+        return "done"
+    return "run"
+
+
+def walk_order(skip: set = frozenset()) -> list[str]:
+    """The stages in the order `yt run` reaches them: PIPELINE with sound
+    moved to where it starts, beside the keyframe, less the ones skipped.
+    The plan and the cap both price this order, since an assumed vfx folds
+    in what follows it: sound priced after vfx would count at nothing."""
+    order = [s for s in PIPELINE if s != "sound"]
+    order.insert(order.index("keyframe"), "sound")
+    return [s for s in order if s not in skip]
+
+
+def run_plan(project: workspace.Project, skip: set, redo: set, *,
+             say=lambda msg: print(msg, file=sys.stderr)) -> tuple[list[str], str]:
+    """The stages `yt run` would walk now, in order, sound where it starts
+    (beside the keyframe), and why the walk would stop early, or "". A
+    keyframe that runs leaves a look awaiting approval, so the plan ends
+    there as the walk does."""
+    plan: list[str] = []
+    for stage in walk_order():
+        state = stage_state(stage, project, skip, redo, say=say)
+        if state == "stop":
+            return plan, f"stops before {stage}: the look awaits the operator"
+        if state == "run":
+            plan.append(stage)
+            if stage == "keyframe":
+                return plan, ("stops before vfx: the look will await the operator "
+                              "(yt keyframe --approve, then yt run again)")
+    return plan, ""
+
+
+def print_plan(plan: list[str], rows: list[dict], stop: str) -> None:
+    """One row per stage the run would walk, the total, and where it stops."""
+    priced = {r["stage"]: r for r in rows}
+    print(f"yt run would walk {len(plan)} stage(s); nothing run:")
+    for stage in plan:
+        r = priced.get(stage) or {"usd": 0.0, "basis": "assumed", "source": "no estimate"}
+        beside = "  (beside the keyframe and vfx)" if stage == "sound" else ""
+        print(f"  {stage:<10} {'$' + format(r['usd'], '.2f'):>8}  {r['basis']:<9} "
+              f"{r['source']}{beside}")
+    print(f"  {'total':<10} {'$' + format(spend.total(priced[s] for s in plan if s in priced), '.2f'):>8}")
+    if stop:
+        print(f"  {stop}")
+
+
 def _run_pipeline(args) -> int:
     split = lambda s: [p.strip() for p in s.split(",") if p.strip()]  # noqa: E731
     skip, redo = set(split(args.skip)), set(split(args.redo))
@@ -278,20 +378,83 @@ def _run_pipeline(args) -> int:
 
     extra = run_extras(args, redo=redo)
     artifacts = dict(workspace.STAGES)
+    say = lambda msg: print(msg, file=sys.stderr)  # noqa: E731
+    say(f"{idea.title}\n  -> {project.root}")
 
-    print(f"{idea.title}\n  -> {project.root}", file=sys.stderr)
+    if args.dry_run:
+        plan, stop = run_plan(project, skip, redo, say=say)
+        print_plan(plan, spend.stage_estimates(project.root, plan), stop)
+        return 0
+
+    def run_stage(stage: str, argv_extra: dict[str, list[str]]) -> int:
+        stage_args = parser.parse_args(stage_argv(stage, base, argv_extra))
+        return stage_args.run(stage_args)
+
+    # The cap: a stage is started only when its estimate fits beside what the
+    # stages that ran have reported. Sound counts at its estimate while it
+    # runs beside, at its report once joined. Priced in walk order, as the
+    # plan is, so a stage is folded into the vfx default only when it follows it.
+    budget = args.budget_usd
+    priced: dict[str, dict] = {}
+    if budget is not None:
+        priced = {r["stage"]: r for r in spend.stage_estimates(project.root, walk_order(skip))}
+    ran: set[str] = set()
+    committed, over = 0.0, False
+
+    def paid(stage: str) -> float:
+        rel = spend.MANIFEST.get(stage)
+        return (spend.cost_in(read_json(project.root / rel, warn=False)) or 0.0) if rel else 0.0
+
+    def refused(stage: str) -> bool:
+        nonlocal over
+        if budget is None:
+            return False
+        spent = sum(paid(s) for s in ran) + committed
+        row = priced.get(stage) or {"usd": 0.0, "basis": "assumed"}
+        if spent + row["usd"] <= budget:
+            return False
+        say(f"\n== {stage}: estimated at ${row['usd']:.2f} ({row['basis']}) and "
+            f"${spent:.2f} of the ${budget:.2f} budget is spent; it does not fit, "
+            f"stopping here (a higher --budget-usd, or `yt {stage}` by hand)")
+        over = True
+        return True
+
+    def run_capped(stage: str, argv: list[str]) -> int:
+        # The re-record retime asks for is a stage like any other under the cap.
+        return retime.UNSETTLED if refused(stage) else run_stage(stage, {stage: argv})
+
+    # Only the build reads the cue sheet, so the sound stage runs beside the
+    # keyframe and vfx on its own thread (its own harness, its own files) and
+    # is joined before the build; a walk that stops early still waits for it.
+    beside: Beside | None = None
+    code = 0
     for stage in PIPELINE:
-        if stage in skip:
-            print(f"\n== {stage}: skipped", file=sys.stderr)
+        if stage == "keyframe" and stage_state("sound", project, skip, redo) == "run":
+            if refused("sound"):
+                code = retime.UNSETTLED
+                break
+            committed = (priced.get("sound") or {}).get("usd", 0.0)
+            say("\n== sound: beside the keyframe and vfx")
+            beside = Beside("sound", lambda: run_stage("sound", extra))
+            beside.start()
+        if stage == "sound" and beside is not None:
+            code = beside.join_for(say)
+            committed, ran = 0.0, ran | {"sound"}
+            if code:
+                break
             continue
-        look = look_gate(stage, project, skip, redo)
-        if look == "stop":
-            return 0
-        if (project.has(artifacts[stage]) and "all" not in redo
-                and stage not in redo and look not in ("again", "relook")):
-            print(f"\n== {stage}: already done ({artifacts[stage]}); "
-                  "--redo to run it again", file=sys.stderr)
+        state = stage_state(stage, project, skip, redo)
+        if state == "skip":
+            say(f"\n== {stage}: skipped")
             continue
+        if state == "stop":
+            break
+        if state == "done":
+            say(f"\n== {stage}: already done ({artifacts[stage]}); --redo to run it again")
+            continue
+        if refused(stage):
+            code = retime.UNSETTLED
+            break
         argv_extra = dict(extra)
         if stage == "vfx" and "keyframe" not in skip and keyframe.approved_keyframe(
                 project.root) and keyframe.load_record(project.root).get("source") == "section":
@@ -304,18 +467,28 @@ def _run_pipeline(args) -> int:
                 print("\n== vfx: the approved look goes into the animation: its section is "
                       "carried and the others are authored again against it", file=sys.stderr)
                 redo = redo | {"build", "render"}
-        print(f"\n== {stage}", file=sys.stderr)
-        stage_args = parser.parse_args(stage_argv(stage, base, argv_extra))
-        code = stage_args.run(stage_args)
+        if stage == "vfx" and budget is not None:
+            # What is left of the cap is the stage's own, every section together.
+            left = budget - sum(paid(s) for s in ran) - committed
+            argv_extra["vfx"] = [*argv_extra.get("vfx", []), "--stage-budget-usd", f"{left:.2f}"]
+        say(f"\n== {stage}")
+        code = run_stage(stage, argv_extra)
+        ran.add(stage)  # its report counts before anything it asks for is priced
         if stage == "retime":
-            def run_one(name: str, extra_argv: list[str]) -> int:
-                one = parser.parse_args(stage_argv(name, base, {name: extra_argv}))
-                return one.run(one)
-            code = settle_retime(code, project, run_one)
+            code = settle_retime(code, project, run_capped)
         if code:
-            print(f"\n{stage} exited {code}; stopping here", file=sys.stderr)
-            return code
-    return 0
+            break
+    if code and not over:
+        say(f"\n{stage} exited {code}; stopping here")
+    if beside is not None and "sound" not in ran:
+        # The walk stopped before the sound slot; what sound did still counts,
+        # whether the thread is still at it or already failed and gone.
+        sound_code = beside.join_for(say)
+        if sound_code:
+            say(f"\nsound exited {sound_code}")
+            code = code or sound_code
+    return code
+
 
 
 # --------------------------------------------------------------------------- #
