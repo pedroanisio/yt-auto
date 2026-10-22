@@ -4,9 +4,10 @@ judged several at once (AUTO-76).
 Freesound and the judge are faked at the same seams as `test_sound_fetch`
 and `test_sound_judge`; a barrier inside the fake proves the overlap, since
 a serial fetch never has two cues inside it at the same time. What the tests
-pin: the flag is the shared `--jobs`, default 4; a round's downloads overlap
-and `sound/index.json` still records every file; a round's judgements
-overlap; and the progress lines come out one cue at a time, in cue order,
+pin: the flag is the shared `--jobs`, default 4, and the stage hands it to
+the fetch; a round's searches and downloads overlap and `sound/index.json`
+still records every file; a round's judgements overlap; and the progress
+lines and the `unfilled` record come one cue at a time, in cue order,
 however the threads interleave.
 """
 
