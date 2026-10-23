@@ -914,14 +914,16 @@ def blocking_mechanical(card: dict) -> set[str]:
 
 def judge(best: dict, new: dict, *, tolerance: float = TOLERANCE) -> dict:
     """Keep only a measured improvement: the overall up, no category down by
-    more than the tolerance, no new blocking mechanical finding."""
+    more than the tolerance, no new blocking mechanical finding. A category
+    not evidenced on either side (no current listening review, AUTO-105)
+    has no delta and neither drops nor counts as a gain."""
     diff = qa.compare(best, new)
     reasons = []
     if diff["overall_delta"] <= 0:
         reasons.append(f"overall {new.get('overall')} did not improve on "
                        f"{best.get('overall')} ({diff['overall_delta']:+.2f})")
     for key, delta in diff["deltas"].items():
-        if delta < -tolerance - 1e-9:
+        if delta is not None and delta < -tolerance - 1e-9:
             reasons.append(f"{key} dropped {delta:+.1f}, more than the {tolerance:g} "
                            "tolerance")
     for fp in sorted(blocking_mechanical(new) - blocking_mechanical(best)):
@@ -1720,6 +1722,13 @@ def story_rejected(root: Path, stage: str, argv: list[str]) -> str:
             "screenplay this pass wrote was not voiced")
 
 
+def _score_cell(summary: dict, key: str):
+    """A category's score as the report prints it: a category recorded not
+    evidenced (None in the scorecard) says so rather than "None"."""
+    scores = summary.get("scores") or {}
+    return "not evidenced" if key in scores and scores[key] is None else scores.get(key)
+
+
 def report_md(record: dict, root: Path) -> str:
     stamp = qa._stamp
     root = Path(root)
@@ -1741,7 +1750,7 @@ def report_md(record: dict, root: Path) -> str:
             d = f"{float(b) - float(a):+.1f}"
         except (TypeError, ValueError):
             d = ""
-        lines.append(f"| {key} | {a} | {b} | {d} |")
+        lines.append(f"| {key} | {_score_cell(start, key)} | {_score_cell(best, key)} | {d} |")
     lines.append(f"| **overall** | {start.get('overall')} | {best.get('overall')} | |")
     lines += ["", "## 3. Changes implemented", ""]
     if not record["passes"]:
@@ -1809,6 +1818,15 @@ def report_md(record: dict, root: Path) -> str:
     lines += ["", "### Minor / acceptable", ""]
     lines += [f"- {stamp(f.get('timestamp'))} [{f['source']}] {f['problem']} "
               f"(owner {f.get('owner') or '?'})" for f in minor] or ["None."]
+    unheard = best_card.get("audio_not_evidenced") or {}
+    if unheard:
+        # AUTO-105: no score without a current listening review, so READY
+        # cannot be judged for these until the evidence exists.
+        lines += ["", "### Not evidenced (READY cannot be judged)", ""]
+        lines += [f"- {key}: no current listening review ({gap.get('missing', '?')}) -- "
+                  + (f"run {gap['command']}" if gap.get("command")
+                     else "nothing in the pipeline produces one yet")
+                  for key, gap in unheard.items()]
     if record.get("human"):
         lines += ["", "### Needs a human decision (not looped)", ""]
         lines += [f"- [{h['route']}] {h['problem']} -- {h.get('why_routed', '')}"
