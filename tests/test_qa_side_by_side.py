@@ -66,7 +66,8 @@ class Pass(unittest.TestCase):
         saved = harness.ENGINE, qa.RENDERER
         self.addCleanup(setattr, qa, "RENDERER", saved[1])
         self.addCleanup(setattr, harness, "ENGINE", saved[0])
-        seen = self.seen = {"prompts": [], "compares": [], "renders": [], "cwd": []}
+        seen = self.seen = {"prompts": [], "compares": [], "renders": [], "cwd": [],
+                             "listed": []}
         #: The comparison's answer: a callable of its prompt, or an exception.
         self.compare = compare = [lambda prompt: {"moments": [
             {"id": i, "better": "same", "why": "no difference", "bears_on": []}
@@ -78,6 +79,8 @@ class Pass(unittest.TestCase):
                 if COMPARE in prompt:
                     seen["compares"].append(prompt)
                     seen["cwd"].append(Path(self_.config.cwd))
+                    seen["listed"].append({p.name: p.read_bytes() for p in
+                                           Path(self_.config.cwd).iterdir()})
                     answer = compare[0]
                     if isinstance(answer, Exception):
                         raise answer
@@ -161,7 +164,7 @@ class Pairs(Pass):
         # the previous cut was not rendered again: every still came from pass-01
         self.assertFalse([r for r in self.seen["renders"] if "previous" in r["out"]])
         prompt = self.seen["compares"][0]
-        cwd = self.seen["cwd"][0]
+        pairs = self.root / "qa" / "pass-02" / qa.SIDE_DIR    # kept for the record
         one = self.root / "qa" / "pass-01" / "frames"
         two = self.root / "qa" / "pass-02" / "frames"
         for m in side["moments"]:
@@ -169,7 +172,9 @@ class Pairs(Pass):
             self.assertIn(f"{m['id']}-B.png", prompt)
             for slot in ("A", "B"):
                 cut = one if m["order"][slot] == "previous" else two
-                self.assertEqual((cwd / f"{m['id']}-{slot}.png").read_bytes(),
+                self.assertEqual((pairs / f"{m['id']}-{slot}.png").read_bytes(),
+                                 (cut / m["frame"]).read_bytes(), (m, slot))
+                self.assertEqual(self.seen["listed"][0][f"{m['id']}-{slot}.png"],
                                  (cut / m["frame"]).read_bytes(), (m, slot))
         self.assertNotEqual((one / samples[0]["frame"]).read_bytes(),
                             (two / samples[0]["frame"]).read_bytes())
@@ -191,6 +196,16 @@ class Pairs(Pass):
                      '"overall"', '"scores"', "7.0"):
             self.assertNotIn(word, prompt)
         self.assertNotIn("pass-", self.seen["cwd"][0].name)
+
+    def test_the_pairs_are_read_outside_the_pass_so_the_frames_cannot_be_matched(self):
+        # Beside the pass's frames/ and previous/, an agent listing `..` could
+        # match A and B to the cuts by name or hash and learn which is new.
+        self.two_passes()
+        cwd = self.seen["cwd"][0]
+        self.assertFalse(cwd.resolve().is_relative_to(self.root.resolve()), cwd)
+        self.assertFalse((cwd.parent / "frames").exists())
+        self.assertFalse((cwd.parent / qa.PREVIOUS_DIR).exists())
+        self.assertFalse(cwd.exists())                  # removed after the reading
 
     def test_the_ab_order_is_recorded_and_varies(self):
         self.two_passes()
@@ -216,6 +231,66 @@ class Pairs(Pass):
         side = self.card()["side_by_side"]
         self.assertEqual(side["status"], "skipped")
         self.assertIn("--reuse", side["why"])
+
+    def test_a_reused_pass_keeps_the_cut_its_frames_show(self):
+        # --reuse scores pass-02's frames again; they show cut 2 whatever
+        # scene.xml says now, so the card keeps cut 2's digest, and a later
+        # pass never takes those frames for cut 3's.
+        self.two_passes()
+        drawn = self.card()["cut"]
+        (self.root / "scene.xml").write_text("<scene cut='3'/>")
+        self.run_qa(reuse="pass-02", fresh=True)
+        self.assertEqual(self.card()["cut"], drawn)
+
+    def test_a_cut_whose_assets_changed_is_compared(self):
+        # The same document drawing a rewritten texture is another cut.
+        (self.root / "wood.png").write_bytes(b"grain 1")
+        (self.root / "scene.xml").write_text("<scene cut='1'><material "
+                                             "baseColorMap=\"wood.png\"/></scene>")
+        self.run_qa()
+        (self.root / "wood.png").write_bytes(b"grain 2")
+        self.run_qa()
+        side = self.card()["side_by_side"]
+        self.assertEqual(side["status"], "done", side["why"])
+        self.assertEqual(len(self.seen["compares"]), 1)
+        self.assertNotEqual(self.card()["cut"], self.card("pass-01")["cut"])
+
+    def test_a_cut_with_an_unreadable_reference_is_never_the_same_cut(self):
+        (self.root / "scene.xml").write_text("<scene cut='1'><material "
+                                             "baseColorMap=\"gone.png\"/></scene>")
+        self.run_qa()
+        self.run_qa()
+        self.assertIsNone(self.card()["cut"])
+        self.assertEqual(self.card()["side_by_side"]["status"], "done")
+
+
+class Default(Pass):
+    """Without --previous, the pass compared with is the previous kept cut."""
+
+    def test_after_improve_reverted_the_latest_pass_the_best_kept_one_is_compared(self):
+        self.run_qa()
+        (self.root / "scene.xml").write_text("<scene cut='2'/>")
+        self.run_qa()
+        # yt improve judged pass-02 and put pass-01's cut back
+        (self.root / "improve.json").write_text(json.dumps({
+            "best": {"pass": "pass-01"},
+            "passes": [{"qa_pass": "pass-02", "decision": "revert"}]}))
+        (self.root / "scene.xml").write_text("<scene cut='3'/>")
+        self.run_qa()
+        card = self.card("pass-03")
+        self.assertEqual(card["side_by_side"]["against"], "pass-01")
+        self.assertEqual(card["comparison"]["against"], "pass-01")
+
+    def test_a_kept_latest_pass_is_compared(self):
+        self.run_qa()
+        (self.root / "scene.xml").write_text("<scene cut='2'/>")
+        self.run_qa()
+        (self.root / "improve.json").write_text(json.dumps({
+            "best": {"pass": "pass-02"},
+            "passes": [{"qa_pass": "pass-02", "decision": "keep"}]}))
+        (self.root / "scene.xml").write_text("<scene cut='3'/>")
+        self.run_qa()
+        self.assertEqual(self.card("pass-03")["side_by_side"]["against"], "pass-02")
 
 
 class Moved(Pass):
@@ -280,6 +355,48 @@ class Moved(Pass):
         self.assertFalse([r for r in self.seen["renders"] if "previous" in r["out"]])
         self.assertTrue(side["unpaired"])
 
+    def test_a_previous_document_whose_texture_changed_is_not_rendered(self):
+        # A texture an included document names, rewritten at the same path:
+        # the snapshot's document would draw the new picture, not the cut
+        # pass-01 judged.
+        (self.root / "vfx").mkdir()
+        (self.root / "vfx" / "wood.png").write_bytes(b"grain 1")
+        (self.root / "vfx" / "a.include.scene.xml").write_text(
+            "<scene><material baseColorMap=\"wood.png\"/></scene>")
+        (self.root / "scene.xml").write_text(
+            "<scene cut='1'><include src=\"vfx/a.include.scene.xml\"/></scene>")
+        self.run_qa()
+        snap = self.root / "improve" / "pass-01" / "snapshot"
+        snap.mkdir(parents=True)
+        shutil.copyfile(self.root / "scene.xml", snap / "scene.xml")
+        (self.root / "vfx" / "wood.png").write_bytes(b"grain 2")
+        (self.root / "scene.xml").write_text(
+            "<scene cut='2'><include src=\"vfx/a.include.scene.xml\"/></scene>")
+        self.build(self.moved())
+        self.run_qa()
+        side = self.card()["side_by_side"]
+        self.assertFalse([r for r in self.seen["renders"] if "previous" in r["out"]])
+        self.assertTrue(side["unpaired"])
+        self.assertTrue(all(m["previous"] == "reused" for m in side["moments"]))
+
+    def test_with_no_moment_paired_the_gap_is_named_under_not_evidenced(self):
+        self.run_qa()
+        (self.root / "scene.xml").write_text("<scene cut='2'/>")
+        shifted = self.moved()
+        for shot in shifted["shots"]:
+            shot["at"] += 0.5
+        self.build(shifted)
+        self.run_qa()
+        card = self.card()
+        side = card["side_by_side"]
+        self.assertEqual(side["status"], "skipped")
+        self.assertTrue(side["unpaired"])
+        self.assertTrue(any("side by side" in n for n in card["not_evidenced"]),
+                        card["not_evidenced"])
+        text = (self.root / "qa" / "pass-02" / "findings.md").read_text()
+        for u in side["unpaired"]:
+            self.assertIn(f"{qa._stamp(u['t'])} shot {u['label']}: not compared", text)
+
 
 class Tally(Pass):
     def answer(self, pick):
@@ -299,7 +416,8 @@ class Tally(Pass):
         n = len(side["moments"])
         self.assertEqual(side["tally"]["visual_quality"], {"better": n, "worse": 0, "same": 0})
         self.assertEqual(side["tally"]["cinematography"]["better"], n)
-        self.assertEqual(side["tally"]["total"], {"better": 2 * n, "worse": 0, "same": 0})
+        # one vote a moment, however many categories it bears on
+        self.assertEqual(side["tally"]["total"], {"better": n, "worse": 0, "same": 0})
         self.assertNotIn("animation_vfx", side["tally"])
         self.assertEqual(len(side["entries"]), 2 * n)
         for e in side["entries"]:
@@ -313,6 +431,64 @@ class Tally(Pass):
         total = self.card()["side_by_side"]["tally"]["total"]
         self.assertEqual((total["better"], total["worse"]), (0, total["worse"]))
         self.assertGreater(total["worse"], 0)
+
+    def test_a_same_moment_files_an_entry_and_counts_as_same(self):
+        self.two_passes()                    # the default answer: every moment the same
+        side = self.card()["side_by_side"]
+        n = len(side["moments"])
+        self.assertGreater(n, 0)
+        self.assertEqual(side["tally"]["total"], {"better": 0, "worse": 0, "same": n})
+        self.assertEqual([e["category"] for e in side["entries"]], [None] * n)
+        self.assertNotIn("None", side["tally"])
+        self.assertNotIn(None, side["tally"])
+        text = (self.root / "qa" / "pass-02" / "findings.md").read_text()
+        self.assertIn(f"the same {n}", text)
+
+    def test_a_same_moment_bearing_on_categories_is_same_in_each(self):
+        self.compare[0] = lambda prompt: {"moments": [
+            {"id": i, "better": "same", "why": "both read", "bears_on": ["visual_quality"]}
+            for i in ids_in(prompt)]}
+        self.two_passes()
+        side = self.card()["side_by_side"]
+        n = len(side["moments"])
+        self.assertEqual(side["tally"]["visual_quality"], {"better": 0, "worse": 0, "same": n})
+        self.assertEqual(side["tally"]["total"]["same"], n)
+
+    def test_a_moment_won_with_no_category_still_counts(self):
+        self.answer(lambda a: "A" if a == "new" else "B")
+        self.compare[0] = (lambda reply: lambda prompt: {"moments": [
+            dict(m, bears_on=[]) for m in reply(prompt)["moments"]]})(self.compare[0])
+        self.two_passes()
+        side = self.card()["side_by_side"]
+        n = len(side["moments"])
+        self.assertEqual(side["tally"]["total"], {"better": n, "worse": 0, "same": 0})
+
+    def test_the_prompt_asks_for_the_categories_whatever_the_answer(self):
+        self.two_passes()
+        prompt = self.seen["compares"][0]
+        self.assertNotIn("none when they are the same", prompt)
+        items = qa.SIDE_SCHEMA["properties"]["moments"]["items"]
+        self.assertNotIn("none when", items["properties"]["bears_on"]["description"])
+
+    def test_the_tally_counts_one_vote_a_moment(self):
+        one = [{"category": c, "result": "better", "source": "stills", "moment": "m01"}
+               for c in ("visual_quality", "cinematography", "animation_vfx",
+                         "editing_pacing")]
+        three = [{"category": "visual_quality", "result": "worse", "source": "stills",
+                  "moment": m} for m in ("m02", "m03", "m04")]
+        got = qa.tally(one + three)
+        self.assertEqual(got["total"], {"better": 1, "worse": 3, "same": 0})
+        self.assertEqual(got["visual_quality"], {"better": 1, "worse": 3, "same": 0})
+        # the same moment id from another source is another moment
+        video = [dict(e, source="video") for e in three]
+        self.assertEqual(qa.tally(three + video)["total"]["worse"], 6)
+        # a moment whose entries disagree goes by most of them, a tie as same
+        split = [{"category": "a", "result": "better", "moment": "m01"},
+                 {"category": "b", "result": "better", "moment": "m01"},
+                 {"category": "c", "result": "worse", "moment": "m01"},
+                 {"category": "a", "result": "better", "moment": "m02"},
+                 {"category": "b", "result": "worse", "moment": "m02"}]
+        self.assertEqual(qa.tally(split)["total"], {"better": 1, "worse": 0, "same": 1})
 
     def test_the_audio_categories_are_not_judged_from_stills(self):
         for key in qa.AUDIO:
