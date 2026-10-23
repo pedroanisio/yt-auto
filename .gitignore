@@ -10,3 +10,4 @@ __pycache__/
 .venv-bridge/
 .bridge/
 .venv/
+gateway/node_modules/
