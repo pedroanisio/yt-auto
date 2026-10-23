@@ -733,6 +733,46 @@ def programme_seconds(project: workspace.Project, build: dict | None) -> float:
     return seconds
 
 
+def _partial_render(project: workspace.Project, build: dict | None,
+                    outputs: list) -> list[tuple[str, str]]:
+    """The render's outputs that cover only part of the programme: the first
+    one found, as (problem, fix)."""
+    duration = programme_seconds(project, build)
+    for o in outputs:
+        start, end = (list(o.get("range") or [0, 0]) + [0, 0])[:2]
+        if duration and (float(start) > 0.05 or float(end) < duration - 0.05):
+            return [(f"the render covers {float(start):g}-{float(end):g}s of a "
+                     f"{duration:g}s programme",
+                     _cmd("render", project, "--quality", "final", "--strict"))]
+    return []
+
+
+def _stale_video(project: workspace.Project) -> list[tuple[str, str]]:
+    """video.mp4 older than scene.xml, as (problem, fix): the scene was
+    rebuilt after the render."""
+    video, scene = project.path("video"), project.path("scene")
+    rendered_at = _mtime(video) if video.exists() else 0.0
+    scene_at = _mtime(scene) if scene.exists() else 0.0
+    if rendered_at and scene_at > rendered_at:
+        return [("video.mp4 predates scene.xml: the scene was rebuilt after the "
+                 "render, so the video shows an older cut",
+                 _cmd("render", project, "--quality", "final", "--strict"))]
+    return []
+
+
+def cut_problems(project: workspace.Project, build: dict | None) -> list[tuple[str, str]]:
+    """Why video.mp4 is not the film scene.xml now builds, as (problem, fix)
+    pairs; empty when it is: a finished render that covers only part of the
+    programme, or a video older than the scene. delivery_evidence reports
+    both among its rows, and `yt qa --watch` (AUTO-127) watches nothing
+    while either stands, since a watch of another cut would point at
+    moments that no longer hold what was seen."""
+    rep = read_json(project.source("render"), warn=False) or {}
+    outputs = (rep.get("result") or {}).get("outputs") or []
+    partial = _partial_render(project, build, outputs) if rep.get("ok") and outputs else []
+    return partial + _stale_video(project)
+
+
 def delivery_evidence(project: workspace.Project, build: dict | None
                       ) -> list[tuple[str, str]]:
     """What stands between the rendered video and publication, as
@@ -770,13 +810,7 @@ def delivery_evidence(project: workspace.Project, build: dict | None
             missing.append((f"the engine reported {said} warning(s) or unsupported "
                             "construct(s) on the render; --strict would have refused it",
                             final))
-        duration = programme_seconds(project, build)
-        for o in outputs:
-            start, end = (list(o.get("range") or [0, 0]) + [0, 0])[:2]
-            if duration and (float(start) > 0.05 or float(end) < duration - 0.05):
-                missing.append((f"the render covers {float(start):g}-{float(end):g}s of a "
-                                f"{duration:g}s programme", final))
-                break
+        missing += _partial_render(project, build, outputs)
 
     built = build or read_json(project.path("build"), warn=False) or {}
     if built and not int(built.get("audio_tracks") or 0):
@@ -791,10 +825,7 @@ def delivery_evidence(project: workspace.Project, build: dict | None
     scene = project.path("scene")
     scene_at = _mtime(scene) if scene.exists() else 0.0
     judged_after = max(rendered_at, scene_at)
-    if rendered_at and scene_at > rendered_at:
-        missing.append(("video.mp4 predates scene.xml: the scene was rebuilt after the "
-                        "render, so the video shows an older cut",
-                        _cmd("render", project, "--quality", "final", "--strict")))
+    missing += _stale_video(project)
     gate_file = project.root / "gate.json"
     gate = read_json(gate_file, warn=False) if gate_file.exists() else None
     if not gate:
