@@ -71,6 +71,7 @@ __all__ = [
     "ClaudeNotFound",
     "ClaudeExecutionError",
     "is_transient",
+    "book_from_table",
 ]
 
 
@@ -225,6 +226,59 @@ def _partial_cost(tokens: dict[str, int], model: str | None) -> float | None:
             + tokens.get("output_tokens", 0) * row.get("output", 0)) / 1_000_000
 
 
+#: A `modelUsage` entry's token counts, by the names `_partial_cost` reads.
+_MODEL_USAGE_TOKENS = (("inputTokens", "input_tokens"), ("outputTokens", "output_tokens"),
+                       ("cacheReadInputTokens", "cache_read_input_tokens"),
+                       ("cacheCreationInputTokens", "cache_creation_input_tokens"))
+
+
+def book_from_table(payload: dict) -> dict:
+    """Book a result that came through Vercel AI Gateway at the price table,
+    in place, and return it (AUTO-121).
+
+    The CLI's `total_cost_usd` and `costUSD` are its own estimate at
+    Anthropic's rates, not what the gateway bills. Each `modelUsage` entry
+    is booked at its row (PRICES and $CLAUDE_PRICES, a gateway id taking its
+    direct name's row, as a cut-off call is priced) times its four token
+    counts; the CLI's figure stays beside it as `cliCostUSD`, and
+    `costSource` says which one was booked: "table", or "cli" when the
+    model has no row or the entry carries no tokens. The call's
+    `total_cost_usd` becomes their sum, its own figure is kept as
+    `cli_cost_usd`, and `cost_source` is "cli" when any entry fell back,
+    or when there was no `modelUsage` to price. A result already booked is
+    left as it is, so booking twice changes nothing.
+
+    The table is an estimate of the bill, not a copy of it: the gateway
+    prices some models below list and adds surcharges (zero data retention,
+    custom reporting), and a cache write is priced at one rate whatever its
+    lifetime. Its own per-call figure is behind /v1/generation, which is not
+    asked here."""
+    if "cli_cost_usd" in payload:
+        return payload
+    usage = payload.get("modelUsage") if isinstance(payload.get("modelUsage"), dict) else {}
+    source = "table" if usage else "cli"
+    total = 0.0
+    for model, entry in usage.items():
+        if not isinstance(entry, dict):
+            continue
+        own = entry.get("costUSD") or 0.0
+        cost = None
+        if any(name in entry for name, _ in _MODEL_USAGE_TOKENS):
+            cost = _partial_cost({mine: int(entry.get(name) or 0)
+                                  for name, mine in _MODEL_USAGE_TOKENS}, model)
+        priced_by = "table"
+        if cost is None:
+            cost, priced_by = own, "cli"
+            source = "cli"
+        entry.update(costUSD=cost, cliCostUSD=own, costSource=priced_by)
+        total += cost
+    payload["cli_cost_usd"] = payload.get("total_cost_usd") or 0.0
+    payload["cost_source"] = source
+    if usage:
+        payload["total_cost_usd"] = total
+    return payload
+
+
 # --------------------------------------------------------------------------- #
 # value objects
 # --------------------------------------------------------------------------- #
@@ -293,6 +347,13 @@ class Usage:
             row["cache_read_tokens"] += m.get("cacheReadInputTokens", 0)
             row["cache_creation_tokens"] += m.get("cacheCreationInputTokens", 0)
             row["cost_usd"] += m.get("costUSD") or 0.0
+            if m.get("costSource"):
+                # Booked through the gateway (`book_from_table`): the CLI's
+                # own figure, and a count of the calls booked each way. A
+                # direct call's row has neither, so its keys are as before.
+                row["cli_cost_usd"] = row.get("cli_cost_usd", 0.0) + (m.get("cliCostUSD") or 0.0)
+                name = f"cost_{m['costSource']}_calls"
+                row[name] = row.get(name, 0) + 1
 
     def merge(self, other: "Usage") -> None:
         """Add another accounting into this one, per-model rows included."""
@@ -575,6 +636,9 @@ class ClaudeEngine:
         #: pins a fresh one: the CLI refuses an id it has already used.
         self.pending_session_id: str | None = None
         self._log: list[dict] = []
+        #: Whether the last launch went through Vercel AI Gateway, so its
+        #: result is booked from the price table (set by `_popen_kwargs`).
+        self._gateway_booked = False
         #: Guards `usage` and the log when workers report back (`absorb`).
         #: One engine's own calls are not thread-safe: run concurrent work
         #: on workers from `spawn()`, never on a shared instance.
@@ -856,7 +920,13 @@ class ClaudeEngine:
     def _popen_kwargs(self) -> dict:
         env = dict(os.environ)
         # After the parent, before config.env: an explicit config.env wins.
-        env.update(self._transport_env({**env, **(self.config.env or {})}))
+        overlay = self._transport_env({**env, **(self.config.env or {})})
+        # A launch that went through the gateway has its result booked from
+        # the price table (`book_from_table`). Set from the launch itself, so
+        # an engine that sends nothing there (codex's own route, the gateway
+        # engine's program, the chat bridge) never has its booking touched.
+        self._gateway_booked = bool(overlay)
+        env.update(overlay)
         if self.config.env:
             env.update(self.config.env)
         # Keep the child from trying to paint a TUI into our pipe.
@@ -1076,6 +1146,11 @@ class ClaudeEngine:
     def _absorb_result(self, payload: dict) -> None:
         if payload.get("session_id"):
             self.session_id = payload["session_id"]
+        if getattr(self, "_gateway_booked", False):
+            # In place, before anything reads it: the per-call usage, the
+            # result event and a caller's own meter (sdkkit's) see the
+            # table's figure too.
+            book_from_table(payload)
         self.usage.add(payload)
         self._log.append(payload)
 
