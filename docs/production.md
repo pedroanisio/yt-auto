@@ -272,6 +272,13 @@ reviewer and as not evidenced.
 More stills than shots are spread evenly over the runtime, each inside a
 shot and at least half a second from every other, so more stills are more
 evidence rather than the same moments again.
+A midpoint misses what happens elsewhere in its shot, so each narrated
+line is also sampled where its first word is said (AUTO-104), half a burst
+inside its shot, labelled `line: <first words>`, with the line beside the
+still: say it, show it is judged at the moment it is said. A line within
+half a second of a still of its own shot merges into it; the payoff,
+re-hook and reveal lines come first when fewer stills are asked for, after
+every shot's own; a wordless film has none.
 
 A still cannot evidence motion. Render each sample as one contiguous window
 of frames around the midpoint — half a second, at most 16 frames, kept

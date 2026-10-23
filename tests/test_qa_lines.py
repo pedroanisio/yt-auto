@@ -228,5 +228,32 @@ class LineBrief(unittest.TestCase):
         self.assertIn("at the moment it is said", prompt)
 
 
+class Docs(unittest.TestCase):
+    """The manual, the README, production.md, the module and --frames say it."""
+
+    ROOT = Path(__file__).resolve().parent.parent
+
+    def flat(self, rel):
+        return " ".join((self.ROOT / rel).read_text(encoding="utf-8").split())
+
+    def test_every_page_names_the_line_stills(self):
+        for rel in ("ytstudio/SKILL.md", "README.md", "docs/production.md"):
+            text = self.flat(rel)
+            self.assertIn("`line: <first words>`", text, rel)
+            self.assertIn("AUTO-104", text, rel)
+        for rel in ("ytstudio/SKILL.md", "README.md"):
+            self.assertIn("`qa.KEY_LINES`", self.flat(rel), rel)
+        doc = " ".join(qa.__doc__.split())
+        self.assertIn("`line: <first words>`", doc)
+        self.assertIn("KEY_LINES", doc)
+
+    def test_the_frames_help_counts_the_line_stills(self):
+        parser = argparse.ArgumentParser()
+        qa.register(parser.add_subparsers())
+        sub = parser._subparsers._group_actions[0].choices["qa"]
+        frames = next(a for a in sub._actions if a.dest == "frame_limit")
+        self.assertIn("line", frames.help)
+
+
 if __name__ == "__main__":
     unittest.main()

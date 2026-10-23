@@ -20,7 +20,22 @@ is how many stills: above the shot count the extra stills are evenly spaced
 over the runtime, each inside a shot and at least half a second from every
 other sample; below it the priority order decides what is kept, the
 reviewer is told which shots it has no still of, and the scorecard names
-them (`unsampled`, and a line under not_evidenced). The stills are rendered by the engine on the render host, from the very document the
+them (`unsampled`, and a line under not_evidenced).
+
+A midpoint misses what happens elsewhere in its shot, and the narration
+says when each line lands (AUTO-104). So each narrated line -- one
+sentence of a take in voice.json, placed on the film by build.json's shot
+`at` -- also gets a still where its first word is said, half a burst
+inside its shot like the evenly spaced ones, labelled `line: <first
+words>`, and the brief carries the line (`lines`, with when it starts)
+beside it, so "is it on screen when it is said" is judged at that moment.
+A line within half a second of a still of its own shot merges into it.
+Line stills come after every shot's own, the payoff, re-hook and reveal
+lines (`KEY_LINES`) first; without --frames they are added up to
+EVERY_SHOT_UP_TO stills in all, and under --frames they count against N
+before the evenly spaced ones. A wordless film has none.
+
+The stills are rendered by the engine on the render host, from the very document the
 encode uses. A still cannot evidence motion, so each sample is rendered as
 one contiguous window of frames around its midpoint (`BURST_SECONDS`, at
 most `BURST_MAX_FRAMES` consecutive frames, planned in `samples.json`) in a
@@ -2313,8 +2328,11 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
     p.add_argument("--frames", type=_positive, default=None, dest="frame_limit",
                    metavar="N",
                    help="how many stills to sample (default: every shot once, at its "
-                        f"midpoint, up to {EVERY_SHOT_UP_TO}). Above the shot count the extra stills are evenly "
-                        "spaced over the runtime; below it the hook, the ending, the "
+                        "midpoint, and the start of each narrated line, up to "
+                        f"{EVERY_SHOT_UP_TO}). The shots come first, then the line "
+                        "stills (payoff, re-hook and reveal lines before the rest); "
+                        "above that the extra stills are evenly "
+                        "spaced over the runtime; below the shot count the hook, the ending, the "
                         "payoff and the section starts are kept first and the shots "
                         "left out are named under not_evidenced")
     p.add_argument("--quality", default="preview",
