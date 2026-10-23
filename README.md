@@ -228,10 +228,9 @@ cross families, and narrows providers only through a pass's own allowlist
 (the reviewer pool's and the listener's `only`).
 
 **Passes on the gateway engine.** `yt script --review --reviewer-model pool`
-(or `sdk:<provider/model>`), `yt qa --listen` and
+(or `sdk:<provider/model>`), `yt qa --listen`, `yt qa --watch` and
 `yt qa --against FILE --compare-model MODEL`, each described in its stage's
-section below. A watch pass, when present, is described with `yt qa`
-below as well.
+section below.
 
 Not yet checked against the live gateway: structured output through it
 (the claude CLI's schema flag, which every decision relies on), whether
