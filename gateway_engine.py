@@ -61,7 +61,9 @@ What it does, and why:
     credentials in the process (Anthropic, OpenAI, Codex) stay out of it.
 
 Requires: `node` (or $YT_GATEWAY_NODE) at 22 or later, and gateway/
-installed with `cd gateway && npm ci --ignore-scripts`.
+installed with `cd gateway && npm ci --ignore-scripts`. `npm ci` needs
+gateway/package-lock.json; until it is committed, `npm install
+--package-lock-only --ignore-scripts` writes it first (LOCK_HINT).
 """
 
 from __future__ import annotations
@@ -96,6 +98,11 @@ MIN_NODE = 22
 PROGRAM_DIR = Path(__file__).resolve().parent / "gateway"
 PROGRAM = "gateway-engine.mjs"
 INSTALL_HINT = "cd gateway && npm ci --ignore-scripts"
+#: `npm ci` refuses to run without a lockfile; until gateway/package-lock.json
+#: is committed, the first install writes one (no package is installed and no
+#: script runs), then installs from it.
+LOCK_HINT = ("cd gateway && npm install --package-lock-only --ignore-scripts "
+             "&& npm ci --ignore-scripts")
 #: Names the node binary when `executable` is left at "node".
 NODE_ENV = "YT_GATEWAY_NODE"
 #: Price rows for gateway ids, over spend's table: '{"google/gemini-3.6-flash":
@@ -294,6 +301,24 @@ def passed_to_program(name: str) -> bool:
             or name.startswith(PROGRAM_ENV_PREFIXES))
 
 
+def has_lockfile(program_dir: str | Path | None = None) -> bool:
+    return (Path(program_dir or PROGRAM_DIR) / "package-lock.json").is_file()
+
+
+def install_hint(program_dir: str | Path | None = None) -> str:
+    """The command that installs gateway/: `npm ci` from the lockfile, or,
+    while there is none, the command that writes it first."""
+    return INSTALL_HINT if has_lockfile(program_dir) else LOCK_HINT
+
+
+def not_installed(installed: str | None, program_dir: str | Path | None = None) -> str:
+    """What is wrong with gateway/node_modules when it does not hold AI_VERSION."""
+    said = f"gateway/node_modules holds ai {installed or 'nothing'}, not {AI_VERSION}"
+    if not has_lockfile(program_dir):
+        said += " (no lockfile yet: gateway/package-lock.json is written on the first install)"
+    return said
+
+
 def node_executable(environ: dict | None = None, executable: str = "node") -> str:
     """The node to run: `executable`, or $YT_GATEWAY_NODE when that is "node"."""
     environ = os.environ if environ is None else environ
@@ -489,8 +514,8 @@ class GatewayEngine(ClaudeEngine):
         program_dir = Path(cfg.program_dir or PROGRAM_DIR)
         installed = installed_ai_version(program_dir)
         if installed != AI_VERSION:
-            raise _permanent(f"gateway/node_modules holds ai {installed or 'nothing'}, not "
-                             f"{AI_VERSION}: run `{INSTALL_HINT}`")
+            raise _permanent(f"{not_installed(installed, program_dir)}: "
+                             f"run `{install_hint(program_dir)}`")
         if cfg.max_turns_budget_usd is not None and price_for(cfg.model, env) is None:
             raise _permanent(f"refusing to start: the ${cfg.max_turns_budget_usd:g} budget "
                              f"cannot be held, {cfg.model!r} has no price. Set its row in "
@@ -643,7 +668,8 @@ class GatewayEngine(ClaudeEngine):
         if line is None:
             if "ERR_MODULE_NOT_FOUND" in stderr:
                 return _permanent(f"the gateway program could not load its packages: run "
-                                  f"`{INSTALL_HINT}`", returncode=code, stderr=stderr), 0.0
+                                  f"`{install_hint(self.config.program_dir)}`", returncode=code,
+                                  stderr=stderr), 0.0
             transient = not _marked_permanent(stderr)
             return GatewayExecutionError(
                 f"the gateway program exited with code {code} without an answer",
@@ -675,7 +701,8 @@ class GatewayEngine(ClaudeEngine):
         if error.get("timeout"):
             return GatewayExecutionError(said, transient=True, **common), spent
         if "ERR_MODULE_NOT_FOUND" in f"{message} {stderr}":
-            return _permanent(f"{said}; run `{INSTALL_HINT}`", **common), spent
+            return _permanent(f"{said}; run `{install_hint(self.config.program_dir)}`",
+                              **common), spent
         return GatewayExecutionError(said, transient=True, **common), spent
 
 

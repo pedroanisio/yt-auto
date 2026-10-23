@@ -57,7 +57,10 @@ research and screenplay work; it is not an unattended model service.
   `none`) every call goes to Anthropic exactly as before. Nothing writes
   `~/.claude/settings.json`.
 - Optional, for a stage that opts into the gateway engine only: Node 22 or
-  later and `cd gateway && npm ci --ignore-scripts`. `gateway_engine.py`
+  later and `cd gateway && npm ci --ignore-scripts` (until
+  `gateway/package-lock.json` is committed, `npm ci` has no lockfile to read,
+  so the first install runs `npm install --package-lock-only --ignore-scripts`
+  before it). `gateway_engine.py`
   (stdlib Python, so the pipeline stays dependency-free) runs
   `gateway/gateway-engine.mjs`, a small program on the AI SDK (`ai` 7.0.150,
   pinned exactly), for models neither CLI reaches: one that listens to audio

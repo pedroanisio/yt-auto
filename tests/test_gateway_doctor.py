@@ -92,6 +92,17 @@ class Environment(unittest.TestCase):
         self.assertEqual([f.level for f in rows[:2]], ["fail", "fail"])
         self.assertIn("npm ci --ignore-scripts", rows[1].fix)
 
+    def test_the_fix_writes_the_lockfile_first_when_there_is_none(self):
+        (self.node.program_dir / "node_modules" / "ai" / "package.json").unlink()
+        rows = self.block()
+        self.assertEqual(rows[1].level, "fail")
+        self.assertIn("no lockfile yet", rows[1].message)
+        self.assertIn("npm install --package-lock-only --ignore-scripts", rows[1].fix)
+        (self.node.program_dir / "package-lock.json").write_text("{}")
+        rows = self.block()
+        self.assertNotIn("lockfile", rows[1].message)
+        self.assertEqual(rows[1].fix, "cd gateway && npm ci --ignore-scripts")
+
     def test_no_block_without_node_modules(self):
         import shutil
         shutil.rmtree(self.node.program_dir / "node_modules")

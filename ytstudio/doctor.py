@@ -271,8 +271,8 @@ def check_gateway_engine(report: Report) -> None:
     if installed == gateway_engine.AI_VERSION:
         report.add("ok", area, f"ai {installed} installed in gateway/node_modules")
     else:
-        report.add("fail", area, f"gateway/node_modules holds ai {installed or 'nothing'}, "
-                   f"not {gateway_engine.AI_VERSION}", gateway_engine.INSTALL_HINT)
+        report.add("fail", area, gateway_engine.not_installed(installed),
+                   gateway_engine.install_hint())
     if gateway.active():
         return
     if (os.environ.get(gateway.KEY) or "").strip():

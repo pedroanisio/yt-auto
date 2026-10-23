@@ -87,6 +87,19 @@ class Preconditions(Case):
         (self.node.program_dir / "node_modules" / "ai" / "package.json").unlink()
         self.assertIn("npm ci --ignore-scripts", str(self.refused()))
 
+    def test_without_a_lockfile_the_hint_writes_one_first(self):
+        # `npm ci` refuses to run without gateway/package-lock.json, so until
+        # one is committed the fix names the command that writes it.
+        (self.node.program_dir / "node_modules" / "ai" / "package.json").unlink()
+        message = str(self.refused())
+        self.assertIn("no lockfile yet", message)
+        self.assertIn("npm install --package-lock-only --ignore-scripts", message)
+        self.assertIn("npm ci --ignore-scripts", message)
+        (self.node.program_dir / "package-lock.json").write_text("{}")
+        message = str(self.refused())
+        self.assertNotIn("--package-lock-only", message)
+        self.assertIn("npm ci --ignore-scripts", message)
+
     def test_refuses_another_ai_version(self):
         (self.node.program_dir / "node_modules" / "ai" / "package.json").write_text(
             json.dumps({"version": "7.0.149"}))
@@ -535,7 +548,8 @@ class Errors(Case):
                                     "code": 1})
         self.assertFalse(error.transient)
         self.assertEqual(runs, 1)
-        self.assertIn("cd gateway && npm ci --ignore-scripts", str(error))
+        self.assertIn(gateway_engine.install_hint(), str(error))
+        self.assertIn("npm ci --ignore-scripts", str(error))
 
     def test_unknown_crash(self):
         error, runs = self.outcome({"stderr": "Segmentation fault", "code": 139})
