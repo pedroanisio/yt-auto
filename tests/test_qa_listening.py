@@ -282,6 +282,23 @@ class Stage(unittest.TestCase):
         self.assertIsNone(self.card["scores"]["voiceover"])
         self.assertEqual(self.card["scores"]["sound_design"], 9.2)
 
+    def test_a_sheet_reviewed_after_the_build_is_not_the_mix_the_film_carries(self):
+        # re-spotted and re-reviewed, never rebuilt: the review is of its own
+        # sheet, but the film still carries the one build.json was made from
+        self.put("voice.json", _voice())
+        self.built_last()
+        self.put("sound.json", _sound())
+        later = (self.root / "build.json").stat().st_mtime + 60
+        os.utime(self.root / "sound.json", (later, later))
+        self.assertEqual(self.run_qa(), 1)
+        self.assertNotIn("the bed swamps the hook line", self.prompt)
+        self.assertIn("build.json predates sound.json", self.prompt)
+        self.assertIsNone(self.card["scores"]["sound_design"])
+        self.assertIsNone(self.card["scores"]["music_score"])
+        self.assertEqual(self.card["scores"]["voiceover"], 9.2)
+        self.assertTrue(self.card["audio_not_evidenced"]["sound_design"]["command"]
+                        .startswith("yt build"))
+
     def test_with_no_listening_evidence_the_three_are_not_evidenced_and_unscored(self):
         self.built_last()
         self.assertEqual(self.run_qa(), 1)
