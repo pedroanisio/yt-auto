@@ -25,11 +25,49 @@ meant, since it is the same model.
 
 from __future__ import annotations
 
+import re
+
 from claude_engine import VIRTUAL_PROVIDER, canonical_model as canonical
 
-__all__ = ["canonical", "VIRTUAL_PROVIDER", "is_virtual"]
+__all__ = ["canonical", "VIRTUAL_PROVIDER", "is_virtual", "maker", "SDK_PREFIX"]
+
+#: What a reviewer value leads with when it names a gateway model for the
+#: gateway engine (`sdk:zai/glm-5.3`, ytstudio/reviewers.py, AUTO-125).
+SDK_PREFIX = "sdk:"
+
+#: A bare OpenAI name, as the codex CLI takes it: gpt-*, the o-series, codex.
+_OPENAI_BARE = re.compile(r"^(gpt-|o\d|codex)")
 
 
 def is_virtual(name: str | None) -> bool:
     """Whether `name` is a gateway virtual model, whose family nobody knows."""
     return canonical(name)[0] == VIRTUAL_PROVIDER
+
+
+def maker(name: str | None) -> str | None:
+    """Who made the model, or None when nobody can tell (AUTO-125).
+
+    A gateway id names its maker in its prefix, which is the catalogue's
+    `owned_by` (`zai/glm-5.3` is zai's, `openai/gpt-oss-120b` OpenAI's,
+    `google/gemma-4-31b-it` and `google/gemini-3.6-flash` both Google's). A
+    Claude model is Anthropic's whichever provider serves it (the
+    `codex_engine.is_claude_model` check), and a bare gpt-*, o-series or
+    codex name is OpenAI's. A virtual model (`vmc/<slug>`) may route to any
+    maker, so it has none; neither has a bare name nobody recognises.
+    `sdk:` in front is the reviewer flag's mark, not part of the id."""
+    text = str(name or "").strip()
+    if text.lower().startswith(SDK_PREFIX):
+        text = text[len(SDK_PREFIX):]
+    if not text:
+        return None
+    provider, model = canonical(text)
+    if provider == VIRTUAL_PROVIDER:
+        return None
+    import codex_engine          # an engine file; models is imported by the engines' users
+    if codex_engine.is_claude_model(text):
+        return "anthropic"
+    if provider:
+        return provider
+    if _OPENAI_BARE.match(model.lower()):
+        return "openai"
+    return None
