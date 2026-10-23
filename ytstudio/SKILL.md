@@ -98,6 +98,25 @@ came from breaking one of them.
    so they are not this rule's work; where ffmpeg is not on PATH the flag
    is refused.
 
+**The invariants hold under Vercel AI Gateway, and the CLIs stay the
+default** (AUTO-117). The claude and codex CLIs answer every call they can;
+the gateway is an opt-in on top. `YT_GATEWAY=vercel` changes only their
+transport, never which tool runs, and with it unset each call's argv, child
+environment, booking and decision cache are as they were. A pass only a
+gateway model can do (listening, watching, a reviewer from another maker)
+sits behind its own flag; without the gateway the flag is refused or the
+pass skipped and recorded as not evidenced, and a CLI call is never
+replaced by a gateway one. Through it a judgement is still a
+`Harness.decide` under a schema, validated, asked once more, then failed
+(3); every call is still booked per model, at list price from the price
+table, an estimate of the bill whose row says how it was priced; the
+reviewer still differs from the author by family, a gateway id taking its
+direct name's family and a `vmc/<slug>` refused on either side; nothing
+heavy moves here (9); and Python stays dependency-free, the gateway
+engine's Node program installed only for a stage that opts in. The
+README's "Vercel AI Gateway (optional)" section has the variables, the
+endpoints and what is not yet checked live.
+
 ## One word per concept
 
 The same meaning is spelled the same way in every stage that has it
