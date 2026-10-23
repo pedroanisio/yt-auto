@@ -41,6 +41,21 @@ research and screenplay work; it is not an unattended model service.
 
 - `claude` on PATH (`claude --version`)
 - An authenticated session: `claude auth`, `claude setup-token`, or `ANTHROPIC_API_KEY`
+- Or, opt-in, Vercel AI Gateway: `YT_GATEWAY=vercel` with the gateway key in
+  `AI_GATEWAY_API_KEY` sends every `claude` call through
+  `https://ai-gateway.vercel.sh/claude-code` (`ytstudio/gateway.py`). The key
+  goes in `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY` is emptied for the
+  child, so a direct key left in the shell cannot win.
+  `YT_GATEWAY_AUTH=subscription` keeps your Claude login and sends the key as
+  a header instead; in that mode unset `ANTHROPIC_API_KEY`, because a key left
+  set is sent to the gateway and used instead of the login. `YT_GATEWAY_URL`
+  replaces the host. `bare` is refused under the gateway in either mode, and
+  so is `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` or
+  `CLAUDE_CODE_USE_FOUNDRY` left on, since the CLI would route there instead.
+  A key alone turns nothing on, a set switch with no key fails before any
+  call, and with `YT_GATEWAY` unset (or `YT_GATEWAY=off`, `0`, `false`, `no`,
+  `none`) every call goes to Anthropic exactly as before. Nothing writes
+  `~/.claude/settings.json`.
 - Python 3.10+
 
 ---

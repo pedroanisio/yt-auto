@@ -596,6 +596,12 @@ class CodexEngine(ClaudeEngine):
 
     # -- resolution --------------------------------------------------------
 
+    def _transport_env(self, environ: dict[str, str]) -> dict[str, str]:
+        """Nothing: the gateway's claude variables are not codex's route, and
+        a missing gateway key must not stop a codex call. Codex's own route
+        is a provider in its config, not these variables."""
+        return {}
+
     def _env(self) -> dict[str, str]:
         env = dict(os.environ)
         env.update(self.config.env or {})
