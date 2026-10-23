@@ -1363,24 +1363,32 @@ latest verdict. The exit code is 0 only when the film is ready.
 
 Two scores inside the samples' spread cannot say whether a revision helped,
 so each pass is also judged against the previous kept cut side by side
-(AUTO-108). The previous cut is the latest scored pass, or `--previous PASS`
-(`yt improve` names its best kept pass). At every sampled moment the
-reviewer is shown the same timestamp of both cuts, labelled A and B: the
-previous still is reused from that pass's `frames/` when it sampled the same
-time, else rendered from the copy under `improve/` whose document matches
-the `cut` digest that pass recorded; a moment with neither is unpaired and
-named under `not_evidenced`. Which cut is A is drawn per moment (half each,
-seeded by the pass) and recorded, so position bias can be checked. One
-`<pass>-compare-pass` inspection answers per moment which is better (A, B or
-same), why, and the visual categories it bears on, without being shown the
-scores. The scorecard files `side_by_side`: the moments, the entries
-(`{category, result: better|worse|same, source: "stills", moment, t}`, the
-shape a video comparison files with `source: "video"`) and their tally
-(`qa.tally`, per category and in total), beside the absolute scores;
-`findings.md` has a Side by side section and `qa.json` the total. The
-comparison is one decision a pass, priced once (`spend.COMPARE_PASS_USD`
-until one is measured). Nothing is compared without an earlier scored pass,
-with the same cut, under `--reuse`, or when the pass is not evidenced.
+(AUTO-108). The previous cut is `--previous PASS` (`yt improve` names its
+best kept pass), else the latest scored pass, else, when `improve.json`
+says `yt improve` reverted that one, the best kept pass it records. At
+every sampled moment the reviewer is shown the same timestamp of both cuts,
+labelled A and B: the previous still is reused from that pass's `frames/`
+when it sampled the same time, else rendered from the copy under
+`improve/` whose document and every file it references (textures, images,
+models, HDRIs, fonts, includes and what they name, as the renderer reads
+them) match the `cut` digest that pass recorded; a moment with neither is
+unpaired and named under `not_evidenced` and in `findings.md`. Which cut is
+A is drawn per moment (half each, seeded by the pass) and recorded, so
+position bias can be checked. One `<pass>-compare-pass` inspection, reading
+the pairs from a temporary directory outside the pass, answers per moment
+which is better (A, B or same), why, and the visual categories it bears on,
+without being shown the scores. The scorecard files `side_by_side`: the
+moments, the entries (`{category, result: better|worse|same, source:
+"stills", moment, t}`, one per category the moment bears on, or one with
+`category: null` when it names none; the shape a video comparison files
+with `source: "video"`) and their tally (`qa.tally`: entries per category,
+and under `total` one vote a moment, the result most of its entries give),
+beside the absolute scores; `findings.md` has a Side by side section and
+`qa.json` the total. The comparison is one decision a pass, priced once
+(`spend.COMPARE_PASS_USD` until one is measured) whenever an earlier scored
+pass exists. Nothing is compared without an earlier scored pass, with the
+same cut, under `--reuse` (whose card keeps the `cut` its frames were drawn
+from), or when the pass is not evidenced.
 
 `--frames N` stills (default: every shot once, up to 60; more adds evenly
 spaced stills, fewer names the shots left out) · `--quality` of the stills ·
@@ -1388,7 +1396,8 @@ spaced stills, fewer names the shots left out) · `--quality` of the stills ·
 score an earlier pass's frames again, measuring them again and rendering
 nothing but proof frames that were rendered graded ·
 `--previous PASS` the earlier pass compared with, its scores and its cut
-side by side (default: the latest scored pass) ·
+side by side (default: the latest scored pass, or improve's best kept one
+when it reverted that) ·
 `--host` / `--local` · `--fresh`
 
 ### `yt improve`
@@ -1415,8 +1424,8 @@ that outrank the house standards (`harness.feedback_for`; the prompts a stage
 builds itself use `harness.with_feedback`). Then the earliest routed stage
 runs with `--fresh`, every stage downstream of it runs up to `yt render`, `yt
 gate` and `yt qa --previous` score a new pass against the best one so far.
-The side-by-side tally is read first: more moments where the new cut was
-better than worse keeps the pass even when its overall moved inside the
+The side-by-side tally is read first, one vote a moment: more moments where
+the new cut was better than worse keeps the pass even when its overall moved inside the
 spread, more worse reverts it, and a tie leaves it to the score delta, read
 second: an overall drop beyond the spread, a category drop or a new blocking
 mechanical finding reverts whatever the tally says. Without a tally the

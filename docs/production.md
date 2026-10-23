@@ -446,8 +446,9 @@ helped, so the reviewer is shown, at every sampled moment, the same
 timestamp of the previous kept cut and the new one, labelled A and B in
 an order drawn per moment and recorded (position bias is checkable), and
 says which is better, or that they are the same, and why. The tally of
-better, worse and same per category is filed beside the absolute scores,
-and the improvement loop reads it before the score delta (step 8 above).
+better, worse and same per category, and one vote per moment in total, is
+filed beside the absolute scores, and the improvement loop reads the
+moments' votes before the score delta (step 8 above).
 Its findings name the owning stage;
 the loop is to fix that stage's source, rebuild, and run it again.
 
