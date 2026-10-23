@@ -493,6 +493,52 @@ class Answer(unittest.TestCase):
         self.assertEqual(yes, [])
         self.assertEqual([v["verdict"] for v in no[0]["votes"]][:2],
                          ["not_visible", "not_visible"])
+        # the reviewer works in the pass directory, where the still is
+        # frames/<name>: that path, or ./frames/<name>, names the same file
+        for named in ("frames/t_00m07s600.png", "./frames/t_00m07s600.png",
+                      " t_00m07s600.png "):
+            with self.subTest(named=named):
+                said = readings("confirmed", "confirmed", "disagree")
+                for r in said:
+                    r["card"]["watched"][0]["frame"] = named
+                yes, no, _ = verdicts(record, said, samples, frames)
+                self.assertEqual([f["id"] for f in yes], ["W1"])
+                self.assertEqual(yes[0]["frame"], "t_00m07s600.png")
+        # a confirmation naming its own burst frame that was never written
+        # under frames/ shows nothing
+        said = readings("confirmed", "confirmed", "confirmed")
+        for r in said:
+            r["card"]["watched"][0]["frame"] = "burst/t_00m07s600_0228.png"
+        yes, no, _ = verdicts(record, said, samples, frames)
+        self.assertEqual(yes, [])
+        self.assertEqual({v["verdict"] for v in no[0]["votes"]}, {"not_visible"})
+        (frames / "burst").mkdir()
+        (frames / "burst" / "t_00m07s600_0228.png").write_bytes(b"png")
+        yes, _, _ = verdicts(record, said, samples, frames)
+        self.assertEqual([f["id"] for f in yes], ["W1"])
+
+    def test_the_brief_says_how_to_name_the_frame(self):
+        record = {"model": "m", "findings": [dict(_finding(7.6, 8.0), id="W1")]}
+        samples = [{"t": 7.6, "frame": "t_00m07s600.png", "watched": ["W1"]}]
+        said = _watch().brief_for(record, samples)
+        self.assertIn("the file name as listed in `frames`", said)
+
+    def test_two_findings_either_side_of_a_cut_with_no_overlap_are_two(self):
+        seg = _watch().Segment
+        out = _watch().merge_segments([
+            (seg(0.0, 30.0, 480), [_finding(29.6, 29.7, problem="a pop")]),
+            (seg(30.0, 60.0, 480), [_finding(0.4, 0.5, problem="another pop")])])
+        self.assertEqual([f["start"] for f in out], [29.6, 30.4])
+        self.assertNotIn("segments", out[0])
+
+    def test_the_catalog_read_failing_mid_body_is_refused(self):
+        import http.client
+
+        def broken(url, timeout):
+            raise http.client.IncompleteRead(b"{\"data\": [")
+        with self.assertRaises(_watch().Refused) as caught:
+            _watch().catalog(broken)
+        self.assertIn("could not be read", str(caught.exception))
 
 
 # --------------------------------------------------------------------------- #
@@ -802,6 +848,19 @@ class Run(Watching):
         self.assertEqual([d["name"] for d in record["decisions"]],
                          ["watch-s01", "watch-s01-again"])
 
+    def test_a_twice_failed_answer_is_not_kept_for_the_next_run(self):
+        self.node.replies(ok(_answer([_finding(3.0, 40.0)])))
+        self.run_qa()
+        self.assertEqual(self.node.count, 2)
+        decisions = self.root / harness.DECISIONS_DIR / "qa"
+        self.assertFalse((decisions / "watch-s01.json").exists())
+        self.assertFalse((decisions / "watch-s01-again.json").exists())
+        # the next run asks the watcher again rather than replaying the failure
+        self.node.replies(ok(_answer([_finding(3.0, 4.0)])))
+        self.run_qa()
+        self.assertEqual(self.node.count, 3)
+        self.assertEqual(self.watch_json("pass-02")["status"], "watched")
+
     def test_watch_duration_check_catches_dropped_video(self):
         self.node.replies(ok(_answer([_finding(1.0, 2.0)], seconds=0)))
         self.run_qa()
@@ -847,6 +906,30 @@ class Run(Watching):
         self.assertTrue(all("not asked" in s["why"] for s in record["plan"]["segments"][1:]))
         self.assertTrue((self.root / "qa" / "pass-01" / "scorecard.json").is_file())
 
+    def test_a_failed_call_leaves_its_segment_unwatched_and_the_watch_goes_on(self):
+        host = self.split()
+        self.node.replies(err("gateway", 1, status=401, message="Unauthorized: invalid key"),
+                          *[ok(_answer([], seconds=s.end - s.start)) for s in host.segments[1:]])
+        self.run_qa()
+        record = self.watch_json()
+        self.assertEqual(self.node.count, len(host.segments))
+        first, *rest = record["plan"]["segments"]
+        self.assertEqual(first["status"], "unwatched")
+        self.assertIn("401", first["why"])
+        self.assertEqual([s["status"] for s in rest], ["watched"] * len(rest))
+        self.assertEqual(record["status"], "watched")
+        self.assertEqual(record["reason"], f"1 of {len(host.segments)} segment(s) not watched")
+
+    def test_a_402_stops_the_watch_by_its_status_alone(self):
+        host = self.split()
+        self.node.replies(err("gateway", 1, status=402, message="Payment required"))
+        self.run_qa()
+        record = self.watch_json()
+        self.assertEqual(self.node.count, 1)
+        self.assertEqual([s["status"] for s in record["plan"]["segments"]],
+                         ["unwatched"] * len(host.segments))
+        self.assertTrue(all("not asked" in s["why"] for s in record["plan"]["segments"][1:]))
+
     def test_prepare_output_over_limit_not_sent(self):
         host = self.split()
         host.sizes = {3: _watch().WATCH_MAX_BYTES + 1}
@@ -868,6 +951,33 @@ class Run(Watching):
         self.run_qa(fresh=True)
         self.assertEqual(self.watch_json("pass-03")["reused_from"], None)
         self.assertEqual(self.node.count, 2)
+
+    def test_a_watch_made_otherwise_is_not_reused(self):
+        self.run_qa()
+        self.assertEqual(self.node.count, 1)
+        first = self.watch_json()
+        changes = {
+            "constants": lambda r: r["constants"].update(height=720),
+            "role": lambda r: r.update(role_sha256="0" * 64),
+            "model": lambda r: r.update(model="zai/glm-5.3-flash"),
+            "providers": lambda r: r.update(providers=["vertex"]),
+            "cut": lambda r: r["cut"].update(sha256="f" * 64),
+            "partial": lambda r: r["plan"]["segments"][0].update(status="unwatched"),
+        }
+        for n, (what, change) in enumerate(changes.items(), 2):
+            with self.subTest(what=what):
+                # every earlier record is the first one, changed in one way
+                for old in (self.root / "qa").glob("pass-*/watch.json"):
+                    record = json.loads(json.dumps(first))
+                    change(record)
+                    old.write_text(json.dumps(record))
+                asked = self.node.count
+                self.run_qa()
+                self.assertIsNone(self.watch_json(f"pass-{n:02d}")["reused_from"])
+                # served from decisions/qa/ (the same bytes, the same question)
+                # or asked: either way not copied from the changed record
+                self.assertGreaterEqual(self.node.count, asked)
+                self.assertTrue(self.watch_json(f"pass-{n:02d}")["decisions"])
 
     def test_reuse_with_watch_reads_watch_json(self):
         Verdicts.say = {"W1": ("confirmed", None)}

@@ -48,6 +48,7 @@ marked TO VERIFY until a live call on the owner's machine sets it.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import math
 import re
@@ -227,7 +228,7 @@ def catalog(fetch=None) -> list[dict]:
     reached: the gate never guesses from a pinned list."""
     try:
         doc = (fetch or _get_json)(CATALOG_URL, CATALOG_TIMEOUT)
-    except (urllib.error.URLError, OSError, ValueError) as exc:
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as exc:
         raise Refused(f"the gateway's catalog ({CATALOG_URL}) could not be read: {exc}; "
                       "the watcher is checked against it and never against a pinned list")
     rows = doc.get("data") if isinstance(doc, dict) else doc
@@ -774,17 +775,23 @@ def check(result: Any, seconds: float) -> tuple[list[dict], list[str]]:
 
 def merge_segments(per_segment: list[tuple[Segment, list[dict]]]) -> list[dict]:
     """Segment times shifted to film times; two findings of neighbouring
-    segments with one category whose starts lie within SAME_SECONDS (the
-    same moment, seen in an overlap) kept once; ids W1.. in time order."""
+    segments that overlap, of one category, the later starting inside the
+    overlap and both within SAME_SECONDS (the same moment, seen twice), kept
+    once; ids W1.. in time order."""
     out: list[dict] = []
     previous: list[dict] = []
+    ended = None                     # where the previous segment ends on the film
     for n, (seg, rows) in enumerate(per_segment, 1):
         mine = []
+        # Only a cut inside a shot shares seconds with the piece before it;
+        # at a shot boundary two findings either side are two moments.
+        overlap = ended is not None and ended > seg.start
         for row in rows:
             f = dict(row, start=round(seg.start + float(row["start"]), 3),
                      end=round(seg.start + float(row["end"]), 3), segment=n)
-            same = next((p for p in previous if p["category"] == f["category"]
-                         and abs(p["start"] - f["start"]) <= SAME_SECONDS), None)
+            same = None if not overlap or f["start"] > ended else next(
+                (p for p in previous if p["category"] == f["category"]
+                 and abs(p["start"] - f["start"]) <= SAME_SECONDS), None)
             if same is not None:
                 same.setdefault("segments", [same["segment"]]).append(n)
                 if f.get("severity") == "blocking":
@@ -792,7 +799,7 @@ def merge_segments(per_segment: list[tuple[Segment, list[dict]]]) -> list[dict]:
                 continue
             mine.append(f)
         out += mine
-        previous = mine
+        previous, ended = mine, seg.end
     out.sort(key=lambda f: (f["start"], f["end"]))
     return [dict(f, id=f"W{i}") for i, f in enumerate(out, 1)]
 
@@ -810,15 +817,22 @@ def _budget_stop(exc: BaseException) -> bool:
 
 
 def _earlier(home: Path, pass_dir: Path, want: dict) -> dict | None:
-    """The latest earlier watch.json that watched this cut with this model,
-    these constants and this role."""
+    """The latest earlier watch.json that watched every segment of this cut
+    with this model, these providers, these constants and this role. A
+    partial watch is never copied: a pass of the same cut asks again for
+    what it lacks (the watched segments are served from decisions/qa/)."""
     for path in sorted((Path(home) / qa.QA_DIR).glob(f"pass-*/{RECORD}"), reverse=True):
         if path.parent == Path(pass_dir):
             continue
         old = read_json(path, warn=False)
-        if (isinstance(old, dict) and old.get("status") == "watched"
+        if not isinstance(old, dict):
+            continue
+        segments = (old.get("plan") or {}).get("segments") or []
+        if (old.get("status") == "watched" and segments
+                and all(s.get("status") == "watched" for s in segments)
                 and (old.get("cut") or {}).get("sha256") == want["sha256"]
                 and old.get("model") == want["model"]
+                and list(old.get("providers") or []) == list(want["providers"])
                 and old.get("constants") == want["constants"]
                 and old.get("role_sha256") == want["role_sha256"]):
             return old
@@ -861,6 +875,7 @@ def watch(project, pass_dir: Path, prepared: Prepared, args, *, home: Path, buil
     base["cut"] = cut
     if not getattr(args, "fresh", False):
         old = _earlier(home, pass_dir, {"sha256": cut["sha256"], "model": prepared.model,
+                                        "providers": base["providers"],
                                         "constants": base["constants"],
                                         "role_sha256": base["role_sha256"]})
         if old is not None:
@@ -923,6 +938,13 @@ def watch(project, pass_dir: Path, prepared: Prepared, args, *, home: Path, buil
                 result = watcher.decide(f"{name}-again", again, WATCH_SCHEMA, media=media)
                 kept, problems = check(result, seg.seconds)
             if problems:
+                # Both answers passed the schema, so the harness kept them:
+                # kept, every rerun would be served them and fail the same
+                # way until --fresh. A first answer whose again-answer is
+                # kept stays: on a rerun both are replayed from the cache, at
+                # no cost, to the same kept answer.
+                watcher.forget(name)
+                watcher.forget(f"{name}-again")
                 entry["why"] = "its answer failed the checks twice: " + "; ".join(problems[:5])
                 noted.append(f"watch: {seg.start:g}-{seg.end:g} s not watched ({entry['why']})")
                 continue
@@ -990,11 +1012,19 @@ def brief_for(record: dict, samples: list[dict]) -> str:
         brief("Watched findings: a model's observations at its own sampling, not "
               f"measurements ({record.get('model')} watched the cut)", rows),
         "For each watched finding above, answer under `watched`: its `id`; `confirmed` only "
-        "when its still or a frame of its burst shows the problem, naming that file under "
-        "`frames/` in `frame`; `not_visible` when none of them shows it; `disagree` when they "
-        "show it is not a problem; and `why`. A watched finding is not yours: do not file it "
-        "again among your findings.",
+        "when its still or a frame of its burst shows the problem, with the file that shows "
+        "it in `frame`, written as the file name as listed in `frames` or `burst` above (the "
+        "file is under `frames/`); `not_visible` when none of them shows it; `disagree` when "
+        "they show it is not a problem; and `why`. A watched finding is not yours: do not file "
+        "it again among your findings.",
     ])
+
+
+def frame_named(said: Any) -> str:
+    """The frame a reviewer named, as the samples list it. The reviewer
+    works in the pass directory, where a still is `frames/<name>`, so that
+    path (or `./frames/<name>`) names the same file as `<name>`."""
+    return re.sub(r"^(\./)?frames/", "", str(said or "").strip())
 
 
 def verdicts(record: dict, readings: list[dict], samples: list[dict],
@@ -1018,7 +1048,7 @@ def verdicts(record: dict, readings: list[dict], samples: list[dict],
             said = next((w for w in (r.get("card") or {}).get("watched") or []
                          if isinstance(w, dict) and w.get("id") == wid), None)
             verdict = (said or {}).get("verdict") or "no answer"
-            named = str((said or {}).get("frame") or "")
+            named = frame_named((said or {}).get("frame"))
             if verdict == "confirmed" and not (named in own and (Path(frames_dir) / named).is_file()):
                 verdict = "not_visible"           # a confirmation without its still
             votes.append({"k": r.get("k"), "verdict": verdict, "frame": named,
