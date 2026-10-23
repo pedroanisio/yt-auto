@@ -39,7 +39,9 @@ loop as code:
    for a new pass -- all through `runner`, a callable taking argv.
 5. **Keep or revert** (§8.8, §9). Against the best pass so far, which QA
    was told with `--previous` and compared side by side at the same
-   timestamps (AUTO-108). The side-by-side tally is read first: more moments
+   timestamps (AUTO-108); with `--compare-model` QA also gets `--against`
+   the video.mp4 that snapshot kept, and watches both cuts whole instead
+   (AUTO-128). The side-by-side tally is read first: more moments
    where the new cut was better than worse keeps the pass even when its
    overall moved inside the samples' spread, more worse reverts it, a tie
    leaves it to the score delta. The score delta is read second: kept

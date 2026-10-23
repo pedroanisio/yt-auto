@@ -76,7 +76,8 @@ research and screenplay work; it is not an unattended model service.
   or watches video, or a reviewer of another family. A stage chooses it per
   harness, `Harness(engine="gateway")` behind its own flag, never through
   `YT_GATEWAY` or `YT_ENGINE`; it needs `AI_GATEWAY_API_KEY`, takes media
-  files with `decide` and serves `decide` only, never `inspect`.
+  files with `decide` and serves `decide` only, never `inspect`. `yt qa
+  --against` is the first stage to opt in (AUTO-128).
   `YT_GATEWAY_NODE` names the node binary, and `GATEWAY_PRICES` adds price
   rows for gateway ids (USD per 1M tokens) for a call the gateway returns no
   cost for. With no stage asking for it nothing runs Node.
@@ -1430,6 +1431,30 @@ pass exists. Nothing is compared without an earlier scored pass, with the
 same cut, under `--reuse` (whose card keeps the `cut` its frames were drawn
 from), or when the pass is not evidenced.
 
+QA reads stills; it never watches the film. `--against FILE --compare-model
+MODEL` (AUTO-128) has a video model watch the previous kept cut FILE and this
+pass's `video.mp4` whole, picture and sound, through the gateway engine, on a
+harness of its own that takes no revision notes. It asks twice, once with the
+previous cut as Cut A and once with the new one, each request blind: the
+files are linked as `cut-a.mp4` and `cut-b.mp4` and labelled `Cut A:` and
+`Cut B:`, and nothing names a pass, a score or which cut is new. Each of the
+ten categories is answered A, B, same or cannot_tell. A category both orders
+call for the new cut is better, for the previous one worse; two answers that
+name different cuts are a tie (same), and cannot_tell in either files nothing.
+Each category is one entry with `source: "video"`, and their tally is the
+pass's `side_by_side`; the still pairs are then not asked. An answer that
+breaks the schema after one retry, a timeout or a gateway failure fails the
+comparison; a missing cut, a `video.mp4` older than the document, two cuts
+over 15 MB or no `AI_GATEWAY_API_KEY` skips it. Either way it files nothing,
+says why under `not_evidenced`, and the still pairs run as they would without
+it. `qa/pass-NN/comparison.json` keeps both cuts' sha256, each order's answer
+and the reconciled rows; the scorecard keeps the comparison's own account as
+`compare_engine`, and `usage` is both. Either option alone, a model the
+gateway engine cannot ask, or one of the family that made the script,
+styles, keyframes, vfx, sound or build exits 2 before anything renders.
+`$YT_COMPARE_MODEL` names the model when `--compare-model` is not given; it
+turns nothing on by itself.
+
 `--frames N` stills (default: every shot once and each narrated line's
 start, up to 60; more adds evenly spaced stills, fewer names the shots left
 out) · `--quality` of the stills ·
@@ -1439,6 +1464,8 @@ nothing but proof frames that were rendered graded ·
 `--previous PASS` the earlier pass compared with, its scores and its cut
 side by side (default: the latest scored pass, or improve's best kept one
 when it reverted that) ·
+`--against FILE` the previous kept cut, watched beside the new one by
+`--compare-model MODEL` (a gateway `provider/model` id) ·
 `--host` / `--local` · `--fresh`
 
 ### `yt improve`
@@ -1469,7 +1496,12 @@ The side-by-side tally is read first, one vote a moment: more moments where
 the new cut was better than worse keeps the pass even when its overall moved inside the
 spread, more worse reverts it, and a tie leaves it to the score delta, read
 second: an overall drop beyond the spread, a category drop or a new blocking
-mechanical finding reverts whatever the tally says. Without a tally the
+mechanical finding reverts whatever the tally says. With `--compare-model
+MODEL` (or `$YT_COMPARE_MODEL`) every `yt qa` of a pass also gets
+`--against` the `video.mp4` its snapshot kept, so the tally read is the
+video comparison's (AUTO-128); a snapshot with no video.mp4 is noted on the
+pass and the stills are compared, and a model of `--model`'s family is
+refused before any stage. Without a tally the
 pass is kept only if the overall
 improves, no category drops more than 0.5 and no new blocking mechanical
 finding appears (a category QA left not evidenced has no score, so it neither

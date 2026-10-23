@@ -148,6 +148,16 @@ cut, under --reuse (which keeps the `cut` the reused frames were drawn
 from), or when the pass is not evidenced. findings.md has a "Side by side"
 section. `yt improve` reads the tally before the score delta.
 
+`--against FILE --compare-model MODEL` (AUTO-128) watches the cuts instead
+of reading stills: a gateway video model is shown FILE, the previous kept
+cut, and this pass's video.mp4 whole, in both orders and blind
+(cutcompare.py has the rules). When it answers, its entries, `source:
+"video"`, one a category, are `side_by_side` and the still pairs are not
+asked; when it fails or is skipped it files nothing, a not_evidenced line
+says why, and the stills are compared as above. qa/pass-NN/comparison.json
+keeps the record, and the scorecard keeps its account as `compare_engine`
+beside `engine`. Without --against nothing here changes.
+
 The loop is: fix the owning stage's source, rebuild, run `yt qa` again. This
 stage changes no file but its own; it says what to change and who owns it.
 """
