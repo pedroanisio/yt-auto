@@ -27,6 +27,7 @@ KNOWN = {
     "FREESOUND_CLIENT_SECRET": "sound effects from Freesound (yt sound --fetch)",
     "FREESOUND_API_KEY": "sound effects from Freesound (older name of the secret)",
     "OPENAI_API_KEY": "third-party models",
+    "AI_GATEWAY_API_KEY": "Vercel AI Gateway (YT_GATEWAY=vercel)",
 }
 
 

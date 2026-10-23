@@ -1,6 +1,8 @@
 """Check the health of the toolchain and of every video, and say what to do next.
 
-Nothing here calls a model or the network. It reads what the stages wrote and
+Nothing here calls a model. Beyond the render hosts' probe it reaches the
+network only when asked: `--gateway-ping` makes one GET of Vercel AI
+Gateway's credits. It reads what the stages wrote and
 measures it: whether the environment can actually run each stage, how far each
 video got, whether what was produced hangs together, and which command moves
 it forward.
@@ -9,6 +11,7 @@ it forward.
     yt doctor --title monty         # one video
     yt doctor --env                 # the toolchain only
     yt doctor --json health.json    # the same, as data
+    yt doctor --env --gateway-ping  # and the gateway team's credit balance
 
 Findings carry a level -- `fail` blocks publishing, `warn` needs a look,
 `note` is information -- and, where there is one, the command that fixes them.
@@ -25,10 +28,13 @@ import os
 import shutil
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
-from . import env, house, keyframe, narrative, render, retention, spend, workspace
+from . import env, gateway, house, keyframe, narrative, render, retention, spend, workspace
 from .assets import licence_tier
 from .core import read_json, timecode, write_json
 
@@ -110,7 +116,9 @@ class Report:
 # the toolchain
 # --------------------------------------------------------------------------- #
 
-def check_environment(work: Path) -> Report:
+def check_environment(work: Path, *, ping: bool = False) -> Report:
+    """The toolchain. Offline but for the render hosts' probe, unless `ping`
+    (`--gateway-ping`) adds one GET of the gateway's credits."""
     report = Report("environment")
 
     claude = shutil.which("claude")
@@ -210,7 +218,10 @@ def check_environment(work: Path) -> Report:
     for name, unlocks in env.KNOWN.items():
         # Names only, never values. A service is unlocked by any variable
         # sharing its prefix: Freesound takes CLIENT_ID/SECRET as well as a key.
-        prefix = name.split("_")[0] + "_"
+        # A two-letter first word names no service (AI_ would take in any
+        # AI_* variable), so the gateway's prefix is AI_GATEWAY_.
+        words = name.split("_")
+        prefix = "_".join(words[:2] if len(words[0]) < 3 else words[:1]) + "_"
         present = sorted(k for k in os.environ if k == name or k.startswith(prefix))
         if present:
             report.add("ok", "keys", f"{', '.join(present)} set ({unlocks})")
@@ -237,10 +248,177 @@ def check_environment(work: Path) -> Report:
     for name in (work / "house.md",):
         if name.is_file():
             report.add("ok", "house", f"channel standards at {name}")
+    check_gateway(report)
     check_gateway_engine(report)
+    if ping:
+        gateway_ping(report)
     review_log(report, work)
     retention_baseline(report, work)
     return report
+
+
+#: Where a gateway key is made, for the fix of a missing or refused one: the
+#: docs page, which leads to the dashboard's AI Gateway > API Keys tab (the
+#: dashboard's own address carries the team's slug).
+GATEWAY_KEYS_PAGE = "https://vercel.com/docs/ai-gateway/authentication-and-byok/api-keys"
+#: The credits endpoint on the gateway's host: the team's balance and what it
+#: has used, in USD. It reads the account and runs no model.
+GATEWAY_CREDITS = "/v1/credits"
+#: Seconds the ping waits; doctor is a quick look, not a retry loop.
+GATEWAY_PING_TIMEOUT = 5
+
+
+def _shown(url: str) -> str:
+    """A URL as doctor may print it: no user, password, query or fragment,
+    since a proxy's URL may carry credentials (gateway.host never echoes it
+    in an error for the same reason)."""
+    parts = urlsplit(url)
+    netloc = parts.hostname or ""
+    if parts.port:
+        netloc += f":{parts.port}"
+    return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+
+
+def _key_fix() -> str:
+    return (f"export {gateway.KEY} with a key from the AI Gateway API Keys page "
+            f"({GATEWAY_KEYS_PAGE})")
+
+
+def check_gateway(report: Report, environ: dict | None = None) -> None:
+    """The claude and codex CLIs' route through Vercel AI Gateway
+    (gateway.py), shown only when YT_GATEWAY is set to something other than
+    off: with it unset no stage goes near the gateway and there is nothing to
+    say. It asks the same functions the engines call, so a fail here is the
+    GatewayError the first call of a run would raise.
+
+    It also names what the route leaves behind in this shell, which Vercel's
+    Claude Code page calls out (https://vercel.com/docs/ai-gateway/coding-agents/claude-code):
+    a hand-set ANTHROPIC_BASE_URL, which yt replaces for the claude CLI and
+    which, ending in /v1, is a 404 for anything else that reads it; and a
+    direct ANTHROPIC_API_KEY, which key mode blanks for the CLI and
+    subscription mode sends to the gateway in place of the login. Names and
+    endpoints only: no key, and no proxy credential, is printed."""
+    environ = os.environ if environ is None else environ
+    if (environ.get(gateway.SWITCH) or "").strip().lower() in gateway.OFF:
+        return
+    area = "gateway"
+    problems: list[str] = []
+    for route in (gateway.claude_env, gateway.codex_config):
+        try:
+            route(environ)
+        except gateway.GatewayError as exc:
+            if str(exc) not in problems:    # a missing key fails both routes
+                problems.append(str(exc))
+    for problem in problems:
+        fix = (_key_fix() if gateway.KEY in problem
+               else f"fix what it names, or unset {gateway.SWITCH} to call the providers directly")
+        report.add("fail", area, f"{gateway.SWITCH} is set but the route cannot run: {problem}",
+                   fix)
+    mode = claude = codex = None
+    try:
+        mode = gateway.auth_mode(environ)
+        claude = gateway.claude_base_url(environ)
+        codex = gateway.codex_base_url(environ)
+    except gateway.GatewayError:
+        pass                                # already a fail above
+    if not problems:
+        how = ("the claude CLI keeps its login and sends the key as a header"
+               if mode == "subscription"
+               else f"the claude CLI sends {gateway.KEY} as ANTHROPIC_AUTH_TOKEN")
+        report.add("ok", area, f"claude CLI through {_shown(claude)}, codex CLI through "
+                   f"{_shown(codex)} ({mode} mode: {how})")
+
+    hand_set = (environ.get("ANTHROPIC_BASE_URL") or "").strip().rstrip("/")
+    if hand_set.endswith("/v1"):
+        report.add("warn", area, "ANTHROPIC_BASE_URL is set by hand and ends in /v1, which "
+                   "the gateway answers with a 404 (the CLI's SDK adds /v1/messages itself); "
+                   "yt replaces it for the claude CLI, but anything else that reads it fails",
+                   f"unset ANTHROPIC_BASE_URL; name a proxy with {gateway.URL}")
+    elif hand_set and claude and hand_set != claude:
+        report.add("warn", area, "ANTHROPIC_BASE_URL is set by hand to another endpoint than "
+                   "the gateway's; yt replaces it for the claude CLI, so it is not the one used",
+                   f"unset ANTHROPIC_BASE_URL; name a proxy with {gateway.URL}")
+
+    if (environ.get("ANTHROPIC_API_KEY") or "").strip():
+        if mode == "subscription":
+            report.add("warn", area, "ANTHROPIC_API_KEY is set, and in subscription mode the "
+                       "claude CLI sends it to the gateway in place of your login",
+                       "unset ANTHROPIC_API_KEY")
+        else:
+            report.add("note", area, "ANTHROPIC_API_KEY is set in this shell; yt blanks it "
+                       "for the claude CLI, which would otherwise send it ahead of the "
+                       "gateway key")
+
+
+def gateway_ping(report: Report, environ: dict | None = None) -> None:
+    """`yt doctor --gateway-ping`: one GET of the gateway's credits with the
+    key as a Bearer token, for the team's `balance` and `total_used` (USD
+    strings, team-wide, not this run's). It runs no model and spends no
+    tokens; whether the endpoint itself is billed or rate limited the docs do
+    not say. It runs whether or not YT_GATEWAY is set, since the gateway
+    engine (AUTO-124) uses the same key without it.
+
+    A refused key (401, 403) or another answer the operator can fix is a
+    fail; a busy or failing gateway (429, 5xx) or no answer at all is a
+    warning, since running again may pass. Only the status and the answer's
+    `error.type` are printed, never its message, which might quote what was
+    sent. Under YT_NO_REMOTE (the suite) nothing is sent."""
+    environ = os.environ if environ is None else environ
+    area = "gateway ping"
+    if environ.get(render.NO_REMOTE_ENV):
+        report.add("warn", area, f"not pinged: {render.NO_REMOTE_ENV} is set")
+        return
+    try:
+        key = gateway.api_key(environ)
+        url = gateway.host(environ) + GATEWAY_CREDITS
+    except gateway.GatewayError as exc:
+        report.add("fail", area, f"cannot ping: {exc}",
+                   _key_fix() if gateway.KEY in str(exc) else f"fix {gateway.URL}")
+        return
+    shown = _shown(url)
+    request = urllib.request.Request(url, method="GET", headers={
+        "Authorization": f"Bearer {key}", "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=GATEWAY_PING_TIMEOUT) as answer:
+            body = json.loads(answer.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as exc:
+        kind = _error_type(exc)
+        said = f"GET {shown} answered HTTP {exc.code}" + (f" ({kind})" if kind else "")
+        if exc.code in (401, 403):
+            report.add("fail", area, f"{said}: the gateway refused the key",
+                       f"check {gateway.KEY}: copy or create a key on the AI Gateway "
+                       f"API Keys page ({GATEWAY_KEYS_PAGE})")
+        elif exc.code == 429 or exc.code >= 500:
+            report.add("warn", area, f"{said}; the gateway is busy or failing, try again later")
+        else:
+            report.add("fail", area, said, f"check {gateway.URL} if it names a proxy")
+        return
+    except (urllib.error.URLError, OSError) as exc:
+        reason = getattr(exc, "reason", None) or exc
+        report.add("warn", area, f"GET {shown} got no answer: {str(reason)[:120]}")
+        return
+    except ValueError:
+        report.add("warn", area, f"GET {shown} answered with no JSON")
+        return
+    if not isinstance(body, dict) or body.get("balance") is None \
+            or body.get("total_used") is None:
+        report.add("warn", area, f"GET {shown} answered without balance and total_used")
+        return
+    credits = {name: str(body[name])[:32] for name in ("balance", "total_used")}
+    report.metrics["gateway_credits"] = credits
+    report.add("ok", area, f"credits: balance {credits['balance']} USD, total_used "
+               f"{credits['total_used']} USD (team-wide, not this run's)")
+
+
+def _error_type(exc: urllib.error.HTTPError) -> str:
+    """The `error.type` in a refused ping's JSON body, else ""."""
+    try:
+        body = json.loads(exc.read().decode("utf-8", "replace"))
+    except (OSError, ValueError):
+        return ""
+    error = body.get("error") if isinstance(body, dict) else None
+    kind = error.get("type") if isinstance(error, dict) else None
+    return kind[:60] if isinstance(kind, str) else ""
 
 
 def check_gateway_engine(report: Report) -> None:
@@ -1259,13 +1437,16 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                    help="the environment only, no videos")
     p.add_argument("--json", dest="json_out", metavar="FILE",
                    help="also write every finding as JSON")
+    p.add_argument("--gateway-ping", action="store_true", dest="gateway_ping",
+                   help="also ask Vercel AI Gateway for the team's credit balance "
+                        "(one GET, no model call; needs AI_GATEWAY_API_KEY)")
     p.set_defaults(run=run)
     return p
 
 
 def run(args) -> int:
     work = workspace.work_dir(args)
-    reports = [check_environment(work)]
+    reports = [check_environment(work, ping=getattr(args, "gateway_ping", False))]
     if not args.env_only:
         found = workspace.projects(work)
         if getattr(args, "project", None):
