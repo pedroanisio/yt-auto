@@ -1440,9 +1440,16 @@ with fail, warn and note lines and the command that fixes each; a record that
 bills a model neither engine priced (`spend.PRICES`, `$CLAUDE_PRICES`,
 `codex_engine.PRICES`, `$CODEX_PRICES`) is a warning, since a Claude call on
 it that times out is booked at $0 and a Codex call on it is recorded without a
-cost. Once a published film has been read by `yt retention`, it notes how many
-the channel has measured: under ten, every retention finding carries
-`sanity_bound`. Exit 1 on any fail, so it works in a script.
+cost. A row the gateway engine booked says how each call was priced
+(`cost_gateway_calls`, `cost_generation_calls`, `cost_table_calls`,
+`cost_unpriced_calls`): one the gateway priced itself is not warned about, a
+table-priced one is quiet when `$GATEWAY_PRICES` (or the tables above) has its
+row, and one with an unpriced call still warns. Where `gateway/node_modules`
+exists, a "gateway engine" block checks Node 22 or later, `ai` 7.0.150 and
+whether `AI_GATEWAY_API_KEY` is set (by name, never its value). Once a
+published film has been read by `yt retention`, it notes how many the channel
+has measured: under ten, every retention finding carries `sanity_bound`.
+Exit 1 on any fail, so it works in a script.
 
 ### `yt assets`
 

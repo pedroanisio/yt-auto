@@ -156,8 +156,12 @@ so a session on a short name keeps the CLI's own stop at 80% of its cap beside
 the stream meter. A decision that raised is a `failed` row in the harness report with
 what the engine spent, so the record bills it; `yt doctor` warns when a
 record's `by_model` names an id neither engine priced (a Codex id is priced
-from `codex_engine.PRICES` and `$CODEX_PRICES`). A Vercel AI Gateway id is
-its direct name (`ytstudio/models.py`, AUTO-120): `anthropic/claude-opus-5.5`,
+from `codex_engine.PRICES` and `$CODEX_PRICES`); a row the gateway engine
+priced itself (`cost_gateway_calls`, `cost_generation_calls`) is not warned
+about, `$GATEWAY_PRICES` prices a gateway id too, and where
+`gateway/node_modules` exists doctor shows a "gateway engine" block (Node,
+the pinned `ai`, the key by name). A Vercel AI Gateway id is its direct
+name (`ytstudio/models.py`, AUTO-120): `anthropic/claude-opus-5.5`,
 `claude-code/anthropic/claude-haiku-4.5` and `openai/gpt-5` take the row,
 the family and the Claude check of `claude-opus-5-5`, `claude-haiku-4-5` and
 `gpt-5` when no row names the gateway id itself, while a name with no

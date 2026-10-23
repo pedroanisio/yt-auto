@@ -620,6 +620,17 @@ class Documented(unittest.TestCase):
                 with self.subTest(doc=doc, needle=needle):
                     self.assertIn(needle, flat)
 
+    def test_the_doctor_text_names_the_gateway_pricing_and_block(self):
+        # `yt doctor` treats a gateway-priced row as priced, reads
+        # $GATEWAY_PRICES, and shows its own block where gateway/ is installed.
+        for doc in ("README.md", "ytstudio/SKILL.md"):
+            flat = " ".join((ROOT / doc).read_text(encoding="utf-8").split())
+            for needle in ("cost_gateway_calls", "cost_generation_calls",
+                           "`$GATEWAY_PRICES`", "gateway/node_modules",
+                           "npm install --package-lock-only"):
+                with self.subTest(doc=doc, needle=needle):
+                    self.assertIn(needle, flat)
+
 
 if __name__ == "__main__":
     unittest.main()
