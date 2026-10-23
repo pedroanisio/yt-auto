@@ -109,9 +109,20 @@ def host(environ: Mapping[str, str] | None = None) -> str:
     return raw.rstrip("/")
 
 
+def base_url(environ: Mapping[str, str] | None = None) -> str | None:
+    """The host YT_GATEWAY_URL names, checked as `host` checks it, or None
+    when it is unset. It does not read the switch: the gateway engine
+    (gateway_engine.py, AUTO-124) is its own opt-in, and hands its program a
+    host only when the operator named one, so the program's own default
+    stands otherwise."""
+    if not (_env(environ).get(URL) or "").strip():
+        return None
+    return host(environ)
+
+
 def claude_base_url(environ: Mapping[str, str] | None = None) -> str:
     """The claude CLI's ANTHROPIC_BASE_URL: the host plus /claude-code."""
-    return host(environ) + CLAUDE_PATH
+    return (base_url(environ) or DEFAULT_HOST) + CLAUDE_PATH
 
 
 def _key(environ: Mapping[str, str]) -> str:
