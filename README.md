@@ -123,6 +123,12 @@ research and screenplay work; it is not an unattended model service.
   Google only). It also needs `ffmpeg` and `ffprobe` on PATH, which run
   here: a stream copy and a probe decode and encode nothing. Without
   `YT_GATEWAY=vercel` the flag is refused, never replaced.
+  The third is `yt qa --watch` (AUTO-127): the cut, `video.mp4`, goes to a
+  model that watches it (`--watch-model`, default `google/gemini-3.6-flash`,
+  served by Google only). It needs the same Node 22 or later and
+  `gateway/node_modules`, the catalogue reachable, and a render host
+  (`RS_RENDER_HOSTS`): a cut too large to send is cut down there, never
+  here. Without `YT_GATEWAY=vercel` the flag is refused, never replaced.
 - Python 3.10+
 
 ---
@@ -237,7 +243,7 @@ Or all of it at once, for one idea:
 | `yt pilot` | 30/60/180-second cuts of the finished film, nested, with what each proves | no model calls |
 | `yt gate` | the delivery verdict: loudness, scopes, frames, caption limits, run on a render host and naming the requirement that stopped it; plus the geometry check (a hero that penetrates the set, or reads merged into it on screen, blocks whatever the tool and the triage said) | one triage call |
 | `yt review` | the PDF review sheet: frames, captions, markers, sources, credits | no model calls |
-| `yt qa` | the scorecard per pass: every shot sampled at its midpoint and each narrated line where it starts (`line: <first words>`, AUTO-104), up to 60 stills (`--frames N` above the shot count adds the line stills first, then evenly spaced stills; below it, or past 60 shots by default, names the shots left out; the lines left without a still are named in `lines_unsampled`), one frame window per sample (the still is its middle frame), a contact sheet, the mechanical findings (flat, clipped, frozen, jump, off-camera, `penetration`: the hero inside a set solid, and `reads-merged`: the hero over a surface on screen with no shadow, from the engine's evaluated geometry and camera), the model's review, scored as the median of three samples (an audio category no current listening review covers is null in every sample, never a median), and a side-by-side comparison with the previous kept cut at the same timestamps | `qa.QA_SAMPLES` (3) inspection calls per pass, at most one merge decision and one `<pass>-compare-pass` inspection when an earlier scored pass exists; one render job per sample (by default one per shot and per narrated line, at most 60; `--frames N` sets it), one eval job per pass; `yt improve` pays this every pass; `--listen` (gateway, opt-in, AUTO-126) adds one `listen-<audio sha>` decision on the film's audio and at most one `-again`, priced by its preflight and refused over `--listen-budget-usd` (0.50), none when the same mix was heard before |
+| `yt qa` | the scorecard per pass: every shot sampled at its midpoint and each narrated line where it starts (`line: <first words>`, AUTO-104), up to 60 stills (`--frames N` above the shot count adds the line stills first, then evenly spaced stills; below it, or past 60 shots by default, names the shots left out; the lines left without a still are named in `lines_unsampled`), one frame window per sample (the still is its middle frame), a contact sheet, the mechanical findings (flat, clipped, frozen, jump, off-camera, `penetration`: the hero inside a set solid, and `reads-merged`: the hero over a surface on screen with no shadow, from the engine's evaluated geometry and camera), the model's review, scored as the median of three samples (an audio category no current listening review covers is null in every sample, never a median), and a side-by-side comparison with the previous kept cut at the same timestamps | `qa.QA_SAMPLES` (3) inspection calls per pass, at most one merge decision and one `<pass>-compare-pass` inspection when an earlier scored pass exists; one render job per sample (by default one per shot and per narrated line, at most 60; `--frames N` sets it), one eval job per pass; `yt improve` pays this every pass; `--listen` (gateway, opt-in, AUTO-126) adds one `listen-<audio sha>` decision on the film's audio and at most one `-again`, priced by its preflight and refused over `--listen-budget-usd` (0.50), none when the same mix was heard before; `--watch` (gateway, opt-in, AUTO-127) adds one `watch-sNN` decision per piece of the cut and at most one `-again` each, plus up to 12 render jobs for the moments it reports, none when the same cut was watched before |
 | `yt improve` | routes each QA finding to the stage that owns it, briefs that stage through `feedback/`, re-runs it and everything downstream, keeps the pass only if it measurably improved | one routing decision per pass, plus the stages it runs |
 | `yt doctor` | every video's state and the command that advances it | no model calls |
 | `yt probe` | the realism probe suite: one neutral brief per class of material, light or motion, composed by an agent coding with the SDK, built and framed by the harness, scored by a different model with each defect's cause | **$1.06** for one probe and one round; up to three author sessions and three reviews per probe |
@@ -1443,6 +1449,55 @@ under today's role. `yt improve` and `yt run` do not pass `--listen`, so
 the next pass's estimate leaves a past listen out of a plain `yt qa`
 (`qa.pass_usd`) and adds the listen's own estimate each time `--listen` is
 asked, whether the last one was paid, served from the cache or failed.
+
+`--watch` (AUTO-127, `ytstudio/watch.py`) is the review that watches the
+cut in motion, for what falls between the stills: a frame that pops, a
+transition that stutters, a super that lands late. It is off by default,
+and `YT_GATEWAY` never turns it on. Its prerequisites are Node 22 or later
+with `gateway/node_modules` installed (the npm step in the requirements
+above), `YT_GATEWAY=vercel` and `AI_GATEWAY_API_KEY`. Before a pass directory is made it checks, and
+refuses with exit 1 naming what is missing: the gateway engine's readiness;
+the catalogue (`GET /v1/models`, read once a run, 20 s); a `--watch-model`
+(default `google/gemini-3.6-flash`) whose catalogue row is a language model
+tagged `video-input` and `structured-output`, not deprecated, not `vmc/`
+and not `-batch`; a watcher whose maker (`models.maker`) is known and
+differs from that of every model script.json, keyframe.json (elements and
+review), vfx.json (and each authored section) and sound.json record, as
+requested model or answering model; providers verified for it in
+`watch.WATCH_PROVIDERS` (Google for the default; kimi-k3 and glm-5.3-flash
+have none yet, so they are refused); and a render host (`--host`, else the
+one an encode would use; `--local` does not move it). A `video.mp4` that
+`doctor.cut_problems` calls stale or partial is not watched: the problem
+and its `yt render` command are a `not_evidenced` line, and scoring goes on.
+The cut is sent as it is when it is under `watch.WATCH_MAX_BYTES` (14 MiB)
+and `WATCH_MAX_SECONDS` (600); otherwise the render host re-encodes it at
+`WATCH_HEIGHT` (480) and `WATCH_KBPS` (600) with no audio, split at shot
+boundaries when it is still too long or too large (a shot longer than a
+piece is cut inside, with 1 s of overlap). The cut goes up once by rsync,
+one ssh cuts every piece, the pieces come back to `qa/pass-NN/watch/`, and
+the host's directory is removed; a piece over the limit or off its planned
+length is an error and nothing is sent. Each piece is one gateway decision,
+`watch-sNN`, cached by its bytes; an answer whose times fall outside the
+piece, or whose `watched_seconds` is not near its length, is asked once
+more (`-again`) and then recorded unwatched. A 402 stops the watch.
+`qa/pass-NN/watch.json` keeps the model, the catalogue row, who served each
+call, the plan, the findings (W1.., film times) and what was not watched;
+the same cut, model and constants reuse an earlier pass's record
+(`reused_from`) unless `--fresh`. Each finding's start becomes a still of
+the pass beyond `--frames` (at most `qa.WATCH_SAMPLES_MAX`, 12, blocking
+ones first; one within 0.5 s of a still merges into it), and the scorecard
+gains a `Watched findings:` brief and a required `watched` verdict per
+finding (confirmed, not_visible or disagree, naming the frame). A finding
+two scoring samples confirm on its own still joins the findings as `source:
+"watched:Wn"`; the rest are listed in findings.md as watched, not confirmed
+or not sampled, and block nothing. The scorecard's `watch` and
+`watch_engine` hold the record and the watcher's report, and `usage` merges
+it. `--reuse PASS --watch` reads that pass's watch.json and watches nothing.
+The estimate adds `watch_usd` (the programme at 258 tokens a second plus an
+answer a piece, at the pinned price) unless the last scorecard's
+`watch_engine` already holds a `watch-sNN`. The size, length, height,
+bitrate, providers and token rate are the card's starting values, to be
+measured live.
 
 One reading is not a measurement: scored once, a category moves about ±0.5
 from run to run on the same frames, the size of the steps a pass is read
