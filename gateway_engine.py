@@ -110,12 +110,14 @@ NODE_ENV = "YT_GATEWAY_NODE"
 PRICES_ENV = "GATEWAY_PRICES"
 
 #: The media a request may carry, by extension. Anything else is refused
-#: before the call, rather than sent with a guessed type.
+#: before the call, rather than sent with a guessed type. `.aac` is an ADTS
+#: stream, what `yt qa --listen` copies out of the film (AUTO-126): Google
+#: lists audio/aac among the audio it takes, and not audio/mp4.
 MEDIA_TYPES = {
     ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
     ".webp": "image/webp", ".mp4": "video/mp4", ".webm": "video/webm",
     ".mov": "video/quicktime", ".mp3": "audio/mpeg", ".m4a": "audio/mp4",
-    ".wav": "audio/wav", ".pdf": "application/pdf",
+    ".aac": "audio/aac", ".wav": "audio/wav", ".pdf": "application/pdf",
 }
 
 #: Failures that a retry cannot fix, whatever status or retryable flag came

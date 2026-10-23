@@ -30,7 +30,21 @@ import re
 from claude_engine import VIRTUAL_PROVIDER, canonical_model as canonical
 
 __all__ = ["canonical", "VIRTUAL_PROVIDER", "is_virtual", "maker", "SDK_PREFIX",
-           "SERVING_PROVIDERS"]
+           "SERVING_PROVIDERS", "LISTEN_MODELS"]
+
+#: The models `yt qa --listen` may send the film's audio to (AUTO-126), by
+#: gateway id, each with the providers allowed to serve it (sent as the
+#: gateway's `only`). No Anthropic or OpenAI model on the gateway takes
+#: audio, and the catalogue's metadata under-reports which do, so this is
+#: an allowlist, not a capability filter. A model whose provider list is
+#: empty is refused: which of its providers take audio input and return
+#: structured output is the card's live check, not yet made. Google's
+#: provider slug ("google" here, perhaps "vertex") is checked live too.
+LISTEN_MODELS: dict[str, dict] = {
+    "google/gemini-3.6-flash": {"providers": ("google",)},
+    "xiaomi/mimo-v2.6-flash": {"providers": ()},
+    "xiaomi/mimo-v2.6-pro": {"providers": ()},
+}
 
 #: What a reviewer value leads with when it names a gateway model for the
 #: gateway engine (`sdk:zai/glm-5.3`, ytstudio/reviewers.py, AUTO-125).
