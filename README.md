@@ -1416,10 +1416,13 @@ why, root cause, owner of voice, sound, build, render or external, fix,
 blocking or minor), plus what it could not hear (`not_heard`), with no
 score. The same mix asks nothing again. A finding whose owner or severity
 is outside the schema, or whose timestamp is outside the measured duration,
-is named in one more decision (`-again`). What still fails is dropped and
-named under `not_evidenced`, never repaired. The record is
-`qa/pass-NN/listening.json`: the model asked and the one that answered, the
-provider, the audio and film digests, the decisions, the answer, the kept
+is named in one more decision (`-again`), which files only those findings,
+corrected. The first answer's kept findings stand, and the second adds what
+the first did not say. What still fails is dropped and named under
+`not_evidenced`, never repaired. The record is `qa/pass-NN/listening.json`:
+the model asked and the one that answered (on a rerun served from the cache,
+the one the record that asked names), the provider, the audio and film
+digests, the decisions, the answer and the second one (`again`), the kept
 and dropped findings and the listener's report. It is current only while
 `video.mp4` is the film heard and not older than `scene.xml`.
 
@@ -1433,7 +1436,10 @@ qa.json's) is the reviewer's and the listener's merged
 (`spend.merge_records`). A listen that fails (a 402, a different model
 answering, a missing field) is recorded not current, with its reason, its
 billed `failed` row and one `external` finding, and the frame review runs
-under today's role. `yt improve` and `yt run` do not pass `--listen`.
+under today's role. `yt improve` and `yt run` do not pass `--listen`, so
+the next pass's estimate leaves a past listen out of a plain `yt qa`
+(`qa.pass_usd`) and adds the listen's own estimate each time `--listen` is
+asked, whether the last one was paid, served from the cache or failed.
 
 One reading is not a measurement: scored once, a category moves about ±0.5
 from run to run on the same frames, the size of the steps a pass is read
