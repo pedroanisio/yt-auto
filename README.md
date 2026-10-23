@@ -150,7 +150,7 @@ Or all of it at once, for one idea:
 | `yt pilot` | 30/60/180-second cuts of the finished film, nested, with what each proves | no model calls |
 | `yt gate` | the delivery verdict: loudness, scopes, frames, caption limits, run on a render host and naming the requirement that stopped it; plus the geometry check (a hero that penetrates the set, or reads merged into it on screen, blocks whatever the tool and the triage said) | one triage call |
 | `yt review` | the PDF review sheet: frames, captions, markers, sources, credits | no model calls |
-| `yt qa` | the scorecard per pass: one frame window per sampled midpoint (the still is its middle frame), a contact sheet, the mechanical findings (flat, clipped, frozen, jump, off-camera, `penetration`: the hero inside a set solid, and `reads-merged`: the hero over a surface on screen with no shadow, from the engine's evaluated geometry and camera), the model's review | one inspection call per pass; one render job per sample, one eval job per pass |
+| `yt qa` | the scorecard per pass: every shot sampled at its midpoint (`--frames N` above the shot count adds evenly spaced stills; below it names the shots left out), one frame window per sample (the still is its middle frame), a contact sheet, the mechanical findings (flat, clipped, frozen, jump, off-camera, `penetration`: the hero inside a set solid, and `reads-merged`: the hero over a surface on screen with no shadow, from the engine's evaluated geometry and camera), the model's review | one inspection call per pass; one render job per sample, one eval job per pass |
 | `yt improve` | routes each QA finding to the stage that owns it, briefs that stage through `feedback/`, re-runs it and everything downstream, keeps the pass only if it measurably improved | one routing decision per pass, plus the stages it runs |
 | `yt doctor` | every video's state and the command that advances it | no model calls |
 | `yt probe` | the realism probe suite: one neutral brief per class of material, light or motion, composed by an agent coding with the SDK, built and framed by the harness, scored by a different model with each defect's cause | **$1.06** for one probe and one round; up to three author sessions and three reviews per probe |
@@ -1212,9 +1212,18 @@ would circle, with the owning stage and the fix — into `review.json`.
 
 The review-and-improve harness of [docs/production.md](docs/production.md),
 run over the rendered film. Sampling is deterministic and kept
-(`samples.json`): the hook, every section's opening, the longest authored
-effects, 25/50/75 % of the runtime and the ending, each at the midpoint of its
-shot, never at a boundary. The stills are rendered by the engine on the render
+(`samples.json`): every shot once, at the midpoint of the shot, never at a
+boundary. Each row's `why` keeps the reasons that give a shot priority: the
+hook, the ending, the payoff, every section's opening, the re-hooks, 25/50/75 %
+of the runtime and the longest authored effects; a shot with none of these
+says `shot`. `--frames N` sets how many stills. Above the shot count the
+extra stills (`why: evenly spaced`) are spread evenly over the runtime, each
+inside a shot and at least half a second from every other sample, so a
+larger N gives more evidence; a film too short for N gets what fits.
+Below the shot count the hook, the ending, the payoff and the section
+starts are kept first, then the other shots spread over the runtime, and the
+scorecard names the shots left out (`unsampled`, and a line under
+`not_evidenced`). The stills are rendered by the engine on the render
 host from the very document the encode uses. A still cannot evidence motion,
 so each sample is rendered as one contiguous window of frames centred on
 its midpoint — half a second, at most 16 consecutive frames, kept inside
@@ -1279,7 +1288,9 @@ numbers included), the next pass is compared with it, and a category that
 drops by 0.5 is a regression. `qa.json` at the project root carries the
 latest verdict. The exit code is 0 only when the film is ready.
 
-`--frames N` for more evidence · `--quality` of the stills · `--reuse PASS` to
+`--frames N` stills (default: every shot once; more adds evenly spaced
+stills, fewer names the shots left out) · `--quality` of the stills ·
+`--reuse PASS` to
 score an earlier pass's frames again, measuring them again and rendering
 nothing but proof frames that were rendered graded ·
 `--host` / `--local` · `--fresh`
