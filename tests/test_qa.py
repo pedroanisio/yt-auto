@@ -106,8 +106,9 @@ class Sampling(unittest.TestCase):
         self.assertIn("ending", samples["3.2"].split("; "))
 
     def test_many_rehooks_do_not_crowd_out_the_section_starts(self):
-        # nothing caps the rehooks a screenplay marks; the default limit
-        # still keeps the hook, the ending and every section (sample's promise)
+        # nothing caps the rehooks a screenplay marks; a --frames below the
+        # shot count still keeps the hook, the ending and every section
+        # (sample's promise; by default every shot is sampled, AUTO-103)
         shots = []
         for n in range(20):
             section = f"S{n // 4 + 1}"
@@ -116,7 +117,7 @@ class Sampling(unittest.TestCase):
                           "seconds": 5, "asset": "effect", "section": section,
                           "function": function})
         build = {"scene": {"duration": 100}, "shots": shots}
-        samples = qa.sample(build)
+        samples = qa.sample(build, limit=14)
         self.assertEqual(len(samples), 14)
         why = [token for s in samples for token in s["why"].split("; ")]
         for section in ("S1", "S2", "S3", "S4", "S5"):
@@ -509,6 +510,20 @@ class StoryStage(unittest.TestCase):
     def run_qa(self, **kw):
         with contextlib.redirect_stdout(io.StringIO()):
             return qa.run(self.args(**kw))
+
+    def test_the_prompt_names_the_shots_no_still_was_taken_of(self):
+        # AUTO-103: under a tight --frames the reviewer is told which shots it
+        # has no picture of before it scores, not only the scorecard after.
+        self.run_qa(frame_limit=2)
+        prompt = self.seen["prompt"]
+        samples = json.loads((self.root / "qa" / "pass-01" / "samples.json").read_text())
+        missing = sorted({"1.1", "1.2", "1.3", "1.4"} - {r["label"] for r in samples})
+        self.assertEqual(len(missing), 2)
+        line = next(l for l in prompt.splitlines() if "no still" in l)
+        for label in missing:
+            self.assertIn(label, line)
+        self.run_qa(frame_limit=None)
+        self.assertNotIn("no still", self.seen["prompt"])
 
     def test_the_prompt_carries_the_story_and_the_narration_is_evidence(self):
         self.run_qa()
