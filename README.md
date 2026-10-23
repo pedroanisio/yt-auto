@@ -85,6 +85,8 @@ research and screenplay work; it is not an unattended model service.
   as given. Codex reads the key as it is, so whitespace around it is refused.
   `yt doctor` checks the route when the switch is set (see `yt doctor`
   below), and `yt doctor --gateway-ping` shows the team's credit balance.
+  [Vercel AI Gateway (optional)](#vercel-ai-gateway-optional) below puts
+  it in one place.
 - Optional, for a stage that opts into the gateway engine only: Node 22 or
   later and `cd gateway && npm ci --ignore-scripts` (until
   `gateway/package-lock.json` is committed, `npm ci` has no lockfile to read,
@@ -124,6 +126,116 @@ research and screenplay work; it is not an unattended model service.
   here: a stream copy and a probe decode and encode nothing. Without
   `YT_GATEWAY=vercel` the flag is refused, never replaced.
 - Python 3.10+
+
+## Vercel AI Gateway (optional)
+
+The claude and codex CLIs are the default: with nothing set every stage
+calls them directly, exactly as before, and they answer every call they can.
+[Vercel AI Gateway](https://vercel.com/docs/ai-gateway) is an opt-in on top
+of them, for two things they do not give. One is a single key and bill for
+the CLIs' own calls (`YT_GATEWAY=vercel`), which changes their transport,
+never which tool runs. The other is the models neither CLI reaches: one that
+listens to the film's audio, one that watches it, a reviewer from another
+maker. Each of those passes sits behind its own flag and runs on the gateway
+engine (`gateway_engine.py`); without the gateway that flag is refused, or
+the pass is skipped and recorded as not evidenced. The gateway never
+replaces a CLI call.
+
+To switch it on, make a key on the AI Gateway API Keys page of your Vercel
+team, then:
+
+```sh
+export AI_GATEWAY_API_KEY=...         # the key; alone it turns nothing on
+export YT_GATEWAY=vercel              # unset it (or set off) to go direct again
+# export YT_GATEWAY_AUTH=subscription # keep your Claude login (see below)
+./yt doctor --env --gateway-ping
+```
+
+Both can also go in an env file `yt` loads (`--env-file`, `$YT_ENV_FILE`,
+`./.env`). With the switch set, doctor's "gateway" block names the
+endpoints in use (never the key) and fails on anything the route would
+refuse, and `yt doctor --gateway-ping` adds one `GET /v1/credits` showing
+the team's balance; doctor makes no gateway call without it. No setup
+command is needed: Vercel's `npx vercel ai-gateway setup` is described as
+writing the gateway into the CLIs' own settings (`~/.claude/settings.json`,
+`~/.codex/config.toml`), where it would stay on for every claude and codex
+session outside `yt`. `yt` sets the variables for its own child processes
+only and writes neither file.
+
+| Variable | What it does |
+|---|---|
+| `YT_GATEWAY` | `vercel` sends the CLIs' calls through the gateway. Unset, or `off`, `0`, `false`, `no`, `none`: direct, with each call's argv, child environment, booking and decision cache as before. Any other value is refused, so a typo never quietly means direct. |
+| `AI_GATEWAY_API_KEY` | The gateway key. A set switch without it fails before any call. |
+| `YT_GATEWAY_AUTH` | How the claude CLI signs in. `key` (the default) sends the key as `ANTHROPIC_AUTH_TOKEN` and empties `ANTHROPIC_API_KEY` for the child, so a direct key left in the shell cannot win. `subscription` keeps your Claude login and sends the key in a header; unset `ANTHROPIC_API_KEY` yourself there, or the CLI sends it in place of the login. Codex always sends the key. |
+| `YT_GATEWAY_URL` | Replaces the host `https://ai-gateway.vercel.sh`, for a proxy in front of it. The host only: the paths are added. |
+| `YT_GATEWAY_NODE` | The node binary the gateway engine runs (22 or later; default `node`). |
+| `GATEWAY_PRICES` | Price rows for gateway ids (JSON, USD per 1M tokens), for a gateway-engine call the gateway reports no cost for. |
+
+**Where the calls go.** The claude CLI goes to
+`https://ai-gateway.vercel.sh/claude-code`, set as its base URL, as
+Vercel's [Claude Code page](https://vercel.com/docs/ai-gateway/coding-agents/claude-code)
+describes. `bare` is refused under the gateway, and so is a
+`CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` or
+`CLAUDE_CODE_USE_FOUNDRY` left on, since the CLI would go there instead.
+Under `YT_ENGINE=codex` the gateway becomes Codex's model provider through
+`-c` pairs on its command line (base URL
+`https://ai-gateway.vercel.sh/codex/v1`, `wire_api="responses"`, the key
+read from `AI_GATEWAY_API_KEY`), as Vercel's
+[Codex page](https://vercel.com/docs/ai-gateway/coding-agents/openai-codex)
+describes; a bare model goes as `openai/<name>`, and a Claude id never goes
+to codex. The gateway engine is a small Node program on the AI SDK, run only
+for a stage that opts in (installed as Requirements above says).
+
+**Spend.** Through the gateway a claude call is booked at its model's price
+row times the tokens the CLI reports, not at the CLI's own
+`total_cost_usd`, which is its estimate at Anthropic's rates; that figure
+stays on the `by_model` row as `cli_cost_usd`. The gateway charges list
+price with no markup ([Vercel's pricing page](https://vercel.com/docs/ai-gateway/pricing)),
+so the booking is an estimate of the bill at list price: a model Vercel discounts, or a surcharge such as zero data
+retention, is not in it. A call with no price row or no tokens is booked at
+the CLI's figure instead and counted in `cost_cli_calls`, which `yt doctor`
+warns about. A gateway-engine call books the cost the gateway reports for
+it, else a price row (`GATEWAY_PRICES` first), and its row says which
+(`cost_gateway_calls`, `cost_generation_calls`, `cost_table_calls`,
+`cost_unpriced_calls`).
+
+**402 and 429.** A gateway budget's 402 (`quota_for_entity_exceeded`, a
+team or project's "budget exceeded", an API key's "Quota limit exceeded")
+is permanent: the call stops at the first one, with no retry, as it does on
+the engines' other permanent failures (a spent `--max-budget-usd`, a refused
+sign-in). A 429 is retried as any transient failure is, within the engine's
+retries. Any other failure text, an exhausted credit balance's included
+(Vercel does not document its wording), is treated as transient and retried
+up to the engine's retries before the call fails.
+
+**Models.** A gateway id (`anthropic/claude-opus-5.5`, `openai/gpt-5`) is
+priced and judged for family as its direct name, so the reviewer still
+differs from the author by family (or by maker, for a reviewer from another
+maker: `sdk:<id>` or `pool`). A virtual model (`vmc/<slug>`) may route
+anywhere, so it has no family and no price, and is refused as an author or
+a reviewer.
+
+**Not wired.** BYOK (your own provider keys), zero data retention, and the
+gateway's provider order and model fallbacks are not set for the CLIs'
+calls. The gateway engine strips the gateway's model fallbacks, which may
+cross families, and narrows providers only through a pass's own allowlist
+(the reviewer pool's and the listener's `only`).
+
+**Passes on the gateway engine.** `yt script --review --reviewer-model pool`
+(or `sdk:<provider/model>`), `yt qa --listen` and
+`yt qa --against FILE --compare-model MODEL`, each described in its stage's
+section below. A watch pass, when present, is described with `yt qa`
+below as well.
+
+Not yet checked against the live gateway: structured output through it
+(the claude CLI's schema flag, which every decision relies on), whether
+`bare` can sign in with a gateway token (so it is refused), a 1-hour prompt
+cache (Vercel documents only a 5-minute one), the model ids the Claude Code
+endpoint accepts for an alias such as `opus`, any cost or generation-id
+field in the CLIs' own output, the wording of the errors for a budget or
+exhausted credits as the CLIs print them, and which files
+`npx vercel ai-gateway setup` writes. Until they are, treat each as
+unknown.
 
 ---
 

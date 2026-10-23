@@ -11,6 +11,11 @@ not keep working after the session stops servicing requests. It cannot select a
 different model inside the chat; `requested_model` is recorded, while the actual
 executor is labeled `active-chat-session`.
 
+`YT_GATEWAY` (Vercel AI Gateway, README.md) reroutes the claude and codex CLIs,
+which the bridge does not launch, so the bridge is unaffected; a flag that opts
+one pass into the gateway engine, such as `--reviewer-model pool`, still sends
+that pass alone to the gateway.
+
 ## Setup
 
 ```bash

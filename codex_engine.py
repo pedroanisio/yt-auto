@@ -17,7 +17,11 @@ events onto claude_engine's.
     python3 codex_engine.py chat | run tasks.json [--jobs 4]
 
 Requires `codex` on PATH (or `executable=` / $CODEX_ENGINE_EXECUTABLE),
-authenticated (`codex login`). Verified against codex-cli 0.163.0.
+authenticated (`codex login`). Verified against codex-cli 0.163.0. With
+YT_GATEWAY=vercel and AI_GATEWAY_API_KEY set, codex goes through Vercel AI
+Gateway instead, named as its model provider on the command line (the
+YT_GATEWAY row below; ytstudio/gateway.py), and the key is read from that
+variable in place of the login; with it unset nothing changes.
 
 Feature map (S = supported by a Codex flag, E = emulated here, N = no Codex
 meaning: accepted, ignored, one warning when set to a non-default value):
