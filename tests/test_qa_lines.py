@@ -51,6 +51,22 @@ def _refusal():
     return build, voice
 
 
+def _reported():
+    """The reported film's VII exactly: 36.1-41.7 s, midpoint 38.9 s, and the
+    refusal line said 3.2 s into its take, at 39.3 s: 0.4 s after the
+    midpoint, past the edge of that still's burst (38.67-39.13 s at 30 fps)."""
+    build, _ = _refusal()
+    voice = {"takes": [_take("VII", _words(
+        ("He", 3.2, 3.4), ("refused", 3.4, 4.0), ("the", 4.0, 4.1),
+        ("crown.", 4.1, 5.6)), seconds=5.6)]}
+    return build, voice
+
+
+def _late(seconds=6.0, at=4.5):
+    """A take whose one line starts well after its shot's midpoint."""
+    return _words(("Then", at, at + 0.3), ("this.", at + 0.3, at + 1.3))
+
+
 class LineStills(unittest.TestCase):
     def test_a_line_after_the_midpoint_gets_its_own_still_at_its_start(self):
         build, voice = _refusal()
@@ -59,7 +75,8 @@ class LineStills(unittest.TestCase):
         self.assertNotIn("line:", mid["why"])
         line = next(r for r in rows if r["t"] == 39.7)
         self.assertEqual(line["why"], "line: He refused the crown.")
-        self.assertEqual(line["lines"], [{"at": 39.7, "text": "He refused the crown."}])
+        self.assertEqual(line["lines"], [{"at": 39.7, "text": "He refused the crown.",
+                                          "frame": line["frame"]}])
         # the line's own burst, kept inside its shot like any other still
         self.assertTrue(36.1 <= line["burst"]["times"][0] < line["burst"]["times"][-1] < 41.7)
         self.assertNotEqual(line["frame"], mid["frame"])
@@ -72,17 +89,70 @@ class LineStills(unittest.TestCase):
         self.assertEqual(opening["t"], round(36.1 + qa.BURST_SECONDS / 2, 3))
         self.assertEqual(opening["lines"][0]["at"], 36.15)
 
-    def test_a_line_within_half_a_second_of_the_midpoint_adds_nothing(self):
+    def test_the_reported_line_gets_a_still_whose_burst_holds_its_start(self):
+        # 39.3 s is within half a second of the 38.9 s midpoint, but no frame
+        # of that still's burst is at or after it: merged there, the reviewer
+        # would be asked about a moment it cannot see.
+        build, voice = _reported()
+        rows = [r for r in qa.sample(build, voice=voice) if r["label"] == "VII"]
+        mid = next(r for r in rows if r["t"] == 38.9)
+        self.assertNotIn("lines", mid)
+        self.assertNotIn(round(39.3 * 30), mid["burst"]["frames"])
+        line = next(r for r in rows if r.get("lines"))
+        self.assertEqual(line["t"], 39.3)
+        self.assertIn(round(39.3 * 30), line["burst"]["frames"])
+        self.assertEqual(line["lines"], [{"at": 39.3, "text": "He refused the crown.",
+                                          "frame": line["frame"]}])
+
+    def test_a_line_inside_the_burst_of_its_shots_still_adds_nothing(self):
         build = {"scene": {"fps": 30},
                  "shots": [{"label": "1", "at": 10.0, "seconds": 4.0}]}
-        voice = {"takes": [_take("1", _words(("Look", 1.7, 2.0), ("here.", 2.0, 3.9)),
+        voice = {"takes": [_take("1", _words(("Look", 2.1, 2.4), ("here.", 2.4, 3.9)),
                                  seconds=4.0)]}
         rows = qa.sample(build, voice=voice)
         self.assertEqual([r["t"] for r in rows], [12.0])
         why = rows[0]["why"].split("; ")
         self.assertEqual(why[:2], ["hook", "ending"])
         self.assertEqual(why[-1], "line: Look here.")
-        self.assertEqual(rows[0]["lines"], [{"at": 11.7, "text": "Look here."}])
+        # the frame that shows the line's start is the burst's, named beside it
+        stem = rows[0]["frame"][:-4]
+        self.assertEqual(rows[0]["lines"], [{"at": 12.1, "text": "Look here.",
+                                             "frame": f"burst/{stem}_0363.png"}])
+        self.assertIn(f"burst/{stem}_0363.png", rows[0]["burst"]["files"])
+
+    def test_a_line_within_half_a_second_but_outside_the_burst_gets_its_own_still(self):
+        build = {"scene": {"fps": 30},
+                 "shots": [{"label": "1", "at": 10.0, "seconds": 4.0}]}
+        voice = {"takes": [_take("1", _words(("Look", 1.7, 2.0), ("here.", 2.0, 3.9)),
+                                 seconds=4.0)]}
+        rows = qa.sample(build, voice=voice)
+        self.assertEqual([r["t"] for r in rows], [11.7, 12.0])
+        self.assertEqual(rows[0]["why"], "line: Look here.")
+        self.assertNotIn("lines", rows[1])
+
+    def test_a_line_never_merges_into_another_shots_still(self):
+        # An insert nested in a long shot: its line starts inside the long
+        # shot's burst, but it is the insert's line, so it takes a still in
+        # the insert.
+        build = {"scene": {"fps": 30}, "shots": [
+            {"label": "A", "at": 0.0, "seconds": 10.0},
+            {"label": "B", "at": 4.9, "seconds": 1.0}]}
+        voice = {"takes": [_take("B", _words(("Now.", 0.2, 0.8)), seconds=1.0)]}
+        rows = qa.sample(build, voice=voice)
+        a = next(r for r in rows if r["label"] == "A")
+        self.assertIn(round(5.1 * 30), a["burst"]["frames"])
+        self.assertNotIn("lines", a)
+        line = next(r for r in rows if r.get("lines"))
+        self.assertEqual(line["label"], "B")
+        self.assertIn(round(5.1 * 30), line["burst"]["frames"])
+        # and across a cut: 0.3 s into the next shot, 0.4 s from the last
+        # shot's still, the line is still sampled in its own shot
+        build = {"scene": {"fps": 30}, "shots": [
+            {"label": "A", "at": 1.8, "seconds": 0.2},
+            {"label": "B", "at": 2.0, "seconds": 4.0}]}
+        voice = {"takes": [_take("B", _words(("Now.", 0.3, 0.8)), seconds=4.0)]}
+        line = next(r for r in qa.sample(build, voice=voice) if r.get("lines"))
+        self.assertEqual((line["label"], line["t"]), ("B", 2.3))
 
     def test_the_label_is_the_lines_first_words(self):
         build = {"shots": [{"label": "1", "at": 0.0, "seconds": 9.0}]}
@@ -116,6 +186,51 @@ class LineStills(unittest.TestCase):
         self.assertEqual([(r["label"], r["t"]) for r in lines], [("2", 10.5)])
         self.assertEqual(sorted(r["label"] for r in rows), ["1", "2", "2", "3"])
 
+    def test_payoff_then_rehook_then_reveal_lines_win_the_one_spare_still(self):
+        def film(*functions):
+            shots = [{"label": str(n), "at": 6.0 * n, "seconds": 6.0, "function": f}
+                     for n, f in enumerate(("context",) + functions)]
+            voice = {"takes": [_take(s["label"], _late(), seconds=6.0) for s in shots]}
+            rows = qa.sample({"scene": {"fps": 30}, "shots": shots}, voice=voice,
+                             limit=len(shots) + 1)
+            return [r["label"] for r in rows if r.get("lines")]
+        self.assertEqual(film("reveal", "rehook", "payoff"), ["3"])
+        self.assertEqual(film("reveal", "rehook"), ["2"])
+        self.assertEqual(film("reveal"), ["1"])
+
+    def test_without_frames_the_line_stills_stop_at_every_shot_up_to(self):
+        n = qa.EVERY_SHOT_UP_TO * 2 // 3
+        shots = [{"label": f"S{k}", "at": 6.0 * k, "seconds": 6.0} for k in range(n)]
+        voice = {"takes": [_take(s["label"], _late(), seconds=6.0) for s in shots]}
+        build = {"scene": {"fps": 30}, "shots": shots}
+        rows = qa.sample(build, voice=voice)
+        self.assertEqual(len(rows), qa.EVERY_SHOT_UP_TO)
+        self.assertEqual(qa.unsampled(build, rows), [])
+        dropped = qa.lines_unsampled(build, voice, rows)
+        self.assertEqual(len(dropped), 2 * n - qa.EVERY_SHOT_UP_TO)
+
+    def test_the_spare_stills_go_to_lines_spread_over_the_film(self):
+        # 50 shots of 3 s, each take opening on the cut and saying a second
+        # line 0.7 s after its midpoint: 100 lines, 10 spare stills. The
+        # lines inside a shot come before the ones its cut opens on, and
+        # they are spread over the runtime, not taken from its start.
+        shots = [{"label": f"S{k}", "at": 3.0 * k, "seconds": 3.0} for k in range(50)]
+        voice = {"takes": [_take(s["label"], _words(
+            ("Here", 0.1, 0.4), ("it", 0.4, 0.6), ("is.", 0.6, 0.9),
+            ("Then", 2.2, 2.5), ("this.", 2.5, 2.9)), seconds=3.0) for s in shots]}
+        build = {"scene": {"fps": 30}, "shots": shots}
+        rows = qa.sample(build, voice=voice)
+        lines = [r for r in rows if r.get("lines")]
+        self.assertEqual(len(lines), qa.EVERY_SHOT_UP_TO - 50)
+        self.assertTrue(all(r["why"] == "line: Then this." for r in lines), lines)
+        times = sorted(r["t"] for r in lines)
+        self.assertLess(times[0], 150 * 0.15)
+        self.assertGreater(times[-1], 150 * 0.85)
+        self.assertTrue(all(b - a > 6.0 for a, b in zip(times, times[1:])), times)
+        dropped = qa.lines_unsampled(build, voice, rows)
+        self.assertEqual(len(dropped), 100 - len(lines))
+        self.assertEqual(dropped[0], {"shot": "S0", "at": 0.1, "text": "Here it is."})
+
     def test_the_shots_come_before_any_line_under_a_tight_limit(self):
         build, voice = _refusal()
         rows = qa.sample(build, voice=voice, limit=2)
@@ -143,10 +258,36 @@ class LineStills(unittest.TestCase):
         rows = qa.sample(build, voice=voice, limit=12)
         self.assertEqual(len(rows), 12)
         times = sorted(r["t"] for r in rows)
+        # the line stills count against --frames before the evenly spaced ones
+        self.assertEqual(sorted(r["t"] for r in rows if r.get("lines")), [36.35, 39.7])
         spread = [r for r in rows if r["why"] == qa.SPREAD_WHY]
+        self.assertEqual(len(spread), 12 - 4)
         for r in spread:
             others = [t for t in times if t != r["t"]]
             self.assertTrue(all(abs(r["t"] - t) >= qa.SPREAD_GAP - 1e-6 for t in others), r)
+
+    def test_a_label_voiced_twice_is_its_last_take_as_build_places_it(self):
+        # build.timeline keys the takes by label, the last one winning: an
+        # earlier take of the same label is not on the soundtrack.
+        build = {"shots": [{"label": "1", "at": 0.0, "seconds": 8.0}]}
+        twice = _take("1", _words(("One.", 0.1, 0.5), ("Two.", 5.0, 5.5)), seconds=8.0)
+        lines = qa.narrated_lines(build, {"takes": [twice, twice]})
+        self.assertEqual([ln["text"] for ln in lines], ["One.", "Two."])
+        old = _take("1", _words(("Discarded.", 6.0, 7.0)), seconds=8.0)
+        lines = qa.narrated_lines(build, {"takes": [old, twice]})
+        self.assertEqual([ln["text"] for ln in lines], ["One.", "Two."])
+        rows = qa.sample(build, voice={"takes": [twice, twice]})
+        self.assertEqual(sum(len(r.get("lines", [])) for r in rows), 2)
+
+    def test_a_title_or_an_initialism_does_not_end_a_line(self):
+        build = {"shots": [{"label": "1", "at": 0.0, "seconds": 9.0}]}
+        take = _take("1", _words(
+            ("Dr.", 0.1, 0.4), ("Lee", 0.4, 0.7), ("left", 0.7, 1.0), ("the", 1.0, 1.1),
+            ("U.S.", 1.1, 1.6), ("today.", 1.6, 2.0), ("Mr.", 5.0, 5.3), ("Ng", 5.3, 5.6),
+            ("stayed.", 5.6, 6.0)), seconds=9.0)
+        lines = qa.narrated_lines(build, {"takes": [take]})
+        self.assertEqual([ln["text"] for ln in lines],
+                         ["Dr. Lee left the U.S. today.", "Mr. Ng stayed."])
 
     def test_a_shots_per_shot_findings_stay_on_its_midpoint_still(self):
         # The opening line's still is earlier than the midpoint; what is
@@ -225,7 +366,56 @@ class LineBrief(unittest.TestCase):
         self.assertIn("\"why_sampled\": \"line: That is the wind.\"", row)
         self.assertIn("\"text\": \"That is the wind.\"", row)
         self.assertIn("\"at\": 15.0", row)
+        self.assertIn("\"frame\": \"%s\"" % line["lines"][0]["frame"], row)
         self.assertIn("at the moment it is said", prompt)
+        self.assertIn("the burst frame", prompt)
+        card = json.loads((self.root / "qa" / "pass-01" / "scorecard.json").read_text())
+        self.assertEqual(card["lines_unsampled"], [])
+        self.assertFalse(any(n.startswith("lines:") for n in card["not_evidenced"]))
+
+    def test_a_tight_frames_names_the_lines_it_left_without_a_still(self):
+        # Four shots, --frames 4: every shot keeps its still and neither line
+        # gets one; the reviewer is told before it scores, and the scorecard
+        # names them, so "the line is on screen" is not read as checked.
+        with contextlib.redirect_stdout(io.StringIO()):
+            qa.run(self.args(frame_limit=4))
+        pass_dir = self.root / "qa" / "pass-01"
+        card = json.loads((pass_dir / "scorecard.json").read_text())
+        self.assertEqual(card["lines_unsampled"], [
+            {"shot": "1.4", "at": 11.1, "text": "It bends."},
+            {"shot": "1.4", "at": 15.0, "text": "That is the wind."}])
+        note = next(n for n in card["not_evidenced"] if n.startswith("lines:"))
+        self.assertIn("2 of 2 narrated lines", note)
+        self.assertIn("--frames 4", note)
+        self.assertIn("1.4 at 00:15.000", note)
+        self.assertIn("2 of the 2 narrated lines", self.seen["prompts"][0])
+
+
+class LinesNote(unittest.TestCase):
+    def test_the_note_counts_and_names_the_lines_left_without_a_still(self):
+        dropped = [{"shot": "VII", "at": 39.3, "text": "He refused the crown."}]
+        card = qa.note_lines_unsampled({"not_evidenced": ["x"]}, dropped, total=3,
+                                       limit=None, stills=qa.EVERY_SHOT_UP_TO)
+        self.assertEqual(card["lines_unsampled"], dropped)
+        self.assertEqual(card["not_evidenced"][0], "x")
+        self.assertIn("1 of 3 narrated lines", card["not_evidenced"][1])
+        self.assertIn(f"past the default of {qa.EVERY_SHOT_UP_TO} stills",
+                      card["not_evidenced"][1])
+        self.assertIn("VII at 00:39.300", card["not_evidenced"][1])
+        reused = qa.note_lines_unsampled({}, dropped, total=3, limit=None,
+                                         stills=4, reused=True)
+        self.assertIn("in the reused pass", reused["not_evidenced"][0])
+
+    def test_a_long_list_is_cut_short_in_the_note_but_kept_whole(self):
+        dropped = [{"shot": str(k), "at": float(k), "text": "x."} for k in range(30)]
+        card = qa.note_lines_unsampled({}, dropped, total=40, limit=50, stills=50)
+        self.assertEqual(len(card["lines_unsampled"]), 30)
+        self.assertIn("and 20 more", card["not_evidenced"][0])
+
+    def test_a_film_without_narrated_lines_gets_no_key(self):
+        self.assertEqual(qa.note_lines_unsampled({"not_evidenced": []}, [], total=0,
+                                                 limit=None, stills=4),
+                         {"not_evidenced": []})
 
 
 class Docs(unittest.TestCase):
