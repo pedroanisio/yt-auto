@@ -1127,12 +1127,22 @@ def mechanical_blockers(build: dict, *, gate: dict | None) -> list[str]:
 
 
 def compare(prev: dict | None, cur: dict) -> dict:
-    """Pass against pass: per-category deltas and what regressed."""
+    """Pass against pass: per-category deltas and what regressed.
+
+    A category not evidenced (None) on one side has no delta. When the two
+    passes did not score the same categories, their overalls average
+    different things: a pass that lost its listening evidence drops the
+    audio scores out of its mean and its overall rises with nothing in the
+    film changed. So the overall delta is then taken between the means of
+    the categories both passes scored, and `unscored` names the ones left
+    out (AUTO-105). Passes that scored the same categories compare their
+    overalls as filed, as before."""
     if not prev:
         return {"against": None, "deltas": {}, "overall_delta": 0.0, "regressions": []}
+    before_scores, after_scores = prev.get("scores") or {}, cur["scores"]
     deltas = {}
     for key in CATEGORIES:
-        before, after = (prev.get("scores") or {}).get(key, 0), cur["scores"].get(key, 0)
+        before, after = before_scores.get(key, 0), after_scores.get(key, 0)
         if before is None or after is None:
             deltas[key] = None      # not evidenced on one side: nothing to compare
             continue
@@ -1140,11 +1150,20 @@ def compare(prev: dict | None, cur: dict) -> dict:
             deltas[key] = round(float(after) - float(before), 2)
         except (TypeError, ValueError):
             deltas[key] = 0.0
-    return {"against": prev.get("pass"), "deltas": deltas,
-            "overall_delta": round(float(cur.get("overall", 0))
-                                   - float(prev.get("overall", 0)), 2),
-            "regressions": [k for k, d in deltas.items()
-                            if d is not None and d <= -REGRESSION]}
+    out = {"against": prev.get("pass"), "deltas": deltas,
+           "overall_delta": round(float(cur.get("overall", 0))
+                                  - float(prev.get("overall", 0)), 2),
+           "regressions": [k for k, d in deltas.items()
+                           if d is not None and d <= -REGRESSION]}
+    unscored = [k for k in CATEGORIES
+                if (k in before_scores and before_scores[k] is None)
+                != (k in after_scores and after_scores[k] is None)]
+    if unscored:
+        left_out = dict.fromkeys(unscored)          # None: no part of either mean
+        out["overall_delta"] = round(_mean(dict(after_scores) | left_out)
+                                     - _mean(dict(before_scores) | left_out), 2)
+        out["unscored"] = unscored
+    return out
 
 
 def findings_md(name: str, card: dict, samples: list[dict], diff: dict, *,

@@ -195,6 +195,11 @@ class Unscored(unittest.TestCase):
         diff = qa.compare(before, after)
         self.assertIsNone(diff["deltas"]["voiceover"])
         self.assertEqual(diff["regressions"], [])
+        # the overalls are compared over what both passes scored: the +0.1
+        # filed is not a gain in anything measured
+        self.assertEqual(diff["overall_delta"], 0.0)
+        self.assertEqual(diff["unscored"], ["voiceover"])
+        self.assertNotIn("unscored", qa.compare(before, dict(before, overall=9.3)))
         self.assertEqual(qa._mean(dict(_scores(8.0), voiceover=None)), 8.0)
 
 

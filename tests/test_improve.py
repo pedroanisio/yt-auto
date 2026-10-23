@@ -1645,10 +1645,30 @@ class UnheardAudio(unittest.TestCase):
 
     def test_an_unscored_category_is_neither_a_drop_nor_a_gain(self):
         best = self.card()
-        new = self.card(voiceover=None) | {"pass": "pass-02", "overall": 9.3}
+        new = self.card(voiceover=None, visual_quality=9.5) | {"pass": "pass-02",
+                                                               "overall": 9.23}
         verdict = improve.judge(best, new)
         self.assertTrue(verdict["keep"], verdict["reasons"])
         self.assertIsNone(verdict["deltas"]["voiceover"])
+
+    def test_losing_the_low_audio_scores_is_no_gain(self):
+        # The frozen pass-05 numbers, then the same film with its listening
+        # evidence gone: the filed overall rises by +0.5 only because the low
+        # scores left the mean. Over the categories both passes scored,
+        # nothing moved, so the pass is not kept.
+        best = {"pass": "pass-01", "overall": 7.5,
+                "scores": {k: 8.0 for k in qa.CATEGORIES}
+                | {"voiceover": 6.5, "sound_design": 6.0, "music_score": 6.5}}
+        new = {"pass": "pass-02", "overall": 8.0,
+               "scores": dict(best["scores"], voiceover=None, sound_design=None,
+                              music_score=None)}
+        verdict = improve.judge(best, new)
+        self.assertFalse(verdict["keep"])
+        self.assertEqual(verdict["overall_delta"], 0.0)
+        said = " ".join(verdict["reasons"])
+        self.assertIn("did not improve", said)
+        for key in ("voiceover", "sound_design", "music_score"):
+            self.assertIn(key, said)
 
     def test_improve_md_names_the_missing_evidence_and_the_command(self):
         with tempfile.TemporaryDirectory() as tmp:

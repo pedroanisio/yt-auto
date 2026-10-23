@@ -916,12 +916,17 @@ def judge(best: dict, new: dict, *, tolerance: float = TOLERANCE) -> dict:
     """Keep only a measured improvement: the overall up, no category down by
     more than the tolerance, no new blocking mechanical finding. A category
     not evidenced on either side (no current listening review, AUTO-105)
-    has no delta and neither drops nor counts as a gain."""
+    has no delta and neither drops nor counts as a gain: when the passes
+    did not score the same categories, the overall is compared over the
+    ones both scored (qa.compare), so a pass that only lost its low audio
+    scores is not kept on the overall they no longer pull down."""
     diff = qa.compare(best, new)
     reasons = []
     if diff["overall_delta"] <= 0:
+        over = (f", over the categories both passes scored ({', '.join(diff['unscored'])} "
+                "not evidenced on one side)" if diff.get("unscored") else "")
         reasons.append(f"overall {new.get('overall')} did not improve on "
-                       f"{best.get('overall')} ({diff['overall_delta']:+.2f})")
+                       f"{best.get('overall')} ({diff['overall_delta']:+.2f}{over})")
     for key, delta in diff["deltas"].items():
         if delta is not None and delta < -tolerance - 1e-9:
             reasons.append(f"{key} dropped {delta:+.1f}, more than the {tolerance:g} "
