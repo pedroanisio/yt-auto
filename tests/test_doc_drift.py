@@ -188,5 +188,107 @@ class ReviewerPool(unittest.TestCase):
         self.assertIn("`sdk:", row)
 
 
+#: The documents that may name a gateway variable: the four, and the chat
+#: bridge's page, which says the gateway leaves the bridge alone.
+GATEWAY_DOCS = DOCS + ("docs/chat-bridge.md",)
+GATEWAY_VAR = re.compile(r"\b(?:YT_GATEWAY(?:_[A-Z]+)*|AI_GATEWAY_[A-Z_]*[A-Z]|GATEWAY_PRICES)\b")
+
+
+def code_text() -> str:
+    """Every Python module that runs (the root engines and ytstudio/), and
+    the gateway engine's Node program, which reads its own variables."""
+    paths = [*ROOT.glob("*.py"), *(ROOT / "ytstudio").glob("*.py"),
+             ROOT / "gateway" / "gateway-engine.mjs"]
+    return "\n".join(p.read_text(encoding="utf-8") for p in paths)
+
+
+def readme_section(heading: str) -> str:
+    """One `## ` section of README.md, up to the next heading of level 1 or 2
+    or the `---` rule; "" when there is none."""
+    m = re.search(rf"^## {re.escape(heading)}\n(.*?)(?=^#{{1,2}} |^---$)",
+                  "\n".join(read("README.md")) + "\n", re.S | re.M)
+    return " ".join(m.group(1).split()) if m else ""
+
+
+class Gateway(unittest.TestCase):
+    """The gateway is documented as what the code does (AUTO-123): every
+    variable a document names is one the code reads, the README alone is
+    enough to switch it on, and the CLIs stay the default."""
+
+    SECTION = "Vercel AI Gateway (optional)"
+
+    def test_every_gateway_variable_a_document_names_is_read_in_the_code(self):
+        code = code_text()
+        named = {(doc, n, v) for doc in GATEWAY_DOCS for n, line in enumerate(read(doc), 1)
+                 for v in GATEWAY_VAR.findall(line)}
+        self.assertTrue({"YT_GATEWAY", "AI_GATEWAY_API_KEY", "YT_GATEWAY_AUTH",
+                         "YT_GATEWAY_URL"} <= {v for _, _, v in named}, named)
+        missing = [f"{doc}:{n}: {v} is read nowhere in the code" for doc, n, v in sorted(named)
+                   if not re.search(rf"""["']{v}["']|\benv\.{v}\b""", code)]
+        self.assertEqual(missing, [], "\n" + "\n".join(missing))
+
+    def test_gateway_ping_is_a_yt_doctor_flag(self):
+        doctor = next(p for p in parsers() if p.prog.endswith(" doctor"))
+        self.assertIn("--gateway-ping", {o for a in doctor._actions for o in a.option_strings})
+
+    def test_the_readme_alone_switches_the_gateway_on(self):
+        import gateway_engine
+        from ytstudio import gateway
+        text = readme_section(self.SECTION)
+        self.assertTrue(text, f"README.md: no '## {self.SECTION}' section")
+        for var in (gateway.SWITCH, gateway.KEY, gateway.AUTH, gateway.URL,
+                    gateway_engine.NODE_ENV, gateway_engine.PRICES_ENV):
+            self.assertIn(f"`{var}", text, f"the section does not name {var}")
+        self.assertIn(f"{gateway.SWITCH}={gateway.VERCEL}", text)
+        self.assertIn(f"{gateway.AUTH}=subscription", text)
+        for url in (gateway.DEFAULT_HOST + gateway.CLAUDE_PATH,
+                    gateway.DEFAULT_HOST + gateway.CODEX_PATH,
+                    "https://vercel.com/docs/ai-gateway/coding-agents/claude-code",
+                    "https://vercel.com/docs/ai-gateway/coding-agents/openai-codex"):
+            self.assertIn(url, text)
+        for words in ("yt doctor --gateway-ping", "`npx vercel ai-gateway setup`",
+                      "~/.claude/settings.json", "~/.codex/config.toml",
+                      "list price", "`cost_cli_calls`", "402", "429", "`vmc/<slug>`",
+                      "BYOK", "zero data retention", "fallback", "not evidenced"):
+            self.assertIn(words, text, f"the section does not say {words}")
+
+    def test_the_readme_says_the_clis_stay_the_default(self):
+        text = readme_section(self.SECTION)
+        self.assertIn("The claude and codex CLIs are the default", text)
+        self.assertIn("never replaces a CLI call", text)
+        self.assertIn("No dependencies.", "\n".join(read("README.md")))
+
+    def test_the_readme_does_not_state_the_unchecked_as_fact(self):
+        m = re.search(r"Not yet checked against the live gateway:(.*?)\.(?: |$)",
+                      readme_section(self.SECTION))
+        self.assertIsNotNone(m, "the section does not list what is unchecked")
+        for words in ("structured output", "bare", "1-hour", "model ids", "credits"):
+            self.assertIn(words, m.group(1))
+
+    def test_skill_says_the_invariants_hold_under_the_gateway(self):
+        text = "\n".join(read("ytstudio/SKILL.md"))
+        inv = re.search(r"^## The invariants\n(.*?)^## ", text, re.S | re.M).group(1)
+        para = next((p for p in inv.split("\n\n") if "hold under Vercel AI Gateway" in p), "")
+        self.assertTrue(para, "ytstudio/SKILL.md: The invariants says nothing of the gateway")
+        para = " ".join(para.split())
+        for words in ("CLIs stay the default", "`YT_GATEWAY=vercel`", "not evidenced",
+                      "`Harness.decide`", "family", "`vmc/<slug>`", "dependency-free"):
+            self.assertIn(words, para)
+
+    def test_both_engines_say_how_they_reach_the_gateway(self):
+        import ast
+        for name in ("claude_engine.py", "codex_engine.py"):
+            doc = ast.get_docstring(ast.parse((ROOT / name).read_text(encoding="utf-8")))
+            requires = " ".join(next(p for p in doc.split("\n\n")
+                                     if p.lstrip().startswith("Requires")).split())
+            self.assertIn("YT_GATEWAY=vercel", requires, name)
+            self.assertIn("AI_GATEWAY_API_KEY", requires, name)
+
+    def test_the_bridge_page_says_the_gateway_leaves_it_alone(self):
+        text = " ".join("\n".join(read("docs/chat-bridge.md")).split())
+        for words in ("`YT_GATEWAY`", "the bridge is unaffected"):
+            self.assertTrue(words in text, f"docs/chat-bridge.md does not say {words}")
+
+
 if __name__ == "__main__":
     unittest.main()
