@@ -1545,8 +1545,14 @@ def _in_turn(pool: ThreadPoolExecutor, fn, items: list, jobs: int) -> list:
     thread waits on a lock may reach it only once the lock is released, by
     which time a free worker has taken the next queued job, and the
     interrupt's `cancel_futures` cannot stop a job already started
-    (AUTO-129). Handing jobs over here, the interrupt is raised before the
-    next hand-over, so a job not yet started never starts."""
+    (AUTO-129). Handing jobs over here, a Ctrl-C seen while this thread
+    waits for a job to end stops the next one from being handed over. A
+    signal that lands inside a `submit` already under way, or between the
+    wait and the next `submit`, can still let that one job start.
+
+    An error from a job is raised here as soon as that job ends, the first
+    to end rather than the first in item order, and the items not yet
+    handed over never run; the jobs in flight finish at the pool's exit."""
     out: list = [None] * len(items)
     running: dict = {}
     nxt = 0
@@ -1595,8 +1601,8 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
     cues landing on one id share the file), and the verdicts are applied on
     the calling thread in cue order, so the record reads as a serial run. The
     jobs not yet started wait on the calling thread, not in the pool's
-    queue, so an interrupt drops them however late it is seen and waits
-    only for those in flight.
+    queue: a Ctrl-C seen while that thread waits for a job to end drops
+    them, and the fetch waits only for those in flight.
     """
     root = Path(root)
     measure = measure or measure_remote
