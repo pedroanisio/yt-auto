@@ -427,7 +427,7 @@ and file the scorecard three times on the same evidence (`qa.QA_SAMPLES`,
 the categories in a different order each; one reading's noise, about ±0.5 a
 category, is the size of the steps read as progress), takes each category's
 median and records its spread (max - min), keeps a finding two samples
-report and lists one a single sample reports as low-confidence, calls a pass
+report and lists one a single sample reports (a blocking claim included) as low-confidence, calls a pass
 with fewer than two valid samples `not_evidenced` (never READY), applies the bar of section 2 mechanically (a blocking
 mechanical finding caps `visual_quality` and `animation_vfx` at 6; no audio
 track in `build.json` fixes `sound_design` and `music_score` at 2.0), and

@@ -1254,10 +1254,16 @@ samples' findings are grouped by one decision (`pass-NN-scorecard-merge`,
 the improve loop's "same problem" test): a finding two or more samples
 report stands (blocking only when two called it blocking) and names them in
 `samples`; one only a single sample reports is listed under
-`low_confidence`, not routed by `yt improve` and blocking nothing. A sample
+`low_confidence`, not routed by `yt improve` and blocking nothing. The
+reviewer's list of what it calls blocking goes through the same decision:
+one sample's claim is low-confidence, and only a claim two samples make
+stops READY. A category a rule sets (a silent film's sound, a capped
+category) records no spread, since its score is no sample's. A sample
 whose call fails is a failed row in the harness report, billed and never a
 score; with fewer than two valid samples the pass is `not_evidenced`: no
-scores, never READY, exit 1. `scoring` in the scorecard records every
+scores, never READY, exit 1. The next pass compares with the last scored
+one, `yt improve` scores a not-evidenced pass again before judging it, and
+`yt doctor` points at `yt qa`, not at routing. `scoring` in the scorecard records every
 sample (its order, its overall, whether it failed).
 
 The story is read from the film as well. The reviewer's role carries the
