@@ -184,7 +184,7 @@ class On(GatewayCodexCase):
         argv = call["argv"]
         got = pairs(argv)
         self.assertEqual([p for p in got if p.startswith("model_provider")], PROVIDER_ARGS)
-        # Exactly once each, and only the pairs added: the rest is today's argv.
+        # Exactly once each.
         for arg in PROVIDER_ARGS:
             self.assertEqual(got.count(arg), 1, arg)
         self.assertEqual(argv[-1], "-")
@@ -192,6 +192,37 @@ class On(GatewayCodexCase):
         # The key reaches codex through the environment, under the name
         # env_key gives.
         self.assertEqual(call["env"]["AI_GATEWAY_API_KEY"], KEY)
+
+    def test_only_the_pairs_and_the_prefix_are_added(self):
+        # Take the five pairs out and put the bare model back: what is left
+        # is the switch-off argv for the same config, flag for flag.
+        with mock.patch.dict(os.environ, on()):
+            argv = self.launch(Off.snapshot_engine(self))["argv"]
+        rest = []
+        for i, a in enumerate(argv):
+            if a == "-c" and argv[i + 1] in PROVIDER_ARGS:
+                continue
+            if i and argv[i - 1] == "-c" and a in PROVIDER_ARGS:
+                continue
+            rest.append(a)
+        self.assertEqual(flag(rest, "-m"), "openai/gpt-5")
+        rest[rest.index("-m") + 1] = "gpt-5"
+        self.assertEqual(rest, Off.SNAPSHOT)
+
+    def test_a_resumed_or_forked_turn_keeps_the_provider(self):
+        # Without the pairs a resumed turn would go to OpenAI directly.
+        for fork in (False, True):
+            with self.subTest(fork=fork), mock.patch.dict(os.environ, on()):
+                eng = self.engine(model="gpt-5", fork_session=fork)
+                self.fake.plan([{"lines": ok_lines()}, {"lines": ok_lines("again")}])
+                eng.ask("hello")
+                eng.ask("more", resume=True)
+                argv = self.fake.calls()[-1]["argv"]
+                self.assertEqual(argv[:3], ["exec", "fork" if fork else "resume", "t-1"])
+                got = pairs(argv)
+                for arg in PROVIDER_ARGS:
+                    self.assertEqual(got.count(arg), 1, arg)
+                self.assertEqual(flag(argv, "-m"), "openai/gpt-5")
 
     def test_the_switch_on_the_engines_env_turns_it_on(self):
         # A library caller who sets the switch on the engine, not the shell.
@@ -252,6 +283,14 @@ class On(GatewayCodexCase):
             eng = self.engine(model="sonnet")      # a Claude alias: dropped
             self.assertEqual(flag(self.launch(eng)["argv"], "-m"), "openai/gpt-5-codex")
             self.assertEqual(eng.resolved_model(), "openai/gpt-5-codex")
+
+    def test_the_codex_engine_model_variable_is_prefixed_too(self):
+        with mock.patch.dict(os.environ, on(CODEX_ENGINE_MODEL="gpt-5")):
+            self.assertEqual(flag(self.launch(self.engine(model="opus"))["argv"], "-m"),
+                             "openai/gpt-5")
+        with mock.patch.dict(os.environ, {"CODEX_ENGINE_MODEL": "gpt-5"}):
+            self.assertEqual(flag(self.launch(self.engine(model="opus"))["argv"], "-m"),
+                             "gpt-5")
 
     def test_a_claude_slug_atop_the_models_cache_is_passed_over(self):
         # A cache refilled from the gateway's /codex/v1/models lists its
