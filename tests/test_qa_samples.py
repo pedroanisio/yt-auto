@@ -580,7 +580,9 @@ class Estimate(ImproveCase):
         plan = self.improver(FakeRunner(self.root, []), dry_run=True,
                              say=out.append).run()["plan"]
         by = {r["stage"]: r for r in plan["estimates"]}
-        self.assertAlmostEqual(by["qa"]["usd"], 1.8)
+        # three samples, and the side-by-side comparison with the kept pass
+        # that QA is told to make (AUTO-108), priced once
+        self.assertAlmostEqual(by["qa"]["usd"], round(1.8 + spend.COMPARE_PASS_USD, 2))
 
 
 class Docs(unittest.TestCase):

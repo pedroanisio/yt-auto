@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Iterable
@@ -175,6 +176,12 @@ DEFAULT_USD = {"research": 5.0, "styles": 2.0, "script": 3.0, "props": 0.0,
                "sound": 0.5, "build": 0.1, "render": 0.0, "gate": 0.1,
                "qa": 3 * QA_SAMPLE_USD}
 
+#: What the side-by-side comparison adds to a QA pass (AUTO-108), assumed
+#: until a scorecard measures it: one inspection reading every sampled
+#: still beside the previous kept cut's, about what one scoring sample
+#: costs. It is asked once a pass, never per sample.
+COMPARE_PASS_USD = 0.5
+
 #: What the plan review adds to a script (AUTO-92), assumed until a record
 #: measures it: the reviewer's one reading of the plan and, at most, a
 #: second plan and its reading.
@@ -265,7 +272,10 @@ def story_review_usd(root: Path | None, argv: Iterable[str] = ()) -> float:
 #: only what it lacks.
 FLAG_USD = {"script": {"--review": ((PLAN_REVIEW_USD, "plan-review"),
                                     (story_review_usd, "review-r1"),
-                                    (PICTURE_CHECK_USD, "picture-check"))}}
+                                    (PICTURE_CHECK_USD, "picture-check"))},
+            # `yt improve` names its best kept pass to QA, which then
+            # compares the new cut with it side by side (AUTO-108).
+            "qa": {"--previous": ((COMPARE_PASS_USD, "compare-pass"),)}}
 
 
 def flag_increments(root: Path | None, stage: str, argv: Iterable[str]) -> list[tuple[str, float]]:
@@ -276,10 +286,14 @@ def flag_increments(root: Path | None, stage: str, argv: Iterable[str]) -> list[
     names: set[str] = set()
     if root is not None:
         rel = MANIFEST.get(stage)
-        doc = read_json(Path(root) / rel, warn=False) if rel else None
+        # QA has no manifest of its own: its record is the latest scorecard,
+        # whose decisions are named by their pass (`pass-03-compare-pass`).
+        doc = (_qa_card(root) if stage == "qa" else
+               read_json(Path(root) / rel, warn=False) if rel else None)
         engine = doc.get("engine") if isinstance(doc, dict) else None
         rows = engine.get("decisions") if isinstance(engine, dict) else None
-        names = {str(d.get("name")) for d in rows or [] if isinstance(d, dict)}
+        names = {re.sub(r"^pass-\d+-", "", str(d.get("name")))
+                 for d in rows or [] if isinstance(d, dict)}
     out = []
     for flag in dict.fromkeys(argv):
         parts = FLAG_USD.get(stage, {}).get(flag)

@@ -504,7 +504,11 @@ def merge_findings(samples: list[dict], groups) -> tuple[list[dict], list[dict]]
 def pass_usd(card: dict | None) -> float | None:
     """What a pass of QA_SAMPLES samples costs, from one that was scored: its
     cost per sample asked, times QA_SAMPLES. A pass from before the samples
-    (no `scoring`) asked one. None when the card holds no cost."""
+    (no `scoring`) asked one. The side-by-side comparison (AUTO-108) is
+    asked once a pass, not per sample, so what it cost is added once, not
+    scaled; a pass without one is priced without it, and the estimate adds
+    spend.COMPARE_PASS_USD where QA is told the pass to compare with. None
+    when the card holds no cost."""
     cost = spend.cost_in(card)
     if cost is None:
         return None
@@ -513,7 +517,13 @@ def pass_usd(card: dict | None) -> float | None:
         asked = max(1, int((scoring or {}).get("asked") or 1))
     except (TypeError, ValueError):
         asked = 1
-    return round(cost / asked * QA_SAMPLES, 2)
+    engine = card.get("engine") if isinstance(card, dict) else None
+    rows = engine.get("decisions") if isinstance(engine, dict) else None
+    once = sum(float(d.get("cost_usd") or 0) for d in rows or []
+               if isinstance(d, dict) and not d.get("cached")
+               and str(d.get("name", "")).endswith("-compare-pass"))
+    once = min(max(once, 0.0), cost)
+    return round((cost - once) / asked * QA_SAMPLES + once, 2)
 
 
 # --------------------------------------------------------------------------- #

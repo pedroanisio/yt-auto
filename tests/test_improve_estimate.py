@@ -168,7 +168,9 @@ class Loop(ImproveCase):
         record = self.improver(runner, budget_usd=15.0).run()
         self.assertEqual(runner.calls, [])
         self.assertEqual(record["stop"]["reason"], "budget")
-        self.assertIn("$60", record["stop"]["detail"])      # the measured vfx, not the $10 default
+        # the measured vfx, not the $10 default; QA's side-by-side comparison
+        # with the kept pass is priced too (AUTO-108)
+        self.assertIn("$61", record["stop"]["detail"])
 
     def test_a_pass_runs_vfx_only_for_the_routed_sections(self):
         write_vfx(self.root, 20.0, [authored(1, 0, 20, ["1.4"], 10.0),
