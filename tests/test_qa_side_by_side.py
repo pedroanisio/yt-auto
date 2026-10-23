@@ -375,5 +375,28 @@ class Previous(Pass):
         self.assertEqual(ns.previous, "pass-03")
 
 
+class Docs(unittest.TestCase):
+    """The manual, the README, the production brief and the docstrings say it."""
+
+    ROOT = Path(__file__).resolve().parent.parent
+
+    def flat(self, rel):
+        return " ".join((self.ROOT / rel).read_text(encoding="utf-8").split())
+
+    def test_the_manual_the_readme_and_the_brief_say_it(self):
+        from ytstudio import improve
+        for rel in ("ytstudio/SKILL.md", "README.md"):
+            text = self.flat(rel)
+            for needle in ("`side_by_side`", "`--previous PASS`", "`<pass>-compare-pass`",
+                           "`spend.COMPARE_PASS_USD`", "`qa.tally`", "AUTO-108"):
+                self.assertIn(needle, text, rel)
+        production = self.flat("docs/production.md")
+        for needle in ("side by side", "pass-01/side-by-side/"):
+            self.assertIn(needle, production)
+        self.assertIn("AUTO-108", qa.__doc__)
+        self.assertIn("side by side", improve.__doc__)
+        self.assertIn("--previous PASS", qa.__doc__)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -170,7 +170,7 @@ Or all of it at once, for one idea:
 | `yt pilot` | 30/60/180-second cuts of the finished film, nested, with what each proves | no model calls |
 | `yt gate` | the delivery verdict: loudness, scopes, frames, caption limits, run on a render host and naming the requirement that stopped it; plus the geometry check (a hero that penetrates the set, or reads merged into it on screen, blocks whatever the tool and the triage said) | one triage call |
 | `yt review` | the PDF review sheet: frames, captions, markers, sources, credits | no model calls |
-| `yt qa` | the scorecard per pass: every shot sampled at its midpoint, up to 60 stills (`--frames N` above the shot count adds evenly spaced stills; below it, or past 60 shots by default, names the shots left out), one frame window per sample (the still is its middle frame), a contact sheet, the mechanical findings (flat, clipped, frozen, jump, off-camera, `penetration`: the hero inside a set solid, and `reads-merged`: the hero over a surface on screen with no shadow, from the engine's evaluated geometry and camera), the model's review, scored as the median of three samples (an audio category no current listening review covers is null in every sample, never a median) | `qa.QA_SAMPLES` (3) inspection calls per pass and at most one merge decision; one render job per sample (by default one per shot, at most 60; `--frames N` sets it), one eval job per pass; `yt improve` pays this every pass |
+| `yt qa` | the scorecard per pass: every shot sampled at its midpoint, up to 60 stills (`--frames N` above the shot count adds evenly spaced stills; below it, or past 60 shots by default, names the shots left out), one frame window per sample (the still is its middle frame), a contact sheet, the mechanical findings (flat, clipped, frozen, jump, off-camera, `penetration`: the hero inside a set solid, and `reads-merged`: the hero over a surface on screen with no shadow, from the engine's evaluated geometry and camera), the model's review, scored as the median of three samples (an audio category no current listening review covers is null in every sample, never a median), and a side-by-side comparison with the previous kept cut at the same timestamps | `qa.QA_SAMPLES` (3) inspection calls per pass, at most one merge decision and one `<pass>-compare-pass` inspection when an earlier scored pass exists; one render job per sample (by default one per shot, at most 60; `--frames N` sets it), one eval job per pass; `yt improve` pays this every pass |
 | `yt improve` | routes each QA finding to the stage that owns it, briefs that stage through `feedback/`, re-runs it and everything downstream, keeps the pass only if it measurably improved | one routing decision per pass, plus the stages it runs |
 | `yt doctor` | every video's state and the command that advances it | no model calls |
 | `yt probe` | the realism probe suite: one neutral brief per class of material, light or motion, composed by an agent coding with the SDK, built and framed by the harness, scored by a different model with each defect's cause | **$1.06** for one probe and one round; up to three author sessions and three reviews per probe |
@@ -215,7 +215,7 @@ work/
     ├── pilot.scene.xml  pilot.json      the approval cuts
     ├── retime.json  gate.json  review.json  review.pdf
     ├── video.mp4    render.json         the film's encode; other jobs write render-<job>.json
-    ├── qa/pass-01/  frames/  samples.json  contact-sheet.png  scorecard.json  findings.md
+    ├── qa/pass-01/  frames/  samples.json  contact-sheet.png  previous/  side-by-side/  scorecard.json  findings.md
     ├── qa.json                         the latest verdict
     ├── retention/*.json  retention.json what Studio showed for the published film, read onto its shots
     └── decisions/<stage>/<name>.json   what the model decided, and from what
@@ -1361,11 +1361,34 @@ numbers included), the next pass is compared with it, and a category that
 drops by 0.5 is a regression. `qa.json` at the project root carries the
 latest verdict. The exit code is 0 only when the film is ready.
 
+Two scores inside the samples' spread cannot say whether a revision helped,
+so each pass is also judged against the previous kept cut side by side
+(AUTO-108). The previous cut is the latest scored pass, or `--previous PASS`
+(`yt improve` names its best kept pass). At every sampled moment the
+reviewer is shown the same timestamp of both cuts, labelled A and B: the
+previous still is reused from that pass's `frames/` when it sampled the same
+time, else rendered from the copy under `improve/` whose document matches
+the `cut` digest that pass recorded; a moment with neither is unpaired and
+named under `not_evidenced`. Which cut is A is drawn per moment (half each,
+seeded by the pass) and recorded, so position bias can be checked. One
+`<pass>-compare-pass` inspection answers per moment which is better (A, B or
+same), why, and the visual categories it bears on, without being shown the
+scores. The scorecard files `side_by_side`: the moments, the entries
+(`{category, result: better|worse|same, source: "stills", moment, t}`, the
+shape a video comparison files with `source: "video"`) and their tally
+(`qa.tally`, per category and in total), beside the absolute scores;
+`findings.md` has a Side by side section and `qa.json` the total. The
+comparison is one decision a pass, priced once (`spend.COMPARE_PASS_USD`
+until one is measured). Nothing is compared without an earlier scored pass,
+with the same cut, under `--reuse`, or when the pass is not evidenced.
+
 `--frames N` stills (default: every shot once, up to 60; more adds evenly
 spaced stills, fewer names the shots left out) · `--quality` of the stills ·
 `--reuse PASS` to
 score an earlier pass's frames again, measuring them again and rendering
 nothing but proof frames that were rendered graded ·
+`--previous PASS` the earlier pass compared with, its scores and its cut
+side by side (default: the latest scored pass) ·
 `--host` / `--local` · `--fresh`
 
 ### `yt improve`
@@ -1391,7 +1414,13 @@ system prompt of every decision and inspection that stage makes, as notes
 that outrank the house standards (`harness.feedback_for`; the prompts a stage
 builds itself use `harness.with_feedback`). Then the earliest routed stage
 runs with `--fresh`, every stage downstream of it runs up to `yt render`, `yt
-gate` and `yt qa` score a new pass, and the pass is kept only if the overall
+gate` and `yt qa --previous` score a new pass against the best one so far.
+The side-by-side tally is read first: more moments where the new cut was
+better than worse keeps the pass even when its overall moved inside the
+spread, more worse reverts it, and a tie leaves it to the score delta, read
+second: an overall drop beyond the spread, a category drop or a new blocking
+mechanical finding reverts whatever the tally says. Without a tally the
+pass is kept only if the overall
 improves, no category drops more than 0.5 and no new blocking mechanical
 finding appears (a category QA left not evidenced has no score, so it neither
 drops nor gains, and when two passes scored different categories the overall
@@ -1404,7 +1433,7 @@ a defect survives three briefed passes, and writes `improve.json` and an
 `improve.md` in the shape of the §11 report. The estimate is per stage, read from
 each stage's own report (else a like project's) and marked measured, like or
 assumed (QA at its cost per scoring sample times the three samples, so a
-pass scored once prices the two it did not ask), and a routed vfx pass re-authors only the sections its findings fall in
+pass scored once prices the two it did not ask, and the side-by-side comparison once on top), and a routed vfx pass re-authors only the sections its findings fall in
 (`--sections`), the whole film (`--fresh`) when a finding cannot be placed. A
 routed script pass whose findings all name a shot sends only those lines back
 (`yt script --revise feedback`, read from the brief's `.json` twin); one

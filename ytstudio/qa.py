@@ -101,6 +101,28 @@ problem -> root cause -> owner stage -> fix), so "measurably improved" is a
 comparison with the pass before and a regression is a category that dropped.
 `qa.json` at the project root carries the latest verdict for `yt doctor`.
 
+Two scores inside the samples' spread cannot say whether a revision helped,
+so each pass is also judged against the previous kept cut side by side
+(AUTO-108). The previous pass is the latest scored one, or `--previous PASS`
+(`yt improve` names its best kept pass). At every sampled moment the new
+cut's still and the previous cut's still at the same timestamp are shown
+as A and B: the previous one reused from that pass's frames when it was
+sampled at the same time, else rendered from the improve snapshot whose
+document matches the `cut` digest that pass recorded, else the moment is
+unpaired and named under not_evidenced. Which cut is A is drawn per moment
+(`side_order`, half each, seeded by the pass) and recorded, so position
+bias can be checked. One inspection (`<pass>-compare-pass`, `SIDE_SCHEMA`)
+answers per moment A, B or same, why, and the visual categories the moment
+bears on; the reviewer is not shown the scores. The scorecard files
+`side_by_side`: the pass compared against, each moment (order, reused or
+rendered, the answer), the engine-agnostic `entries` (`{category, result:
+better|worse|same, source: "stills", moment, t}`, the shape a video
+comparison files with `source: "video"`) and their `tally` (`qa.tally`,
+per category and in total). Nothing is compared with no earlier scored
+pass, with the same cut, under --reuse, or when the pass is not evidenced.
+findings.md has a "Side by side" section. `yt improve` reads the tally
+before the score delta.
+
 The loop is: fix the owning stage's source, rebuild, run `yt qa` again. This
 stage changes no file but its own; it says what to change and who owns it.
 """

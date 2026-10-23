@@ -440,7 +440,15 @@ mechanical finding caps `visual_quality` and `animation_vfx` at 6; no audio
 track in `build.json` fixes `sound_design` and `music_score` at 2.0; a
 `voiceover`, `sound_design` or `music_score` with no current listening
 review (§12) is not evidenced, unscored, and READY cannot be judged), and
-compares the pass with the one before. Its findings name the owning stage;
+compares the pass with the one before: its scores, and its cut side by
+side. Two scores inside the samples' spread cannot say whether a revision
+helped, so the reviewer is shown, at every sampled moment, the same
+timestamp of the previous kept cut and the new one, labelled A and B in
+an order drawn per moment and recorded (position bias is checkable), and
+says which is better, or that they are the same, and why. The tally of
+better, worse and same per category is filed beside the absolute scores,
+and the improvement loop reads it before the score delta (step 8 above).
+Its findings name the owning stage;
 the loop is to fix that stage's source, rebuild, and run it again.
 
 ### Where the QA lives
@@ -451,13 +459,16 @@ work/<slug>/qa/
 ├── pass-01/frames/burst/      each sample's frame window, the still's stem and the frame index
 ├── pass-01/samples.json       what was sampled, where, and each window's plan (frames, range, still frame)
 ├── pass-01/contact-sheet.png  the stills tiled with their timestamps
+├── pass-01/previous/          the previous kept cut's stills at the same timestamps (reused or rendered)
+├── pass-01/side-by-side/      each moment's A and B, the order recorded in the scorecard
 ├── pass-01/scorecard.json     ten categories (the scoring samples' medians and spread), overall, verdict, the caps, the mechanical and low-confidence findings, each scoring sample
 ├── pass-01/findings.md        timestamp → problem → root cause → owner → fix → result, with the burst numbers
 └── pass-02/…                  the next cycle, for before-and-after comparison
 ```
 
 Keeping each pass makes "measurably improved" a comparison rather than an
-opinion, and makes the regression check mechanical.
+opinion, side by side at the same moments, and makes the regression check
+mechanical.
 
 ---
 

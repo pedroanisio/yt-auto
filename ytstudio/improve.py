@@ -37,10 +37,16 @@ loop as code:
    of it up to render (research and the screenplay only when routed to
    them; a stage the film never ran is left out), the gate, then `yt qa`
    for a new pass -- all through `runner`, a callable taking argv.
-5. **Keep or revert** (§8.8, §9). Against the best pass so far: kept when
-   the overall improves, no category drops by more than `TOLERANCE` and no
-   new blocking mechanical finding appears; otherwise the snapshot taken
-   before the pass (`improve/pass-NN/snapshot/`) is restored. vfx versions
+5. **Keep or revert** (§8.8, §9). Against the best pass so far, which QA
+   was told with `--previous` and compared side by side at the same
+   timestamps (AUTO-108). The side-by-side tally is read first: more moments
+   where the new cut was better than worse keeps the pass even when its
+   overall moved inside the samples' spread, more worse reverts it, a tie
+   leaves it to the score delta. The score delta is read second: kept
+   when the overall improves beyond the spread; an overall drop beyond the
+   spread, a category drop of more than `TOLERANCE` or a new blocking
+   mechanical finding reverts whatever the tally says. A pass not kept has
+   the snapshot taken before it (`improve/pass-NN/snapshot/`) is restored. vfx versions
    are kept anyway, so reverting vfx restores `vfx.json`'s active version.
    A pass whose stages all ran but whose QA filed nothing (a render host
    down) is `unjudged`: its outputs and snapshot stay, and the next run
