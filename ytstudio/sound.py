@@ -1593,9 +1593,10 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
     (`FETCH_JOBS`), none of it on this machine; the index and the counts
     change under one lock, each Freesound id is fetched under its own (two
     cues landing on one id share the file), and the verdicts are applied on
-    the calling thread in cue order, so the record reads as a serial run. An
-    interrupt drops the round's queued jobs and waits only for those in
-    flight.
+    the calling thread in cue order, so the record reads as a serial run. The
+    jobs not yet started wait on the calling thread, not in the pool's
+    queue, so an interrupt drops them however late it is seen and waits
+    only for those in flight.
     """
     root = Path(root)
     measure = measure or measure_remote
