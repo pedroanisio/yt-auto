@@ -128,5 +128,28 @@ class RetakesAreDirected(unittest.TestCase):
                 self.assertNotIn("speed", call["settings"] or {})
 
 
+class TheTakeReviewSaysWhatItHeard(unittest.TestCase):
+    """voice.json's take review carries the mark of the takes it was asked
+    about (AUTO-105), so `yt qa` uses it only while the film carries them."""
+
+    TAKES = [{"label": "1.1", "text": "Line one.", "file": "voice/1.1.wav", "seconds": 2.5,
+              "engine": "kokoro", "voice": "af"},
+             {"label": "1.2", "text": "Line two.", "file": "voice/1.2.wav", "seconds": 2,
+              "engine": "kokoro", "voice": "af"}]
+
+    def test_the_review_is_kept_with_the_mark_of_its_takes(self):
+        review = voice.reviewed({"verdict": "ok", "retakes": [], "notes": "n"}, self.TAKES)
+        self.assertEqual(review["verdict"], "ok")
+        self.assertEqual(review["heard"], voice.heard(self.TAKES))
+        self.assertEqual(review["heard"]["takes"], 2)
+
+    def test_a_retake_changes_the_mark_and_a_number_written_as_float_does_not(self):
+        mark = voice.heard(self.TAKES)
+        same = [dict(t, seconds=float(t["seconds"])) for t in self.TAKES]
+        self.assertEqual(voice.heard(same), mark)
+        retaken = [dict(self.TAKES[0], file="voice/1.1-b.wav", seconds=2.9), self.TAKES[1]]
+        self.assertNotEqual(voice.heard(retaken)["sha256"], mark["sha256"])
+
+
 if __name__ == "__main__":
     unittest.main()

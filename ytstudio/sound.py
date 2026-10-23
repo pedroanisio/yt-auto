@@ -42,6 +42,7 @@ import array
 import base64
 import csv
 import hashlib
+import json
 import math
 import os
 import re
@@ -233,6 +234,36 @@ REVISE_SCHEMA = {
 }
 #: Severities the review-then-revise loop acts on.
 REVISABLE = ("blocker", "important")
+
+#: What the listen-back hears of a cue: its place on the film and every field
+#: a revision may rewrite. Not the file `--fetch` writes back, which comes
+#: later and changes nothing the review read.
+HEARD_FIELDS = ("cue_id", "kind", "at", "seconds") + REVISE_TEXT + REVISE_FADES
+
+
+def heard(cues) -> dict:
+    """The mark of the cue sheet a listen-back heard: a digest of each cue's
+    HEARD_FIELDS, in order, and the count. `yt sound --review` writes it into
+    the review as `heard`; `yt qa` computes it again from sound.json and uses
+    the review as listening evidence only when the two agree (AUTO-105), so
+    a review of a sheet that has since been ridden or re-spotted never
+    stands in for the one the film carries. Takes Cue objects or the dicts
+    sound.json holds; numbers are compared as numbers, so 1 and 1.0 agree."""
+    rows = []
+    for cue in cues or []:
+        raw = asdict(cue) if hasattr(cue, "__dataclass_fields__") else dict(cue or {})
+        row = {}
+        for key in HEARD_FIELDS:
+            value = raw.get(key)
+            if key in ("at", "seconds") + REVISE_FADES:
+                try:
+                    value = round(float(value or 0), 3)
+                except (TypeError, ValueError):
+                    pass
+            row[key] = value
+        rows.append(row)
+    text = json.dumps(rows, sort_keys=True, ensure_ascii=False)
+    return {"sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(), "cues": len(rows)}
 
 
 @dataclass
@@ -1040,6 +1071,9 @@ class SoundDesigner:
                   if do_review and cues else {})
         if review.get("revisions"):
             stats = coverage(cues, self.runtime)
+        if review:
+            # the sheet as the review left it, which is the one written here
+            review["heard"] = heard(cues)
         data = {
             "idea": asdict(self.idea),
             "runtime": self.runtime,

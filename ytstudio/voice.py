@@ -212,6 +212,36 @@ def directions_from(retakes) -> dict[str, dict]:
     return out
 
 
+#: What the take review hears of a take: its words, the recording and how
+#: long it runs, and who read it.
+HEARD_FIELDS = ("label", "text", "file", "seconds", "engine", "voice")
+
+
+def heard(takes) -> dict:
+    """The mark of the takes a take review heard: a digest of each take's
+    HEARD_FIELDS, in order, and the count. `yt qa` computes it again from
+    voice.json and uses the review as listening evidence only when the two
+    agree (AUTO-105), so a review of takes since re-recorded never stands in
+    for the read the film carries."""
+    rows = []
+    for take in takes or []:
+        raw = asdict(take) if hasattr(take, "__dataclass_fields__") else dict(take or {})
+        row = {key: raw.get(key) for key in HEARD_FIELDS}
+        try:
+            row["seconds"] = round(float(row["seconds"] or 0), 3)
+        except (TypeError, ValueError):
+            pass
+        rows.append(row)
+    text = json.dumps(rows, sort_keys=True, ensure_ascii=False)
+    return {"sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(), "takes": len(rows)}
+
+
+def reviewed(review: dict, takes) -> dict:
+    """The director's take review as voice.json keeps it: the answer, with
+    `heard`, the mark of the takes it was asked about."""
+    return dict(review or {}, heard=heard(takes))
+
+
 def candidates(engine: str, lang: str) -> list[dict]:
     """The voices this engine offers for this language, as the editor sees them."""
     if engine == "kokoro":
@@ -1412,7 +1442,7 @@ def run(args) -> int:
     except HarnessError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    data["review"] = review
+    data["review"] = reviewed(review, data["takes"])
     data["director"] = director.report()      # "engine" stays the TTS engine
     data["usage"] = spend.from_report(data["director"])
     if review.get("retakes"):
