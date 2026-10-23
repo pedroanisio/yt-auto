@@ -1114,7 +1114,24 @@ class Run(Watching):
         self.assertIn("google/gemini-3.6-flash", card["usage"]["by_model"])
         qa_json = json.loads((self.root / "qa.json").read_text())
         self.assertEqual(qa_json["usage"], card["usage"])
-        self.assertEqual(dict(spend.flag_increments(self.root, "qa", ["--watch"])), {})
+        # like a listen, a past watch is no part of the next pass's base,
+        # so the flag prices the next watch each time it is asked
+        self.assertEqual(dict(spend.flag_increments(self.root, "qa", ["--watch"])),
+                         plain)
+        self.assertAlmostEqual(qa.pass_usd(card),
+                               round(reviewer / card["scoring"]["asked"] * qa.QA_SAMPLES, 2))
+
+
+class PassCost(unittest.TestCase):
+    def test_a_past_watch_is_left_out_of_the_pass_estimate(self):
+        card = {"usage": {"cost_usd": 1.5}, "scoring": {"asked": 3},
+                "engine": {"decisions": []},
+                "watch_engine": {"cost_usd": 0.5, "decisions": [
+                    {"name": "watch-s01", "cost_usd": 0.5, "cached": False}]}}
+        self.assertEqual(qa.pass_usd(card), round(1.0 / 3 * qa.QA_SAMPLES, 2))
+        # neither scaled by the samples nor counted once
+        card["scoring"]["asked"] = 1
+        self.assertEqual(qa.pass_usd(card), round(1.0 * qa.QA_SAMPLES, 2))
 
 
 if __name__ == "__main__":

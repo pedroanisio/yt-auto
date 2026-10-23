@@ -607,16 +607,20 @@ def pass_usd(card: dict | None) -> float | None:
     scaled; a pass without one is priced without it, and the estimate adds
     spend.COMPARE_PASS_USD where QA is told the pass to compare with. The
     video comparison's decisions (`compare_engine`, AUTO-128) are likewise
-    added once. A `--listen` (AUTO-126) is left out: the card's usage holds
-    what it cost, paid, cached or failed, but a plain `yt qa` and `yt improve`
-    do not listen, and spend.FLAG_USD adds the listen's own estimate whenever
-    --listen is asked. None when the card holds no cost."""
+    added once. A `--listen` (AUTO-126) and a `--watch` (AUTO-127,
+    `watch_engine`) are left out: the card's usage holds what they cost,
+    but a plain `yt qa` and `yt improve` neither listen nor watch, and
+    spend.FLAG_USD adds each one's own estimate whenever its flag is asked.
+    None when the card holds no cost."""
     cost = spend.cost_in(card)
     if cost is None:
         return None
     heard = card.get("listen") if isinstance(card, dict) else None
     if isinstance(heard, dict) and isinstance(heard.get("engine"), dict):
         cost = max(cost - float(heard["engine"].get("cost_usd") or 0), 0.0)
+    seen = card.get("watch_engine") if isinstance(card, dict) else None
+    if isinstance(seen, dict):
+        cost = max(cost - float(seen.get("cost_usd") or 0), 0.0)
     scoring = card.get("scoring") if isinstance(card, dict) else None
     try:
         asked = max(1, int((scoring or {}).get("asked") or 1))
@@ -629,12 +633,10 @@ def pass_usd(card: dict | None) -> float | None:
                and str(d.get("name", "")).endswith("-compare-pass"))
     # The video comparison (AUTO-128) is asked once a pass too, on its own
     # harness: every decision there is one.
-    # A watch (AUTO-127) is asked once a pass as well, on its own harness.
-    for key in ("compare_engine", "watch_engine"):
-        video = card.get(key) if isinstance(card, dict) else None
-        once += sum(float(d.get("cost_usd") or 0)
-                    for d in (video.get("decisions") if isinstance(video, dict) else None) or []
-                    if isinstance(d, dict) and not d.get("cached"))
+    video = card.get("compare_engine") if isinstance(card, dict) else None
+    once += sum(float(d.get("cost_usd") or 0)
+                for d in (video.get("decisions") if isinstance(video, dict) else None) or []
+                if isinstance(d, dict) and not d.get("cached"))
     once = min(max(once, 0.0), cost)
     return round((cost - once) / asked * QA_SAMPLES + once, 2)
 

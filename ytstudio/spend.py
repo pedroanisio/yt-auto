@@ -353,13 +353,14 @@ FLAG_USD = {"script": {"--review": ((PLAN_REVIEW_USD, "plan-review"),
             # `listen.engine`, never among the reviewer's, so no record holds
             # it: qa.pass_usd leaves a past listen out of the base, and the
             # flag adds the next one's estimate each time it is asked.
+            # `--watch` (AUTO-127) is priced the same way: its decisions are
+            # on the scorecard's `watch_engine`, which pass_usd leaves out
+            # and this record never reads.
             "qa": {"--previous": ((COMPARE_PASS_USD, "compare-pass"),),
                    # the video comparison's two orders, `cutcompare-<pass>-ab`
                    # and `-ba`, on the scorecard's compare_engine (AUTO-128)
                    "--against": ((_compare_usd, "cutcompare"),),
                    "--listen": ((listen_usd, "listen"),),
-                   # the watch's `watch-sNN` decisions, on the scorecard's
-                   # watch_engine (AUTO-127); a measured watched pass holds them
                    "--watch": ((watch_usd, "watch"),)}}
 
 
@@ -390,8 +391,7 @@ def flag_increments(root: Path | None, stage: str, argv: Iterable[str]) -> list[
         doc = (_qa_card(root) if stage == "qa" else
                read_json(Path(root) / rel, warn=False) if rel else None)
         rows: list = []
-        # compare_engine: AUTO-128; watch_engine: AUTO-127
-        for key in ("engine", "compare_engine", "watch_engine"):
+        for key in ("engine", "compare_engine"):     # compare_engine: AUTO-128
             engine = doc.get(key) if isinstance(doc, dict) else None
             rows += (engine.get("decisions") if isinstance(engine, dict) else None) or []
         names = {re.sub(r"^pass-\d+-", "", str(d.get("name")))
