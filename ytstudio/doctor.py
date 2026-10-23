@@ -686,8 +686,8 @@ def check_spend(project: workspace.Project, report: Report) -> None:
             for model, row in ((m, r) for a in accounts
                                for m, r in (a.get("by_model") or {}).items()):
                 if isinstance(row, dict) and row.get("cost_cli_calls"):
-                    # Through the gateway with no row or no tokens to price
-                    # it (AUTO-121): booked at the claude CLI's own figure.
+                    # Through the gateway with nothing the table could price
+                    # it by (AUTO-121): booked at the claude CLI's own figure.
                     estimated.setdefault(str(model), []).append(path.name)
                 elif not _priced(str(model), row):
                     unpriced.setdefault(str(model), []).append(path.name)
@@ -701,8 +701,10 @@ def check_spend(project: workspace.Project, report: Report) -> None:
         report.add("warn", "spend", f"{model}: {', '.join(sorted(set(names)))} book calls "
                    "made through the gateway at the claude CLI's own figure (cost_cli_calls), "
                    "not the price table, so the record may differ from the gateway's bill",
-                   "add the model's row to ytstudio/spend.PRICES or $CLAUDE_PRICES; a call "
-                   "whose result carried no tokens is booked this way whatever the table says")
+                   "add the model's row to ytstudio/spend.PRICES or $CLAUDE_PRICES if it has "
+                   "none; a call whose result carried no tokens, a prompt above the model's "
+                   "tier (Haiku 5.5 over 100K tokens) or a server tool other than web search "
+                   "is booked this way whatever the table says")
 
 
 def check_project(project: workspace.Project, work: Path | None = None) -> Report:
