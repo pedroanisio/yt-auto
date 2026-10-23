@@ -123,10 +123,15 @@ class Construction(Case):
             self.make(gateway={"providers": ["google"], "models": ["openai/gpt-5"]})
 
     def test_inspect_refused_on_gateway(self):
+        # The harness refuses before it builds an engine: the guard's own
+        # words, no launch, and no failed decision booked or saved.
+        h = self.make()
         with self.assertRaises(harness.HarnessError) as caught:
-            self.make().inspect("pass-01", "look", SCHEMA, cwd=self.node.dir)
-        self.assertIn("decide", str(caught.exception))
+            h.inspect("pass-01", "look", SCHEMA, cwd=self.node.dir)
+        self.assertIn("cannot inspect", str(caught.exception))
         self.assertEqual(self.node.count, 0)
+        self.assertEqual(h.report()["decisions"], [])
+        self.assertFalse((self.root / "decisions").exists())
 
     def test_gateway_names_are_strings(self):
         h = self.make(gateway={"providers": "google", "has": ["structured-output"]})

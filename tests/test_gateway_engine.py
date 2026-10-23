@@ -432,6 +432,20 @@ class ServedModel(Case):
         self.assertIn("claude-opus-5", str(caught.exception))
         self.assertEqual(engine.usage.calls, 1)
 
+    def test_another_providers_model_of_the_same_name_is_refused(self):
+        # The provider parts must be equal whenever both are present.
+        for reply in (ok(model="openai/gemini-3.6-flash"),
+                      ok(routing={"modelAttempts": [{"canonicalSlug": "vertex/gemini-3.6-flash"}]})):
+            with self.subTest(reply=reply["stdout"]["modelId"]):
+                self.node.replies(reply)
+                engine = self.node.engine()
+                with self.assertRaises(GatewayExecutionError) as caught:
+                    engine.ask_json("q", SCHEMA)
+                self.assertFalse(caught.exception.transient)
+                self.assertIn("/gemini-3.6-flash, not", str(caught.exception))
+                self.assertEqual(engine.usage.calls, 1)
+                self.assertAlmostEqual(engine.usage.cost_usd, 0.0012)
+
     def test_provider_switch_same_model_passes(self):
         routing = {"resolvedProvider": "vertex", "finalProvider": "google",
                    "modelAttempts": [{"canonicalSlug": MODEL}]}
