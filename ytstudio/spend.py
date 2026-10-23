@@ -326,8 +326,10 @@ FLAG_USD = {"script": {"--review": ((PLAN_REVIEW_USD, "plan-review"),
             # names, or with the latest scored one when there is one, so
             # stage_estimates asks the flag of a plain `yt qa` too (AUTO-108).
             # `--listen` is the listening pass (AUTO-126), priced as its
-            # preflight prices it; its decisions are on the scorecard's
-            # `listen.engine`, since the listener is a harness of its own.
+            # preflight prices it. Its decisions are on the scorecard's
+            # `listen.engine`, never among the reviewer's, so no record holds
+            # it: qa.pass_usd leaves a past listen out of the base, and the
+            # flag adds the next one's estimate each time it is asked.
             "qa": {"--previous": ((COMPARE_PASS_USD, "compare-pass"),),
                    "--listen": ((listen_usd, "listen"),)}}
 
@@ -359,13 +361,9 @@ def flag_increments(root: Path | None, stage: str, argv: Iterable[str]) -> list[
         doc = (_qa_card(root) if stage == "qa" else
                read_json(Path(root) / rel, warn=False) if rel else None)
         engine = doc.get("engine") if isinstance(doc, dict) else None
-        rows = list((engine.get("decisions") if isinstance(engine, dict) else None) or [])
-        heard = doc.get("listen") if stage == "qa" and isinstance(doc, dict) else None
-        if isinstance(heard, dict) and isinstance(heard.get("engine"), dict):
-            # The listener's decisions (AUTO-126) are its own harness's.
-            rows += heard["engine"].get("decisions") or []
+        rows = engine.get("decisions") if isinstance(engine, dict) else None
         names = {re.sub(r"^pass-\d+-", "", str(d.get("name")))
-                 for d in rows if isinstance(d, dict)}
+                 for d in rows or [] if isinstance(d, dict)}
     out = []
     for flag in dict.fromkeys(argv):
         parts = FLAG_USD.get(stage, {}).get(flag)

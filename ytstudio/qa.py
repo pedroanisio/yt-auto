@@ -565,11 +565,17 @@ def pass_usd(card: dict | None) -> float | None:
     (no `scoring`) asked one. The side-by-side comparison (AUTO-108) is
     asked once a pass, not per sample, so what it cost is added once, not
     scaled; a pass without one is priced without it, and the estimate adds
-    spend.COMPARE_PASS_USD where QA is told the pass to compare with. None
-    when the card holds no cost."""
+    spend.COMPARE_PASS_USD where QA is told the pass to compare with. A
+    `--listen` (AUTO-126) is left out: the card's usage holds what it cost,
+    paid, cached or failed, but a plain `yt qa` and `yt improve` do not
+    listen, and spend.FLAG_USD adds the listen's own estimate whenever
+    --listen is asked. None when the card holds no cost."""
     cost = spend.cost_in(card)
     if cost is None:
         return None
+    heard = card.get("listen") if isinstance(card, dict) else None
+    if isinstance(heard, dict) and isinstance(heard.get("engine"), dict):
+        cost = max(cost - float(heard["engine"].get("cost_usd") or 0), 0.0)
     scoring = card.get("scoring") if isinstance(card, dict) else None
     try:
         asked = max(1, int((scoring or {}).get("asked") or 1))
@@ -580,10 +586,6 @@ def pass_usd(card: dict | None) -> float | None:
     once = sum(float(d.get("cost_usd") or 0) for d in rows or []
                if isinstance(d, dict) and not d.get("cached")
                and str(d.get("name", "")).endswith("-compare-pass"))
-    # A --listen (AUTO-126) is one more decision a pass, on its own harness.
-    heard = card.get("listen") if isinstance(card, dict) else None
-    if isinstance(heard, dict) and isinstance(heard.get("engine"), dict):
-        once += float(heard["engine"].get("cost_usd") or 0)
     once = min(max(once, 0.0), cost)
     return round((cost - once) / asked * QA_SAMPLES + once, 2)
 
