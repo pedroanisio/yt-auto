@@ -1656,7 +1656,7 @@ def run(args) -> int:
     # build older than the file a review heard carries an older mix.
     built_before = set()
     build_file = src("build")
-    for source, spec in LISTENERS.items():
+    for source in LISTENERS:
         heard_file = src(source)
         try:
             if (build_file and heard_file and Path(build_file).stat().st_mtime
