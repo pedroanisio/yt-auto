@@ -51,6 +51,7 @@ import subprocess
 import sys
 import threading
 import wave
+from concurrent import futures
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
@@ -1535,6 +1536,30 @@ class _Job:
     lines: list = field(default_factory=list)       # progress not yet said
 
 
+def _in_turn(pool: ThreadPoolExecutor, fn, items: list, jobs: int) -> list:
+    """`fn` over `items` on `pool`, the results in item order, with at most
+    `jobs` of them handed to the pool at once; the next is handed over from
+    this thread when one ends.
+
+    Not `pool.map`, which queues them all: a Ctrl-C that lands while this
+    thread waits on a lock may reach it only once the lock is released, by
+    which time a free worker has taken the next queued job, and the
+    interrupt's `cancel_futures` cannot stop a job already started
+    (AUTO-129). Handing jobs over here, the interrupt is raised before the
+    next hand-over, so a job not yet started never starts."""
+    out: list = [None] * len(items)
+    running: dict = {}
+    nxt = 0
+    while nxt < len(items) or running:
+        while nxt < len(items) and len(running) < max(1, jobs):
+            running[pool.submit(fn, items[nxt])] = nxt
+            nxt += 1
+        ended, _ = futures.wait(running, return_when=futures.FIRST_COMPLETED)
+        for future in ended:
+            out[running.pop(future)] = future.result()
+    return out
+
+
 def fetch(root: str | Path, data: dict, *, token: str | None = None,
           say=None, measure=None, judge=None, jobs: int = FETCH_JOBS) -> dict:
     """Fill the cue sheet in `data` with files under `<root>/sound/`.
@@ -1778,7 +1803,7 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
         try:
             while True:
                 active = [j for j in work if not j.done]
-                list(pool.map(advance, active))
+                _in_turn(pool, advance, active, jobs)
                 said(active)
                 testing = [j for j in active if not j.done]
                 if not testing:
@@ -1793,14 +1818,16 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
                 # The level checks are instant and run here; the judge is a
                 # session each, so the round's candidates are judged in the pool
                 # and the verdicts applied here, in cue order.
-                checked, asked = [], {}
+                checked, asking = [], []
                 for job in testing:
                     got = levels.get(job.rel)
                     fields, why = (level_to_design(job.cue, got, narration)
                                    if got is not None else (None, ""))
                     checked.append((job, got, fields, why))
                     if got is not None and not why and judge is not None and job.hit is not None:
-                        asked[job.n] = pool.submit(judged, job, got)
+                        asking.append((job, got))
+                asked = dict(zip((job.n for job, _ in asking),
+                                 _in_turn(pool, lambda pair: judged(*pair), asking, jobs)))
                 discard: set[str] = set()
                 for job, got, fields, why in checked:
                     if got is None:
@@ -1808,7 +1835,7 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
                         continue
                     verdict: dict | None = None
                     if job.n in asked:
-                        verdict = asked[job.n].result()
+                        verdict = asked[job.n]
                         if verdict["verdict"] == "reject":
                             why = f"judged not to fit the cue: {verdict['reason']}"
                     if why:
@@ -1833,7 +1860,7 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
         except KeyboardInterrupt:
             # The pool's exit waits for every queued job; an interrupt keeps
             # only the ones in flight (a download, a judge session) and
-            # drops the rest of the round.
+            # drops the rest of the round, which `_in_turn` never queued.
             pool.shutdown(wait=False, cancel_futures=True)
             raise
 
