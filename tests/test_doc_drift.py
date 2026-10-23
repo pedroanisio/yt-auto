@@ -204,10 +204,20 @@ def code_text() -> str:
 
 def readme_section(heading: str) -> str:
     """One `## ` section of README.md, up to the next heading of level 1 or 2
-    or the `---` rule; "" when there is none."""
-    m = re.search(rf"^## {re.escape(heading)}\n(.*?)(?=^#{{1,2}} |^---$)",
-                  "\n".join(read("README.md")) + "\n", re.S | re.M)
-    return " ".join(m.group(1).split()) if m else ""
+    or the `---` rule, as one line; "" when there is none. A `# comment` in
+    a fenced block is not a heading."""
+    out, inside, fenced = [], False, False
+    for line in read("README.md"):
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+        elif not fenced and (re.match(r"#{1,2} ", line) or line == "---"):
+            if inside:
+                break
+            inside = line == f"## {heading}"
+            continue
+        if inside:
+            out.append(line)
+    return " ".join(" ".join(out).split())
 
 
 class Gateway(unittest.TestCase):
