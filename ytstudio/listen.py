@@ -195,6 +195,30 @@ def authors(script: dict | None, sound: dict | None, voice: dict | None
     return out
 
 
+def family(stage: str, author: str, model: str) -> str:
+    """Why `model` may not hear what `author` wrote for `stage`, or "".
+    flags.own_reviewer judges the pair, as it does for every reviewer; the
+    words are the listen's own, since `yt qa --listen` has no --model or
+    --reviewer-model to change. An author nobody can place stays refused:
+    its maker may be the listener's, and nobody can show it is not."""
+    if not own_reviewer(author, model):
+        return ""
+    made, hears = models.maker(author), models.maker(model)
+    where = f"{stage}.json names {author} among the models that wrote it"
+    if made is None:
+        return (f"{where}, and nobody can say who made {author} (not a provider/model id, a "
+                f"Claude or an OpenAI name), so --listen-model {model} cannot be shown to come "
+                f"from another maker; rerun `yt {stage}` with a model whose maker is known, "
+                "or leave --listen off")
+    if made == hears:
+        return (f"{where}, {made}'s, and --listen-model {model} is {hears}'s too: a maker's "
+                "models share their training, so one does not judge another's work; pass "
+                f"--listen-model with another maker's model (models.LISTEN_MODELS: "
+                f"{', '.join(models.LISTEN_MODELS)})")
+    return (f"{where}, of the same family as --listen-model {model}; pass --listen-model "
+            "with another maker's model")
+
+
 # --------------------------------------------------------------------------- #
 # the estimate
 # --------------------------------------------------------------------------- #
@@ -296,10 +320,9 @@ def preflight(args, project, *, home: Path, scene: str, build: dict, script: dic
                         "schema (models.LISTEN_MODELS); it is refused until a live check "
                         "names one")
     for stage, author in authors(script, sound, voice):
-        said = own_reviewer(author, model)
+        said = family(stage, author, model)
         if said:
-            problems.append(f"{stage} was written by {author}: "
-                            + said.removeprefix("error: "))
+            problems.append(said)
     video = Path(home) / "video.mp4"
     scene_path = Path(scene)
     if not video.is_file():
