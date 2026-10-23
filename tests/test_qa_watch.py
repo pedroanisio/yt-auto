@@ -605,6 +605,20 @@ class Sampling(unittest.TestCase):
         self.assertEqual(qa.sample(self.build(), limit=4, voice=listening._voice(), watched=[]),
                          qa.sample(self.build(), limit=4, voice=listening._voice()))
 
+    def test_a_watched_moment_past_the_end_is_held_to_the_last_frame(self):
+        build = self.build()
+        shots = build["shots"]
+        end = max(float(s["at"]) + float(s["seconds"]) for s in shots)
+        fps = qa._fps(build)
+        rows = qa.sample(build, limit=4, voice=listening._voice(), watched=[
+            {"id": "W1", "t": end + 0.4, "severity": "minor", "problem": "a late pop"},
+            {"id": "W2", "t": -0.3, "severity": "minor", "problem": "an early pop"}])
+        for wid in ("W1", "W2"):
+            with self.subTest(wid=wid):
+                row = next(r for r in rows if wid in (r.get("watched") or []))
+                self.assertGreaterEqual(row["t"], 0.0)
+                self.assertLessEqual(row["t"], round(end - 1 / fps, 3))
+
     def test_the_watched_schema_adds_a_required_watched(self):
         for k in range(4):
             schema = qa.sample_schema(k, watched=True)
@@ -764,6 +778,38 @@ class Preflight(Watching):
     def test_a_model_without_verified_providers_is_refused(self):
         self.refused("WATCH_PROVIDERS", watch_model="zai/glm-5.3-flash")
 
+    def test_the_authors_are_read_where_qa_reads_them(self):
+        # --script FILE (in_script) is the script qa uses: its author counts
+        elsewhere = self.tmp / "elsewhere-script.json"
+        elsewhere.write_text(json.dumps({"engine": {"model": "google/gemini-3.7-flash",
+                                                    "by_model": {}}}))
+        self.refused("google/gemini-3.7-flash", in_script=str(elsewhere))
+
+    def test_no_model_takes_the_reviewer_maker_from_the_engine(self):
+        project = workspace.Project(self.root)
+        # script.json is Anthropic's (sonnet); the claude CLI's default is too
+        prepared = _watch().preflight(self.args(model=None), project, home=self.root)
+        self.assertIs(prepared.reviewer_same_maker, True)
+        with mock.patch.object(harness, "ENGINE_NAME", "codex"):
+            prepared = _watch().preflight(self.args(model=None), project, home=self.root)
+        self.assertIs(prepared.reviewer_same_maker, False)
+        with mock.patch.object(harness, "ENGINE_NAME", "bridge"):
+            prepared = _watch().preflight(self.args(model=None), project, home=self.root)
+        self.assertIsNone(prepared.reviewer_same_maker)
+
+    def test_a_build_with_no_shots_stops_before_the_watch(self):
+        build = json.loads((self.root / "build.json").read_text())
+        build["shots"] = []
+        self.put("build.json", build)
+        later = (self.root / "scene.xml").stat().st_mtime + 60
+        os.utime(self.root / "build.json", (later, later))
+        code = self.run_qa()
+        self.assertEqual(code, 1, self.stderr)
+        self.assertIn("no shots to sample", self.stderr)
+        self.assertEqual(self.node.count, 0)
+        self.assertEqual(self.passes(), [])
+        self.assertEqual(self.fetched, [])
+
     def test_local_does_not_move_the_prep_here(self):
         project = workspace.Project(self.root)
         prepared = _watch().preflight(self.args(local=True), project, home=self.root)
@@ -782,6 +828,14 @@ class Preflight(Watching):
         self.assertEqual(watcher.timeout, _watch().WATCH_TIMEOUT)
         self.assertFalse(watcher.feedback)
         self.assertEqual(watcher.model, "google/gemini-3.6-flash")
+        # the scorecard's reviewer is built as today: --model, the global
+        # engine, no gateway config
+        self.run_qa()
+        card = self.card()
+        self.assertEqual(card["engine"]["model"], "sonnet")
+        self.assertEqual(card["watch_engine"]["model"], "google/gemini-3.6-flash")
+        self.assertTrue(listen_tests.Recording.stream_calls, "the reviewer was not asked")
+        self.assertNotIn("gateway", json.dumps(card["engine"]))
 
 
 class Run(Watching):

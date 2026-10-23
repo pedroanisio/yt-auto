@@ -289,9 +289,8 @@ def model_error(model: str, catalog: list[dict], authors: list[str]) -> str:
     return ""
 
 
-#: The stage records whose models made what is seen, and where each keeps
-#: its harness reports.
-AUTHOR_FILES = ("script.json", "keyframe.json", "vfx.json", "sound.json")
+#: The stages whose records name the models that made what is seen.
+AUTHOR_STAGES = ("script", "keyframe", "vfx", "sound")
 
 
 def _report_models(report: Any) -> list[str]:
@@ -305,11 +304,20 @@ def _report_models(report: Any) -> list[str]:
     return out + [str(m) for m in report.get("by_model") or {} if m]
 
 
-def author_models(root: Path) -> list[tuple[str, str]]:
+def author_models(sources: Any) -> list[tuple[str, str]]:
     """(file, model) for every model the stages that made the film recorded:
     script.json's engine, keyframe.json's elements and review, vfx.json's
     engine and each authored section's, sound.json's engine, and their
-    `usage` rows where they keep one."""
+    `usage` rows where they keep one.
+
+    `sources` is {stage: path or None}, the files qa reads (its `src()`,
+    which honours --script FILE and a standalone project's sources, as
+    cutcompare.author_models takes them), or a directory holding
+    <stage>.json. cutcompare reads only `usage` and `engine.model`; the
+    watcher's gate needs every model that served (`by_model`), keyframe's
+    two harnesses and vfx's authored sections as well."""
+    if not isinstance(sources, dict):
+        sources = {stage: Path(sources) / f"{stage}.json" for stage in AUTHOR_STAGES}
     out: list[tuple[str, str]] = []
 
     def add(name: str, report: Any) -> None:
@@ -317,19 +325,21 @@ def author_models(root: Path) -> list[tuple[str, str]]:
             model = model.strip()
             if model and (name, model) not in out:
                 out.append((name, model))
-    for name in AUTHOR_FILES:
-        doc = read_json(Path(root) / name, warn=False)
+    for stage in AUTHOR_STAGES:
+        path = sources.get(stage)
+        doc = read_json(Path(path), warn=False) if path else None
         if not isinstance(doc, dict):
             continue
+        name = Path(path).name
         engine = doc.get("engine")
-        if name == "keyframe.json" and isinstance(engine, dict) and (
+        if stage == "keyframe" and isinstance(engine, dict) and (
                 "elements" in engine or "review" in engine):
             add(name, engine.get("elements"))
             add(name, engine.get("review"))
         else:
             add(name, engine)
         add(name, doc.get("usage"))
-        if name == "vfx.json":
+        if stage == "vfx":
             for row in doc.get("authored") or []:
                 if isinstance(row, dict):
                     add(name, row.get("engine"))
@@ -569,7 +579,7 @@ class Prepared:
     row: dict = field(default_factory=dict)
     authors: list = field(default_factory=list)
     host: str = ""
-    reviewer_same_maker: bool = False
+    reviewer_same_maker: bool | None = False
     reused: dict | None = None
 
 
@@ -577,9 +587,25 @@ def _where(project) -> str:
     return "" if project.standalone else f"--project {project.root}"
 
 
-def preflight(args, project, *, home: Path, fetch=None) -> Prepared:
+#: Who made the model each default CLI runs when no --model is given.
+ENGINE_MAKERS = {"claude": "anthropic", "codex": "openai"}
+
+
+def reviewer_maker(model: Any) -> str | None:
+    """The maker of the scorecard's reviewer: its --model's, else that of
+    the model the global engine's CLI runs by default; None when unknown."""
+    if model:
+        return models.maker(model)
+    from . import harness
+    return ENGINE_MAKERS.get(harness.ENGINE_NAME)
+
+
+def preflight(args, project, *, home: Path, fetch=None,
+              sources: dict | None = None) -> Prepared:
     """Everything --watch needs, checked before a pass directory is made or
-    anything is rendered, uploaded or paid. Refused names what is missing."""
+    anything is rendered, uploaded or paid. Refused names what is missing.
+    `sources` is {stage: path} for AUTHOR_STAGES as qa resolves them;
+    without it, the project's own files."""
     import gateway_engine
     model = str(getattr(args, "watch_model", None) or WATCH_MODEL).strip()
     reuse = getattr(args, "reuse", None)
@@ -598,7 +624,8 @@ def preflight(args, project, *, home: Path, fetch=None) -> Prepared:
     if problems:
         raise Refused("\n".join(problems))
     rows = catalog(fetch)
-    authors = author_models(Path(project.root))
+    authors = author_models(sources if sources is not None else {
+        stage: project.source(stage) for stage in AUTHOR_STAGES})
     said = model_error(model, rows, [m for _, m in authors])
     if said:
         problems.append(said)
@@ -614,11 +641,15 @@ def preflight(args, project, *, home: Path, fetch=None) -> Prepared:
         raise Refused("\n".join(problems))
     row = catalog_row(model, rows) or {}
     makers = {models.maker(m) for _, m in authors}
+    # Whether the reviewer that confirms a watched finding shares a maker
+    # with the film's authors (open question 3): recorded, never refused;
+    # None when nobody can say who made the reviewer.
+    judge = reviewer_maker(getattr(args, "model", None))
     return Prepared(model=model, providers=list(providers),
                     row={k: row.get(k) for k in ("id", "type", "tags", "pricing",
                                                   "deprecated_at")},
                     authors=[list(a) for a in authors], host=str(host),
-                    reviewer_same_maker=models.maker(getattr(args, "model", None)) in makers)
+                    reviewer_same_maker=None if judge is None else judge in makers)
 
 
 # --------------------------------------------------------------------------- #

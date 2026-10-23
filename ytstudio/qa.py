@@ -1053,7 +1053,7 @@ def sample(build: dict, *, limit: int | None = None,
         for t, shot in _spread_times(shots, [r["t"] for r in out], limit - len(out)):
             out.append(row(shot, t, SPREAD_WHY))
     if watched:
-        _add_watched(out, shots, watched, row)
+        _add_watched(out, shots, watched, row, fps=fps)
     return sorted(out, key=lambda r: r["t"])
 
 
@@ -1064,11 +1064,16 @@ WATCHED_NEAR = 0.5
 WATCHED_WHY = "watched: "
 
 
-def _add_watched(out: list[dict], shots: list[dict], watched: list[dict], row) -> None:
-    """The watched moments' stills (AUTO-127), added to `out` in place."""
+def _add_watched(out: list[dict], shots: list[dict], watched: list[dict], row, *,
+                 fps: float) -> None:
+    """The watched moments' stills (AUTO-127), added to `out` in place. A
+    moment is held to the film, from 0 to its last frame: the watcher's
+    times may run SLACK past its segment's end, and a still asked for past
+    the end cannot be rendered, so its finding could never be confirmed."""
     added = 0
+    last = max(float(s["at"]) + float(s.get("seconds") or 0) for s in shots) - 1 / fps
     for w in sorted(watched, key=lambda w: (w.get("severity") != "blocking", float(w["t"]))):
-        t = round(float(w["t"]), 3)
+        t = round(min(max(float(w["t"]), 0.0), max(last, 0.0)), 3)
         words = str(w.get("problem") or "").split()
         why = (f"{WATCHED_WHY}{w['id']} " + " ".join(words[:LINE_WORDS])
                + (" ..." if len(words) > LINE_WORDS else "")).strip()
@@ -3081,8 +3086,13 @@ def run(args) -> int:
     watching, watched = None, None
     if getattr(args, "watch", False):
         from . import watch as watch_pass   # it reads this module's owners and duties
+        if not args.reuse and not (build or {}).get("shots"):
+            # sample() would stop on this after the watch was paid for
+            print("error: the build manifest has no shots to sample", file=sys.stderr)
+            return 1
         try:
-            watching = watch_pass.preflight(args, project, home=home)
+            watching = watch_pass.preflight(args, project, home=home, sources={
+                stage: src(stage) for stage in watch_pass.AUTHOR_STAGES})
         except watch_pass.Refused as exc:
             for line in str(exc).splitlines():
                 print(f"error: --watch: {line}", file=sys.stderr)
