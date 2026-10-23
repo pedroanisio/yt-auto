@@ -24,7 +24,9 @@ CLI:
     python claude_engine.py run     tasks.json [--jobs 4]
 
 Requires: the `claude` CLI on PATH and an authenticated session
-(`claude auth` / `claude setup-token`, or ANTHROPIC_API_KEY).
+(`claude auth` / `claude setup-token`, or ANTHROPIC_API_KEY). With
+YT_GATEWAY=vercel and AI_GATEWAY_API_KEY set, the CLI goes through Vercel AI
+Gateway instead (ytstudio/gateway.py); with it unset nothing changes.
 
 Every `claude -p` flag is a field on EngineConfig. A field left `None` falls
 back to `set_defaults(...)`, then to `CLAUDE_ENGINE_<FIELD>` in the
@@ -48,6 +50,8 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field, asdict, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Sequence
+
+from ytstudio import gateway as _gateway
 
 __all__ = [
     "EngineConfig",
@@ -448,7 +452,9 @@ class EngineConfig:
     safe_mode: bool = False             # --safe-mode: all customisation off
     bare: bool = False                  # --bare: no hooks, plugins, memory,
                                         # CLAUDE.md discovery or keychain;
-                                        # auth is ANTHROPIC_API_KEY only
+                                        # auth is ANTHROPIC_API_KEY only, so
+                                        # refused under YT_GATEWAY=vercel in
+                                        # key mode, which empties it
 
     # --- streaming (stream-json only) --------------------------------------
     include_partial_messages: bool = False  # --include-partial-messages
@@ -751,8 +757,36 @@ class ClaudeEngine:
 
     # -- process plumbing --------------------------------------------------
 
+    def _transport_env(self, environ: dict[str, str]) -> dict[str, str]:
+        """The variables that route the CLI through a gateway, read from
+        `environ` (the parent's environment with config.env on top). Empty
+        unless YT_GATEWAY names one, so the child's environment is otherwise
+        exactly what it always was.
+
+        A gateway that cannot be used raises a permanent error before any
+        launch: a missing key or a bad switch would fail every attempt. So
+        does `bare` in key mode: --bare authenticates with ANTHROPIC_API_KEY
+        only, and key mode empties it so the gateway key in
+        ANTHROPIC_AUTH_TOKEN is the one the CLI sends. Whether --bare honours
+        ANTHROPIC_AUTH_TOKEN is unchecked, and a call that reached Anthropic
+        directly while the operator believed it went through the gateway is
+        worse than one that stops.
+        """
+        try:
+            overlay = _gateway.claude_env(environ)
+        except _gateway.GatewayError as exc:
+            raise ClaudeExecutionError(f"gateway: {exc}", transient=False) from exc
+        if self.config.bare and "ANTHROPIC_AUTH_TOKEN" in overlay:
+            raise ClaudeExecutionError(
+                "gateway: bare is refused under YT_GATEWAY=vercel in key mode: --bare "
+                "authenticates with ANTHROPIC_API_KEY only, which the gateway needs "
+                "empty; run without bare", transient=False)
+        return overlay
+
     def _popen_kwargs(self) -> dict:
         env = dict(os.environ)
+        # After the parent, before config.env: an explicit config.env wins.
+        env.update(self._transport_env({**env, **(self.config.env or {})}))
         if self.config.env:
             env.update(self.config.env)
         # Keep the child from trying to paint a TUI into our pipe.
@@ -1466,7 +1500,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="disable all customisation (CLAUDE.md, hooks, plugins...)")
     g.add_argument("--bare", action="store_true",
                    help="minimal mode: no hooks, plugins, memory, CLAUDE.md "
-                        "discovery or keychain; auth is ANTHROPIC_API_KEY only")
+                        "discovery or keychain; auth is ANTHROPIC_API_KEY only, "
+                        "so refused under YT_GATEWAY=vercel in key mode")
     g.add_argument("--restricted", action="store_true",
                    help="no code-running tools or WebFetch unless listed; file "
                         "tools confined to the working directories")
