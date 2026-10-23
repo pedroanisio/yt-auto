@@ -66,6 +66,17 @@ PRICES: dict[str, dict[str, float]] = {
 # stream reports; the engine looks a row up exactly.
 PRICES["claude-haiku-4-5-20251001"] = PRICES["claude-haiku-4-5"]
 
+# The gateway reviewer pool's pinned rows (AUTO-125), by gateway id, so the
+# gateway engine's budget check and `yt doctor` find a price for each. A row
+# is the dearest of its pinned providers; no cache discount is assumed.
+from .reviewers import POOL as _POOL  # noqa: E402
+
+for _pooled in _POOL:
+    PRICES[_pooled["model"]] = {"input": _pooled["price"]["input"],
+                                "cached_input": _pooled["price"]["input"],
+                                "output": _pooled["price"]["output"],
+                                "cache_creation": _pooled["price"]["input"]}
+
 #: The short names a stage is configured with (`--model sonnet`), priced by
 #: `price_for` as the generation the CLI resolves them to. Not rows.
 ALIASES = {"fable": "claude-fable-5-1", "opus": "claude-opus-5-5",
@@ -250,7 +261,12 @@ def story_review_usd(root: Path | None, argv: Iterable[str] = ()) -> float:
     except (TypeError, ValueError):
         minutes, wpm, rounds = DEFAULT_MINUTES, DEFAULT_WPM, 2
     words = _script_words(root) or words_for(round(minutes * 60), wpm)
-    row = price_for(_argv_value(argv, "--reviewer-model", "opus")) or price_for("opus") or {}
+    # A pool reviewer is priced at its pinned row (AUTO-125): `pool` as the
+    # row it would choose for the author, with no network.
+    from .reviewers import priced_as
+    reviewer = priced_as(_argv_value(argv, "--reviewer-model", "opus"),
+                         _argv_value(argv, "--model", "sonnet"))
+    row = price_for(reviewer) or price_for("opus") or {}
     per_in, per_out = row.get("input", 0.0) / 1e6, row.get("output", 0.0) / 1e6
 
     def reading(overhead: float, per_word: float, out: float) -> float:

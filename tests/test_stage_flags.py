@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from ytstudio import cli, improve, workspace  # noqa: E402
+from ytstudio import cli, flags, improve, workspace  # noqa: E402
 
 SKILL = ROOT / "ytstudio" / "SKILL.md"
 
@@ -185,6 +185,40 @@ class Manual(unittest.TestCase):
                 self.assertIn(f"`{spelling}`", table, spelling)
         for flag in ("--model", "--effort", "--fallback-model"):
             self.assertIn(f"`{flag}`", table)
+
+
+class OwnReviewer(unittest.TestCase):
+    """A gateway reviewer is judged by its maker, a CLI pair by its family (AUTO-125)."""
+
+    def test_own_reviewer_sdk_uses_maker(self):
+        self.assertTrue(flags.own_reviewer("opus", "sdk:anthropic/claude-haiku-4.5"))
+        self.assertEqual(flags.own_reviewer("opus", "sdk:zai/glm-5.3"), "")
+        self.assertTrue(flags.own_reviewer("google/gemini-3.7-flash", "google/gemini-3.6-flash"))
+        self.assertTrue(flags.own_reviewer("google/gemini-3.7-flash",
+                                           "sdk:google/gemma-4-31b-it"))
+        self.assertEqual(flags.own_reviewer("google/gemini-3.7-flash", "zai/glm-5.3"), "")
+        # an unknown maker on either side cannot be told apart from the other
+        self.assertTrue(flags.own_reviewer("mystery", "sdk:zai/glm-5.3"))
+        self.assertTrue(flags.own_reviewer("zai/glm-5.3", "mystery"))
+
+    def test_own_reviewer_refuses_unresolved_pool(self):
+        said = flags.own_reviewer("opus", "pool")
+        self.assertIn("resolved", said)
+        self.assertTrue(said.startswith("error:"))
+
+    def test_own_reviewer_cli_pairs_unchanged(self):
+        for author, reviewer, refused in (
+                ("opus", "sonnet", False), ("sonnet", "opus", False), ("sonnet", "haiku", False),
+                ("opus", "gpt-5", False), ("gpt-5", "opus", False),
+                ("opus", "opus", True), ("opus", "claude-opus-5-5", True),
+                ("opus", "opus[1m]", True), ("sonnet", "claude-sonnet-5-5", True),
+                ("openai/gpt-5", "gpt-5", True), ("gpt-5", "openai/gpt-5", True),
+                ("anthropic/claude-opus-5", "opus", True),
+                ("openai/gpt-5", "anthropic/claude-opus-5", False),
+                ("anthropic/claude-opus-5", "anthropic/claude-sonnet-5", False),
+                ("opus", "mystery-model", False)):
+            self.assertEqual(bool(flags.own_reviewer(author, reviewer)), refused,
+                             (author, reviewer))
 
 
 if __name__ == "__main__":

@@ -73,18 +73,53 @@ def model_family(name: str) -> str:
     return next((f for f in ("fable", "opus", "sonnet", "haiku") if f in low), low)
 
 
+#: The makers the claude and codex CLIs reach. A pair of their models is
+#: judged by family, as it always was.
+CLI_MAKERS = ("anthropic", "openai")
+
+
 def own_reviewer(model: str, reviewer_model: str) -> str:
     """The error when the reviewer is the author's own model (one family),
     else "". A model never grades its own work, so every stage that reviews
     refuses this before anything is paid, and says what to pass. A gateway
     virtual model (`vmc/<slug>`) may route to any model, the author's too,
-    so it is refused on either side."""
+    so it is refused on either side.
+
+    A model from another maker (AUTO-125) is judged by maker, not family:
+    `sdk:<id>` on either side, or a known maker that is neither Anthropic
+    nor OpenAI, compares `models.maker`, so google/gemini-3.7-flash refuses
+    google/gemini-3.6-flash, which `model_family` alone would let through,
+    and an unknown maker on either side is refused, since nobody can say it
+    differs. A pair of CLI models is judged by family exactly as before (a
+    sonnet author may still be read by opus). `pool` is a choice still to
+    be made (`reviewers.resolve`); every caller resolves it first, so this
+    only catches a call site that did not."""
+    pending = [m for m in (model, reviewer_model)
+               if str(m or "").strip().lower() == "pool"]
+    if pending:
+        return (f"error: --reviewer-model pool must be resolved to one model before it is "
+                f"checked against --model {model} (ytstudio/reviewers.py resolve)")
     virtual = [m for m in (model, reviewer_model) if models.is_virtual(m)]
     if virtual:
         return (f"error: {virtual[0]} is a virtual gateway model (--model {model}, "
                 f"--reviewer-model {reviewer_model}): it may route to any model, so "
                 "whether the reviewer is the author's own cannot be known; pass "
                 "--model and --reviewer-model as provider/model ids")
+    sides = (model, reviewer_model)
+    makers = [models.maker(m) for m in sides]
+    if (any(str(m or "").strip().lower().startswith(models.SDK_PREFIX) for m in sides)
+            or any(m is not None and m not in CLI_MAKERS for m in makers)):
+        if None in makers:
+            unknown = sides[makers.index(None)]
+            return (f"error: nobody can say who made {unknown} (--model {model}, "
+                    f"--reviewer-model {reviewer_model}), so a reviewer from another maker "
+                    "cannot be shown to differ from the author; pass provider/model ids")
+        if makers[0] != makers[1]:
+            return ""
+        return (f"error: the reviewer must come from another maker than the author (--model "
+                f"{model}, --reviewer-model {reviewer_model}, both {makers[0]}'s): a maker's "
+                "models share their training, so one does not grade another's work; pass "
+                "--reviewer-model with another maker's model")
     if model_family(reviewer_model) != model_family(model):
         return ""
     return (f"error: the reviewer must be a different model from the author (--model {model}, "

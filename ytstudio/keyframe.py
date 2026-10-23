@@ -98,7 +98,7 @@ from pathlib import Path
 
 from claude_engine import ClaudeError, EngineConfig, Usage
 from . import (assess, design, flags, fonts, framecheck, harness, house, render, sdkkit, spend,
-               vfx, workspace)
+               reviewers, vfx, workspace)
 from .script import Shot, visible_text
 from .core import Idea, _merge_usage, compact, read_json, write_json
 from .vfx import (AUTHOR_TOOLS, FRAME, MISSION, STACK, Workspace,
@@ -1440,6 +1440,11 @@ def run(args) -> int:
             print(f"  next: yt vfx --project {project.root}   (the author inherits this look)")
         return 0
 
+    # The gateway reviewer pool (AUTO-125) answers text decisions only; this
+    # stage's reviewer opens images through an agent.
+    if refused := reviewers.agent_refusal("keyframe", args.reviewer_model):
+        print(refused, file=sys.stderr)
+        return 2
     # Both modes review (the look through `yt vfx`'s planner): a model never
     # grades its own work, so the author's family as reviewer is refused here.
     if own := flags.own_reviewer(args.model, args.reviewer_model):

@@ -45,7 +45,7 @@ import claude_engine
 from claude_engine import ClaudeError
 from .core import Idea, read_json, timecode, wrap, write_json
 from .ideas import CHANNEL_STYLES, style_brief
-from . import flags, harness, house, narrative, spend, workspace
+from . import flags, harness, house, narrative, reviewers, spend, workspace
 
 #: Narration pace. 150 wpm is an unhurried documentary read; 180 is brisk.
 DEFAULT_WPM = 150
@@ -1656,6 +1656,7 @@ class Screenwriter:
                  house_digest: dict | None = None,
                  jobs: int = 4, draft_effort: str | None = "medium",
                  reviewer_model: str | None = None,
+                 reviewer: "reviewers.Resolved | None" = None,
                  review_budget_usd: float | None = None, rounds: int = 2,
                  samples: int = STORY_SAMPLES, fresh: bool = False,
                  review_log: Path | str | None = None,
@@ -1703,6 +1704,15 @@ class Screenwriter:
             root or ".", "script", model=model, role=SYSTEM, effort=draft_effort,
             house_digest=self.house_digest, fresh=fresh, verbose=verbose, usage=self.usage,
             decisions=self.harness.decisions, lock=self.harness.lock)
+        #: A pool reviewer from another maker (AUTO-125), resolved by the
+        #: command: every reading harness below runs on the gateway engine
+        #: under its gateway id; the author's harnesses above keep ENGINE.
+        #: None (a CLI reviewer) builds exactly the harnesses it always did.
+        self.pool_reviewer = reviewer
+        if reviewer is not None:
+            reviewer_model = reviewer.model
+        self._reviewer_kw = {k: v for k, v in reviewers.harness_kwargs(reviewer).items()
+                             if k != "model"}
         #: The plan's reader (AUTO-92): another model family (the command
         #: refuses the author's own), its own cap a review, the plan's
         #: reviewer role and the house in its system; on the same books, so
@@ -1711,7 +1721,7 @@ class Screenwriter:
             root or ".", "script", model=reviewer_model, role=narrative.reviewer_role(plan=True),
             house=house, house_digest=self.house_digest, budget_usd=review_budget_usd,
             fresh=fresh, verbose=verbose, usage=self.usage, decisions=self.harness.decisions,
-            lock=self.harness.lock) if reviewer_model else None
+            lock=self.harness.lock, **self._reviewer_kw) if reviewer_model else None
         #: The same reviewer's model reading the drafted screenplay's pictures
         #: with the narration taken away (AUTO-98), under a role of its own:
         #: the plan's role would tell it there is no screenplay yet.
@@ -1719,7 +1729,7 @@ class Screenwriter:
             root or ".", "script", model=reviewer_model, role=narrative.picture_role(),
             house=house, house_digest=self.house_digest, budget_usd=review_budget_usd,
             fresh=fresh, verbose=verbose, usage=self.usage, decisions=self.harness.decisions,
-            lock=self.harness.lock) if reviewer_model else None
+            lock=self.harness.lock, **self._reviewer_kw) if reviewer_model else None
         self.reviewer_model = reviewer_model
         self.review_budget_usd = review_budget_usd
         #: The story review's readers (AUTO-93), made when first asked: one
@@ -1756,7 +1766,8 @@ class Screenwriter:
                 house_digest=self.house_digest, feedback=not cold,
                 budget_usd=self.review_budget_usd, fresh=self.fresh,
                 verbose=self.verbose, usage=self.usage,
-                decisions=self.harness.decisions, lock=self.harness.lock)
+                decisions=self.harness.decisions, lock=self.harness.lock,
+                **(self._reviewer_kw if self.reviewer_model else {}))
         return self._readers[which]
 
     def _ask(self, name: str, prompt: str, schema: dict) -> dict:
@@ -2018,6 +2029,10 @@ class Screenwriter:
                   "retried": previous is not None, "model": self.reviewer.model,
                   "prechecks": checks, "unsettled": rounds[-1]["unsettled"],
                   "rounds": rounds}
+        if self.pool_reviewer is not None:
+            # On the record a stop writes to plan_review.json too: which pool
+            # reviewer read it, served by whom, priced from where.
+            record["reviewer"] = self.pool_reviewer.record()
         if verdict == "reject" or (verdict == "revise" and fix):
             # script.json is not written on a stop (its existence marks the
             # stage done for `yt run`), so the command keeps this elsewhere.
@@ -3242,6 +3257,11 @@ class Screenwriter:
         self.findings += self.ledger_lines(plan, sections, cold, fix=fix)
         self.findings += rule_lines(flags, kept, self.lang, revised=fix)
 
+        if self.pool_reviewer is not None:
+            # Which pool reviewer read it, served by whom, priced from where.
+            for reading in (plan_review, pictured, story):
+                if isinstance(reading, dict):
+                    reading["reviewer"] = self.pool_reviewer.record()
         return {
             "idea": asdict(self.idea),
             "logline": plan.get("logline", ""),
@@ -4465,7 +4485,18 @@ def run(args) -> int:
             print(f"{name:<24} {brief}")
         return 0
     # A model never grades its own work: refused before anything is paid.
-    if args.review and (own := flags.own_reviewer(args.model, args.reviewer_model)):
+    # `pool` and `sdk:<id>` (AUTO-125) are resolved to one reviewer from
+    # another maker first, with the gateway's prerequisites; any other value
+    # is checked by family, as it always was.
+    pooled = None
+    if args.review:
+        try:
+            pooled = reviewers.resolve(args.model, args.reviewer_model)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+    if args.review and pooled is None and (
+            own := flags.own_reviewer(args.model, args.reviewer_model)):
         print(own, file=sys.stderr)
         return 2
     # --gate reads the verdict of the review this run makes. Without
@@ -4504,7 +4535,7 @@ def run(args) -> int:
         research=research_block(dossier) if dossier else "",
         direction=direction_block(direction) if direction else "",
         outline=(dossier or {}).get("outline") if args.outline else None,
-        reviewer_model=args.reviewer_model if args.review else None,
+        reviewer_model=args.reviewer_model if args.review else None, reviewer=pooled,
         review_budget_usd=args.review_budget_usd, rounds=args.rounds,
         fresh=getattr(args, "fresh", False),
         review_log=review_log_path(args, project) if args.review else None,

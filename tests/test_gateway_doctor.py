@@ -21,7 +21,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from gateway_fakes import KEY, MODEL, FakeNode  # noqa: E402
+from gateway_fakes import KEY, MODEL, UNPRICED, FakeNode  # noqa: E402
 from ytstudio import doctor, spend, workspace  # noqa: E402
 from ytstudio.core import write_json  # noqa: E402
 
@@ -33,9 +33,9 @@ class Spend(unittest.TestCase):
         self.root = Path(self.tmp.name)
         write_json(self.root / "idea.json", {"title": "T", "genre": "g", "description": "d"})
 
-    def findings(self, row: dict) -> list:
+    def findings(self, row: dict, model: str = MODEL) -> list:
         write_json(self.root / "qa.json", {"usage": spend.record(
-            0.01, MODEL, 1, by_model={MODEL: {"calls": 1, "cost_usd": 0.01, **row}})})
+            0.01, model, 1, by_model={model: {"calls": 1, "cost_usd": 0.01, **row}})})
         report = doctor.check_project(workspace.Project(self.root))
         return [f for f in report.findings if f.area == "spend"]
 
@@ -48,12 +48,15 @@ class Spend(unittest.TestCase):
         self.assertEqual(len(self.findings({"cost_unpriced_calls": 1})), 1)
 
     def test_a_row_without_the_counters_is_judged_as_before(self):
-        self.assertEqual(len(self.findings({})), 1)
+        self.assertEqual(len(self.findings({}, UNPRICED)), 1)
+        # MODEL is a reviewer pool row (AUTO-125), so spend's table prices it.
+        self.assertEqual(self.findings({}), [])
 
     def test_a_table_priced_row_is_quiet_when_gateway_prices_has_it(self):
         with mock.patch.dict(os.environ, {"GATEWAY_PRICES": json.dumps(
-                {MODEL: {"input": 0.75, "output": 3.75}})}):
-            self.assertEqual(self.findings({"cost_table_calls": 1}), [])
+                {UNPRICED: {"input": 0.75, "output": 3.75}})}):
+            self.assertEqual(self.findings({"cost_table_calls": 1}, UNPRICED), [])
+        self.assertEqual(len(self.findings({"cost_table_calls": 1}, UNPRICED)), 1)
 
 
 class Environment(unittest.TestCase):

@@ -25,6 +25,9 @@ import gateway_engine
 
 KEY = "vck_gateway_test_key_0123456789"
 MODEL = "google/gemini-3.6-flash"
+#: A gateway id no table prices. MODEL has a row since the reviewer pool
+#: pinned it (AUTO-125), so a test of an unpriced call names this one.
+UNPRICED = "xiaomi/mimo-v2.6-flash"
 
 FAKE_NODE = r'''#!/usr/bin/env python3
 import json, os, sys
