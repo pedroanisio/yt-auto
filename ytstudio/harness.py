@@ -13,6 +13,16 @@ own copy of the same plumbing:
     card = h.inspect("pass-01", prompt, CARD, cwd=dir)  # an agent reads files first
     manifest["engine"] = h.report()
 
+A stage that needs a model neither CLI reaches (one that listens to audio or
+watches video, or a reviewer of another family) builds its own harness with
+`engine="gateway"` behind its own flag (gateway_engine.py, AUTO-124): that
+harness decides through Vercel AI Gateway, with media files attached, while
+every other harness of the run stays on the global ENGINE.
+
+    judge = Harness(project.root, "qa", model="google/gemini-3.6-flash",
+                    engine="gateway", gateway={"providers": ["google"]})
+    verdict = judge.decide("listen", prompt, VERDICT, media=[mix_wav])
+
 A decision is written under `<project>/decisions/<stage>/<name>.json` with a
 digest of everything the model saw (system, prompt, schema -- and for an
 inspection, the files in its directory). The same inputs are served from that
@@ -64,6 +74,11 @@ FEEDBACK_LEAD = ("The operator's revision notes for this pass, which outrank the
 
 #: The tools an inspection may use: it looks, it never changes anything.
 INSPECT_TOOLS = ("Read", "Glob", "Grep")
+
+#: The one engine a Harness may name for itself, beside the global ENGINE.
+GATEWAY_ENGINE = "gateway"
+#: What `Harness.gateway` may set: the GatewayConfig fields a stage chooses.
+GATEWAY_OPTIONS = ("providers", "has", "cost_poll_tries", "max_media_mb")
 
 #: The engine class; tests replace it with a fake.
 ENGINE: Callable[[EngineConfig], Any] = ClaudeEngine
@@ -329,15 +344,48 @@ class Harness:
     #: meant to know nothing but the work it is shown (the script's cold
     #: reader, judging 14) sets this off, as it leaves `house` empty.
     feedback: bool = True
+    #: None: the global ENGINE (claude, or what YT_ENGINE chose). "gateway":
+    #: this harness alone decides through gateway_engine.GatewayEngine, a
+    #: stage's own opt-in; it takes media and never inspects.
+    engine: str | None = None
+    #: The gateway engine's options (GATEWAY_OPTIONS), e.g. {"providers":
+    #: ["google"]} to serve the model from Google only.
+    gateway: dict | None = None
     #: Held while an answer is booked, so threads may share one harness.
     lock: Any = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         self.root = Path(self.root)
+        if self.engine is not None:
+            self._gateway_post_init()
+            return
+        if self.gateway is not None:
+            raise HarnessError(f"[{self.stage}] gateway options need engine='gateway'")
         if self.effort is None:
             self.effort = claude_engine.default_for("effort")
         if self.fallback_model is None:
             self.fallback_model = claude_engine.default_for("fallback_model")
+
+    def _gateway_post_init(self) -> None:
+        """Check a gateway harness when it is built, not when it first asks:
+        the model must be a gateway id, and effort and fallback stay None.
+        Neither reaches the gateway request, so an effort would change the
+        digest without changing the question, and a fallback would be
+        ignored; claude's defaults for them are not taken either."""
+        if self.engine != GATEWAY_ENGINE:
+            raise HarnessError(f"[{self.stage}] unknown engine {self.engine!r}: a harness "
+                               f"names only {GATEWAY_ENGINE!r}; the others are YT_ENGINE's")
+        import gateway_engine
+        problem = gateway_engine.model_problem(self.model)
+        if problem:
+            raise HarnessError(f"[{self.stage}] {problem}")
+        if self.effort is not None or self.fallback_model is not None:
+            raise HarnessError(f"[{self.stage}] a gateway harness takes no effort or "
+                               "fallback model: neither reaches the request")
+        unknown = sorted(set(self.gateway or {}) - set(GATEWAY_OPTIONS))
+        if unknown:
+            raise HarnessError(f"[{self.stage}] unknown gateway option(s) "
+                               f"{', '.join(unknown)} (one of {', '.join(GATEWAY_OPTIONS)})")
 
     @property
     def _asked_as(self) -> str:
@@ -345,7 +393,10 @@ class Harness:
         and the effort when one is set. Effort changes the answer, so a
         different effort is a different question; no effort keeps the
         digests of decisions made before it existed. Another engine than
-        claude is named too (`sonnet~codex`)."""
+        claude is named too (`sonnet~codex`), and so is a harness's own
+        gateway engine (`google/gemini-3.6-flash~gateway`), which has no effort."""
+        if self.engine == GATEWAY_ENGINE:
+            return f"{self.model}~{GATEWAY_ENGINE}"
         asked = f"{self.model}@{self.effort}" if self.effort else self.model
         return asked if ENGINE_NAME == "claude" else f"{asked}~{ENGINE_NAME}"
 
@@ -421,6 +472,11 @@ class Harness:
         self._note(Decision(name, False, digest, cost, kind="failed", tool_calls=tool_calls))
 
     def _engine(self, **config: Any):
+        if self.engine == GATEWAY_ENGINE:
+            import gateway_engine
+            return gateway_engine.GatewayEngine(gateway_engine.GatewayConfig(
+                model=self.model, timeout=self.timeout,
+                max_turns_budget_usd=self.budget_usd, **(self.gateway or {}), **config))
         return ENGINE(EngineConfig(model=self.model, effort=self.effort,
                                    fallback_model=self.fallback_model,
                                    timeout=self.timeout,
@@ -428,10 +484,35 @@ class Harness:
 
     # -- asking ------------------------------------------------------------
 
-    def decide(self, name: str, prompt: str, schema: dict) -> Any:
+    def _media_digest(self, media: Sequence[Any]) -> list[list[str]]:
+        """Each file's bytes and media type, for the digest: the same
+        evidence under another name is the same question."""
+        import gateway_engine
+        rows = []
+        for path in media:
+            try:
+                data = Path(path).read_bytes()
+            except OSError as exc:
+                raise HarnessError(f"[{self.stage}] cannot read media {path}: {exc}") from exc
+            rows.append([hashlib.sha256(data).hexdigest(),
+                         gateway_engine.media_type(path) or ""])
+        return rows
+
+    def decide(self, name: str, prompt: str, schema: dict, *,
+               media: Sequence[Any] = ()) -> Any:
         """One structured answer to one question, served from the project
-        when the same question was answered before."""
-        digest = _digest(self.system, prompt, schema, self._asked_as)
+        when the same question was answered before. `media` (files) go to
+        a gateway harness only; with none, the digest and the engine calls
+        are exactly what they were before media existed."""
+        media = tuple(media or ())
+        if media and self.engine != GATEWAY_ENGINE:
+            raise HarnessError(f"[{self.stage}] {name}: media need a harness with "
+                               "engine='gateway'; claude and codex take none here")
+        parts: list[Any] = [self.system, prompt, schema, self._asked_as]
+        if media:
+            parts.append(self._media_digest(media))
+        digest = _digest(*parts)
+        ask = {"media": media} if media else {}
         saved = self._cached(name, digest)
         if saved is not None:
             self._say(f"[{self.stage}] {name}: decided earlier, same inputs")
@@ -440,7 +521,7 @@ class Harness:
         self._say(f"[{self.stage}] {name}: asking {self._asked_as}")
         engine = self._engine(tools=())
         try:
-            result = engine.ask_json(prompt, schema, system=self.system)
+            result = engine.ask_json(prompt, schema, system=self.system, **ask)
             # invariant 3: validate, retry once with the problem named, then
             # fail (a missing field) or let the stage record its fallback (a
             # type, a value outside its enum)
@@ -451,7 +532,7 @@ class Harness:
             if problems:
                 self._say(f"[{self.stage}] {name}: asking again ({'; '.join(problems[:3])})")
                 result = engine.ask_json(prompt + RETRY_INSTRUCTION % "; ".join(problems[:10]),
-                                         schema, system=self.system)
+                                         schema, system=self.system, **ask)
             self._check(name, result, schema)
         except (ClaudeError, HarnessError) as exc:
             self._failed(name, digest, engine.usage.cost_usd)
@@ -474,6 +555,10 @@ class Harness:
         schema from them, adding nothing. Tools are read-only: an inspection
         changes no file, so its evidence stays what it was.
         """
+        if self.engine == GATEWAY_ENGINE:
+            raise HarnessError(f"[{self.stage}] {name}: a gateway harness cannot inspect, "
+                               "it makes one call with no tools; pass the evidence files "
+                               "to decide as media")
         cwd = Path(cwd)
         bad = [t for t in tools if t not in READ_ONLY_TOOLS]
         if bad:
