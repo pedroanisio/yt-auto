@@ -425,7 +425,9 @@ includes that restart at t=0 looks like; the other mechanical findings on
 that world's shots are re-owned to `build`), has the model read the frames and the contact sheet as images
 and file the scorecard, applies the bar of section 2 mechanically (a blocking
 mechanical finding caps `visual_quality` and `animation_vfx` at 6; no audio
-track in `build.json` fixes `sound_design` and `music_score` at 2.0), and
+track in `build.json` fixes `sound_design` and `music_score` at 2.0; a
+`voiceover`, `sound_design` or `music_score` with no current listening
+review (§12) is not evidenced, unscored, and READY cannot be judged), and
 compares the pass with the one before. Its findings name the owning stage;
 the loop is to fix that stage's source, rebuild, and run it again.
 
@@ -456,7 +458,8 @@ opinion, and makes the regression check mechanical.
    verified result until the new cut is published and measured: it reads
    "not re-measured".
 4. **Remaining issues** — only genuine ones, classified **Blocking** or
-   **Minor / acceptable**.
+   **Minor / acceptable**, and the categories nothing heard, **Not
+   evidenced**, with the command that produces the listening review.
 5. **Final artifact** — path, runtime, resolution, frame rate, audio
    configuration.
 6. **Publication rationale** — why it now meets the bar, or exactly what
@@ -475,10 +478,18 @@ An honest spec says where it is blind, so nobody mistakes silence for a pass:
   the engine's own report (integrated LUFS, loudness range, momentary and
   short-term peaks, true peak) and through the delivery gate, which `yt
   gate` runs on a render host that has ffprobe and the engine. Waveform
-  inspection and listening still happen on a machine that has the tools, so
-  "sound design" and "music" scores rest on the cue sheet, what the build
-  placed and the engine's measurements, and that limit is stated in the
-  report rather than scored around.
+  inspection and listening still happen on a machine that has the tools.
+  `yt qa` scores Voiceover, Sound design and Music / score only from a
+  listening review that heard what the film carries: the sound design's
+  listen-back (`yt sound --review`, which reads the cue sheet cue by cue,
+  not the rendered track) and the director's take review in `yt voice`, each
+  recording a digest of what it heard (`heard`). A review of a sheet since
+  ridden or re-spotted, of takes since re-recorded, or of a file newer than
+  the build is stale, said so, and not used. Without a current one the
+  category is not evidenced, has no score, and READY cannot be judged for it;
+  the scorecard and `improve.md` name the missing review and the command
+  that produces it. The measurements (the cue list, the mix settings, the
+  narration's numbers) are context, never a score.
 - **The music and effects are library previews.** `yt sound --fetch` fills
   each cue with a CC0 or CC-BY high-quality mp3 preview from Freesound and
   `yt build` places it; a cue nothing matched stays unfilled and is listed

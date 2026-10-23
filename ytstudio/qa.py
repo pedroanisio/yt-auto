@@ -35,9 +35,18 @@ animation_vfx cannot exceed `MECHANICAL_CAP`.
 Then the model reads the frames and the sheet, with the screenplay, the
 editorial decisions, the numbers and the mechanical findings beside each
 frame, and files the scorecard under a schema. What stills cannot evidence
--- the voice as heard, the mix, the music -- it scores from the measurements
-and names in `not_evidenced`; a film with no audio track at all scores
-`SILENT_SCORE` on sound_design and music_score by rule, never a neutral 5.
+-- the voice as heard, the mix, the music -- is scored only from a listening
+review that heard what the film carries (AUTO-105): sound.json's listen-back
+(`yt sound --review`, the cue sheet read cue by cue) for sound_design and
+music_score, voice.json's take review (`yt voice`) for voiceover. Each
+records a digest of what it heard (`heard`); the prompt carries it marked
+current or stale, and a review whose mark no longer matches its file, or
+whose file is newer than build.json, is stale and what it said is left out.
+A category no current review covers has no score (None), is named under
+`not_evidenced` with the command that produces the evidence, and the bar
+says READY cannot be judged for it rather than NOT READY on a frozen number.
+A film with no audio track at all scores `SILENT_SCORE` on sound_design and
+music_score by rule, never a neutral 5.
 
 The story is judged from the film too (AUTO-99). The role carries the
 narrative rubric's sentences for narrative_clarity and editing_pacing,
