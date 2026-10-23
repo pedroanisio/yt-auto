@@ -169,6 +169,15 @@ class Estimate(ImproveCase):
         plain = self.qa_row(("qa",))
         self.assertAlmostEqual(plain["usd"], spend.DEFAULT_USD["qa"])
 
+    def test_a_plain_qa_after_a_scored_pass_is_priced_with_the_comparison(self):
+        # `yt run` and improve's baseline call `yt qa` with no flag; with an
+        # earlier scored pass under qa/ it compares all the same.
+        self.start_pass(improve_card(7.0))
+        row = self.qa_row(("qa",))
+        self.assertAlmostEqual(row["usd"],
+                               round(qa.pass_usd(self.card()) + spend.COMPARE_PASS_USD, 2))
+        self.assertIn("--previous", row["source"])     # the flag that asks for it
+
     def test_a_measured_comparison_is_not_added_twice_nor_multiplied(self):
         decisions = [{"name": f"pass-01-scorecard-s{k}", "cost_usd": 0.5} for k in (1, 2, 3)]
         decisions.append({"name": "pass-01-compare-pass", "cost_usd": 0.3})

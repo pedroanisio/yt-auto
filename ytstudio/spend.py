@@ -273,9 +273,24 @@ def story_review_usd(root: Path | None, argv: Iterable[str] = ()) -> float:
 FLAG_USD = {"script": {"--review": ((PLAN_REVIEW_USD, "plan-review"),
                                     (story_review_usd, "review-r1"),
                                     (PICTURE_CHECK_USD, "picture-check"))},
-            # `yt improve` names its best kept pass to QA, which then
-            # compares the new cut with it side by side (AUTO-108).
+            # QA compares the new cut side by side with the pass `--previous`
+            # names, or with the latest scored one when there is one, so
+            # stage_estimates asks the flag of a plain `yt qa` too (AUTO-108).
             "qa": {"--previous": ((COMPARE_PASS_USD, "compare-pass"),)}}
+
+
+def qa_compares(root: Path | None) -> bool:
+    """Whether a `yt qa` under `root` pays for the side-by-side comparison
+    without being told --previous: a pass it can compare with, one scored
+    (not `not_evidenced`), is already under qa/ (AUTO-108)."""
+    if root is None:
+        return False
+    from . import qa  # qa reads this module; it is only asked where its passes live
+    for path in reversed(qa._passes(Path(root))):
+        card = read_json(path / "scorecard.json", warn=False)
+        if isinstance(card, dict) and card.get("verdict") != qa.NOT_EVIDENCED:
+            return True
+    return False
 
 
 def flag_increments(root: Path | None, stage: str, argv: Iterable[str]) -> list[tuple[str, float]]:
@@ -399,6 +414,8 @@ def stage_estimates(root: Path, stages: list[str],
     for stage in list(stages) + [s for s in ("gate", "qa") if s not in stages]:
         wanted = sections if stage == "vfx" else None
         flags = (extras or {}).get(stage) or ()
+        if stage == "qa" and "--previous" not in flags and qa_compares(root):
+            flags = [*flags, "--previous"]      # `yt run`'s plain qa compares all the same
         have = _reported(root, stage, wanted)
         like = _like(root, stage, flags) if have is None and not wanted else None
         if have is not None:

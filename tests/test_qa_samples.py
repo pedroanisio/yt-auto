@@ -564,13 +564,16 @@ class Estimate(ImproveCase):
         self.start_pass(dict(improve_card(7.0), usage=spend.record(0.6, "m", 1)))
         row = self.qa_row()
         self.assertEqual(row["basis"], "measured")
-        self.assertAlmostEqual(row["usd"], round(0.6 * qa.QA_SAMPLES, 2))
+        # the samples, and once the side-by-side comparison with that scored
+        # pass, which the next `yt qa` makes (AUTO-108)
+        self.assertAlmostEqual(row["usd"],
+                               round(0.6 * qa.QA_SAMPLES + spend.COMPARE_PASS_USD, 2))
         self.assertEqual(improve._qa_cost(self.root), 0.6)     # what it cost stays read
 
     def test_a_pass_already_sampled_is_priced_as_measured(self):
         self.start_pass(dict(improve_card(7.0), usage=spend.record(1.8, "m", 3),
                              scoring={"asked": 3, "valid": 3}))
-        self.assertAlmostEqual(self.qa_row()["usd"], 1.8)
+        self.assertAlmostEqual(self.qa_row()["usd"], round(1.8 + spend.COMPARE_PASS_USD, 2))
 
     def test_the_dry_run_estimate_rises_by_the_samples(self):
         write_json(self.root / "sound.json", {"cues": [], "usage": {"cost_usd": 0.5}})
