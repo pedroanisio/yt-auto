@@ -46,8 +46,11 @@ no key, a key with whitespace or control characters inside it (in a header
 a newline would start another header), a URL that already names a path, and
 a CLAUDE_CODE_USE_BEDROCK, _VERTEX or _FOUNDRY switch, which Claude Code
 honours ahead of ANTHROPIC_BASE_URL so the call would not reach the gateway
-at all (the claude CLI's only: codex does not read them). No message here carries the key, and nothing writes
-~/.claude/settings.json or runs a setup command.
+at all (the claude CLI's only: codex does not read them). On the codex route
+a key with whitespace around it is refused as well, since codex reads the
+variable as it is rather than the stripped value yt checked. No message here
+carries the key, and nothing writes ~/.claude/settings.json or runs a setup
+command.
 
 Stdlib only, and no import of claude_engine, which imports this.
 """
@@ -211,6 +214,12 @@ def codex_config(environ: Mapping[str, str] | None = None) -> dict[str, str]:
         return {}
     base = codex_base_url(environ)
     _key(environ)
+    raw = environ.get(KEY) or ""
+    if raw != raw.strip():
+        # codex sends the variable as it is, not the value checked above.
+        raise GatewayError(
+            f"{KEY} has whitespace or a newline around the key, and codex sends "
+            "it as it is; set it to the key alone")
     return {
         "model_provider": CODEX_PROVIDER,
         f"model_providers.{CODEX_PROVIDER}.name": CODEX_PROVIDER_NAME,

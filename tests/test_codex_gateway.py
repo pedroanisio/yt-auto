@@ -121,6 +121,15 @@ class Pairs(unittest.TestCase):
                 gateway.codex_config(env)
             self.assertNotIn(KEY, str(caught.exception))
 
+    def test_a_key_with_whitespace_around_it_is_refused_for_codex(self):
+        # Codex reads the variable as it is, so a key that is only right
+        # once stripped would pass a stripped check and fail at the gateway.
+        for raw in (KEY + "\n", " " + KEY, KEY + " "):
+            with self.subTest(raw=repr(raw)), self.assertRaises(gateway.GatewayError) as caught:
+                gateway.codex_config(on(AI_GATEWAY_API_KEY=raw))
+            self.assertIn("AI_GATEWAY_API_KEY", str(caught.exception))
+            self.assertNotIn(KEY, str(caught.exception))
+
     def test_no_websocket_setting_is_sent(self):
         # Vercel says non-OpenAI models do not support Codex's WebSocket
         # mode; the provider is left on plain HTTP streaming.
