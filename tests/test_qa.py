@@ -560,15 +560,16 @@ class StoryStage(unittest.TestCase):
         self.run_qa(reuse="pass-01")
         text = (pass_dir / "narration.txt").read_text()
         self.assertIn("written at a later review than the frames", text.splitlines()[0])
-        # new evidence in the pass: the cached inspection is not served
-        self.assertEqual(len(self.seen["prompts"]), asked + 1)
+        # new evidence in the pass: the cached inspections are not served
+        self.assertEqual(len(self.seen["prompts"]), asked + qa.QA_SAMPLES)
 
     def test_every_section_has_a_line_or_the_reviewer_is_asked_again(self):
         # structure 20: one line per screenplay section, a blank line fails
         blank_line = dict(STORY, sections=[{"section": 1, "viewer_has_at_end": " "}])
         self.cards[:] = [dict(self.cards[0], story=blank_line), self.cards[0]]
         self.run_qa()
-        self.assertEqual(len(self.seen["prompts"]), 2)
+        # the first sample is asked again; the others answered whole (AUTO-107)
+        self.assertEqual(len(self.seen["prompts"]), qa.QA_SAMPLES + 1)
         self.assertIn("section 1", self.seen["prompts"][1].split("Answer again")[-1])
         card = json.loads((self.root / "qa" / "pass-01" / "scorecard.json").read_text())
         self.assertEqual(card["story"]["sections"], STORY["sections"])
@@ -578,7 +579,8 @@ class StoryStage(unittest.TestCase):
         missing = dict(STORY, sections=[{"section": 3, "viewer_has_at_end": "x"}])
         self.cards[:] = [dict(self.cards[0], story=missing)]
         self.run_qa()
-        self.assertEqual(len(self.seen["prompts"]), 2)        # asked once more, no more
+        # each sample asked once more, no more (AUTO-107)
+        self.assertEqual(len(self.seen["prompts"]), 2 * qa.QA_SAMPLES)
         card = json.loads((self.root / "qa" / "pass-01" / "scorecard.json").read_text())
         gaps = [n for n in card["not_evidenced"] if "structure 20" in n]
         self.assertEqual(len(gaps), 1, card["not_evidenced"])
