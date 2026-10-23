@@ -516,9 +516,49 @@ class Improve(ImproveCase):
         runner = FakeRunner(self.root, [card(6.0)], fail={"gate": "refuse"})
         record = self.improver(runner, rejudge=True, max_passes=1, compare_model=MODEL).run()
         (argv,) = self.qa_runs(runner)
-        fresh = self.root / "improve" / "pass-01" / "snapshot-rejudge"
-        self.assertEqual(self.against_of(argv), (str(fresh / "video.mp4"), MODEL))
+        # the snapshot taken before the pass changed anything: best_before's cut
+        snap = self.root / "improve" / "pass-01" / "snapshot"
+        self.assertEqual(self.against_of(argv), (str(snap / "video.mp4"), MODEL))
+        self.assertEqual(argv[argv.index("--previous") + 1], "pass-01")
         self.assertEqual([a for a in record["passes"][-1]["argv"] if a[0] == "qa"], [argv])
+
+    def kept_by_a_rejudge(self):
+        """pass-01 reverted, then kept by a --rejudge: the project now holds
+        the attempt, rendered again, and its attempt/ is still there."""
+        write_json(self.root / "gate.json", {"exit": 0})
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        self.improver(FakeRunner(self.root, [card(4.9)], fail={"gate": "refuse"}),
+                      max_passes=1, compare_model=MODEL).run()
+        record = self.improver(FakeRunner(self.root, [card(6.0)], fail={"gate": "refuse"}),
+                               rejudge=True, max_passes=1, compare_model=MODEL).run()
+        self.assertEqual(record["passes"][-1]["decision"], "keep")
+        self.assertNotEqual((self.root / "video.mp4").read_bytes(), b"original video")
+
+    def test_a_rejudged_kept_pass_is_compared_with_the_cut_before_it(self):
+        # snapshot-rejudge would hold the attempt's own earlier render: the
+        # cut compared with itself, filed as a comparison against pass-01
+        self.kept_by_a_rejudge()
+        runner = FakeRunner(self.root, [card(6.1)], fail={"gate": "refuse"})
+        self.improver(runner, rejudge=True, max_passes=1, compare_model=MODEL).run()
+        (argv,) = self.qa_runs(runner)
+        snap = self.root / "improve" / "pass-01" / "snapshot"
+        self.assertEqual(self.against_of(argv), (str(snap / "video.mp4"), MODEL))
+        self.assertEqual((snap / "video.mp4").read_bytes(), b"original video")
+        self.assertEqual(argv[argv.index("--previous") + 1], "pass-01")
+
+    def test_a_pass_left_unjudged_by_a_rejudge_is_compared_with_the_cut_before_it(self):
+        self.kept_by_a_rejudge()
+        self.improver(FakeRunner(self.root, [], fail={"gate": "refuse", "qa": "no-pass"}),
+                      rejudge=True, max_passes=1, compare_model=MODEL).run()
+        record = read_json(self.root / improve.REPORT_JSON)
+        self.assertEqual(record["passes"][-1]["decision"], "unjudged")
+        self.assertTrue(record["passes"][-1]["snapshot"].endswith("snapshot-rejudge"))
+        runner = FakeRunner(self.root, [card(6.1)])
+        self.improver(runner, max_passes=1, compare_model=MODEL).run()
+        argv = self.qa_runs(runner)[0]
+        snap = self.root / "improve" / "pass-01" / "snapshot"
+        self.assertEqual(self.against_of(argv), (str(snap / "video.mp4"), MODEL))
+        self.assertEqual(argv[argv.index("--previous") + 1], "pass-01")
 
     def test_an_unjudged_pass_is_scored_against_its_own_snapshot(self):
         self.start_pass(card(5.0, mechanical=[mech()]))
@@ -539,6 +579,8 @@ class Improve(ImproveCase):
         (argv,) = self.qa_runs(runner)
         snap = self.root / "improve" / "pass-01" / "snapshot"
         self.assertEqual(self.against_of(argv), (str(snap / "video.mp4"), MODEL))
+        # the kept pass that cut is from, so the tally is filed against it
+        self.assertEqual(argv[argv.index("--previous") + 1], "pass-01")
         self.assertEqual([a for a in record["passes"][-1]["argv"] if a[0] == "qa"], [argv])
 
     def test_against_off_is_identical(self):

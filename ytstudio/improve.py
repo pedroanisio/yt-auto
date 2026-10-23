@@ -1263,15 +1263,24 @@ class Improver:
             new = self._card(latest)
         if new is None:
             self._log(f"[improve] {entry['name']} was never judged; scoring it first")
-            snap = Path(entry.get("snapshot") or self.root / IMPROVE_DIR / entry["name"]
-                        / "snapshot")
-            new = self._qa(self._qa_argv(before, snap, entry))
+            new = self._qa(self._qa_argv(before, self._kept_snapshot(entry), entry))
         if new is None:
             self.say(f"error: {entry['name']} still has no QA pass; the render host may "
                      "be down")
             return None
         self.spent_stages += float(earlier.get("spent_usd") or 0)
         return self._settle(entry, before, new)
+
+    def _kept_snapshot(self, entry: dict) -> Path:
+        """The snapshot that holds the cut `entry` is judged against: the one
+        taken before the pass changed anything, which holds best_before's
+        cut whatever came after. Not `entry["snapshot"]`: after a --rejudge
+        that is snapshot-rejudge, the project as it stood then, which after
+        a kept pass is the attempt's own earlier render (AUTO-128)."""
+        own = self.root / IMPROVE_DIR / entry["name"] / "snapshot"
+        if (own / "snapshot.json").is_file() or not entry.get("snapshot"):
+            return own
+        return Path(entry["snapshot"])
 
     def _gate(self, entry: dict, pdir: Path, stamps: dict[str, int]) -> None:
         """Run the gate on the new video. A gate that wrote nothing (it can
@@ -1358,7 +1367,9 @@ class Improver:
                     "stop": {"reason": "stage-failed", "detail": f"render exited {code}; "
                              "the state before the re-judge was restored"}}
         self._gate(entry, pdir, stamps)
-        qa_argv = self._qa_argv(before, fresh, entry)
+        # best_before's cut, not snapshot-rejudge's: after a kept pass that
+        # is the attempt's own earlier render
+        qa_argv = self._qa_argv(before, self._kept_snapshot(last), entry)
         entry["argv"].append(qa_argv)
         new = self._qa(qa_argv)
         cost = stage_cost(self.root, "gate", stamps) + self.qa_cost
@@ -1435,6 +1446,10 @@ class Improver:
         if failed is None:
             self._gate(entry, pdir, stamps)
             qa_argv = self._qa_argv(None, pdir / "snapshot", entry)
+            if "--against" in qa_argv:
+                # the cut is best_before's: name that pass, so the tally is
+                # filed against the pass it was measured against
+                qa_argv = self._qa_argv(before, pdir / "snapshot")
             entry["argv"].append(qa_argv)
             new = self._qa(qa_argv)
         cost = sum(stage_cost(self.root, st, stamps) for st, _ in steps) + stage_cost(
