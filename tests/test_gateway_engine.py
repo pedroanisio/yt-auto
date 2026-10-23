@@ -29,7 +29,7 @@ import gateway_engine  # noqa: E402
 from claude_engine import ClaudeEngine, EngineConfig, Usage  # noqa: E402
 from gateway_engine import (GatewayConfig, GatewayEngine,  # noqa: E402
                             GatewayExecutionError, GatewayNotFound)
-from gateway_fakes import KEY, MODEL, USAGE, FakeNode, err, ok  # noqa: E402
+from gateway_fakes import KEY, MODEL, UNPRICED, USAGE, FakeNode, err, ok  # noqa: E402
 
 SCHEMA = {"type": "object", "properties": {"answer": {"type": "string"}},
           "required": ["answer"]}
@@ -275,15 +275,15 @@ class Booking(Case):
         self.assertNotIn("cost_gateway_calls", answer.usage.by_model[MODEL])
 
     def test_cost_from_generation_only_when_poll_enabled(self):
-        self.node.replies(ok(cost=None, generation_cost=0.0031))
-        engine = self.node.engine()
+        self.node.replies(ok(cost=None, generation_cost=0.0031, model=UNPRICED))
+        engine = self.node.engine(model=UNPRICED)
         engine.ask_json("q", SCHEMA)
-        self.assertNotIn("cost_generation_calls", engine.usage.by_model[MODEL])
-        self.assertEqual(engine.usage.by_model[MODEL]["cost_unpriced_calls"], 1)
-        polled = self.node.engine(cost_poll_tries=3)
+        self.assertNotIn("cost_generation_calls", engine.usage.by_model[UNPRICED])
+        self.assertEqual(engine.usage.by_model[UNPRICED]["cost_unpriced_calls"], 1)
+        polled = self.node.engine(model=UNPRICED, cost_poll_tries=3)
         polled.ask_json("q", SCHEMA)
         self.assertEqual(self.node.requests()[-1]["costPoll"], {"tries": 3, "intervalMs": 2000})
-        self.assertEqual(polled.usage.by_model[MODEL]["cost_generation_calls"], 1)
+        self.assertEqual(polled.usage.by_model[UNPRICED]["cost_generation_calls"], 1)
         self.assertAlmostEqual(polled.usage.cost_usd, 0.0031)
 
     def test_cost_from_table_then_unpriced(self):
@@ -305,11 +305,11 @@ class Booking(Case):
         self.assertEqual(engine.usage.by_model[claude]["cost_table_calls"], 1)
         # Nobody priced it: $0, and said so.
         os.environ.pop("GATEWAY_PRICES")
-        self.node.replies(ok(cost=None))
-        engine = self.node.engine()
+        self.node.replies(ok(cost=None, model=UNPRICED))
+        engine = self.node.engine(model=UNPRICED)
         engine.ask_json("q", SCHEMA)
         self.assertEqual(engine.usage.cost_usd, 0.0)
-        self.assertEqual(engine.usage.by_model[MODEL]["cost_unpriced_calls"], 1)
+        self.assertEqual(engine.usage.by_model[UNPRICED]["cost_unpriced_calls"], 1)
 
     def test_merge_keeps_cost_counters_numeric(self):
         engine = self.node.engine()
@@ -330,8 +330,8 @@ class Booking(Case):
         self.assertAlmostEqual(into_gateway.cost_usd, 0.5012)
 
     def test_a_budget_on_an_unpriced_model_is_refused(self):
-        self.node.replies(ok(cost=None))
-        error = self.refused(self.node.engine(max_turns_budget_usd=0.5))
+        self.node.replies(ok(cost=None, model=UNPRICED))
+        error = self.refused(self.node.engine(model=UNPRICED, max_turns_budget_usd=0.5))
         self.assertIn("GATEWAY_PRICES", str(error))
 
     def test_a_retry_stops_once_the_booked_cost_reaches_the_budget(self):
