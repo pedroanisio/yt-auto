@@ -483,12 +483,15 @@ An honest spec says where it is blind, so nobody mistakes silence for a pass:
   listening review that heard what the film carries: the sound design's
   listen-back (`yt sound --review`, which reads the cue sheet cue by cue,
   not the rendered track) and the director's take review in `yt voice`, each
-  recording a digest of what it heard (`heard`). A review of a sheet since
-  ridden or re-spotted, of takes since re-recorded, or of a file newer than
-  the build is stale, said so, and not used. Without a current one the
-  category is not evidenced, has no score, and READY cannot be judged for it;
-  the scorecard and `improve.md` name the missing review and the command
-  that produces it. The measurements (the cue list, the mix settings, the
+  recording a digest of what it heard (`heard`: the cue sheet with the mix
+  targets and the normalise mode, or the takes). A review of a sheet since
+  ridden, re-spotted or re-mastered, of takes since re-recorded, or of a
+  file newer than the build is stale, said so, and not used. Without a
+  current one the category is not evidenced, has no score, and READY cannot
+  be judged for it; the overall is the mean of what was scored, and the
+  scorecard and `improve.md` name the missing review and the command that
+  produces it. A wordless film has no take review, so READY is out of reach
+  for it until a review hears the rendered track. The measurements (the cue list, the mix settings, the
   narration's numbers) are context, never a score.
 - **The music and effects are library previews.** `yt sound --fetch` fills
   each cue with a CC0 or CC-BY high-quality mp3 preview from Freesound and

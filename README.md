@@ -1244,21 +1244,30 @@ evidence (the voice as heard, the mix, the music) is scored only from a
 listening review that heard what the film carries: `sound.json`'s
 listen-back (`yt sound --review`, which reads the cue sheet cue by cue, not
 the rendered track) for `sound_design` and `music_score`, and `voice.json`'s
-take review for `voiceover`. Each review records `heard`, a digest of the
-cue sheet's design or of the takes it heard (`sound.heard`, `voice.heard`),
-and QA computes it again: a review whose digest no longer matches its file
-(a mix ride, a re-spotted sheet, a re-recorded take), one written before the
-mark, one that never answered, or one whose file is newer than `build.json`
-is stale; the prompt says so and leaves out what it said, and the
-scorecard's `listening` lists every row with why. A category no current
+take review for `voiceover`. Each review records `heard`, a digest of
+what it heard (`sound.heard`: each cue's design, the palette's mix targets
+and the master's `normalize` mode; `voice.heard`: the takes), and QA
+computes it again: a review whose digest no longer matches its file (a mix
+ride, a re-spotted sheet, a new mix target or normalise mode, a re-recorded
+take), one written before the mark, one that never answered, or one whose
+file is newer than `build.json` is stale. The listen-back never reads the
+recorded narration, so a voice re-record under an unchanged sheet leaves it
+current; the take review is what hears the takes. For a stale review the
+prompt says so and leaves out what it said, and the scorecard's
+`listening` lists every row with why. A category no current
 review covers is recorded not evidenced with no score (`null` in
 `scores`), named under `not_evidenced` and `audio_not_evidenced` (also in
 `qa.json`) with the command that produces the evidence (`yt sound --fresh
 --review --fetch --synth` or `yt voice`, then `yt build`, `yt render` and
-`yt qa`), and the bar says READY cannot be judged for it instead of NOT
-READY on a frozen number. The mean, the comparison and `yt improve`'s keep
-or revert skip it. A wordless film has no take review, so its `voiceover`
-stays not evidenced until a review that hears the track exists.
+`yt qa`, every step with the film's `--project`), and the bar says READY
+cannot be judged for it instead of NOT READY on a frozen number. The
+overall is then the mean of the categories that were scored, whatever the
+reviewer filed (kept as `overall_filed`). Two passes that did not score the
+same categories compare their overalls over the ones both scored, so a pass
+that only lost its low audio scores is no gain for `yt improve`'s keep or
+revert. A wordless film has no take review, so its `voiceover` stays not
+evidenced and READY is out of reach for it until a review that hears the
+rendered track exists (AUTO-126); the bar and `improve.md` say so.
 
 The story is read from the film as well. The reviewer's role carries the
 narrative rubric's rows for the hook, stakes, open loops, reveal setup and

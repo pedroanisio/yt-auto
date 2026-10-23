@@ -44,7 +44,10 @@ current or stale, and a review whose mark no longer matches its file, or
 whose file is newer than build.json, is stale and what it said is left out.
 A category no current review covers has no score (None), is named under
 `not_evidenced` with the command that produces the evidence, and the bar
-says READY cannot be judged for it rather than NOT READY on a frozen number.
+says READY cannot be judged for it rather than NOT READY on a frozen number;
+the overall is then the mean of the scored categories, and two passes that
+scored different categories compare their overalls over the ones both
+scored, so losing the low audio scores is never a gain.
 A film with no audio track at all scores `SILENT_SCORE` on sound_design and
 music_score by rule, never a neutral 5.
 
