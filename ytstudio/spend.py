@@ -324,6 +324,14 @@ def listen_usd(root: Path | None, argv: Iterable[str] = ()) -> float:
     return estimate_for(root, argv) or 0.0
 
 
+def watch_usd(root: Path | None, argv: Iterable[str] = ()) -> float:
+    """What `yt qa --watch` adds (AUTO-127): the programme's seconds of
+    video and an answer a segment at `--watch-model`'s pinned price
+    (watch.WATCH_PRICE); it never fetches."""
+    from .watch import watch_usd as estimate   # watch reads qa, which reads this module
+    return estimate(root, argv)
+
+
 #: A flag that adds to what its stage costs: stage -> flag -> its parts, each
 #: (the increment, the decision whose row in the stage's record shows that
 #: part was on). An increment is dollars, or a function of the project and
@@ -349,7 +357,10 @@ FLAG_USD = {"script": {"--review": ((PLAN_REVIEW_USD, "plan-review"),
                    # the video comparison's two orders, `cutcompare-<pass>-ab`
                    # and `-ba`, on the scorecard's compare_engine (AUTO-128)
                    "--against": ((_compare_usd, "cutcompare"),),
-                   "--listen": ((listen_usd, "listen"),)}}
+                   "--listen": ((listen_usd, "listen"),),
+                   # the watch's `watch-sNN` decisions, on the scorecard's
+                   # watch_engine (AUTO-127); a measured watched pass holds them
+                   "--watch": ((watch_usd, "watch"),)}}
 
 
 def qa_compares(root: Path | None) -> bool:
@@ -379,7 +390,8 @@ def flag_increments(root: Path | None, stage: str, argv: Iterable[str]) -> list[
         doc = (_qa_card(root) if stage == "qa" else
                read_json(Path(root) / rel, warn=False) if rel else None)
         rows: list = []
-        for key in ("engine", "compare_engine"):     # compare_engine: AUTO-128
+        # compare_engine: AUTO-128; watch_engine: AUTO-127
+        for key in ("engine", "compare_engine", "watch_engine"):
             engine = doc.get(key) if isinstance(doc, dict) else None
             rows += (engine.get("decisions") if isinstance(engine, dict) else None) or []
         names = {re.sub(r"^pass-\d+-", "", str(d.get("name")))

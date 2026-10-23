@@ -158,6 +158,24 @@ says why, and the stills are compared as above. qa/pass-NN/comparison.json
 keeps the record, and the scorecard keeps its account as `compare_engine`
 beside `engine`. Without --against nothing here changes.
 
+`--watch` (AUTO-127, watch.py has the rules) sends this cut, video.mp4, to
+a gateway model that watches it in motion: `--watch-model`, default
+google/gemini-3.6-flash, a catalog row tagged video-input and
+structured-output from another maker than every model that made the film.
+The gateway (YT_GATEWAY=vercel, AI_GATEWAY_API_KEY, Node >=22 and
+gateway/node_modules), the catalog, the model and a render host are checked
+before a pass directory is made; a missing one exits 1. A cut too large to
+send is cut down on the render host (downscaled, no audio, split at shot
+boundaries), never here. A stale or partial cut is not watched: the
+problem is a not_evidenced line. Each moment the watcher reports (W1..,
+qa/pass-NN/watch.json) becomes a still of the pass beyond --frames (at most
+WATCH_SAMPLES_MAX), and the scorecard's reviewer says of each whether its
+still shows it (`watched`); one at least two scoring samples confirm on its
+still joins the findings as `source: watched:Wn`, the rest are listed in
+findings.md and block nothing. The watcher's account is `watch_engine`,
+its cost is in `usage`. `--reuse PASS --watch` reads that pass's
+watch.json. Without --watch nothing here changes.
+
 The loop is: fix the owning stage's source, rebuild, run `yt qa` again. This
 stage changes no file but its own; it says what to change and who owns it.
 """
@@ -421,14 +439,26 @@ def category_order(seed: int) -> tuple[str, ...]:
     return CATEGORIES[start:] + CATEGORIES[:start]
 
 
-def sample_schema(seed: int) -> dict:
+def scorecard_schema(watched: bool = False) -> dict:
+    """SCORECARD_SCHEMA, or with `watched` (AUTO-127) a copy that also
+    requires the reviewer's verdict on each watched finding."""
+    if not watched:
+        return SCORECARD_SCHEMA
+    from . import watch as watch_pass      # it reads this module's owners
+    out = copy.deepcopy(SCORECARD_SCHEMA)
+    out["properties"]["watched"] = copy.deepcopy(watch_pass.WATCHED_SCHEMA)
+    out["required"] = [*out["required"], "watched"]
+    return out
+
+
+def sample_schema(seed: int, watched: bool = False) -> dict:
     """The scorecard's schema for sample `seed`: the categories under
     `scores` in `category_order(seed)`. SCORECARD_SCHEMA itself is never
-    changed, and seed 0 is it."""
+    changed, and seed 0 is it (`scorecard_schema(watched)`)."""
     if not seed:
-        return SCORECARD_SCHEMA
+        return scorecard_schema(watched)
     order = category_order(seed)
-    out = copy.deepcopy(SCORECARD_SCHEMA)
+    out = copy.deepcopy(scorecard_schema(watched))
     out["properties"]["scores"]["properties"] = {k: {"type": "number"} for k in order}
     out["properties"]["scores"]["required"] = list(order)
     return out
@@ -599,10 +629,12 @@ def pass_usd(card: dict | None) -> float | None:
                and str(d.get("name", "")).endswith("-compare-pass"))
     # The video comparison (AUTO-128) is asked once a pass too, on its own
     # harness: every decision there is one.
-    video = card.get("compare_engine") if isinstance(card, dict) else None
-    once += sum(float(d.get("cost_usd") or 0)
-                for d in (video.get("decisions") if isinstance(video, dict) else None) or []
-                if isinstance(d, dict) and not d.get("cached"))
+    # A watch (AUTO-127) is asked once a pass as well, on its own harness.
+    for key in ("compare_engine", "watch_engine"):
+        video = card.get(key) if isinstance(card, dict) else None
+        once += sum(float(d.get("cost_usd") or 0)
+                    for d in (video.get("decisions") if isinstance(video, dict) else None) or []
+                    if isinstance(d, dict) and not d.get("cached"))
     once = min(max(once, 0.0), cost)
     return round((cost - once) / asked * QA_SAMPLES + once, 2)
 
@@ -939,7 +971,7 @@ def _line_why(text: str) -> str:
 
 
 def sample(build: dict, *, limit: int | None = None,
-           voice: dict | None = None) -> list[dict]:
+           voice: dict | None = None, watched: list[dict] | None = None) -> list[dict]:
     """Where the evidence is taken, per docs/production.md §7: every shot,
     at its midpoint (AUTO-103), each row's `why` naming the priority
     reasons that shot has (hook, ending, payoff, section start, re-hook,
@@ -966,7 +998,14 @@ def sample(build: dict, *, limit: int | None = None,
     cost a shot its only one; `_add_lines` says which lines come first.
     Without --frames they are added up to EVERY_SHOT_UP_TO stills in all;
     under --frames they count against it, before the evenly spaced ones.
-    `lines_unsampled` says which lines got no still."""
+    `lines_unsampled` says which lines got no still.
+
+    With `watched` (AUTO-127: watch.candidates, each {id, t, severity,
+    problem}), each watched moment gets a still too, after everything
+    above and beyond `limit`: one within WATCHED_NEAR seconds of a still
+    merges into it at no cost, the others are added up to
+    WATCH_SAMPLES_MAX, blocking ones first, then in time order. `why` is
+    `watched: <id> <first words>` and `watched` lists the ids a row shows."""
     shots = sorted(build.get("shots", []), key=lambda s: float(s["at"]))
     if not shots:
         return []
@@ -1013,7 +1052,43 @@ def sample(build: dict, *, limit: int | None = None,
     if limit is not None and limit > len(out):
         for t, shot in _spread_times(shots, [r["t"] for r in out], limit - len(out)):
             out.append(row(shot, t, SPREAD_WHY))
+    if watched:
+        _add_watched(out, shots, watched, row)
     return sorted(out, key=lambda r: r["t"])
+
+
+#: The most stills a watch adds to a pass (AUTO-127), how near a still a
+#: watched moment merges into it, and the reason such a still is taken.
+WATCH_SAMPLES_MAX = 12
+WATCHED_NEAR = 0.5
+WATCHED_WHY = "watched: "
+
+
+def _add_watched(out: list[dict], shots: list[dict], watched: list[dict], row) -> None:
+    """The watched moments' stills (AUTO-127), added to `out` in place."""
+    added = 0
+    for w in sorted(watched, key=lambda w: (w.get("severity") != "blocking", float(w["t"]))):
+        t = round(float(w["t"]), 3)
+        words = str(w.get("problem") or "").split()
+        why = (f"{WATCHED_WHY}{w['id']} " + " ".join(words[:LINE_WORDS])
+               + (" ..." if len(words) > LINE_WORDS else "")).strip()
+        near = min(out, key=lambda r: abs(r["t"] - t), default=None)
+        if near is not None and abs(near["t"] - t) <= WATCHED_NEAR:
+            if why not in near["why"].split("; "):
+                near["why"] = f"{near['why']}; {why}" if near["why"] else why
+            near.setdefault("watched", []).append(w["id"])
+            continue
+        if added >= WATCH_SAMPLES_MAX:
+            continue
+        inside = [s for s in shots if float(s["at"]) <= t < float(s["at"]) + float(
+            s.get("seconds") or 0)]
+        shot = inside[-1] if inside else max(
+            (s for s in shots if float(s["at"]) <= t), key=lambda s: float(s["at"]),
+            default=shots[0])
+        new = row(shot, t, why)
+        new["watched"] = [w["id"]]
+        out.append(new)
+        added += 1
 
 
 def _add_lines(out: list[dict], lines: list[dict], row, *, cap: int,
@@ -2450,6 +2525,9 @@ def findings_md(name: str, card: dict, samples: list[dict], diff: dict, *,
                 lines.append(f"- {row.get('file')} ({covers}): not used -- {row.get('why')}"
                              + (f"; run {row['command']}" if row.get("command") else ""))
         lines.append("")
+    if card.get("watch"):
+        from . import watch as watch_pass   # AUTO-127; absent without --watch
+        lines += watch_pass.findings_lines(card)
     lines += ["## Mechanical", "",
               "Measured from the stills, the bursts and the engine's diagnostics before "
               f"the review; a blocking one caps {' and '.join(CAPPED)} at {MECHANICAL_CAP:g}.",
@@ -2747,7 +2825,8 @@ def _positive(text: str) -> int:
 
 
 def ask_samples(reviewer: Harness, pass_dir: Path, prompt: str, script: dict, *,
-                samples: int | None = None, quiet: bool = True) -> list[dict]:
+                samples: int | None = None, quiet: bool = True,
+                watched: bool = False) -> list[dict]:
     """The scorecard asked `samples` (QA_SAMPLES) times on the same evidence:
     `<pass>-scorecard-s<k>`, each with the categories in `category_order(k)`.
     A sample whose `story.sections` is not one line per screenplay section
@@ -2757,12 +2836,12 @@ def ask_samples(reviewer: Harness, pass_dir: Path, prompt: str, script: dict, *,
     whose own call fails is not valid; the harness's report keeps its failed
     row, so it is billed and never read as a score. Each sample's form is
     removed before the next is asked, so every sample reads the same
-    files."""
+    files. With `watched` (AUTO-127) each sample also answers `watched`."""
     form = "scorecard.form.json"
     rows = []
     for k in range(1, (QA_SAMPLES if samples is None else samples) + 1):
         name, order = f"{pass_dir.name}-scorecard-s{k}", category_order(k)
-        schema = sample_schema(k)
+        schema = sample_schema(k, watched=watched)
         ask = prompt + f"\n\nScore the categories in this order: {', '.join(order)}."
         row: dict = {"name": name, "k": k, "order": list(order), "valid": False,
                      "again": False}
@@ -2931,6 +3010,8 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
     p.add_argument("--fresh", action="store_true",
                    help="score again even if the evidence did not change")
     listen_pass.add_flags(p)
+    from . import watch as watch_pass       # it reads this module's owners and duties
+    watch_pass.add_flags(p)
     workspace.add_inputs(p, "build", "script", "voice", "sound", "styles", "gate")
     p.set_defaults(run=run)
     return p
@@ -2995,6 +3076,17 @@ def run(args) -> int:
             for line in str(exc).splitlines():
                 print(f"error: --listen: {line}", file=sys.stderr)
             return 1
+    # --watch (AUTO-127): the gateway, the catalog, the model and a render
+    # host, checked before a pass directory is made or anything renders.
+    watching, watched = None, None
+    if getattr(args, "watch", False):
+        from . import watch as watch_pass   # it reads this module's owners and duties
+        try:
+            watching = watch_pass.preflight(args, project, home=home)
+        except watch_pass.Refused as exc:
+            for line in str(exc).splitlines():
+                print(f"error: --watch: {line}", file=sys.stderr)
+            return 1
 
     # -- the evidence --------------------------------------------------------
     if args.reuse:
@@ -3004,9 +3096,26 @@ def run(args) -> int:
             print(f"error: {pass_dir} has no samples.json to reuse", file=sys.stderr)
             return 1
         problems = []
+        # A reused pass is never watched again: its record, if it has one.
+        watched = watching.reused if watching is not None else None
     else:
         pass_dir = next_pass(home)
-        samples = sample(build, limit=args.frame_limit, voice=voice)
+        if watching is not None:
+            # The watch runs first, so what it saw becomes stills of this pass.
+            pass_dir.mkdir(parents=True, exist_ok=True)
+            treatment = ((styles.get("styles") or [{}])[0] if isinstance(
+                styles.get("styles"), list) else styles.get("treatment"))
+            rules_now, digest_now = house.for_args(args, project, "qa")
+            watched = watch_pass.watch(project, pass_dir, watching, args, home=home,
+                                       build=build, title=idea.title, treatment=treatment,
+                                       house=rules_now, house_digest=digest_now)
+            if not args.quiet:
+                print(f"[qa] watch: {watched['status']}"
+                      + (f" ({watched['reason']})" if watched.get("reason") else "")
+                      + f", {len(watched.get('findings') or [])} finding(s)", file=sys.stderr)
+        samples = sample(build, limit=args.frame_limit, voice=voice,
+                         **({"watched": watch_pass.candidates(watched)}
+                            if watched is not None else {}))
         if not samples:
             print("error: the build manifest has no shots to sample", file=sys.stderr)
             return 1
@@ -3181,6 +3290,8 @@ def run(args) -> int:
     unheard = audio_unheard(listening, silent=silent(build))
 
     # -- the review ------------------------------------------------------------
+    # The watched findings with a still are put to the reviewer (AUTO-127).
+    asked_watched = watched is not None and watch_pass.asks(watched, samples)
     reviewer = Harness(project.root, "qa", model=args.model,
                        role=ROLE_LISTENED if listened else ROLE,
                        house=rules, house_digest=digest,
@@ -3251,6 +3362,7 @@ def run(args) -> int:
          "with the measurements as context only."),
         brief("Measurements and decisions from the stages", measurements),
         *([listen_pass.brief_for(heard)] if listened else []),
+        *([watch_pass.brief_for(watched, samples)] if asked_watched else []),
         brief("Blocking, already proven", blockers),
         brief("Each finding's owner is exactly one of these; one you cannot place is "
               "`external`, with the reason in `fix`", {o: DUTIES[o] for o in OWNERS}),
@@ -3264,7 +3376,8 @@ def run(args) -> int:
     # checked past the schema in each (one non-blank line per screenplay
     # section, asked once more); what still lacks a line is named under
     # not_evidenced, never filled in.
-    readings = ask_samples(reviewer, pass_dir, prompt, script, quiet=args.quiet)
+    readings = ask_samples(reviewer, pass_dir, prompt, script, quiet=args.quiet,
+                           **({"watched": True} if asked_watched else {}))
     card = combine_samples(reviewer, pass_dir.name, readings, unheard=unheard)
     gaps = card.pop("gaps")
     if gaps:
@@ -3272,6 +3385,9 @@ def run(args) -> int:
             f"story.sections (structure 20): {'; '.join(gaps)}, asked once more"]
     if heard is not None:
         card = listen_pass.merge_into(card, heard)     # the listener's own findings
+    if watched is not None:
+        # Only what two samples confirmed on its still joins the findings.
+        card = watch_pass.merge_into(card, watched, readings, samples, frames_dir)
     evidenced = card["verdict"] != NOT_EVIDENCED
     if not evidenced and not args.quiet:
         print(f"[qa] {pass_dir.name}: {card['scoring']['valid']} of "
@@ -3415,6 +3531,15 @@ def run(args) -> int:
         # reviewer's, its cost in the pass's usage.
         card["listen"] = listen_pass.card_entry(heard)
         card["usage"] = spend.merge_records(card["usage"], spend.from_report(heard["engine"]))
+    if watched is not None:
+        # The watcher is a harness of its own too (AUTO-127). A reused
+        # pass's record was paid for by that pass, so it books nothing here.
+        card["watch"] = watch_pass.card_entry(watched) | (
+            {"reused_pass": args.reuse} if args.reuse else {})
+        if watched.get("engine") and not args.reuse:
+            card["watch_engine"] = watched["engine"]
+            card["usage"] = spend.merge_records(card["usage"],
+                                                spend.from_report(watched["engine"]))
     diff = compare(previous, card)
     card["comparison"] = diff
     write_json(pass_dir / "scorecard.json", card)
