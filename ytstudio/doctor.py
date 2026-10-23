@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import importlib.util
 import json
 import os
@@ -269,14 +270,22 @@ GATEWAY_PING_TIMEOUT = 5
 
 
 def _shown(url: str) -> str:
-    """A URL as doctor may print it: no user, password, query or fragment,
-    since a proxy's URL may carry credentials (gateway.host never echoes it
-    in an error for the same reason)."""
+    """A URL as doctor may print it, and as the ping sends it: no user,
+    password, query or fragment, since a proxy's URL may carry credentials
+    (gateway.host never echoes it in an error for the same reason). The host
+    is kept as written, so an IPv6 address keeps its brackets."""
     parts = urlsplit(url)
-    netloc = parts.hostname or ""
-    if parts.port:
-        netloc += f":{parts.port}"
+    netloc = parts.netloc.rpartition("@")[2]
     return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuses every redirect, so a 3xx comes back as the HTTPError it is.
+    urllib's own handler copies the request's headers onto the new request
+    whatever its host or scheme, and the ping's carries the gateway key."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 def _key_fix() -> str:
@@ -362,7 +371,14 @@ def gateway_ping(report: Report, environ: dict | None = None) -> None:
     fail; a busy or failing gateway (429, 5xx) or no answer at all is a
     warning, since running again may pass. Only the status and the answer's
     `error.type` are printed, never its message, which might quote what was
-    sent. Under YT_NO_REMOTE (the suite) nothing is sent."""
+    sent. Under YT_NO_REMOTE (the suite) nothing is sent.
+
+    The key goes to the host YT_GATEWAY_URL names and nowhere else: a
+    redirect is not followed (it is a fail naming the status), and the
+    header is one urllib never copies onto another request. A user and
+    password in YT_GATEWAY_URL are left out of the request, with a note:
+    urllib would read them as part of the host name, and a proxy's
+    credentials are the claude CLI's business, not the ping's."""
     environ = os.environ if environ is None else environ
     area = "gateway ping"
     if environ.get(render.NO_REMOTE_ENV):
@@ -370,33 +386,58 @@ def gateway_ping(report: Report, environ: dict | None = None) -> None:
         return
     try:
         key = gateway.api_key(environ)
-        url = gateway.host(environ) + GATEWAY_CREDITS
+        host = gateway.host(environ)
     except gateway.GatewayError as exc:
         report.add("fail", area, f"cannot ping: {exc}",
                    _key_fix() if gateway.KEY in str(exc) else f"fix {gateway.URL}")
         return
-    shown = _shown(url)
-    request = urllib.request.Request(url, method="GET", headers={
-        "Authorization": f"Bearer {key}", "Accept": "application/json"})
+    split = urlsplit(host)
+    credentials = split.username is not None or split.password is not None
+    shown = url = _shown(host) + GATEWAY_CREDITS
+    if credentials:
+        report.add("note", area, f"the user and password in {gateway.URL} are not sent by "
+                   f"the ping, which asks {shown} with the gateway key alone")
+    request = urllib.request.Request(url, method="GET", headers={"Accept": "application/json"})
+    request.add_unredirected_header("Authorization", f"Bearer {key}")
+    opener = urllib.request.build_opener(_NoRedirect)
     try:
-        with urllib.request.urlopen(request, timeout=GATEWAY_PING_TIMEOUT) as answer:
-            body = json.loads(answer.read().decode("utf-8", "replace"))
+        with opener.open(request, timeout=GATEWAY_PING_TIMEOUT) as answer:
+            raw = answer.read()
     except urllib.error.HTTPError as exc:
         kind = _error_type(exc)
         said = f"GET {shown} answered HTTP {exc.code}" + (f" ({kind})" if kind else "")
         if exc.code in (401, 403):
-            report.add("fail", area, f"{said}: the gateway refused the key",
+            why = ("the gateway refused the key, or the proxy wanted the user and "
+                   "password the ping leaves out" if credentials
+                   else "the gateway refused the key")
+            report.add("fail", area, f"{said}: {why}",
                        f"check {gateway.KEY}: copy or create a key on the AI Gateway "
                        f"API Keys page ({GATEWAY_KEYS_PAGE})")
+        elif 300 <= exc.code < 400:
+            report.add("fail", area, f"{said}, a redirect, which the ping does not follow, "
+                       "so the key goes to no other host",
+                       f"set {gateway.URL} to the host that answers itself, or unset it")
         elif exc.code == 429 or exc.code >= 500:
             report.add("warn", area, f"{said}; the gateway is busy or failing, try again later")
         else:
             report.add("fail", area, said, f"check {gateway.URL} if it names a proxy")
         return
+    except http.client.InvalidURL:
+        # nothing was sent; the exception's text may quote the URL
+        report.add("fail", area, f"GET {shown} was not sent: urllib cannot use the URL",
+                   f"check {gateway.URL}")
+        return
     except (urllib.error.URLError, OSError) as exc:
         reason = getattr(exc, "reason", None) or exc
         report.add("warn", area, f"GET {shown} got no answer: {str(reason)[:120]}")
         return
+    except http.client.HTTPException as exc:
+        # a garbled status line or a cut-off body: neither an OSError nor a ValueError
+        report.add("warn", area, f"GET {shown} got no answer it could read "
+                   f"({type(exc).__name__})")
+        return
+    try:
+        body = json.loads(raw.decode("utf-8", "replace"))
     except ValueError:
         report.add("warn", area, f"GET {shown} answered with no JSON")
         return
@@ -414,7 +455,7 @@ def _error_type(exc: urllib.error.HTTPError) -> str:
     """The `error.type` in a refused ping's JSON body, else ""."""
     try:
         body = json.loads(exc.read().decode("utf-8", "replace"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, http.client.HTTPException):
         return ""
     error = body.get("error") if isinstance(body, dict) else None
     kind = error.get("type") if isinstance(error, dict) else None

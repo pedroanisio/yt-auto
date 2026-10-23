@@ -15,6 +15,7 @@ the flag. No test here reaches the network: urlopen is replaced in each.
 from __future__ import annotations
 
 import contextlib
+import http.client
 import io
 import json
 import os
@@ -23,6 +24,7 @@ import tempfile
 import unittest
 import urllib.error
 import urllib.request
+import urllib.response
 from email.message import Message
 from pathlib import Path
 from unittest import mock
@@ -73,12 +75,32 @@ def never(*args, **kwargs):
     raise AssertionError("doctor reached the network")
 
 
+def network(fake) -> contextlib.ExitStack:
+    """`fake` in place of every way urllib opens a URL: urlopen and an
+    opener's own open, which a ping through a built opener calls."""
+    stack = contextlib.ExitStack()
+    stack.enter_context(mock.patch.object(urllib.request, "urlopen", side_effect=fake))
+    stack.enter_context(mock.patch.object(urllib.request.OpenerDirector, "open",
+                                          side_effect=fake))
+    return stack
+
+
+def answered(url: str, code: int, body: bytes = b"", **headers) -> urllib.response.addinfourl:
+    """A response as an HTTP handler hands it to the opener."""
+    message = Message()
+    for name, value in headers.items():
+        message[name] = value
+    response = urllib.response.addinfourl(io.BytesIO(body), message, url, code=code)
+    response.msg = "answer"
+    return response
+
+
 class Block(unittest.TestCase):
     def rows(self, **env) -> list:
         patcher = environ(**env)
         self.addCleanup(patcher.stop)
         report = doctor.Report("environment")
-        with mock.patch.object(urllib.request, "urlopen", side_effect=never):
+        with network(never):
             doctor.check_gateway(report)
         return [f for f in report.findings if f.area == "gateway"]
 
@@ -163,7 +185,7 @@ class Block(unittest.TestCase):
         patcher = environ(YT_GATEWAY="vercel", AI_AGENT="some-agent")
         self.addCleanup(patcher.stop)
         with mock.patch.object(doctor.render, "hosts", return_value=[]), \
-                mock.patch.object(urllib.request, "urlopen", side_effect=never):
+                network(never):
             report = doctor.check_environment(Path(tempfile.gettempdir()))
         self.assertTrue([f for f in report.findings
                          if f.area == "gateway" and f.level == "fail"])
@@ -183,9 +205,9 @@ class Ping(unittest.TestCase):
             self.calls.append((request, timeout))
             if isinstance(answer, BaseException):
                 raise answer
-            return Answer(answer)
+            return answer if isinstance(answer, Answer) else Answer(answer)
         report = doctor.Report("environment")
-        with mock.patch.object(urllib.request, "urlopen", side_effect=fake):
+        with network(fake):
             doctor.gateway_ping(report)
         self.report = report
         return [f for f in report.findings if f.area == "gateway ping"]
@@ -241,6 +263,75 @@ class Ping(unittest.TestCase):
         rows = self.ping(b'{"credits": 3}')
         self.assertEqual([f.level for f in rows], ["warn"])
 
+    def test_a_garbled_answer_is_said_not_raised(self):
+        # http.client's own errors are neither OSError nor ValueError
+        rows = self.ping(http.client.BadStatusLine("HTTP/9 ?"))
+        self.assertEqual([f.level for f in rows], ["warn"])
+        self.assertIn("no answer", rows[0].message)
+
+        class Cut(Answer):
+            def read(self, *args):
+                raise http.client.IncompleteRead(b'{"bal', 40)
+        rows = self.ping(Cut())
+        self.assertEqual([f.level for f in rows], ["warn"])
+        self.assertNotIn("no JSON", rows[0].message)
+        refused = http_error(401)
+        refused.read = Cut().read
+        rows = self.ping(refused)
+        self.assertEqual([f.level for f in rows], ["fail"])
+        self.assertIn("401", rows[0].message)
+
+    def test_a_url_urllib_cannot_use_is_not_called_an_answer(self):
+        rows = self.ping(http.client.InvalidURL("nonnumeric port: 'x'"))
+        self.assertEqual([f.level for f in rows], ["fail"])
+        self.assertNotIn("answered", rows[0].message)
+        self.assertIn("YT_GATEWAY_URL", rows[0].fix)
+
+    def test_a_proxy_with_credentials_is_pinged_without_them(self):
+        # urllib would read user:pw@host as the host name; the ping sends no
+        # credential of the proxy's and says so
+        os.environ["YT_GATEWAY_URL"] = "https://user:hunter2@proxy.example:8443/"
+        rows = self.ping(b'{"balance": "1", "total_used": "0"}')
+        request = self.calls[0][0]
+        self.assertEqual(request.full_url, "https://proxy.example:8443/v1/credits")
+        self.assertEqual(request.get_header("Authorization"), f"Bearer {KEY}")
+        self.assertIsNone(request.get_header("Proxy-authorization"))
+        self.assertEqual(sorted(f.level for f in rows), ["note", "ok"])
+        note = [f for f in rows if f.level == "note"][0]
+        self.assertIn("YT_GATEWAY_URL", note.message)
+        self.assertIn("not sent", note.message)
+        self.assertNotIn("hunter2", " ".join(f.message + f.fix for f in rows))
+        # a refusal then names the credentials left out as a possible cause
+        rows = self.ping(http_error(401))
+        self.assertIn("proxy", [f for f in rows if f.level == "fail"][0].message)
+
+    def test_a_redirect_is_not_followed_and_the_key_stays(self):
+        # through urllib's real opener: only the handlers that would open a
+        # socket are replaced
+        seen = []
+
+        def https_open(handler, request):
+            seen.append(request)
+            return answered(request.full_url, 302, Location="http://evil.example/x")
+
+        def http_open(handler, request):
+            seen.append(request)
+            return answered(request.full_url, 200, b'{"balance": "1", "total_used": "0"}')
+        report = doctor.Report("environment")
+        with mock.patch.object(urllib.request.HTTPSHandler, "https_open", https_open), \
+                mock.patch.object(urllib.request.HTTPHandler, "http_open", http_open):
+            doctor.gateway_ping(report)
+        self.assertEqual([r.full_url for r in seen], ["https://ai-gateway.vercel.sh/v1/credits"])
+        self.assertEqual(seen[0].get_header("Authorization"), f"Bearer {KEY}")
+        rows = [f for f in report.findings if f.area == "gateway ping"]
+        self.assertEqual([f.level for f in rows], ["fail"])
+        self.assertIn("302", rows[0].message)
+        self.assertIn("redirect", rows[0].message)
+        self.assertNotIn("evil.example", rows[0].message)
+        # nor does the key ride along if some handler did follow one
+        self.assertEqual(seen[0].unredirected_hdrs.get("Authorization"), f"Bearer {KEY}")
+        self.assertNotIn("Authorization", seen[0].headers)
+
     def test_no_key_is_refused_without_a_call(self):
         os.environ.pop("AI_GATEWAY_API_KEY")
         rows = self.ping(b"{}")
@@ -283,7 +374,7 @@ class Command(unittest.TestCase):
             ["doctor", "--work", self.tmp.name, "--env", *argv])
         out = io.StringIO()
         with mock.patch.object(doctor.render, "hosts", return_value=[]), \
-                mock.patch.object(urllib.request, "urlopen", side_effect=fake), \
+                network(fake), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
             args.run(args)
         return out.getvalue(), calls
