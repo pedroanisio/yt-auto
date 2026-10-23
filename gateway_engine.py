@@ -77,7 +77,7 @@ from typing import Any, Iterator, Sequence
 
 from claude_engine import (PERMANENT_MARKERS, VIRTUAL_PROVIDER, Answer, ClaudeEngine,
                            ClaudeError, ClaudeExecutionError, ClaudeNotFound, EngineConfig,
-                           Event, _loads_loose, canonical_model)
+                           Event, _loads_loose, canonical_model, default_for)
 from ytstudio import gateway as _gateway
 
 __all__ = ["GatewayEngine", "GatewayConfig", "GatewayExecutionError", "GatewayNotFound",
@@ -180,16 +180,36 @@ class GatewayConfig(EngineConfig):
     program_dir: str | Path | None = None   # None: PROGRAM_DIR
 
     def __post_init__(self) -> None:
-        self.providers = tuple(self.providers or ())
-        self.has = tuple(self.has or ())
+        self.providers = _names("providers", self.providers)
+        self.has = _names("has", self.has)
+
+
+def _names(field_name: str, value: Any) -> tuple[str, ...]:
+    """A list of provider or capability names as a tuple. A bare string is
+    one name: tuple("google") would send its letters as six providers."""
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        value = (value,) if value else ()
+    if not isinstance(value, (list, tuple)) or not all(isinstance(v, str) for v in value):
+        raise TypeError(f"GatewayConfig.{field_name} takes a name or a list of names, "
+                        f"not {value!r}")
+    return tuple(value)
 
 
 def _as_gateway_config(config: EngineConfig) -> GatewayConfig:
+    """A plain EngineConfig as a GatewayConfig. Its effort and fallback
+    model are dropped when they are only claude's defaults (set_defaults,
+    $CLAUDE_ENGINE_EFFORT), which EngineConfig filled in, not the caller;
+    one the caller chose stays, and is refused when the engine asks."""
     if isinstance(config, GatewayConfig):
         return config
     values = {f.name: getattr(config, f.name) for f in fields(EngineConfig)}
     if values.get("executable") == "claude":
         values["executable"] = "node"
+    for name in ("effort", "fallback_model"):
+        if values[name] is not None and values[name] == default_for(name):
+            values[name] = None
     return GatewayConfig(**values)
 
 

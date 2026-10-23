@@ -111,6 +111,21 @@ class Preconditions(Case):
             with self.subTest(**kw):
                 self.refused(self.node.engine(**kw))
 
+    def test_a_plain_engine_config_does_not_inherit_claude_defaults(self):
+        # EngineConfig fills effort and fallback_model from claude's defaults
+        # (set_defaults, $CLAUDE_ENGINE_EFFORT); those are the claude CLI's,
+        # not a choice the caller made, so they do not refuse the call.
+        claude_engine.set_defaults(effort="high", fallback_model="haiku")
+        with mock.patch.dict(os.environ, {"CLAUDE_ENGINE_EFFORT": "max"}):
+            engine = GatewayEngine(EngineConfig(model=MODEL, timeout=10.0))
+            self.assertEqual(engine.ask_json("judge it", SCHEMA), {"answer": "yes"})
+        self.assertEqual(self.node.count, 1)
+        # One the caller chose, unlike the default, is still refused.
+        with self.assertRaises(GatewayExecutionError) as caught:
+            GatewayEngine(EngineConfig(model=MODEL, effort="low")).ask_json("q", SCHEMA)
+        self.assertIn("no effort", str(caught.exception))
+        self.assertEqual(self.node.count, 1)
+
     def test_refuses_tools(self):
         engine = self.node.engine()
         with self.assertRaises(GatewayExecutionError) as caught:
@@ -165,6 +180,18 @@ class Request(Case):
         self.node.engine(providers=["google"], has=["structured-output"]).ask_json("q", SCHEMA)
         (req,) = self.node.requests()
         self.assertEqual(req["gateway"], {"only": ["google"], "has": ["structured-output"]})
+
+    def test_a_string_names_one_provider_not_its_letters(self):
+        config = GatewayConfig(providers="google", has="structured-output")
+        self.assertEqual(config.providers, ("google",))
+        self.assertEqual(config.has, ("structured-output",))
+        self.assertEqual(GatewayConfig(providers=None).providers, ())
+        self.node.engine(providers="google").ask_json("q", SCHEMA)
+        (req,) = self.node.requests()
+        self.assertEqual(req["gateway"], {"only": ["google"]})
+        for bad in (5, ["google", 5]):
+            with self.subTest(bad=bad), self.assertRaises(TypeError):
+                GatewayConfig(providers=bad)
 
     def test_the_host_is_sent_only_when_yt_gateway_url_is_set(self):
         os.environ["YT_GATEWAY_URL"] = "https://proxy.example/"

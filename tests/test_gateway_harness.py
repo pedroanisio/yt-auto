@@ -127,6 +127,16 @@ class Construction(Case):
         self.assertIn("decide", str(caught.exception))
         self.assertEqual(self.node.count, 0)
 
+    def test_gateway_names_are_strings(self):
+        h = self.make(gateway={"providers": "google", "has": ["structured-output"]})
+        h.decide("look", "P", SCHEMA)
+        (req,) = self.node.requests()
+        self.assertEqual(req["gateway"], {"only": ["google"], "has": ["structured-output"]})
+        for bad in ({"providers": 5}, {"has": ["structured-output", 1]},
+                    {"providers": {"google": True}}):
+            with self.subTest(bad=bad), self.assertRaises(harness.HarnessError):
+                self.make(gateway=bad)
+
     def test_gateway_does_not_need_yt_gateway(self):
         self.assertNotIn("YT_GATEWAY", os.environ)
         claude = ClaudeEngine(claude_engine.EngineConfig(executable=str(self.node.exe),

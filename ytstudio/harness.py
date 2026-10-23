@@ -386,6 +386,10 @@ class Harness:
         if unknown:
             raise HarnessError(f"[{self.stage}] unknown gateway option(s) "
                                f"{', '.join(unknown)} (one of {', '.join(GATEWAY_OPTIONS)})")
+        try:   # the options' types, now rather than at the first decision
+            gateway_engine.GatewayConfig(model=self.model, **(self.gateway or {}))
+        except TypeError as exc:
+            raise HarnessError(f"[{self.stage}] {exc}") from exc
 
     @property
     def _asked_as(self) -> str:
