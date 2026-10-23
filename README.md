@@ -1641,7 +1641,9 @@ as a Bearer token and a 5-second timeout and shows the team's `balance` and
 `total_used` in USD (team-wide, not this run's). It runs no model and uses no
 tokens. A 401 or 403 fails with the AI Gateway API Keys page as its fix, a
 429 or 5xx warns, and only the HTTP status and the answer's `error.type` are
-printed. It is refused under `YT_NO_REMOTE`. Once a
+printed. A redirect is not followed, so the key goes to no other host (it
+fails naming the status), and a user and password in `YT_GATEWAY_URL` are
+not sent by the ping (a note says so). It is refused under `YT_NO_REMOTE`. Once a
 published film has been read by `yt retention`, it notes how many the channel
 has measured: under ten, every retention finding carries `sanity_bound`.
 Exit 1 on any fail, so it works in a script.

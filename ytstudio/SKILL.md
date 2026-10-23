@@ -507,7 +507,9 @@ is noted as blanked for the CLI (warned about in subscription mode), and the
 endpoints in use are named, never the key. `yt doctor --gateway-ping` asks
 `GET /v1/credits` for the team's `balance` and `total_used` (one GET, five
 seconds, no model, never without the flag; a refused key fails with the AI
-Gateway API Keys page as its fix; refused under `YT_NO_REMOTE`).
+Gateway API Keys page as its fix; a redirect is not followed, so the key
+goes to no other host; a proxy's user and password in `YT_GATEWAY_URL` are
+not sent; refused under `YT_NO_REMOTE`).
 Through the gateway a claude call is booked at its model's price row times
 the tokens in `modelUsage`, an estimate of the gateway's bill (list price,
 no markup; a discount or a surcharge is not in it), and the CLI's own
