@@ -164,5 +164,27 @@ class RecordShape(unittest.TestCase):
                     self.fail(f"{doc}:{n}: puts the cost under engine: {line.strip()[:100]}")
 
 
+class ReviewerPool(unittest.TestCase):
+    """The reviewer pool's values and variable are documented and real (AUTO-125)."""
+
+    def test_every_reviewer_variable_a_document_names_is_read_in_the_code(self):
+        code = "\n".join(p.read_text(encoding="utf-8") for p in (ROOT / "ytstudio").glob("*.py"))
+        named = {(doc, n, v) for doc in DOCS for n, line in enumerate(read(doc), 1)
+                 for v in re.findall(r"\bYT_REVIEWER_[A-Z_]+\b", line)}
+        self.assertIn("YT_REVIEWER_EXCLUDE_QUANT", {v for _, _, v in named},
+                      "no document names $YT_REVIEWER_EXCLUDE_QUANT")
+        missing = [f"{doc}:{n}: {v}" for doc, n, v in sorted(named) if f'"{v}"' not in code]
+        self.assertEqual(missing, [], "\n" + "\n".join(missing))
+        self.assertIn('"YT_REVIEWER_EXCLUDE_QUANT"',
+                      (ROOT / "ytstudio" / "reviewers.py").read_text(encoding="utf-8"))
+
+    def test_the_reviewer_row_of_the_flag_table_names_the_pool(self):
+        row = next((line for line in read("ytstudio/SKILL.md")
+                    if line.startswith("| the model that reviews")), "")
+        self.assertIn("`--reviewer-model`", row)
+        self.assertIn("`pool`", row)
+        self.assertIn("`sdk:", row)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -80,6 +80,20 @@ research and screenplay work; it is not an unattended model service.
   `YT_GATEWAY_NODE` names the node binary, and `GATEWAY_PRICES` adds price
   rows for gateway ids (USD per 1M tokens) for a call the gateway returns no
   cost for. With no stage asking for it nothing runs Node.
+  The first stage to ask is the script's review: `--reviewer-model pool` (or
+  `sdk:<provider/model>`) on `yt script --review` and on the calibration run
+  takes a reviewer from another maker out of `reviewers.POOL`
+  (`ytstudio/reviewers.py`): pinned rows of Z.ai, Moonshot, Google, DeepSeek,
+  Alibaba and Mistral models, each with an upper-bound price at or below
+  opus's and an allowlist of providers sent as the gateway's `only` with
+  `has: ["structured-output"]`. A row with no pinned provider yet is passed
+  over. It needs `YT_GATEWAY=vercel` and the prerequisites above, or the
+  stage exits 2 before anything is built. Each run reads the catalogue and
+  the model's providers (no key needed) and keeps only the pinned ones that
+  are up, offer structured output, are priced within the row and are not of
+  a quantization in `YT_REVIEWER_EXCLUDE_QUANT` (comma-separated, default
+  `fp4`); when that read fails the pinned list stands. The script is sent to
+  those third-party providers, and script.json says which ones.
 - Python 3.10+
 
 ---
@@ -461,7 +475,12 @@ stumbles or buries its point.
 
 `--review` has a reviewer of another model family (`--reviewer-model`,
 default `opus`, refused with exit 2 when it is the author's own family) read
-the beat sheet before any section is drafted. The `plan-review` decision
+the beat sheet before any section is drafted. `--reviewer-model pool` (or
+`sdk:<provider/model>`) reads with a model from another maker on the gateway
+engine instead (see Requirements): the plan review, the picture check and
+the story review's readers ask it, the drafting and every revision stay on
+the author's CLI, and `plan_review`, `review` and `picture` in script.json
+name it under `reviewer`. The `plan-review` decision
 reads five rows of the narrative rubric (the train, the stakes, the open
 loops, the reveal's setup, the ending) under a reviewer role of its own
 (`narrative.reviewer_role(plan=True)`: accept, revise or reject, never the
@@ -1623,7 +1642,10 @@ stages out, and `--quick` drops the quality passes (deliberation, polish,
 fact-check, plan review, listen-back) for a cheaper first draft and renders at draft
 quality. `cli.run_extras` is the flags each stage gets (`--rich` and
 `--deliberate critique` for styles, `--polish --verify --review` for script
-(with `--reviewer-model` and `--review-budget-usd`, as keyframe and vfx get them),
+(with `--reviewer-model` and `--review-budget-usd`, as keyframe and vfx get them;
+a `pool` reviewer is resolved once and handed to script alone as `sdk:<id>`,
+keyframe and vfx keep `opus`, so with `--model opus` the run is refused
+unless they are skipped),
 `--fetch --synth` and `--review` for sound), and `cli.stage_argv` builds each
 stage's argv; `yt props` gets no extras, only the flags every model stage
 gets (only `yt render` goes without the model flags). Only the build reads
