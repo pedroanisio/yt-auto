@@ -552,6 +552,31 @@ class Stage(unittest.TestCase):
         self.assertEqual(len(self.jobs), 4)                   # one job per sample
         self.assertTrue(all("frames" in j for j in self.jobs))
 
+    def test_by_default_every_shot_is_sampled_and_nothing_is_named_unsampled(self):
+        # AUTO-103: no --frames is one still per shot, each in samples.json.
+        qa.RENDERER = self.renderer(frozen_hook=False)
+        qa.run(self.args(frame_limit=None))
+        pass_dir = self.root / "qa" / "pass-01"
+        samples = json.loads((pass_dir / "samples.json").read_text())
+        self.assertEqual(sorted(s["label"] for s in samples), ["1.1", "1.2", "1.3", "1.4"])
+        card = json.loads((pass_dir / "scorecard.json").read_text())
+        self.assertEqual(card["unsampled"], [])
+        self.assertFalse(any(n.startswith("frames:") for n in card["not_evidenced"]))
+
+    def test_a_tight_frames_names_the_shots_it_left_unsampled(self):
+        qa.RENDERER = self.renderer(frozen_hook=False)
+        qa.run(self.args(frame_limit=2))
+        pass_dir = self.root / "qa" / "pass-01"
+        card = json.loads((pass_dir / "scorecard.json").read_text())
+        self.assertEqual(len(card["samples"]), 2)
+        self.assertEqual(len(card["unsampled"]), 2)
+        line = next(n for n in card["not_evidenced"] if n.startswith("frames:"))
+        self.assertIn("2 of 4 shots", line)
+        self.assertIn("--frames 2", line)
+        for label in card["unsampled"]:
+            self.assertIn(label, line)
+        self.assertIn(line, (pass_dir / "findings.md").read_text())
+
     def test_qa_json_names_the_house_it_was_judged_under(self):
         # AUTO-89: with no house file anywhere, the shipped default is the house.
         qa.RENDERER = self.renderer(frozen_hook=False)

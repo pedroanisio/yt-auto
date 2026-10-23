@@ -106,8 +106,9 @@ class Sampling(unittest.TestCase):
         self.assertIn("ending", samples["3.2"].split("; "))
 
     def test_many_rehooks_do_not_crowd_out_the_section_starts(self):
-        # nothing caps the rehooks a screenplay marks; the default limit
-        # still keeps the hook, the ending and every section (sample's promise)
+        # nothing caps the rehooks a screenplay marks; a --frames below the
+        # shot count still keeps the hook, the ending and every section
+        # (sample's promise; by default every shot is sampled, AUTO-103)
         shots = []
         for n in range(20):
             section = f"S{n // 4 + 1}"
@@ -116,7 +117,7 @@ class Sampling(unittest.TestCase):
                           "seconds": 5, "asset": "effect", "section": section,
                           "function": function})
         build = {"scene": {"duration": 100}, "shots": shots}
-        samples = qa.sample(build)
+        samples = qa.sample(build, limit=14)
         self.assertEqual(len(samples), 14)
         why = [token for s in samples for token in s["why"].split("; ")]
         for section in ("S1", "S2", "S3", "S4", "S5"):

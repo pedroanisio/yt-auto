@@ -6,13 +6,20 @@ overall of 9.0 with no category under 8.5 and nothing blocking. This stage is
 the harness that runs it:
 
     yt qa --title monty                    # sample, render, score: qa/pass-NN
-    yt qa --title monty --frames 20        # more evidence per pass
+    yt qa --title monty --frames 40        # every shot, plus evenly spaced stills
     yt qa --title monty --reuse pass-02    # score the frames of an earlier pass again
 
-Sampling is deterministic and written down (`samples.json`): the hook, every
-section's opening, the longest authored effects, 25/50/75 % of the runtime and
-the ending -- each at the midpoint of its shot, never at a boundary, because the
-gap between takes is real and a frame on it shows an empty stage. The stills
+Sampling is deterministic and written down (`samples.json`): every shot once,
+at its midpoint, never at a boundary, because the gap between takes is real
+and a frame on it shows an empty stage (AUTO-103). Each row's `why` keeps
+the reasons docs/production.md §7 gives a shot priority -- the hook, the
+ending, the payoff, every section's opening, the re-hooks, 25/50/75 % of the
+runtime, the longest authored effects -- or `shot` when it has none.
+`--frames N` is how many stills: above the shot count the extra stills are
+evenly spaced over the runtime, each inside a shot and at least half a
+second from every other sample; below it the priority order decides what is
+kept and the scorecard names the shots left out (`unsampled`, and a line
+under not_evidenced). The stills
 are rendered by the engine on the render host, from the very document the
 encode uses. A still cannot evidence motion, so each sample is rendered as
 one contiguous window of frames around its midpoint (`BURST_SECONDS`, at
@@ -291,19 +298,22 @@ def _fps(build: dict) -> float:
 
 
 def burst_plan(t: float, *, fps: float, seconds: float | None = None,
-               span: float = BURST_SECONDS, limit: int = BURST_MAX_FRAMES) -> dict:
-    """Which frames evidence the motion around one midpoint: one contiguous
-    window of `span` seconds (at most `limit` frames) centred on the midpoint
-    frame, kept inside the shot when it is shorter, so a step between two of
-    them is never a real cut. `range` is the engine's `A..B` (end exclusive)
-    and `still_frame` the midpoint frame inside it. Deterministic: the same
-    midpoint and rate plan the same window."""
+               span: float = BURST_SECONDS, limit: int = BURST_MAX_FRAMES,
+               start: float | None = None) -> dict:
+    """Which frames evidence the motion around one moment: one contiguous
+    window of `span` seconds (at most `limit` frames) centred on its frame,
+    kept inside the shot (`start`, `seconds`; without `start`, `t` is the
+    shot's midpoint) so a step between two of them is never a real cut.
+    `range` is the engine's `A..B` (end exclusive) and `still_frame` the
+    moment's frame inside it. Deterministic: the same moment and rate plan
+    the same window."""
     fps = float(fps) or 30.0
     mid = max(int(round(float(t) * fps)), 0)
     count = max(min(int(round(span * fps)), int(limit)), 1)
     first, end = max(mid - count // 2, 0), None
     if seconds is not None and float(seconds) > 0:
-        shot_first = max(int(round((float(t) - float(seconds) / 2) * fps)), 0)
+        begin = float(start) if start is not None else float(t) - float(seconds) / 2
+        shot_first = max(int(round(begin * fps)), 0)
         shot_end = max(shot_first + int(float(seconds) * fps), shot_first + 1)
         count = min(count, shot_end - shot_first)
         first = min(max(mid - count // 2, shot_first), max(shot_end - count, shot_first))
@@ -316,10 +326,11 @@ def burst_plan(t: float, *, fps: float, seconds: float | None = None,
             "still_frame": mid if frames[0] <= mid <= frames[-1] else None}
 
 
-def _burst(t: float, *, fps: float, seconds: float | None, frame: str) -> dict:
+def _burst(t: float, *, fps: float, seconds: float | None, frame: str,
+           start: float | None = None) -> dict:
     """The plan plus where each frame lands: `burst/<still stem>_<index>.png`,
     the engine's own `%04d` naming, so the files are known before rendering."""
-    plan = burst_plan(t, fps=fps, seconds=seconds)
+    plan = burst_plan(t, fps=fps, seconds=seconds, start=start)
     stem = frame[:-4] if frame.endswith(".png") else frame
     plan["pattern"] = f"burst/{stem}_%04d.png"
     plan["files"] = [f"burst/{stem}_{f:04d}.png" for f in plan["frames"]]
@@ -331,14 +342,18 @@ def _burst(t: float, *, fps: float, seconds: float | None, frame: str) -> dict:
 EDGE_REASONS = ("hook", "ending", "beat: payoff")
 
 
-def sample(build: dict, *, limit: int = 14) -> list[dict]:
-    """Where the evidence is taken, per docs/production.md §7, in priority
-    order so a tight limit still keeps the hook, the ending and the sections.
-    Each row carries its burst plan, the frames that evidence motion."""
-    shots = sorted(build.get("shots", []), key=lambda s: float(s["at"]))
-    if not shots:
-        return []
-    fps = _fps(build)
+#: An extra still (AUTO-103) is this far from every other sample, so two
+#: stills never show the same moment, and is labelled this way in `why`.
+SPREAD_GAP, SPREAD_WHY = 0.5, "evenly spaced"
+#: A shot no priority reason names is still sampled, under this reason.
+SHOT_WHY = "shot"
+
+
+def _priority(shots: list[dict]) -> list[tuple[dict, str]]:
+    """The shots docs/production.md §7 names, most important first: the
+    hook, the ending, the payoff, each section's start, the re-hooks, the
+    shots at 25/50/75 % of the runtime and the three longest effects. A
+    shot can be named more than once; each name is a reason in `why`."""
     runtime = max(float(s["at"]) + float(s["seconds"]) for s in shots)
 
     def containing(t: float) -> dict:
@@ -368,26 +383,140 @@ def sample(build: dict, *, limit: int = 14) -> list[dict]:
                      key=lambda s: -float(s["seconds"]))
     for s in effects[:3]:
         wanted.append((s, "longest authored effect"))
+    return wanted
+
+
+def _spread_rest(shots: list[dict], named: list[dict]) -> list[dict]:
+    """The shots no priority reason names, in the order a tight --frames
+    keeps them: each next the one farthest from every shot already in line,
+    so what a ceiling leaves out is spread over the runtime rather than all
+    taken from its end. Ties go to the earlier shot; deterministic."""
+    chosen = [_mid(s) for s in named]
+    rest = [s for s in shots if not any(s is n for n in named)]
+    # each remaining shot's distance to the nearest one in line, kept current
+    near = [min((abs(_mid(s) - t) for t in chosen), default=0.0) for s in rest]
+    order = []
+    while rest:
+        i = max(range(len(rest)), key=lambda k: (near[k], -float(rest[k]["at"])))
+        far = rest.pop(i)
+        near.pop(i)
+        order.append(far)
+        t = _mid(far)
+        near = [min(d, abs(_mid(s) - t)) for d, s in zip(near, rest)]
+    return order
+
+
+def _spread_times(shots: list[dict], taken: list[float], count: int) -> list[float]:
+    """`count` more moments, evenly spaced over the runtime: a grid of
+    centres, each moved inside the shot it falls in (half a burst from its
+    edges, so the window is the shot's own) and dropped when it falls in a
+    gap between takes or within SPREAD_GAP of a sample. When too few
+    survive, the grid is made finer and `count` are taken evenly from what
+    does; a film too short for `count` more gets what fits."""
+    if count <= 0 or not shots:
+        return []
+    runtime = max(float(s["at"]) + float(s["seconds"]) for s in shots)
+    best: list[float] = []
+    # A grid finer than SPREAD_GAP cannot keep its points apart; a count
+    # beyond that starts from the finest grid that can.
+    finest = int(runtime / SPREAD_GAP)
+    n = min(count, finest)
+    while 1 <= n <= finest:
+        free: list[float] = []
+        for i in range(n):
+            g = runtime * (i + 0.5) / n
+            shot = next((s for s in shots
+                         if float(s["at"]) <= g < float(s["at"]) + float(s["seconds"])), None)
+            if shot is None:
+                continue                    # a gap between takes shows an empty stage
+            at, seconds = float(shot["at"]), float(shot["seconds"])
+            edge = min(BURST_SECONDS / 2, seconds / 2)
+            t = round(min(max(g, at + edge), at + seconds - edge), 3)
+            if all(abs(t - u) >= SPREAD_GAP for u in [*taken, *free]):
+                free.append(t)
+        if len(free) >= count:
+            if count == 1:
+                return [free[len(free) // 2]]
+            return [free[round(j * (len(free) - 1) / (count - 1))] for j in range(count)]
+        best = free if len(free) > len(best) else best
+        n += max(count - len(free), 1)
+    return best
+
+
+def sample(build: dict, *, limit: int | None = None) -> list[dict]:
+    """Where the evidence is taken, per docs/production.md §7: every shot,
+    at its midpoint (AUTO-103), each row's `why` naming the priority
+    reasons that shot has (hook, ending, payoff, section start, re-hook,
+    25/50/75 % of the runtime, longest effect) or `shot` when it has none.
+
+    `limit` is how many stills: None is one per shot. Above the shot count
+    the extra stills (`why`: evenly spaced) are spread over the runtime
+    (`_spread_times`); below it the priority order decides what is kept
+    (the named shots first, then the others spread over the runtime) and
+    `unsampled` says which shots were left out. Each row carries its burst
+    plan, the frames that evidence motion, kept inside its shot."""
+    shots = sorted(build.get("shots", []), key=lambda s: float(s["at"]))
+    if not shots:
+        return []
+    fps = _fps(build)
+
+    def row(shot: dict, t: float, why: str) -> dict:
+        seconds = float(shot.get("seconds") or 0)
+        return {"t": t, "why": why, "label": shot.get("label", ""),
+                "section": shot.get("section", ""),
+                "asset": shot.get("asset", ""), "frame": frame_name(t),
+                "seconds": seconds,
+                "burst": _burst(t, fps=fps, seconds=seconds or None,
+                                frame=frame_name(t), start=float(shot["at"]))}
+
+    wanted = _priority(shots)
+    named: list[dict] = []
+    for shot, _ in wanted:
+        if not any(shot is n for n in named):
+            named.append(shot)
+    wanted += [(s, SHOT_WHY) for s in _spread_rest(shots, named)]
 
     out: list[dict] = []
     for shot, why in wanted:
         t = _mid(shot)
-        hit = next((row for row in out if abs(row["t"] - t) < 0.5), None)
+        # One row per shot: the same midpoint is the same shot. Two shots
+        # closer than half a second are two rows, so neither hides the other.
+        hit = next((r for r in out if r["t"] == t), None)
         if hit:
             # whole reasons, not substrings: "hook" is inside "beat: rehook"
             if why not in hit["why"].split("; "):
                 hit["why"] += f"; {why}"
             continue
-        if len(out) >= limit:
+        if limit is not None and len(out) >= limit:
             continue
-        seconds = float(shot.get("seconds") or 0)
-        out.append({"t": t, "why": why, "label": shot.get("label", ""),
-                    "section": shot.get("section", ""),
-                    "asset": shot.get("asset", ""), "frame": frame_name(t),
-                    "seconds": seconds,
-                    "burst": _burst(t, fps=fps, seconds=seconds or None,
-                                    frame=frame_name(t))})
-    return sorted(out, key=lambda row: row["t"])
+        out.append(row(shot, t, why))
+    if limit is not None and limit > len(out):
+        for t in _spread_times(shots, [r["t"] for r in out], limit - len(out)):
+            shot = next(s for s in shots
+                        if float(s["at"]) <= t < float(s["at"]) + float(s["seconds"]))
+            out.append(row(shot, t, SPREAD_WHY))
+    return sorted(out, key=lambda r: r["t"])
+
+
+def unsampled(build: dict, samples: list[dict]) -> list[str]:
+    """The labels of the build's shots no sampled still belongs to, in
+    label order: what a --frames below the shot count left unseen."""
+    seen = {str(r.get("label", "")) for r in samples}
+    return sorted({str(s.get("label", "")) for s in build.get("shots", [])} - seen)
+
+
+def note_unsampled(card: dict, missing: list[str], *, total: int,
+                   limit: int | None) -> dict:
+    """The scorecard says which shots went unsampled (AUTO-103): `unsampled`
+    lists them and a not_evidenced line counts and names them, so a score
+    read from a tight --frames is not mistaken for one of the whole film."""
+    card = dict(card, unsampled=list(missing))
+    if missing:
+        under = f"under --frames {limit}" if limit is not None else "in the reused pass"
+        card["not_evidenced"] = list(card.get("not_evidenced") or []) + [
+            f"frames: {len(missing)} of {total} shots not sampled {under}: "
+            f"{', '.join(missing)}; their pictures were not seen"]
+    return card
 
 
 # --------------------------------------------------------------------------- #
@@ -713,6 +842,7 @@ def mechanical_findings(samples: list[dict], diagnostics: dict | None = None,
     `penetration` (`geometry`, records per shot label) and a `reads-merged`
     (`merged`, spans per shot label) are always blocking and owned by vfx."""
     found: list[dict] = []
+    per_shot_filed: set[str] = set()
     for row in samples:
         base = {"timestamp": row["t"], "frame": row.get("frame", ""),
                 "shot": str(row.get("label", "")),
@@ -765,6 +895,11 @@ def mechanical_findings(samples: list[dict], diagnostics: dict | None = None,
                 "root_cause": "a key, an include boundary or a hold that snaps instead "
                               "of easing",
                 "fix": "ease the key, or move the boundary to a cut the edit intends"})
+        # What follows is recorded per shot, not per frame: a shot with more
+        # than one still (AUTO-103) files it once, on its first still.
+        if base["shot"] in per_shot_filed:
+            continue
+        per_shot_filed.add(base["shot"])
         diag = (diagnostics or {}).get(base["shot"]) or {}
         ids = list(diag.get("off_camera") or [])
         if ids:
@@ -1288,6 +1423,17 @@ def unproven_satisfaction(card: dict, *, retention: bool) -> dict:
     return card
 
 
+def _positive(text: str) -> int:
+    """--frames: a count of stills, at least one."""
+    try:
+        n = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a whole number: {text!r}") from None
+    if n < 1:
+        raise argparse.ArgumentTypeError("at least one still")
+    return n
+
+
 def register(sub, parents=()) -> argparse.ArgumentParser:
     p = sub.add_parser(
         "qa", parents=list(parents),
@@ -1295,8 +1441,13 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--scene", metavar="FILE",
                    help="the document (default: the project's scene.xml)")
-    p.add_argument("--frames", type=int, default=14, dest="frame_limit",
-                   help="how many stills to sample (default 14)")
+    p.add_argument("--frames", type=_positive, default=None, dest="frame_limit",
+                   metavar="N",
+                   help="how many stills to sample (default: every shot once, at its "
+                        "midpoint). Above the shot count the extra stills are evenly "
+                        "spaced over the runtime; below it the hook, the ending, the "
+                        "payoff and the section starts are kept first and the shots "
+                        "left out are named under not_evidenced")
     p.add_argument("--quality", default="preview",
                    choices=["draft", "preview", "final"],
                    help="render quality of the stills (default preview)")
@@ -1561,6 +1712,13 @@ def run(args) -> int:
     card = score_silence(dict(card), build)
     work = Path(args.work) if getattr(args, "work", None) else Path(project.root).parent
     card = unproven_satisfaction(card, retention=(work / RETENTION).is_file())
+    # What a --frames below the shot count left unseen is said, not implied.
+    missing = unsampled(build, samples)
+    card = note_unsampled(card, missing, total=len(build.get("shots", [])),
+                          limit=None if args.reuse else args.frame_limit)
+    if missing and not args.quiet:
+        print(f"note: {len(missing)} shot(s) not sampled: {', '.join(missing)}",
+              file=sys.stderr)
     scores, overall, capped = cap_scores(card.get("scores", {}), card.get("overall", 0),
                                          mechanical)
     card["scores"], card["overall"] = scores, overall
