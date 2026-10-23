@@ -33,6 +33,8 @@ FOREIGN_FLAGS = {
     "--permission-prompts",             # claude_engine.py passes it to the claude CLI
     "--schema", "--write",              # claude_engine.py's own command line
     "--process",                        # govern new
+    "--ignore-scripts",                 # npm ci, the gateway engine's install step
+    "--package-lock-only",              # npm install, writes gateway/package-lock.json
 }
 
 #: A retired yt spelling that is a live flag of another tool: (document, flag).

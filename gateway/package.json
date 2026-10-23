@@ -1,0 +1,17 @@
+{
+  "name": "yt-gateway-engine",
+  "version": "0.1.0",
+  "description": "The opt-in gateway engine's Node program: one structured decision through Vercel AI Gateway with the AI SDK (gateway_engine.py runs it).",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/engine.test.mjs"
+  },
+  "dependencies": {
+    "ai": "7.0.150",
+    "undici": "7.16.0"
+  }
+}

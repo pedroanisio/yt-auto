@@ -449,5 +449,28 @@ class Documented(unittest.TestCase):
                 self.assertIn(name, flat)
 
 
+class BaseUrl(unittest.TestCase):
+    """`base_url` is the host YT_GATEWAY_URL names, or None (AUTO-124): the
+    gateway engine passes a host to its program only when one was set, and
+    it does not depend on the switch."""
+
+    def test_unset_is_none(self):
+        self.assertIsNone(gateway.base_url({}))
+        self.assertIsNone(gateway.base_url({"YT_GATEWAY_URL": "  "}))
+
+    def test_set_is_the_host_without_the_switch(self):
+        self.assertEqual(gateway.base_url({"YT_GATEWAY_URL": "https://proxy.example/"}),
+                         "https://proxy.example")
+
+    def test_a_bad_host_is_refused_as_before(self):
+        with self.assertRaises(gateway.GatewayError):
+            gateway.base_url({"YT_GATEWAY_URL": "https://ai-gateway.vercel.sh/v1"})
+
+    def test_claude_env_builds_on_it(self):
+        self.assertEqual(gateway.claude_base_url({}), HOST + "/claude-code")
+        self.assertEqual(gateway.claude_base_url({"YT_GATEWAY_URL": "https://proxy.example"}),
+                         "https://proxy.example/claude-code")
+
+
 if __name__ == "__main__":
     unittest.main()

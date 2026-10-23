@@ -65,6 +65,21 @@ research and screenplay work; it is not an unattended model service.
   over any Claude slug in its models cache), and a Claude id is never passed
   to codex. A `model_provider` of your own in `codex_config` gets the model
   as given. Codex reads the key as it is, so whitespace around it is refused.
+- Optional, for a stage that opts into the gateway engine only: Node 22 or
+  later and `cd gateway && npm ci --ignore-scripts` (until
+  `gateway/package-lock.json` is committed, `npm ci` has no lockfile to read,
+  so the first install runs `npm install --package-lock-only --ignore-scripts`
+  before it). `gateway_engine.py`
+  (stdlib Python, so the pipeline stays dependency-free) runs
+  `gateway/gateway-engine.mjs`, a small program on the AI SDK (`ai` 7.0.150,
+  pinned exactly), for models neither CLI reaches: one that listens to audio
+  or watches video, or a reviewer of another family. A stage chooses it per
+  harness, `Harness(engine="gateway")` behind its own flag, never through
+  `YT_GATEWAY` or `YT_ENGINE`; it needs `AI_GATEWAY_API_KEY`, takes media
+  files with `decide` and serves `decide` only, never `inspect`.
+  `YT_GATEWAY_NODE` names the node binary, and `GATEWAY_PRICES` adds price
+  rows for gateway ids (USD per 1M tokens) for a call the gateway returns no
+  cost for. With no stage asking for it nothing runs Node.
 - Python 3.10+
 
 ---
@@ -1507,9 +1522,16 @@ with fail, warn and note lines and the command that fixes each; a record that
 bills a model neither engine priced (`spend.PRICES`, `$CLAUDE_PRICES`,
 `codex_engine.PRICES`, `$CODEX_PRICES`) is a warning, since a Claude call on
 it that times out is booked at $0 and a Codex call on it is recorded without a
-cost. Once a published film has been read by `yt retention`, it notes how many
-the channel has measured: under ten, every retention finding carries
-`sanity_bound`. Exit 1 on any fail, so it works in a script.
+cost. A row the gateway engine booked says how each call was priced
+(`cost_gateway_calls`, `cost_generation_calls`, `cost_table_calls`,
+`cost_unpriced_calls`): one the gateway priced itself is not warned about, a
+table-priced one is quiet when `$GATEWAY_PRICES` (or the tables above) has its
+row, and one with an unpriced call still warns. Where `gateway/node_modules`
+exists, a "gateway engine" block checks Node 22 or later, `ai` 7.0.150 and
+whether `AI_GATEWAY_API_KEY` is set (by name, never its value). Once a
+published film has been read by `yt retention`, it notes how many the channel
+has measured: under ten, every retention finding carries `sanity_bound`.
+Exit 1 on any fail, so it works in a script.
 
 ### `yt assets`
 

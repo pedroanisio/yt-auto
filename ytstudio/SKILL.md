@@ -156,8 +156,12 @@ so a session on a short name keeps the CLI's own stop at 80% of its cap beside
 the stream meter. A decision that raised is a `failed` row in the harness report with
 what the engine spent, so the record bills it; `yt doctor` warns when a
 record's `by_model` names an id neither engine priced (a Codex id is priced
-from `codex_engine.PRICES` and `$CODEX_PRICES`). A Vercel AI Gateway id is
-its direct name (`ytstudio/models.py`, AUTO-120): `anthropic/claude-opus-5.5`,
+from `codex_engine.PRICES` and `$CODEX_PRICES`); a row the gateway engine
+priced itself (`cost_gateway_calls`, `cost_generation_calls`) is not warned
+about, `$GATEWAY_PRICES` prices a gateway id too, and where
+`gateway/node_modules` exists doctor shows a "gateway engine" block (Node,
+the pinned `ai`, the key by name). A Vercel AI Gateway id is its direct
+name (`ytstudio/models.py`, AUTO-120): `anthropic/claude-opus-5.5`,
 `claude-code/anthropic/claude-haiku-4.5` and `openai/gpt-5` take the row,
 the family and the Claude check of `claude-opus-5-5`, `claude-haiku-4-5` and
 `gpt-5` when no row names the gateway id itself, while a name with no
@@ -501,7 +505,17 @@ Codex's own default included, and never a Claude id, not even one atop the
 models cache (a `model_provider` of your own gets the model as given, and a
 key with whitespace around it is refused); an effort above `high`
 that `models_cache.json` lists for neither spelling goes as `high`, with a
-warning. Every stage that asks the
+warning. The gateway engine
+(`gateway_engine.py`, AUTO-124) is a separate opt-in: a stage builds
+`Harness(engine="gateway")` behind its own flag for a model neither CLI reaches
+(audio, video, another reviewer family), and only that harness runs
+`gateway/gateway-engine.mjs` on Node 22 or later (`cd gateway && npm ci
+--ignore-scripts`, after `npm install --package-lock-only --ignore-scripts`
+while no lockfile is committed; `YT_GATEWAY_NODE` names the binary,
+`AI_GATEWAY_API_KEY` is its key, `GATEWAY_PRICES` prices a gateway id the
+gateway returns no cost for).
+It serves `decide` (with `media=` files) only, never `inspect`; `YT_GATEWAY`
+and `YT_ENGINE` do not select it, and Python stays dependency-free. Every stage that asks the
 model takes `--model`, `--effort` and `--fallback-model` (default sonnet);
 `yt doctor`, `yt ls` and `yt assets` call no model.
 

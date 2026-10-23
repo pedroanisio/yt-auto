@@ -237,9 +237,49 @@ def check_environment(work: Path) -> Report:
     for name in (work / "house.md",):
         if name.is_file():
             report.add("ok", "house", f"channel standards at {name}")
+    check_gateway_engine(report)
     review_log(report, work)
     retention_baseline(report, work)
     return report
+
+
+def check_gateway_engine(report: Report) -> None:
+    """The opt-in gateway engine's prerequisites (gateway_engine.py,
+    AUTO-124), shown only on a checkout where gateway/ was installed: Node
+    22 or later, the pinned `ai`, and whether AI_GATEWAY_API_KEY is set,
+    by name only. The key row is left out when YT_GATEWAY is set, since
+    the claude CLI's route is then checked with its key."""
+    import gateway_engine
+    from . import gateway
+    if not (gateway_engine.PROGRAM_DIR / "node_modules").is_dir():
+        return
+    area = "gateway engine"
+    exe = gateway_engine.node_executable(dict(os.environ))
+    node = shutil.which(exe)
+    major = gateway_engine.node_major(node) if node else None
+    if not node:
+        report.add("fail", area, f"{exe} is not on PATH; a stage that opts into the "
+                   "gateway engine cannot run", f"install Node {gateway_engine.MIN_NODE} or "
+                   f"later, or set ${gateway_engine.NODE_ENV}")
+    elif major is None or major < gateway_engine.MIN_NODE:
+        report.add("fail", area, f"{node} is Node {gateway_engine.node_version(node) or '?'}; "
+                   f"the gateway engine needs {gateway_engine.MIN_NODE} or later",
+                   f"install Node {gateway_engine.MIN_NODE} or later")
+    else:
+        report.add("ok", area, f"node at {node}, {gateway_engine.node_version(node)}")
+    installed = gateway_engine.installed_ai_version()
+    if installed == gateway_engine.AI_VERSION:
+        report.add("ok", area, f"ai {installed} installed in gateway/node_modules")
+    else:
+        report.add("fail", area, gateway_engine.not_installed(installed),
+                   gateway_engine.install_hint())
+    if gateway.active():
+        return
+    if (os.environ.get(gateway.KEY) or "").strip():
+        report.add("ok", area, f"{gateway.KEY} set")
+    else:
+        report.add("warn", area, f"{gateway.KEY} not set; a stage that opts into the "
+                   "gateway engine is refused", f"export {gateway.KEY}")
 
 
 def retention_baseline(report: Report, work: Path) -> None:
@@ -591,11 +631,30 @@ def check_renders(project: workspace.Project, report: Report) -> None:
                     }.get(status, "read the report, then re-run the job"))
 
 
-def _priced(model: str) -> bool:
-    """Whether either engine has a row for `model`. A record does not say
-    which CLI wrote it, and under `YT_ENGINE=codex` `by_model` is keyed by
-    Codex's own ids, priced from its table and `$CODEX_PRICES`; the module
-    is imported here, as `harness.use_engine` does, not at the top."""
+#: The counters gateway_engine puts on a by_model row, one per way it found
+#: the call's cost (AUTO-124).
+GATEWAY_COST_COUNTERS = ("cost_gateway_calls", "cost_generation_calls",
+                         "cost_table_calls", "cost_unpriced_calls")
+
+
+def _priced(model: str, row: dict | None = None) -> bool:
+    """Whether `model`'s calls were priced. A row the gateway engine booked
+    says so itself: priced when the gateway (its metadata or its generation
+    record) gave a cost and no call went unpriced. Otherwise, whether an
+    engine has a row for `model`. A record does not say which CLI wrote it,
+    and under `YT_ENGINE=codex` `by_model` is keyed by Codex's own ids,
+    priced from its table and `$CODEX_PRICES`; the modules are imported
+    here, as `harness.use_engine` does, not at the top."""
+    if isinstance(row, dict) and any(k in row for k in GATEWAY_COST_COUNTERS):
+        counted = {k: row.get(k) or 0 for k in GATEWAY_COST_COUNTERS}
+        if (counted["cost_gateway_calls"] + counted["cost_generation_calls"] > 0
+                and counted["cost_unpriced_calls"] == 0):
+            return True
+        if counted["cost_unpriced_calls"]:
+            return False
+        import gateway_engine
+        if gateway_engine.price_for(model) is not None:
+            return True
     if spend.price_for(model) is not None:
         return True
     import codex_engine
@@ -621,8 +680,9 @@ def check_spend(project: workspace.Project, report: Report) -> None:
                 continue
             accounts = [account] if "by_model" in account else [
                 v for v in account.values() if isinstance(v, dict)]
-            for model in (m for a in accounts for m in (a.get("by_model") or {})):
-                if not _priced(str(model)):
+            for model, row in ((m, r) for a in accounts
+                               for m, r in (a.get("by_model") or {}).items()):
+                if not _priced(str(model), row):
                     unpriced.setdefault(str(model), []).append(path.name)
     for model, names in sorted(unpriced.items()):
         report.add("warn", "spend", f"{model} has no price; {', '.join(sorted(set(names)))} "
