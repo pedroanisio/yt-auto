@@ -214,8 +214,24 @@ class On(GatewayCodexCase):
 
     def test_the_users_own_provider_wins_too(self):
         with mock.patch.dict(os.environ, on()):
-            cfg = configs(self.launch(self.engine(codex_config={"model_provider": "mine"}))["argv"])
-        self.assertEqual(cfg["model_provider"], '"mine"')
+            argv = self.launch(self.engine(model="gpt-5",
+                                           codex_config={"model_provider": "mine"}))["argv"]
+        self.assertEqual(configs(argv)["model_provider"], '"mine"')
+        # The model is the user's provider's to read, so it goes as given.
+        self.assertEqual(flag(argv, "-m"), "gpt-5")
+
+    def test_under_the_users_own_provider_codexs_default_is_left_alone(self):
+        (self.fake.home / "config.toml").write_text('model = "gpt-5-codex"\n')
+        for provider in ("mine", "openai"):
+            with self.subTest(provider=provider), mock.patch.dict(os.environ, on()):
+                argv = self.launch(self.engine(codex_config={"model_provider": provider}))["argv"]
+                self.assertNotIn("-m", argv)
+
+    def test_naming_the_gateway_provider_yourself_still_prefixes(self):
+        with mock.patch.dict(os.environ, on()):
+            argv = self.launch(self.engine(model="gpt-5",
+                                           codex_config={"model_provider": "vercel"}))["argv"]
+        self.assertEqual(flag(argv, "-m"), "openai/gpt-5")
 
     def test_bare_openai_model_prefixed_under_gateway(self):
         cases = {"gpt-5": "openai/gpt-5", "o3": "openai/o3",
@@ -236,6 +252,29 @@ class On(GatewayCodexCase):
             eng = self.engine(model="sonnet")      # a Claude alias: dropped
             self.assertEqual(flag(self.launch(eng)["argv"], "-m"), "openai/gpt-5-codex")
             self.assertEqual(eng.resolved_model(), "openai/gpt-5-codex")
+
+    def test_a_claude_slug_atop_the_models_cache_is_passed_over(self):
+        # A cache refilled from the gateway's /codex/v1/models lists its
+        # whole catalog, Claude included. Left unnamed, codex would take the
+        # top slug itself; the first listed model that is not Claude is
+        # named instead.
+        (self.fake.home / "models_cache.json").write_text(json.dumps({"models": [
+            {"slug": "anthropic/claude-opus-5", "priority": 0, "visibility": "list"},
+            {"slug": "openai/gpt-5", "priority": 2, "visibility": "list"},
+            {"slug": "claude-sonnet-5", "priority": 1, "visibility": "list"},
+            {"slug": "gpt-5-codex", "priority": 3, "visibility": "list"},
+        ]}))
+        with mock.patch.dict(os.environ, on()):
+            eng = self.engine()
+            self.assertEqual(flag(self.launch(eng)["argv"], "-m"), "openai/gpt-5")
+            self.assertEqual(eng.resolved_model(), "openai/gpt-5")
+
+    def test_a_claude_default_in_config_toml_is_passed_over(self):
+        (self.fake.home / "config.toml").write_text('model = "anthropic/claude-opus-5"\n')
+        (self.fake.home / "models_cache.json").write_text(json.dumps({"models": [
+            {"slug": "gpt-5", "priority": 1, "visibility": "list"}]}))
+        with mock.patch.dict(os.environ, on()):
+            self.assertEqual(flag(self.launch(self.engine())["argv"], "-m"), "openai/gpt-5")
 
     def test_no_known_default_passes_no_model(self):
         with mock.patch.dict(os.environ, on()):

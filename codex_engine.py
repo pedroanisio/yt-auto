@@ -76,8 +76,11 @@ meaning: accepted, ignored, one warning when set to a non-default value):
                                     responses; ytstudio/gateway.py), under
                                     codex_config, whose keys win; a bare
                                     model goes to -m as openai/<name>, and
-                                    Codex's own default is named that way;
-                                    no key -> a permanent error, no launch
+                                    Codex's own default is named that way,
+                                    Claude slugs passed over (none of this
+                                    under a model_provider of the user's);
+                                    no key, or one with whitespace around
+                                    it -> a permanent error, no launch
     images (CodexConfig / kwarg)    -i FILE                                  S
     cwd / add_dirs                  -C + process cwd / --add-dir; on resume   S
                                     -c sandbox_mode / writable_roots
@@ -369,17 +372,24 @@ def _models_cache(env: dict[str, str]) -> list[dict]:
     return [m for m in models or [] if isinstance(m, dict)]
 
 
-def codex_default_model(env: dict[str, str]) -> str | None:
+def codex_default_model(env: dict[str, str], *, skip_claude: bool = False) -> str | None:
     """The model Codex uses when none is passed: config.toml's `model`, else
-    the first listed model in the models cache. Best effort."""
+    the first listed model in the models cache. Best effort.
+
+    With `skip_claude`, a Claude id in either place is passed over for the
+    next candidate: a cache refilled from the gateway's /codex/v1/models
+    lists its whole catalog, Claude included, and a model to name to codex
+    must not be one of those."""
     try:
         conf = tomllib.loads((_codex_home(env) / "config.toml").read_text())
-        if isinstance(conf.get("model"), str):
-            return conf["model"]
+        model = conf.get("model")
+        if isinstance(model, str) and not (skip_claude and is_claude_model(model)):
+            return model
     except (OSError, tomllib.TOMLDecodeError):
         pass
     listed = [m for m in _models_cache(env) if m.get("visibility", "list") == "list"
-              and m.get("slug")]
+              and m.get("slug")
+              and not (skip_claude and is_claude_model(str(m["slug"])))]
     if not listed:
         return None
     return min(listed, key=lambda m: m.get("priority", 1 << 30))["slug"]
@@ -634,6 +644,16 @@ class CodexEngine(ClaudeEngine):
         under the name that provider's env_key gives."""
         return {}
 
+    def _via_gateway(self, env: dict[str, str]) -> bool:
+        """Whether the provider codex ends up with is the gateway's: the
+        switch is on and the user's codex_config names no other
+        model_provider. Only then is a model spelled the gateway's way; the
+        user's own provider is sent the model as given."""
+        if not _gateway.active(env):
+            return False
+        mine = getattr(self.config, "codex_config", None) or {}
+        return mine.get("model_provider", _gateway.CODEX_PROVIDER) == _gateway.CODEX_PROVIDER
+
     def _codex_pairs(self) -> dict[str, Any]:
         """The -c pairs that follow the engine's own: the gateway's provider
         when YT_GATEWAY=vercel (from the parent's environment with
@@ -697,8 +717,11 @@ class CodexEngine(ClaudeEngine):
         as `openai/gpt-5`, since the gateway names models `provider/model`
         and is not documented to take a bare one; an id with a provider
         passes as it is. For the same reason Codex's own default is named
-        there, read from its config.toml or models cache, rather than left
-        for codex to send bare. A Claude id is never passed on either route."""
+        there, read from its config.toml or models cache with Claude ids
+        passed over, rather than left for codex to send bare or to pick a
+        Claude slug from a cache the gateway filled. A codex_config that
+        names its own model_provider gets none of this. A Claude id is never
+        passed on either route."""
         model = self.config.model
         if is_claude_model(model):
             _warn_once(f"model:{model}", f"model {model!r} is a Claude model; Codex "
@@ -709,11 +732,9 @@ class CodexEngine(ClaudeEngine):
             if is_claude_model(model):
                 model = None
         env = self._env()
-        if _gateway.active(env):
+        if self._via_gateway(env):
             if not model:
-                model = codex_default_model(env)
-                if is_claude_model(model):
-                    model = None
+                model = codex_default_model(env, skip_claude=True)
             if model and not canonical_model(model)[0]:
                 model = OPENAI_PREFIX + model
         return model or None
