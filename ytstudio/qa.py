@@ -49,10 +49,12 @@ improve` reads as the size of no change. The samples' findings are grouped
 into defects by one decision (`<pass>-scorecard-merge`, the improve loop's
 "same problem" test): one two or more samples report stands, blocking only
 when two called it so; one a single sample reports is `low_confidence`,
-listed and not routed. A sample whose call fails is a failed engine row,
-never a score, and fewer than two valid samples is `not_evidenced`: no
-scores, never READY. `scoring` records each sample; the bar reads the
-medians.
+listed and not routed. The reviewer's `blocking` claims go through the same
+decision, so one reading's claim blocks nothing either. A sample whose call
+fails is a failed engine row, never a score, and fewer than two valid
+samples is `not_evidenced`: no scores, never READY. `scoring` records each
+sample; the bar reads the medians. A category set by rule (a silent film's
+sound, a capped category) records no spread: its score is no sample's.
 
 The story is judged from the film too (AUTO-99). The role carries the
 narrative rubric's sentences for narrative_clarity and editing_pacing,
@@ -321,8 +323,8 @@ def _number(value) -> float | None:
 
 def combine_scores(cards: list[dict]) -> tuple[dict, float | None, dict]:
     """The valid samples' answers as one: each category's median and the
-    overall's, and their spread (max - min, the overall's under `overall`).
-    A value that is not a number is not counted; a category no sample
+    overall's, and their spread (max - min; the overall's, under `overall`,
+    is the spread of the reviewers' own overalls). A value that is not a number is not counted; a category no sample
     scored is left out, which the bar reads as 0."""
     scores, spread = {}, {}
 
@@ -357,27 +359,37 @@ MERGE_SCHEMA = {
 
 
 def _finding_rows(samples: list[dict]) -> dict[str, tuple[int, dict]]:
-    """Every finding of the samples by its id, `s<k>.F<n>`, in sample order."""
+    """Every finding of the samples by its id, `s<k>.F<n>`, then each
+    sample's `blocking` claims, `s<k>.B<n>`, in sample order. A claim is the
+    reviewer's free-text item, held as a finding with only a `problem`,
+    severity blocking and `claim` set, so one merge decides both."""
     out = {}
     for row in samples:
         for n, f in enumerate(row.get("findings") or [], 1):
             if isinstance(f, dict):
                 out[f"s{row['k']}.F{n}"] = (int(row["k"]), f)
+        for n, b in enumerate(row.get("blocking") or [], 1):
+            if str(b).strip():
+                out[f"s{row['k']}.B{n}"] = (int(row["k"]), {
+                    "problem": str(b), "severity": "blocking", "claim": True})
     return out
 
 
 def merge_prompt(samples: list[dict]) -> str:
     """What the merge decision reads: each sample's findings under its id."""
-    rows = [{"id": fid, "sample": k, "timestamp": f.get("timestamp"),
+    rows = [{"id": fid, "sample": k, "kind": "blocking claim" if f.get("claim") else "finding",
+             "timestamp": f.get("timestamp"),
              "problem": str(f.get("problem", ""))[:400], "owner": f.get("owner")}
             for fid, (k, f) in _finding_rows(samples).items()]
     return "\n\n".join([
         f"{len(samples)} independent readings of the same QA evidence each filed "
-        "findings. Group the findings that are the same problem -- the same thing "
-        "visibly wrong at about the same place, however differently it is worded. "
-        "Each id belongs to at most one group; leave a finding no other reading "
+        "findings (`F` ids) and listed what they call blocking (`B` ids). Group "
+        "the items that are the same problem -- the same thing visibly wrong at "
+        "about the same place, however differently it is worded; a blocking claim "
+        "goes in the group of the finding it names, its own reading's included. "
+        "Each id belongs to at most one group; leave an item no other reading "
         "reports out of every group. Merge nothing that is a different problem.",
-        brief("Findings, by reading", rows)])
+        brief("Findings and blocking claims, by reading", rows)])
 
 
 def merge_findings(samples: list[dict], groups) -> tuple[list[dict], list[dict]]:
@@ -387,11 +399,13 @@ def merge_findings(samples: list[dict], groups) -> tuple[list[dict], list[dict]]
     decision's lists of ids. An id it does not know, or one an earlier
     group took, is ignored; what no group holds is a group of one. A group
     two or more samples report is kept, worded as the earliest sample
-    worded it, with `samples` naming them; it is blocking only when two or
-    more of them called it blocking, since one reading's severity is the
-    noise this removes. A group of one sample (two findings of one reading
-    are still one reading) is low-confidence: listed, not routed, blocking
-    nothing."""
+    worded it (its earliest finding, when it holds one), with `samples`
+    naming them; it is blocking only when two or more of them called it
+    blocking, by severity or by a claim, since one reading's severity is the
+    noise this removes. A kept group of claims alone stays a claim (`claim`
+    set): the caller lists it under `blocking`, not as a finding to route.
+    A group of one sample (two items of one reading are still one reading)
+    is low-confidence: listed, not routed, blocking nothing."""
     by_id = _finding_rows(samples)
     rank = {fid: i for i, fid in enumerate(by_id)}
     taken: set[str] = set()
@@ -407,7 +421,8 @@ def merge_findings(samples: list[dict], groups) -> tuple[list[dict], list[dict]]
     for ids in clusters:
         members = [by_id[i] for i in ids]
         ks = sorted({k for k, _ in members})
-        out = dict(members[0][1], samples=ks)
+        head = next((f for _, f in members if not f.get("claim")), members[0][1])
+        out = dict(head, samples=ks)
         if len(ks) >= 2:
             votes = {k for k, f in members if f.get("severity") == "blocking"}
             out["severity"] = "blocking" if len(votes) >= 2 else "minor"
@@ -1019,6 +1034,18 @@ def silent(build: dict) -> bool:
     return not tracks
 
 
+def rule_spread(spread: dict, *, silent: bool, capped) -> dict:
+    """The samples' spread with no spread on a category whose score a rule
+    set (AUTO-107): a silent film's SILENT categories and the `capped` ones
+    record no sample's median, so improve must read any change in them as
+    real. The overall's spread stays the spread of the reviewers' overalls,
+    though the bar may have lowered the overall itself."""
+    out = dict(spread or {})
+    for key in (SILENT if silent else ()) + tuple(capped or ()):
+        out[key] = 0.0
+    return out
+
+
 def score_silence(card: dict, build: dict) -> dict:
     """A silent film scores SILENT_SCORE on what sound would be judged by,
     and says so under not_evidenced, rather than the reviewer's neutral 5."""
@@ -1186,6 +1213,8 @@ def findings_md(name: str, card: dict, samples: list[dict], diff: dict, *,
     def finding_lines(row: dict) -> list[str]:
         seen_in = (f" (samples {', '.join(map(str, row['samples']))})"
                    if row.get("samples") else "")
+        if row.get("claim"):          # a `blocking` item with nothing but its words
+            return [f"### blocking claim — {row.get('problem', '')}{seen_in}", ""]
         return [f"### {stamp(row.get('timestamp'))} — {row.get('problem', '')}"
                 f" [{row.get('severity', '?')}]{seen_in}",
                 f"- frame: {row.get('frame', '')}",
@@ -1256,7 +1285,9 @@ def findings_md(name: str, card: dict, samples: list[dict], diff: dict, *,
             lines.append(f"- {row.get('name')}: {state}"
                          + (f", overall {row.get('overall')}, {row.get('findings', 0)} "
                             "finding(s)" if row.get("valid") else "")
-                         + (", asked again" if row.get("again") else ""))
+                         + (", asked again" if row.get("again") else "")
+                         + (f" (that failed: {row['again_failed']})"
+                            if row.get("again_failed") else ""))
         if (scoring.get("merge") or {}).get("failed"):
             lines.append(f"- findings unmerged: {scoring['merge']['failed']}")
     lines += ["", "## Rationale", "", str(card.get("rationale", "")), ""]
@@ -1506,10 +1537,13 @@ def ask_samples(reviewer: Harness, pass_dir: Path, prompt: str, script: dict, *,
     """The scorecard asked `samples` (QA_SAMPLES) times on the same evidence:
     `<pass>-scorecard-s<k>`, each with the categories in `category_order(k)`.
     A sample whose `story.sections` is not one line per screenplay section
-    (structure 20) is asked once more as `-again`. A sample whose call
-    fails is not valid; the harness's report keeps its failed row, so it is
-    billed and never read as a score. Each sample's form is removed before
-    the next is asked, so every sample reads the same files."""
+    (structure 20) is asked once more as `-again`; if that call fails, the
+    first answer stands with its gaps (its scores were answered; only its
+    story lines are short) and the row records `again_failed`. A sample
+    whose own call fails is not valid; the harness's report keeps its failed
+    row, so it is billed and never read as a score. Each sample's form is
+    removed before the next is asked, so every sample reads the same
+    files."""
     form = "scorecard.form.json"
     rows = []
     for k in range(1, (QA_SAMPLES if samples is None else samples) + 1):
@@ -1527,13 +1561,20 @@ def ask_samples(reviewer: Harness, pass_dir: Path, prompt: str, script: dict, *,
                     print(f"[qa] {name}: asking again ({'; '.join(gaps)})", file=sys.stderr)
                 row["again"] = True
                 (pass_dir / form).unlink(missing_ok=True)   # the first answer's form
-                card = reviewer.inspect(
-                    f"{name}-again", ask + "\n\nAnswer again, the whole form: an earlier "
-                    "answer's `story.sections` was not one line per section of the "
-                    f"screenplay (structure 20): {'; '.join(gaps)}. The screenplay has "
-                    f"{len(script.get('sections') or [])} sections, numbered from 1; give "
-                    "each one non-blank line.", schema, cwd=pass_dir, form=form)
-                gaps = story_gaps(card, script)
+                try:
+                    card = reviewer.inspect(
+                        f"{name}-again", ask + "\n\nAnswer again, the whole form: an "
+                        "earlier answer's `story.sections` was not one line per section "
+                        f"of the screenplay (structure 20): {'; '.join(gaps)}. The "
+                        f"screenplay has {len(script.get('sections') or [])} sections, "
+                        "numbered from 1; give each one non-blank line.", schema,
+                        cwd=pass_dir, form=form)
+                    gaps = story_gaps(card, script)
+                except HarnessError as exc:
+                    if not quiet:
+                        print(f"[qa] {name}-again failed ({exc}); the first answer stands",
+                              file=sys.stderr)
+                    row["again_failed"] = str(exc)
         except HarnessError as exc:
             if not quiet:
                 print(f"[qa] {name} failed ({exc})", file=sys.stderr)
@@ -1549,8 +1590,8 @@ def ask_samples(reviewer: Harness, pass_dir: Path, prompt: str, script: dict, *,
 
 def _sample_summary(row: dict) -> dict:
     """A sample as the scorecard records it: what it said, not its whole card."""
-    out = {k: row[k] for k in ("name", "k", "order", "valid", "again", "failed", "gaps")
-           if k in row}
+    out = {k: row[k] for k in ("name", "k", "order", "valid", "again", "again_failed",
+                               "failed", "gaps") if k in row}
     card = row.get("card")
     if isinstance(card, dict):
         out.update(verdict=card.get("verdict"), overall=card.get("overall"),
@@ -1563,17 +1604,21 @@ def combine_samples(reviewer: Harness, pass_name: str, rows: list[dict]) -> dict
     NOT_EVIDENCED: no scores, and the one reading's findings low-confidence.
     Otherwise each category is the median, `spread` its max - min, and the
     findings are merged by one decision (`<pass>-scorecard-merge`) asked
-    only when two samples have findings to match. A merge that fails keeps
-    every finding unmerged (improve's router merges duplicates too) and says
-    so under not_evidenced. The reviewer's `blocking` items and
-    not_evidenced lines are the samples' union: a blocking claim is not out-
-    voted, since READY is never reached on a vote. The story is the first
-    sample's that has a line for every section, else the first valid one's,
-    and the gaps it still has come with it."""
+    only when two samples have findings or blocking claims to match. The
+    reviewer's `blocking` claims are merged with the findings: one two
+    samples make stays under `blocking`, one a single sample makes is
+    low-confidence and blocks nothing, so the verdict reads the medians and
+    what two readings agree on. A merge that fails keeps every finding and
+    claim unmerged (improve's router merges duplicates too), so nothing is
+    out-voted, and says so under not_evidenced. The not_evidenced lines are
+    the samples' union. The story is the first sample's that has a line for
+    every section, else the first valid one's, and the gaps it still has
+    come with it."""
     valid = [r for r in rows if r.get("valid")]
     scoring = {"asked": len(rows), "valid": len(valid),
                "samples": [_sample_summary(r) for r in rows]}
-    finding_rows = [{"k": r["k"], "findings": r["card"].get("findings")} for r in valid]
+    finding_rows = [{"k": r["k"], "findings": r["card"].get("findings"),
+                     "blocking": r["card"].get("blocking")} for r in valid]
     if len(valid) < 2:
         _, low = merge_findings(finding_rows, [])
         first = valid[0]["card"] if valid else {}
@@ -1585,7 +1630,7 @@ def combine_samples(reviewer: Harness, pass_name: str, rows: list[dict]) -> dict
                 "verdict": NOT_EVIDENCED, "scoring": scoring, "gaps": []}
     scores, overall, spread = combine_scores([r["card"] for r in valid])
     noted: list[str] = []
-    with_findings = [r for r in finding_rows if r["findings"]]
+    with_findings = [r for r in finding_rows if r["findings"] or r["blocking"]]
     if len(with_findings) >= 2:
         try:
             answer = reviewer.decide(f"{pass_name}-scorecard-merge",
@@ -1600,9 +1645,11 @@ def combine_samples(reviewer: Harness, pass_name: str, rows: list[dict]) -> dict
             low = []
             scoring["merge"] = {"failed": str(exc)}
             noted.append(f"findings: the samples' findings could not be merged ({exc}); "
-                         f"all {len(kept)} are kept unmerged")
+                         f"all {len(kept)} findings and blocking claims are kept unmerged")
     else:
         kept, low = merge_findings(finding_rows, [])
+    claims = list(dict.fromkeys(f["problem"] for f in kept if f.get("claim")))
+    kept = [f for f in kept if not f.get("claim")]
     chosen = next((r for r in valid if not r["gaps"]), valid[0])
 
     def union(field: str) -> list[str]:
@@ -1610,7 +1657,7 @@ def combine_samples(reviewer: Harness, pass_name: str, rows: list[dict]) -> dict
                                   for x in r["card"].get(field) or []))
     said = Counter(r["card"].get("verdict") for r in valid).most_common(1)[0][0]
     return {"scores": scores, "overall": overall, "spread": spread, "findings": kept,
-            "low_confidence": low, "blocking": union("blocking"),
+            "low_confidence": low, "blocking": claims,
             "not_evidenced": union("not_evidenced") + noted,
             "rationale": "\n\n".join(f"[sample {r['k']}] {r['card'].get('rationale', '')}"
                                      for r in valid),
@@ -1796,8 +1843,11 @@ def run(args) -> int:
     for earlier in reversed(_passes(home)):
         if earlier != pass_dir:
             previous = read_json(earlier / "scorecard.json", warn=False)
-            if previous:
+            # A pass QA could not score (AUTO-107) has nothing to compare
+            # with; the one before it is the previous measurement.
+            if previous and previous.get("verdict") != NOT_EVIDENCED:
                 break
+            previous = None
 
     story = story_brief(script, build)
 
@@ -1886,6 +1936,8 @@ def run(args) -> int:
         scores, overall, capped = cap_scores(card.get("scores", {}),
                                              card.get("overall", 0), mechanical)
         card["scores"], card["overall"] = scores, overall
+        card["spread"] = rule_spread(card.get("spread"), silent=silent(build),
+                                     capped=capped)
     if capped and not args.quiet:
         print(f"note: {', '.join(capped)} capped at {MECHANICAL_CAP:g}: a blocking "
               "mechanical finding stands", file=sys.stderr)

@@ -67,6 +67,8 @@ class Samples(unittest.TestCase):
         self.answers = answers = []
         #: The merge decision's groups, as the reviewer would file them.
         self.groups = groups = []
+        #: An exception here makes the merge decision fail.
+        self.merge_error = merge_error = []
 
         class Reader(motion.FakeEngine):
             def stream(self_, prompt, system=None):
@@ -81,6 +83,8 @@ class Samples(unittest.TestCase):
             def ask_json(self_, prompt, schema, system=None):
                 if "groups" in schema.get("properties", {}):
                     seen["merges"].append(prompt)
+                    if merge_error:
+                        raise merge_error[0]
                     return {"groups": [{"findings": g, "why": "same defect"} for g in groups]}
                 return super().ask_json(prompt, schema, system)
 
@@ -113,8 +117,8 @@ class Samples(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             return qa.run(self.args(**kw))
 
-    def card(self):
-        return json.loads((self.root / "qa" / "pass-01" / "scorecard.json").read_text())
+    def card(self, name="pass-01"):
+        return json.loads((self.root / "qa" / name / "scorecard.json").read_text())
 
     def test_three_samples_give_the_median_and_the_spread(self):
         self.answers[:] = [sample(8.0, cinematography=6.5, overall=7.6),
@@ -237,6 +241,112 @@ class Samples(unittest.TestCase):
         card = self.card()
         self.assertEqual(card["findings"][0]["severity"], "minor")
 
+    def test_a_blocking_claim_one_sample_makes_blocks_nothing(self):
+        # The reviewer lists what it calls blocking beside its findings; one
+        # sample's claim is one reading, so it is low-confidence like the
+        # finding it names, and the median scores decide the verdict.
+        flat = finding("the hook frame is flat", severity="blocking")
+        self.answers[:] = [sample(9.5, findings=[flat],
+                                  blocking=["the hook frame is flat at 2.0s"]),
+                           sample(9.5), sample(9.5)]
+        code = self.run_qa()
+        card = self.card()
+        self.assertEqual(card["blocking"], [])
+        self.assertEqual(card["verdict"], qa.READY, card["bar"])
+        self.assertEqual(code, 0)
+        low = [f["problem"] for f in card["low_confidence"]]
+        self.assertIn("the hook frame is flat", low)
+        self.assertIn("the hook frame is flat at 2.0s", low)
+
+    def test_a_blocking_claim_two_samples_make_blocks_ready(self):
+        self.answers[:] = [sample(9.5, blocking=["the hook frame is flat"]),
+                           sample(9.5, blocking=["the opening frame reads flat"]),
+                           sample(9.5)]
+        self.groups[:] = [["s1.B1", "s2.B1"]]
+        code = self.run_qa()
+        self.assertEqual(len(self.seen["merges"]), 1)
+        self.assertIn("s2.B1", self.seen["merges"][0])
+        card = self.card()
+        self.assertEqual(card["blocking"], ["the hook frame is flat"])
+        self.assertEqual(card["findings"], [])
+        self.assertEqual(card["verdict"], qa.NOT_READY)
+        self.assertEqual(code, 1)
+
+    def test_a_merge_that_fails_keeps_every_finding_unmerged(self):
+        a = finding("the hook frame is flat", severity="blocking")
+        b = finding("the opening still has no depth")
+        self.answers[:] = [sample(8.0, findings=[a], blocking=["the hook"]),
+                           sample(8.0, findings=[b]), sample(8.0)]
+        self.merge_error[:] = [ClaudeError("the session ended")]
+        self.run_qa()
+        self.assertEqual(len(self.seen["merges"]), 1)
+        card = self.card()
+        self.assertEqual([f["problem"] for f in card["findings"]],
+                         [a["problem"], b["problem"]])
+        self.assertEqual([f["samples"] for f in card["findings"]], [[1], [2]])
+        self.assertEqual(card["low_confidence"], [])
+        # unmerged, nothing was out-voted: a claim and a blocking finding still block
+        self.assertEqual(card["blocking"], ["the hook", "the hook frame is flat at 2.0s"])
+        self.assertIn("session ended", card["scoring"]["merge"]["failed"])
+        self.assertTrue(any("could not be merged" in n for n in card["not_evidenced"]))
+        text = (self.root / "qa" / "pass-01" / "findings.md").read_text()
+        self.assertIn("could not be merged", text)
+        record = json.loads((self.root / "qa.json").read_text())
+        self.assertEqual(record["verdict"], qa.NOT_READY)
+        self.assertEqual(record["overall"], 8.0)
+
+    def test_a_failed_ask_again_keeps_the_first_answer(self):
+        gappy = dict(sample(8.0), story=dict(STORY, sections=[]))
+        self.answers[:] = [gappy, ClaudeError("the session ended"),
+                           sample(8.0), sample(8.0)]
+        self.run_qa()
+        card = self.card()
+        self.assertEqual(card["scoring"]["valid"], 3)
+        first = card["scoring"]["samples"][0]
+        self.assertTrue(first["valid"])
+        self.assertTrue(first["again"])
+        self.assertIn("session ended", first["again_failed"])
+        self.assertTrue(first["gaps"])
+        self.assertNotEqual(card["verdict"], qa.NOT_EVIDENCED)
+
+    def test_a_category_fixed_by_rule_has_no_spread(self):
+        (self.root / "build.json").write_text(json.dumps(motion._build(audio_tracks=0)))
+        self.answers[:] = [sample(8.0, sound_design=6.0, music_score=5.0),
+                           sample(8.0, sound_design=8.0, music_score=7.0),
+                           sample(8.0, sound_design=7.0, music_score=6.0)]
+        self.run_qa()
+        card = self.card()
+        self.assertEqual(card["scores"]["sound_design"], qa.SILENT_SCORE)
+        self.assertEqual(card["spread"]["sound_design"], 0.0)
+        self.assertEqual(card["spread"]["music_score"], 0.0)
+        # what the samples decided keeps its spread
+        self.assertEqual(card["spread"]["cinematography"], 0.0)
+        self.assertIn("overall", card["spread"])
+
+    def test_a_capped_category_has_no_spread(self):
+        spread = {"visual_quality": 1.0, "animation_vfx": 0.5, "voiceover": 1.0,
+                  "sound_design": 0.5, "overall": 0.4}
+        out = qa.rule_spread(spread, silent=True, capped=["visual_quality"])
+        self.assertEqual(out, {"visual_quality": 0.0, "animation_vfx": 0.5,
+                               "voiceover": 1.0, "sound_design": 0.0,
+                               "music_score": 0.0, "overall": 0.4})
+        self.assertEqual(spread["visual_quality"], 1.0)        # not changed in place
+
+    def test_a_not_evidenced_pass_is_never_the_previous_one(self):
+        self.answers[:] = [sample(8.0), sample(8.0), sample(8.0),
+                           ClaudeError("down"), ClaudeError("down"), ClaudeError("down"),
+                           sample(8.0, cinematography=6.0), sample(8.0, cinematography=6.0),
+                           sample(8.0, cinematography=6.0)]
+        for _ in range(3):
+            self.run_qa()
+        self.assertEqual(self.card("pass-02")["verdict"], qa.NOT_EVIDENCED)
+        third = self.card("pass-03")
+        self.assertEqual(third["comparison"]["against"], "pass-01")
+        self.assertIn("cinematography", third["comparison"]["regressions"])
+        self.assertIn("pass-01", self.seen["prompts"][-1])
+        record = json.loads((self.root / "qa.json").read_text())
+        self.assertIn("cinematography", record["regressions"])
+
     def test_no_merge_is_asked_when_no_two_samples_have_findings(self):
         self.answers[:] = [sample(8.0, findings=[finding("a")]), sample(8.0), sample(8.0)]
         self.run_qa()
@@ -263,6 +373,17 @@ class Merging(unittest.TestCase):
         kept, low = qa.merge_findings(self.rows(["a", "a again"], []), [["s1.F1", "s1.F2"]])
         self.assertEqual(kept, [])
         self.assertEqual(len(low), 1)
+
+
+class MergingClaims(unittest.TestCase):
+    def test_a_claim_grouped_with_another_samples_finding_makes_it_blocking(self):
+        rows = [{"k": 1, "findings": [], "blocking": ["the hook is flat"]},
+                {"k": 2, "findings": [finding("flat hook", severity="blocking")]}]
+        kept, low = qa.merge_findings(rows, [["s1.B1", "s2.F1"]])
+        self.assertEqual(low, [])
+        self.assertEqual([(f["problem"], f["severity"]) for f in kept],
+                         [("flat hook", "blocking")])
+        self.assertFalse(kept[0].get("claim"))
 
 
 class Keep(unittest.TestCase):
