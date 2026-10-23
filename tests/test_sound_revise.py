@@ -404,7 +404,9 @@ class HeardMark(unittest.TestCase):
         d._ask = ask
         data = d.run(do_review=True)
         # the sheet as revised, which is the one written and mixed
-        self.assertEqual(data["review"]["heard"], sound.heard(data["cues"]))
+        self.assertEqual(data["review"]["heard"],
+                         sound.heard(data["cues"], mix=data["palette"].get("mix"),
+                                     normalize=data.get("normalize")))
         self.assertEqual(data["review"]["heard"]["cues"], len(data["cues"]))
         self.assertNotEqual(data["review"]["heard"], sound.heard(cues()))
 
@@ -422,6 +424,21 @@ class HeardMark(unittest.TestCase):
         self.assertEqual(sound.heard(rows), before)
         rows[0]["level"] = "-30 dBFS"                          # a mix ride
         self.assertNotEqual(sound.heard(rows)["sha256"], before["sha256"])
+
+    def test_the_mark_moves_with_the_mix_targets_and_the_normalise_mode(self):
+        # the listen-back read the palette's mix targets beside the sheet,
+        # and the master is normalised the way sound.json's `normalize` says
+        mix = {"narration": "-16 LUFS", "narration_lufs": -16, "bed_below_narration_db": 12,
+               "normalize": {"mode": "loudnorm", "reason": "r"}}
+        norm = {"mode": "loudnorm", "reason": "r"}
+        before = sound.heard(cues(), mix=mix, normalize=norm)
+        self.assertEqual(sound.heard(cues(), mix=dict(mix), normalize=dict(norm)), before)
+        self.assertNotEqual(sound.heard(cues(), mix=dict(mix, bed_below_narration_db=6),
+                                        normalize=norm), before)
+        self.assertNotEqual(sound.heard(cues(), mix=mix,
+                                        normalize={"mode": "none", "reason": "r"}), before)
+        self.assertEqual(sound.heard(cues(), mix=mix, normalize=dict(norm, reason="other")),
+                         before)                               # the mode is what is heard
 
 
 if __name__ == "__main__":

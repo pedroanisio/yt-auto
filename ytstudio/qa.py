@@ -127,8 +127,10 @@ AUDIO = ("voiceover", "sound_design", "music_score")
 LISTENERS = {
     "sound": {"file": "sound.json", "covers": ("sound_design", "music_score"),
               "review": "the listen-back of `yt sound --review`: the cue sheet as "
-                        "spotted (each cue's place, level, fades and design), read cue "
-                        "by cue, not the rendered track",
+                        "spotted (each cue's place, level, fades and design) and the "
+                        "palette's mix targets, read cue by cue, not the rendered track "
+                        "and not the recorded narration; its mark also covers the "
+                        "master's normalise mode",
               "redo": "sound --fresh --review --fetch --synth"},
     "voice": {"file": "voice.json", "covers": ("voiceover",),
               "review": "the director's take review in `yt voice`: the recorded takes, "
@@ -948,8 +950,10 @@ def listening_evidence(sound: dict | None, voice: dict | None, *,
         review = data.get("review") if isinstance(data.get("review"), dict) else {}
         mark = review.get("heard") if isinstance(review.get("heard"), dict) else {}
         what = "cue sheet" if source == "sound" else "takes"
-        now = (sheet_heard(data.get("cues") or []) if source == "sound"
-               else takes_heard(data.get("takes") or []))
+        now = (sheet_heard(data.get("cues") or [],
+                           mix=(data.get("palette") or {}).get("mix"),
+                           normalize=data.get("normalize"))
+               if source == "sound" else takes_heard(data.get("takes") or []))
         row = {"source": source, "file": spec["file"], "review": spec["review"],
                "covers": list(spec["covers"]), "heard": mark.get("sha256"),
                "now": now["sha256"] if data else None, "current": False, "why": "",

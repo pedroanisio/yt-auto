@@ -35,12 +35,23 @@ def _cues():
 
 
 def _sound(cues=None):
+    """sound.json as `yt sound --review` writes it, with the keys the mark
+    reads (the cues, the palette's mix targets, the master's normalise mode)
+    and some it does not (coverage, house, engine)."""
     cues = cues if cues is not None else _cues()
-    return {"cues": cues, "mix": {"narration": "-16 LUFS"},
+    mix = {"narration": "-16 LUFS, centred", "music_bed": "-28 LUFS under speech",
+           "effects": "peaks at -6 dBTP", "master": "-14 LUFS", "narration_lufs": -16,
+           "bed_below_narration_db": 12, "effects_peak_dbtp": -6,
+           "normalize": {"mode": "loudnorm", "reason": "a spoken film"}}
+    normalize = {"mode": "loudnorm", "reason": "a spoken film"}
+    return {"runtime": 12, "palette": {"identity": "dry and close", "mix": mix},
+            "cues": cues, "coverage": {"music_share": 80}, "normalize": normalize,
+            "house": None, "engine": {"engine": "fake"},
             "review": {"flags": [{"cue": "M1", "problem": "the bed swamps the hook line",
                                   "severity": "minor", "fix": "duck 3 dB"}],
                        "verdict": "ready to hand to an editor", "revisions": [],
-                       "unresolved": [], "heard": sound.heard(cues)}}
+                       "unresolved": [],
+                       "heard": sound.heard(cues, mix=mix, normalize=normalize)}}
 
 
 def _takes():
@@ -90,6 +101,18 @@ class Evidence(unittest.TestCase):
         self.assertIn("yt sound", unheard["sound_design"]["command"])
         self.assertIn("--review", unheard["sound_design"]["command"])
 
+    def test_a_new_mix_target_or_master_mode_makes_the_listen_back_stale(self):
+        snd = _sound()
+        snd["normalize"]["mode"] = "none"              # the master, re-decided
+        self.assertFalse(self.rows(snd, _voice())["sound"]["current"])
+        snd = _sound()
+        snd["palette"]["mix"]["bed_below_narration_db"] = 6
+        self.assertFalse(self.rows(snd, _voice())["sound"]["current"])
+        snd = _sound()
+        snd["coverage"]["music_share"] = 40            # derived, not something heard
+        snd["engine"] = {"engine": "another"}
+        self.assertTrue(self.rows(snd, _voice())["sound"]["current"])
+
     def test_a_review_that_does_not_say_what_it_heard_is_not_evidence(self):
         snd = _sound()
         del snd["review"]["heard"]                     # written before AUTO-105
@@ -101,7 +124,7 @@ class Evidence(unittest.TestCase):
         snd = _sound()
         snd["review"] = {"flags": [{"cue": "M1", "rule": "rule:level", "problem": "p",
                                     "severity": "important", "fix": "f"}], "verdict": "",
-                         "heard": sound.heard(snd["cues"])}
+                         "heard": snd["review"]["heard"]}
         self.assertFalse(self.rows(snd, _voice())["sound"]["current"])
 
     def test_a_film_built_before_the_reviewed_sheet_does_not_carry_it(self):

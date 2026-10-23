@@ -241,14 +241,22 @@ REVISABLE = ("blocker", "important")
 HEARD_FIELDS = ("cue_id", "kind", "at", "seconds") + REVISE_TEXT + REVISE_FADES
 
 
-def heard(cues) -> dict:
+def heard(cues, *, mix: dict | None = None, normalize: dict | None = None) -> dict:
     """The mark of the cue sheet a listen-back heard: a digest of each cue's
-    HEARD_FIELDS, in order, and the count. `yt sound --review` writes it into
-    the review as `heard`; `yt qa` computes it again from sound.json and uses
-    the review as listening evidence only when the two agree (AUTO-105), so
-    a review of a sheet that has since been ridden or re-spotted never
-    stands in for the one the film carries. Takes Cue objects or the dicts
-    sound.json holds; numbers are compared as numbers, so 1 and 1.0 agree."""
+    HEARD_FIELDS, in order, of the palette's `mix` targets it read beside
+    them, and of the master's normalise mode (sound.json's `normalize`, which
+    `yt build` applies), with the count of cues. `yt sound --review` writes
+    it into the review as `heard`; `yt qa` computes it again from sound.json
+    and uses the review as listening evidence only when the two agree
+    (AUTO-105), so a review of a sheet that has since been ridden,
+    re-spotted or re-mastered never stands in for the one the film carries.
+    Takes Cue objects or the dicts sound.json holds; a cue's numbers are
+    compared as numbers, so 1 and 1.0 agree.
+
+    What it does not cover: the narration. The listen-back reads the cue
+    sheet and the mix targets, never the recorded takes, so a voice
+    re-record under an unchanged sheet leaves it current; the takes are
+    what voice.json's take review hears, and voiceover is scored from that."""
     rows = []
     for cue in cues or []:
         raw = asdict(cue) if hasattr(cue, "__dataclass_fields__") else dict(cue or {})
@@ -262,7 +270,9 @@ def heard(cues) -> dict:
                     pass
             row[key] = value
         rows.append(row)
-    text = json.dumps(rows, sort_keys=True, ensure_ascii=False)
+    master = (normalize or {}).get("mode") if isinstance(normalize, dict) else None
+    text = json.dumps({"cues": rows, "mix": mix if isinstance(mix, dict) else {},
+                       "normalize": master}, sort_keys=True, ensure_ascii=False)
     return {"sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(), "cues": len(rows)}
 
 
@@ -1071,9 +1081,6 @@ class SoundDesigner:
                   if do_review and cues else {})
         if review.get("revisions"):
             stats = coverage(cues, self.runtime)
-        if review:
-            # the sheet as the review left it, which is the one written here
-            review["heard"] = heard(cues)
         data = {
             "idea": asdict(self.idea),
             "runtime": self.runtime,
@@ -1098,6 +1105,11 @@ class SoundDesigner:
             # stands and build.json records it as such
             self._say(f"[palette] normalize mode {decided.get('mode')!r} is not one "
                       f"of {', '.join(NORMALIZE_MODES)}; the build decides")
+        if review:
+            # the sheet as the review left it, which is the one written here,
+            # with the mix targets and the master's mode written beside it
+            review["heard"] = heard(cues, mix=(palette or {}).get("mix"),
+                                    normalize=data.get("normalize"))
         return data
 
 
