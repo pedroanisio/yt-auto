@@ -107,7 +107,7 @@ one-line note.
 | revision rounds the author gets | `--rounds` | `keyframe` (with `--sheet`), `vfx`, `probe`, `script` (the fact-check's revisions and the story review's, each; the plan review sends a plan back once) | `--revisions` (`vfx`) |
 | the review score under which work goes back | `--bar` | `keyframe` (with `--sheet`), `vfx`, `probe`; not `script`, whose plan review and story review have no score: the verdict (accept, revise, reject; recommend, consider, reject) is the bar | `--author-bar` (`vfx`) |
 | a spend cap in dollars | `--budget-usd` (`--stage-budget-usd`, `--synth-budget-usd`, `--review-budget-usd` cap the whole stage, the synthesis, a review) | `research`, `keyframe`, `vfx`, `probe`, `assess`, `improve`, `sound`, `run` (the whole run); `--review-budget-usd` on `script` too (each plan or story review decision) | `--budget` (`research`) |
-| the model that reviews, never the author's own: it must differ from `--model` by family, or the stage is refused before anything is paid | `--reviewer-model` (default `opus`; `--review-budget-usd` is what one review may cost, 2) | `keyframe`, `vfx`, `probe`, `script` (with `--review`), `run` (handed to script, keyframe and vfx) | |
+| the model that reviews, never the author's own: it must differ from `--model` by family (a gateway id is its direct name's family, `openai/gpt-5` is `gpt-5`'s; a gateway virtual model, `vmc/<slug>`, is refused on either side), or the stage is refused before anything is paid | `--reviewer-model` (default `opus`; `--review-budget-usd` is what one review may cost, 2) | `keyframe`, `vfx`, `probe`, `script` (with `--review`), `run` (handed to script, keyframe and vfx) | |
 | ignore what is cached and do the stage again | `--fresh` | `research`, `keyframe`, `vfx`, `props`, `script` (every decision asked again: what a story review's plan flag names), `voice`, `sound`, `build`, `retime`, `review`, `qa`, `gate`, `pilot` | |
 | the model, its reasoning effort, its fallbacks | `--model`, `--effort`, `--fallback-model` | every stage that calls a model, `props` included; not `render` | |
 | how many of the stage's independent pieces run at once | `--jobs` | `ideas`, `research`, `styles`, `script`, `keyframe`, `vfx`, `probe`, `sound` (with `--fetch`: cues searched, downloaded and judged at once, default 4) | |
@@ -156,7 +156,24 @@ so a session on a short name keeps the CLI's own stop at 80% of its cap beside
 the stream meter. A decision that raised is a `failed` row in the harness report with
 what the engine spent, so the record bills it; `yt doctor` warns when a
 record's `by_model` names an id neither engine priced (a Codex id is priced
-from `codex_engine.PRICES` and `$CODEX_PRICES`).
+from `codex_engine.PRICES` and `$CODEX_PRICES`). A Vercel AI Gateway id is
+its direct name (`ytstudio/models.py`, AUTO-120): `anthropic/claude-opus-5.5`,
+`claude-code/anthropic/claude-haiku-4.5` and `openai/gpt-5` take the row,
+the family and the Claude check of `claude-opus-5-5`, `claude-haiku-4-5` and
+`gpt-5` when no row names the gateway id itself, while a name with no
+provider is looked up exactly as before. A row is its own provider's:
+Anthropic's rows price `anthropic/` ids, Codex's `openai/` ones, and a Claude
+model from another provider (`bedrock/claude-opus-5`) has no row, its rate
+being that provider's. A 1M-token context (`...[1m]`) has the family of its
+model but no row on either route, as it may bill above the base rate, so its
+session keeps the CLI's budget stop and `yt doctor` warns until a row names
+it; a virtual model (`vmc/<slug>`) has no row, and any `claude-code/` id is
+dropped by Codex as a Claude one. A quiet doctor means `spend.price_for`
+has a row, which for a short name (`opus`, `anthropic/opus`) is an
+estimate's: the engine's table holds no alias, so a cut-off call on one is
+booked at $0. The decision cache names the model as passed, so a gateway id is a
+new question and an alias passed on either route (`--model opus`) reuses
+the same decisions, which is meant: it is the same model.
 
 **What `yt build` does with a bad number.** A malformed editor or
 sound-designer number (`tail_seconds`, a cue's `fade_in`, `fade_out` or

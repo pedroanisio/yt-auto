@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -134,6 +135,64 @@ class ClaudeExecutionError(ClaudeError):
 #: $CLAUDE_PRICES='{"model": {"input": .., "cached_input": .., "output": ..}}'.
 PRICES: dict[str, dict[str, float]] = {}
 
+#: The provider of a virtual model on Vercel's AI Gateway (`vmc/<slug>`): the
+#: slug may route to any model, so it has no family and no price.
+VIRTUAL_PROVIDER = "vmc"
+
+
+def canonical_model(name: str | None) -> tuple[str, str]:
+    """`(provider, model)` for a model name, so a gateway id and its direct
+    name are one model. Vercel's AI Gateway names models `provider/model`
+    (`anthropic/claude-opus-5`, `openai/gpt-5`) and writes Anthropic's
+    versions with a dot (`claude-haiku-4.5`, which Anthropic's own ids write
+    `claude-haiku-4-5`); its Claude Code picker leads with `claude-code/` and
+    marks a 1M-token context with `[1m]`. Both marks are dropped, the
+    provider is split off, and only an Anthropic version has its dots made
+    dashes (OpenAI's `gpt-5.1` is spelled with the dot). A name with no
+    provider (`sonnet`, `claude-opus-5-5`) has provider "". A virtual model
+    comes back as `("vmc", slug)`."""
+    text = str(name or "").strip()
+    if text.lower().startswith("claude-code/"):
+        text = text[len("claude-code/"):]
+    if text.lower().endswith("[1m]"):
+        text = text[:-len("[1m]")]
+    provider, _, model = text.partition("/") if "/" in text else ("", "", text)
+    provider = provider.lower()
+    if provider == "anthropic":
+        model = re.sub(r"(?<=\d)\.(?=\d)", "-", model)
+    return provider, model
+
+
+#: The mark Claude Code's gateway picker (and the CLI's own `opus[1m]`) puts on
+#: a model run with a 1M-token context.
+LONG_CONTEXT_MARK = "[1m]"
+
+
+def _price_row(table: dict, model: str | None, aliases: dict | None = None,
+               provider: str = "anthropic") -> Any:
+    """`model`'s row in `table`: the id exactly as reported, then, for a
+    gateway id of the table's own `provider` (`anthropic/claude-opus-5`),
+    its direct id, then the generation `aliases` resolves a short name to.
+    A name with no provider is looked up as it always was. Another
+    provider's id has no row here, a Claude model on Bedrock or Vertex
+    included, since its rate is that provider's; nor has a virtual model.
+    A 1M-token context (`...[1m]`) has no row unless one names it: it may
+    bill above the base rate, so neither route prices it at the base row,
+    and its session keeps the CLI's own budget stop (sdkkit.stream_round)."""
+    name = model or ""
+    names = [name]
+    found, direct = canonical_model(name)
+    if (found == provider and not name.lower().endswith(LONG_CONTEXT_MARK)
+            and direct not in names):
+        names.append(direct)
+    for each in names:
+        if table.get(each) is not None:
+            return table[each]
+    for each in names:
+        if aliases and each in aliases:
+            return table.get(aliases[each])
+    return None
+
 
 def _partial_cost(tokens: dict[str, int], model: str | None) -> float | None:
     """The estimated cost of `tokens` on `model`, None when it has no price."""
@@ -144,7 +203,7 @@ def _partial_cost(tokens: dict[str, int], model: str | None) -> float | None:
             table.update(json.loads(raw))
         except ValueError:
             pass
-    row = table.get(model or "")
+    row = _price_row(table, model)
     if not row:
         return None
     return (tokens.get("input_tokens", 0) * row.get("input", 0)

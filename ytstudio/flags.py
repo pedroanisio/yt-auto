@@ -18,6 +18,8 @@ from __future__ import annotations
 import argparse
 import sys
 
+from . import models
+
 
 class _Alias(argparse.Action):
     """An old spelling: stores like the flag it was renamed to, and says so."""
@@ -61,15 +63,28 @@ def review_budget(p, *, default, help, dest="review_budget_usd") -> None:
 
 
 def model_family(name: str) -> str:
-    """`opus`, `claude-opus-5-5` and `opus[1m]` are one model family."""
-    low = (name or "").lower()
+    """`opus`, `claude-opus-5-5` and `opus[1m]` are one model family, and so
+    are a gateway id and its direct name (`openai/gpt-5` and `gpt-5`,
+    `anthropic/claude-opus-5` and `opus`): the provider is not the model."""
+    provider, model = models.canonical(name)
+    low = model.lower()
+    if provider == models.VIRTUAL_PROVIDER:
+        return f"{provider}/{low}"
     return next((f for f in ("fable", "opus", "sonnet", "haiku") if f in low), low)
 
 
 def own_reviewer(model: str, reviewer_model: str) -> str:
     """The error when the reviewer is the author's own model (one family),
     else "". A model never grades its own work, so every stage that reviews
-    refuses this before anything is paid, and says what to pass."""
+    refuses this before anything is paid, and says what to pass. A gateway
+    virtual model (`vmc/<slug>`) may route to any model, the author's too,
+    so it is refused on either side."""
+    virtual = [m for m in (model, reviewer_model) if models.is_virtual(m)]
+    if virtual:
+        return (f"error: {virtual[0]} is a virtual gateway model (--model {model}, "
+                f"--reviewer-model {reviewer_model}): it may route to any model, so "
+                "whether the reviewer is the author's own cannot be known; pass "
+                "--model and --reviewer-model as provider/model ids")
     if model_family(reviewer_model) != model_family(model):
         return ""
     return (f"error: the reviewer must be a different model from the author (--model {model}, "
