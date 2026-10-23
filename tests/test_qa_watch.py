@@ -663,8 +663,13 @@ class Watching(listen_tests.Project):
         p = mock.patch.object(_watch(), "_get_json", fetch)
         p.start()
         self.addCleanup(p.stop)
+        # the film has sound, so even the cut as it is goes by the host,
+        # which copies its picture and drops its sound
+        self.host = FakeHost(self)
+        self.host.segments = [_watch().Segment(0.0, 16.5, None)]
         self.node.replies(ok(_answer([_finding(7.6, 8.4, severity="blocking",
-                                               problem="the super lands two seconds late")])))
+                                               problem="the super lands two seconds late")]),
+                             routing={"finalProvider": "google"}))
 
     def args(self, **kw):
         kw.setdefault("watch", True)
@@ -791,11 +796,24 @@ class Run(Watching):
         self.assertEqual(record["catalog_row"]["id"], "google/gemini-3.6-flash")
         self.assertEqual(record["calls"][0]["model"], "google/gemini-3.6-flash")
         self.assertEqual(record["calls"][0]["generation_id"], "gen_01TEST")
+        self.assertEqual(record["calls"][0]["provider"], "google")
+        # the sound never leaves: the picture is copied as it is on the host
+        self.assertEqual(record["plan"]["host"], "render-1")
+        self.assertEqual([s["audio"] for s in record["plan"]["segments"]], [False])
+        self.assertIsNone(record["plan"]["segments"][0]["scale"])
+        script = next(c for c in self.host.calls if c[0] == "ssh")[-1]
+        self.assertIn(" -an ", script)
+        self.assertIn("-c:v copy", script)
+        self.assertNotIn("scale=", script)
+        self.assertNotIn("libx264", script)
         # the reviewer (--model sonnet) is Anthropic's, like script.json's author:
         # recorded, not refused (open question 3)
         self.assertIs(record["reviewer_same_maker"], True)
         self.assertEqual(self.fetched, [(_watch().CATALOG_URL, 20.0)])
-        self.assertNotIn("pass-01", json.dumps(self.node.requests()[0]))
+        # the question never names the pass (the media are digested by
+        # their bytes, so the segment's path in it does not matter)
+        request = self.node.requests()[0]
+        self.assertNotIn("pass-01", request["prompt"] + request["instructions"])
         samples = json.loads((self.root / "qa" / "pass-01" / "samples.json").read_text())
         self.assertTrue(any(r.get("watched") == ["W1"] for r in samples))
         card = self.card()
@@ -805,6 +823,38 @@ class Run(Watching):
         self.assertTrue(any("the super lands two seconds late" in b for b in card["blocking"]))
         self.assertEqual(card["watch"]["status"], "watched")
         self.assertEqual(code, 1)                          # a blocking finding stands
+
+    def test_a_cut_without_sound_is_sent_as_it_is(self):
+        self.make_project(audio_tracks=0)
+        self.run_qa()
+        record = self.watch_json()
+        self.assertEqual(record["status"], "watched", self.stderr)
+        self.assertEqual(record["plan"]["kind"], "as_is")
+        self.assertIsNone(record["plan"]["host"])
+        self.assertEqual(self.host.calls, [])
+        self.assertEqual(record["plan"]["segments"][0]["file"],
+                         str(self.root / "video.mp4"))
+        self.assertEqual([s["audio"] for s in record["plan"]["segments"]], [False])
+
+    def test_reviewer_confirms_naming_the_frames_path(self):
+        # the reviewer's cwd is the pass directory: frames/<still> is its path
+        Verdicts.say = {"W1": ("confirmed", None)}
+        real = Verdicts.stream
+
+        def stream(engine, prompt, system=None):
+            for event in real(engine, prompt, system):
+                if event.text and '"watched"' in event.text:
+                    body = json.loads(event.text.strip("`\njson"))
+                    for w in body["watched"]:
+                        w["frame"] = "frames/" + w["frame"]
+                    event = Event(type="assistant",
+                                  text="```json\n" + json.dumps(body) + "\n```")
+                yield event
+        with mock.patch.object(Verdicts, "stream", stream):
+            code = self.run_qa()
+        card = self.card()
+        self.assertEqual(card["watched"]["confirmed"], ["W1"], self.stderr)
+        self.assertEqual(code, 1)
 
     def test_scorecard_carries_watched_verdicts(self):
         self.node.replies(ok(_answer([

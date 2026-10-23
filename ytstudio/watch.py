@@ -452,16 +452,21 @@ def _host_tools(host: str) -> tuple[str, str]:
 def prepare_script(root: str, segments: list[Segment], *, ffmpeg: str = "",
                    ffprobe: str = "", kbps: int = WATCH_KBPS) -> str:
     """The one script the host runs: ffmpeg on PATH, else beside its
-    ffprobe; each segment re-encoded from cut.mp4 with no audio, then its
-    bytes and duration printed as `@@OUT n bytes seconds`."""
+    ffprobe; each segment made from cut.mp4 with no audio, then its bytes
+    and duration printed as `@@OUT n bytes seconds`. A scaled segment is
+    re-encoded; an unscaled one is the whole cut (`as_is`), its picture
+    copied as it is and its sound dropped."""
     q = shlex.quote
     runs = ""
     for n, seg in enumerate(segments, 1):
         name = segment_name(n)
-        scale = f"-vf scale=-2:{int(seg.scale)} " if seg.scale else ""
-        runs += (f'"$F" -nostdin -hide_banner -loglevel error -y -ss {seg.start:.3f} '
-                 f'-t {seg.seconds:.3f} -i cut.mp4 -an {scale}-c:v libx264 -preset veryfast '
-                 f'-b:v {kbps}k -maxrate {kbps}k -bufsize {2 * kbps}k -movflags +faststart '
+        if seg.scale:
+            make = (f'-ss {seg.start:.3f} -t {seg.seconds:.3f} -i cut.mp4 -an '
+                    f'-vf scale=-2:{int(seg.scale)} -c:v libx264 -preset veryfast '
+                    f'-b:v {kbps}k -maxrate {kbps}k -bufsize {2 * kbps}k')
+        else:
+            make = "-i cut.mp4 -an -c:v copy"
+        runs += (f'"$F" -nostdin -hide_banner -loglevel error -y {make} -movflags +faststart '
                  f'{name} && echo "@@OUT {n} $(stat -c %s {name}) '
                  f'$("$P" -v error -show_entries format=duration -of csv=p=0 {name})" '
                  f'|| echo "@@FAIL {n}"; ')
@@ -888,9 +893,13 @@ def watch(project, pass_dir: Path, prepared: Prepared, args, *, home: Path, buil
                           max_seconds=WATCH_MAX_SECONDS, kbps=WATCH_KBPS)
     kind = plan_kind(segments)
     rows: list[dict] = []
-    if kind == "as_is":
+    # The sound never goes (open question 1's default: the pass is visual,
+    # and the listener hears the mix). A cut the build says has no audio
+    # track goes as it is, straight to the gateway; any other `as_is` cut
+    # has its picture copied without its sound on the host first.
+    if kind == "as_is" and (build or {}).get("audio_tracks") == 0:
         rows = [{"n": 1, "path": str(video), "bytes": cut["bytes"], "seconds": cut["seconds"],
-                 "audio": True}]
+                 "audio": False}]
     else:
         try:
             prep = plan_remote(video, prepared.host, Path(project.root).name, segments,
@@ -902,11 +911,12 @@ def watch(project, pass_dir: Path, prepared: Prepared, args, *, home: Path, buil
                 for n, s in enumerate(segments, 1)]}
             return done("failed", f"the cut could not be prepared to send, so nothing was "
                                   f"sent: {exc}")
-    plan = {"kind": kind, "host": None if kind == "as_is" else prepared.host, "segments": []}
+    direct = rows[0]["path"] == str(video)
+    plan = {"kind": kind, "host": None if direct else prepared.host, "segments": []}
     for seg, row in zip(segments, rows):
         plan["segments"].append({"n": row["n"], "start": seg.start, "end": seg.end,
                                  "scale": seg.scale, "bytes": row["bytes"],
-                                 "sha256": cut["sha256"] if kind == "as_is"
+                                 "sha256": cut["sha256"] if direct
                                  else _sha256(Path(row["path"])),
                                  "audio": row["audio"], "file": row["path"],
                                  "status": "unwatched", "why": ""})
