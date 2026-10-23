@@ -44,7 +44,7 @@ GATEWAY_VARS = ("YT_GATEWAY", "YT_GATEWAY_AUTH", "YT_GATEWAY_URL", "AI_GATEWAY_A
                 "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_PRICES")
 
 #: A stand-in for `claude -p`: counts its launches, then prints FAKE_RESULT
-#: (or fails with FAKE_STDERR and exit 1).
+#: (or fails with FAKE_STDERR and exit 1), exiting FAKE_EXIT (0 by default).
 FAKE_CLAUDE = r'''#!/usr/bin/env python3
 import json, os, sys
 with open(os.environ["FAKE_LOG"], "a") as f:
@@ -57,6 +57,7 @@ result = json.loads(os.environ["FAKE_RESULT"])
 if "stream-json" in sys.argv:
     print(json.dumps({"type": "system", "subtype": "init", "session_id": "s-fake"}))
 print(json.dumps(result))
+sys.exit(int(os.environ.get("FAKE_EXIT", "0")))
 '''
 
 MODEL = "claude-opus-5-5"
@@ -207,6 +208,64 @@ class Booking(Case):
         self.assertEqual(eng.usage.cost_usd, CLI_USD)
         self.assertEqual(answer.raw["cost_source"], "cli")
 
+    def test_web_searches_are_booked_per_search(self):
+        # The CLI's costUSD carries its server-side web searches too, at
+        # Anthropic's $10 per 1000; the table's tokens alone would leave
+        # them out of the ledger (the research stage searches).
+        self.give(result({MODEL: {**TOKENS, "webSearchRequests": 15, "costUSD": CLI_USD}}))
+        with mock.patch.dict(os.environ, on()):
+            eng = self.engine()
+            answer = eng.ask("hi")
+        want = TABLE_USD + 15 * claude_engine.WEB_SEARCH_USD
+        self.assertEqual(claude_engine.WEB_SEARCH_USD, 0.01)
+        self.assertAlmostEqual(eng.usage.cost_usd, want, places=10)
+        self.assertEqual(eng.usage.by_model[MODEL]["cost_table_calls"], 1)
+        self.assertEqual(answer.raw["cost_source"], "table")
+
+    def test_a_server_tool_the_table_does_not_price_falls_back(self):
+        # Any other per-request counter is a charge the row cannot see:
+        # the CLI's figure is booked and doctor told (cost_cli_calls).
+        self.give(result({MODEL: {**TOKENS, "codeExecutionRequests": 2, "costUSD": CLI_USD}}))
+        with mock.patch.dict(os.environ, on()):
+            eng = self.engine()
+            answer = eng.ask("hi")
+        self.assertEqual(eng.usage.cost_usd, CLI_USD)
+        self.assertEqual(eng.usage.by_model[MODEL]["cost_cli_calls"], 1)
+        self.assertEqual(answer.raw["cost_source"], "cli")
+
+    def test_a_zero_counter_is_no_charge(self):
+        self.give(result({MODEL: {**TOKENS, "webSearchRequests": 0,
+                                  "codeExecutionRequests": 0, "costUSD": CLI_USD}}))
+        with mock.patch.dict(os.environ, on()):
+            eng = self.engine()
+            eng.ask("hi")
+        self.assertAlmostEqual(eng.usage.cost_usd, TABLE_USD, places=10)
+        self.assertEqual(eng.usage.by_model[MODEL]["cost_table_calls"], 1)
+
+    def test_a_prompt_above_a_models_tier_falls_back(self):
+        # Haiku 5.5 bills 5x above 100K prompt tokens, which its row does
+        # not model: such a call is booked at the CLI's figure, flagged.
+        haiku = {"input": 0.10, "cached_input": 0.01, "output": 0.50, "cache_creation": 0.125}
+        cases = (("claude-haiku-5-5", {"inputTokens": 200000, "outputTokens": 1000}, "cli"),
+                 ("anthropic/claude-haiku-5.5",
+                  {"inputTokens": 60000, "cacheReadInputTokens": 50000}, "cli"),
+                 ("claude-haiku-5-5", {"inputTokens": 50000, "cacheReadInputTokens": 30000,
+                                       "cacheCreationInputTokens": 10000,
+                                       "outputTokens": 90000}, "table"))
+        for model, tokens, source in cases:
+            with self.subTest(model=model, tokens=tokens), \
+                    mock.patch.dict(claude_engine.PRICES, {"claude-haiku-5-5": haiku}), \
+                    mock.patch.dict(os.environ, on()):
+                self.give(result({model: {**tokens, "costUSD": 0.1}}, total=0.1))
+                eng = self.engine()
+                answer = eng.ask("hi")
+                self.assertEqual(answer.raw["cost_source"], source)
+                self.assertEqual(eng.usage.by_model[model][f"cost_{source}_calls"], 1)
+                if source == "cli":
+                    self.assertEqual(eng.usage.cost_usd, 0.1)
+                else:
+                    self.assertNotEqual(eng.usage.cost_usd, 0.1)
+
     def test_direct_booking_unchanged(self):
         for env in ({}, {"YT_GATEWAY": "off", "AI_GATEWAY_API_KEY": KEY}):
             with self.subTest(env=env), mock.patch.dict(os.environ, env):
@@ -242,14 +301,37 @@ class Booking(Case):
 
     def test_codex_under_the_switch_keeps_its_own_booking(self):
         # Codex already books from its price table; the claude CLI's
-        # repricing is not applied to its turns.
+        # repricing is not applied to its turns. A launch under the switch
+        # decides it, so the launch's env is built first, over a flag a
+        # previous claude launch would have left on.
         eng = codex_engine.CodexEngine(codex_engine.CodexConfig())
+        eng._gateway_booked = True
         payload = {"type": "result", "total_cost_usd": 0.01, "usage": {},
                    "modelUsage": {"openai/gpt-5": {"inputTokens": 5, "costUSD": 0.01}}}
         with mock.patch.dict(os.environ, on()):
+            eng._popen_kwargs()
             eng._absorb_result(payload)
+        self.assertFalse(eng._gateway_booked)
         self.assertEqual(eng.usage.cost_usd, 0.01)
         self.assertNotIn("cli_cost_usd", eng.usage.by_model["openai/gpt-5"])
+        self.assertNotIn("cli_cost_usd", payload)
+
+    def test_the_gateway_engine_keeps_its_own_booking(self):
+        # The AI SDK program prices its own calls (COST_SOURCES); a call it
+        # makes under the switch is not repriced as a claude CLI call.
+        from gateway_fakes import FakeNode
+        import gateway_engine
+        fake = FakeNode(self)
+        with mock.patch.dict(os.environ, {"YT_GATEWAY": "vercel"}):
+            eng = fake.engine()
+            answer = eng.ask("hi")
+        self.assertEqual(answer.raw["cost_source"], "gateway")
+        self.assertNotIn("cli_cost_usd", answer.raw)
+        row = eng.usage.by_model[answer.raw["model"]]
+        self.assertEqual(row["cost_gateway_calls"], 1)
+        self.assertNotIn("cli_cost_usd", row)
+        self.assertNotIn("cost_table_calls", row)
+        self.assertIsInstance(eng, gateway_engine.GatewayEngine)
 
 
 class Budget(Case):
@@ -317,6 +399,35 @@ class Classification(Case):
         self.assertFalse(caught.exception.transient)
         self.assertIn("quota_for_entity_exceeded", caught.exception.stderr)
         self.assertEqual(self.launches(), 1)
+
+    def test_a_key_budget_402_in_the_result_ends_the_call_at_the_first_attempt(self):
+        # The CLI more often reports an API error as an is_error result on
+        # stdout, exiting 1, than on stderr.
+        self.give({"type": "result", "subtype": "success", "is_error": True,
+                   "result": f"API Error: {KEY_402}", "session_id": "s-fake"})
+        os.environ["FAKE_EXIT"] = "1"
+        try:
+            with mock.patch.dict(os.environ, on()):
+                with self.assertRaises(ClaudeExecutionError) as caught:
+                    self.engine(max_retries=3).ask("hi")
+        finally:
+            del os.environ["FAKE_EXIT"]
+        self.assertFalse(caught.exception.transient)
+        self.assertIn("quota_for_entity_exceeded", caught.exception.payload.get("result", ""))
+        self.assertEqual(self.launches(), 1)
+
+    def test_a_429_in_the_result_is_tried_again(self):
+        self.give({"type": "result", "subtype": "success", "is_error": True,
+                   "result": RATE_429, "session_id": "s-fake"})
+        os.environ["FAKE_EXIT"] = "1"
+        try:
+            with mock.patch.dict(os.environ, on()):
+                with self.assertRaises(ClaudeExecutionError) as caught:
+                    self.engine(max_retries=1).ask("hi")
+        finally:
+            del os.environ["FAKE_EXIT"]
+        self.assertTrue(caught.exception.transient)
+        self.assertEqual(self.launches(), 2)
 
     def test_a_429_is_tried_again(self):
         os.environ["FAKE_STDERR"] = RATE_429
