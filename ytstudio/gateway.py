@@ -156,6 +156,13 @@ def codex_base_url(environ: Mapping[str, str] | None = None) -> str:
     return host(environ) + CODEX_PATH
 
 
+def api_key(environ: Mapping[str, str] | None = None) -> str:
+    """The gateway key from `environ` (default os.environ), checked as the
+    routes check it, for a caller that sends it itself (`yt doctor
+    --gateway-ping`). Raises GatewayError, whose message never carries it."""
+    return _key(_env(environ))
+
+
 def _key(environ: Mapping[str, str]) -> str:
     key = (environ.get(KEY) or "").strip()
     if not key:

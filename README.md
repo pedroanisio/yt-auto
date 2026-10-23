@@ -83,6 +83,8 @@ research and screenplay work; it is not an unattended model service.
   over any Claude slug in its models cache), and a Claude id is never passed
   to codex. A `model_provider` of your own in `codex_config` gets the model
   as given. Codex reads the key as it is, so whitespace around it is refused.
+  `yt doctor` checks the route when the switch is set (see `yt doctor`
+  below), and `yt doctor --gateway-ping` shows the team's credit balance.
 - Optional, for a stage that opts into the gateway engine only: Node 22 or
   later and `cd gateway && npm ci --ignore-scripts` (until
   `gateway/package-lock.json` is committed, `npm ci` has no lockfile to read,
@@ -1650,7 +1652,8 @@ yt retention --title X --export studio.json
 
 Reads what the stages wrote and says what to do next. No model calls, but it
 does reach the render hosts: one short ssh per host asks for the engine, the
-memory and the GPU. It reports the toolchain (engine, ffmpeg, the scene SDK,
+memory and the GPU. Nothing else goes on the network unless you pass
+`--gateway-ping`. It reports the toolchain (engine, ffmpeg, the scene SDK,
 the delivery gate, the third-party packages the stages import, which voice
 engines are usable, which keys are set) and then every video,
 with fail, warn and note lines and the command that fixes each; a record that
@@ -1665,7 +1668,23 @@ row, and one with an unpriced call still warns. A claude call booked through
 the gateway at the CLI's own figure rather than the table (`cost_cli_calls`
 on its row) is a warning of its own. Where `gateway/node_modules`
 exists, a "gateway engine" block checks Node 22 or later, `ai` 7.0.150 and
-whether `AI_GATEWAY_API_KEY` is set (by name, never its value). Once a
+whether `AI_GATEWAY_API_KEY` is set (by name, never its value). With
+`YT_GATEWAY` set, a "gateway" block fails when the route cannot run (no
+`AI_GATEWAY_API_KEY`, an unknown switch, a cloud provider switch left on),
+warns when `ANTHROPIC_BASE_URL` was set by hand to another endpoint, which yt
+replaces for the claude CLI, or ends in `/v1`, which the gateway answers with
+a 404, notes a parent `ANTHROPIC_API_KEY` that the CLI's child gets blank
+(in subscription mode it warns: the CLI would send it to the gateway), and
+names the claude and codex endpoints in use; a proxy's credentials in
+`YT_GATEWAY_URL` are not printed. `yt doctor --gateway-ping` (opt-in; doctor
+makes no gateway call without it) sends one `GET /v1/credits` with the key
+as a Bearer token and a 5-second timeout and shows the team's `balance` and
+`total_used` in USD (team-wide, not this run's). It runs no model and uses no
+tokens. A 401 or 403 fails with the AI Gateway API Keys page as its fix, a
+429 or 5xx warns, and only the HTTP status and the answer's `error.type` are
+printed. A redirect is not followed, so the key goes to no other host (it
+fails naming the status), and a user and password in `YT_GATEWAY_URL` are
+not sent by the ping (a note says so). It is refused under `YT_NO_REMOTE`. Once a
 published film has been read by `yt retention`, it notes how many the channel
 has measured: under ten, every retention finding carries `sanity_bound`.
 Exit 1 on any fail, so it works in a script.
