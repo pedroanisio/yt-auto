@@ -45,12 +45,13 @@ from tests.test_script_review import (ACCEPT, ANSWERS, COLD, flag, kind,  # noqa
 
 GOOGLE = {"model": "google/gemini-3.6-flash", "maker": "google",
           "price": {"input": 0.75, "output": 3.75},
-          "providers": ("google", "vertex"), "priced_on": "2026-10-23"}
+          "providers": ("google", "vertex"), "priced_on": "2026-10-23", "verified": True}
 ZAI = {"model": "zai/glm-5.3", "maker": "zai", "price": {"input": 1.20, "output": 4.00},
-       "providers": ("cerebras", "deepinfra", "novita", "zai"), "priced_on": "2026-10-23"}
+       "providers": ("cerebras", "deepinfra", "novita", "zai"), "priced_on": "2026-10-23",
+       "verified": True}
 DEEPSEEK = {"model": "deepseek/deepseek-v4.1-flash", "maker": "deepseek",
             "price": {"input": 0.075, "output": 0.30},
-            "providers": ("deepseek",), "priced_on": "2026-10-23"}
+            "providers": ("deepseek",), "priced_on": "2026-10-23", "verified": True}
 TEST_POOL = (GOOGLE, ZAI, DEEPSEEK)
 GATEWAY_ON = {"YT_GATEWAY": "vercel"}
 
@@ -134,15 +135,26 @@ class Maker(unittest.TestCase):
                            ("google/gemma-4-31b-it", "google"),
                            ("google/gemini-3.6-flash", "google"),
                            ("zai/glm-5.3", "zai"), ("sdk:zai/glm-5.3", "zai"),
-                           ("vmc/foo", None), ("mystery", None), ("", None)):
+                           ("vmc/foo", None), ("mystery", None), ("", None),
+                           # A serving provider is not a maker: Bedrock serves
+                           # Z.ai's models too, so its prefix says nothing of who
+                           # made one; a Claude model is Anthropic's wherever served.
+                           ("bedrock/zai.glm-5", None), ("vertex/gemini-3.6-flash", None),
+                           ("azure/gpt-5", None), ("deepinfra/zai/glm-5.3", None),
+                           ("sdk:bedrock/deepseek.v4", None),
+                           ("vertex/claude-opus-5", "anthropic")):
             self.assertEqual(reviewers.maker(name), want, name)
 
     def test_the_pinned_pool_has_no_cli_maker_and_its_makers_are_its_prefixes(self):
         for row in reviewers.POOL:
             self.assertNotIn(row["maker"], ("anthropic", "openai"), row["model"])
             self.assertEqual(reviewers.maker(row["model"]), row["maker"])
-            self.assertEqual(set(row), {"model", "maker", "price", "providers", "priced_on"})
+            self.assertEqual(set(row), {"model", "maker", "price", "providers", "priced_on",
+                                        "verified"})
             self.assertIsInstance(row["providers"], tuple)
+            # Nothing has been checked live on this machine (no network):
+            # every row says so until the card's live check pins it.
+            self.assertIs(row["verified"], False, row["model"])
 
 
 class Choose(Offline):
@@ -227,6 +239,49 @@ class Preflight(Offline):
         self.assertEqual(got["price_source"], "pinned")
         self.assertIsNone(got["live_price"])
         self.assertEqual(len([x for x in said.getvalue().splitlines() if x.strip()]), 1)
+
+    def test_preflight_failure_refuses_an_unverified_row(self):
+        # A row whose providers nobody checked live (quantization, schema,
+        # dearest price) is not served on its pinned list alone.
+        fetch = Fetch(fail=urllib.error.URLError("no route to host"))
+        unchecked = dict(ZAI, verified=False)
+        with self.assertRaises(ValueError) as caught, \
+                contextlib.redirect_stderr(io.StringIO()):
+            reviewers.preflight(unchecked, fetch=fetch, env={})
+        said = str(caught.exception)
+        self.assertIn("zai/glm-5.3", said)
+        self.assertIn("not checked live", said)
+        # Read live, the same row is narrowed as any other.
+        with contextlib.redirect_stderr(io.StringIO()):
+            got = reviewers.preflight(unchecked, fetch=zai_live(), env={})
+        self.assertEqual(got["providers"], ("cerebras", "novita", "zai"))
+
+    def test_preflight_cache_keyed_by_exclusions_and_providers(self):
+        self.ready()
+        fetch = Fetch({"zai/glm-5.3": [endpoint("cerebras", quant="fp8"),
+                                       endpoint("zai", quant="bf16")]})
+        with contextlib.redirect_stderr(io.StringIO()):
+            wide = reviewers.resolve("opus", "sdk:zai/glm-5.3", env=GATEWAY_ON, fetch=fetch)
+            first = len(fetch.calls)
+            strict = reviewers.resolve(
+                "opus", "sdk:zai/glm-5.3", fetch=fetch,
+                env={**GATEWAY_ON, reviewers.EXCLUDE_QUANT_ENV: "fp4,fp8"})
+            self.assertEqual(len(fetch.calls), 2 * first)
+            fewer = dict(ZAI, providers=("zai",))
+            reviewers.preflight(fewer, fetch=fetch, env={})
+            self.assertEqual(len(fetch.calls), 3 * first)
+        self.assertEqual(wide.providers, ("cerebras", "zai"))
+        self.assertEqual(strict.providers, ("zai",))
+
+    def test_a_failed_fetch_is_not_cached(self):
+        down = Fetch(fail=OSError("offline"))
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(reviewers.preflight(ZAI, fetch=down, env={})["price_source"],
+                             "pinned")
+            up = zai_live()
+            got = reviewers.preflight(ZAI, fetch=up, env={})
+        self.assertTrue(up.calls)
+        self.assertEqual(got["price_source"], "live")
 
     def test_preflight_cached_in_process(self):
         self.ready()
@@ -475,23 +530,145 @@ class ScriptRoles(Engines):
             self.assertEqual(seen["providers"], list(ZAI["providers"]))
             self.assertEqual(seen["price_source"], "pinned")
 
+    def test_script_retry_and_revision_roles_on_pool(self):
+        """The rows only a send-back makes: the plan's second reading and its
+        again, a sample's again, a section redrafted, a picture revised."""
+        got = self.resolved()
+        p = mock.patch.object(gateway_engine, "GatewayEngine", SendsBack)
+        p.start()
+        self.addCleanup(p.stop)
+        SendsBack.seen, SendsBack.count = [], {}
+        w = script.Screenwriter(idea(), root=self.root, verbose=False, minutes=1, jobs=1,
+                                model="sonnet", research="", reviewer_model="pool",
+                                reviewer=got, review_budget_usd=2.0)
+        data = w.run(review=True, do_verify=True)
+        asked = {d["name"]: d["model"] for d in data["engine"]["decisions"]}
+        for name in ("plan-review", "plan-review-again", "plan-review-2", "picture-check"):
+            self.assertEqual(asked.get(name), "zai/glm-5.3", (name, asked))
+        again = [n for n in asked if n.startswith("review-r1-s") and n.endswith("-again")]
+        self.assertTrue(again, asked)
+        for name in again:
+            self.assertEqual(asked[name], "zai/glm-5.3", name)
+        for name in ("plan", "plan-2", "write-01", "redraft-02", "revise-story-1",
+                     "revise-picture"):
+            self.assertEqual(asked.get(name), "sonnet", (name, asked))
+        for name, model in asked.items():
+            on_pool = name.startswith(REVIEWER_ROWS)
+            self.assertEqual(model, "zai/glm-5.3" if on_pool else "sonnet", name)
+        self.assertNotIn("zai/glm-5.3", {c["model"] for c in CliEngine.seen})
+
+    def test_a_plan_the_pool_stops_keeps_its_reviewer(self):
+        """A reject stops the stage before script.json; the record the command
+        writes to plan_review.json still names who read it and how it was served."""
+        got = self.resolved()
+        p = mock.patch.object(gateway_engine, "GatewayEngine", Rejects)
+        p.start()
+        self.addCleanup(p.stop)
+        w = script.Screenwriter(idea(), root=self.root, verbose=False, minutes=1, jobs=1,
+                                model="sonnet", research="", reviewer_model="pool",
+                                reviewer=got, review_budget_usd=2.0)
+        with self.assertRaises(claude_engine.ClaudeError):
+            w.run(review=True)
+        stop = w.plan_review_stop
+        self.assertEqual(stop["verdict"], "reject")
+        self.assertEqual(stop["model"], "zai/glm-5.3")
+        self.assertEqual(stop["reviewer"], got.record())
+        self.assertEqual(stop["reviewer"]["providers"], list(ZAI["providers"]))
+        self.assertEqual(stop["reviewer"]["price_source"], "pinned")
+
     def test_script_cli_reviewer_unchanged(self):
+        """A CLI reviewer's four harnesses are the ones develop built, with
+        the same constructor arguments, so their digests, configs and
+        effort and fallback are today's; pinned to literals under fixed
+        claude defaults so a change to either is caught."""
+        claude_engine.set_defaults(effort="high", fallback_model="haiku")
+        self.addCleanup(claude_engine.DEFAULTS.clear)
         w = script.Screenwriter(idea(), root=self.root, verbose=False, minutes=1, jobs=1,
                                 model="opus", research="", reviewer_model="sonnet",
                                 review_budget_usd=2.0)
-        for h in (w.reviewer, w.picture_reviewer, w._reader(1), w._reader("cold")):
-            self.assertIsNone(h.engine)
-            self.assertIsNone(h.gateway)
-            self.assertEqual(h._asked_as, "sonnet")
+        common = dict(house_digest=w.house_digest, budget_usd=2.0, fresh=False,
+                      verbose=False)
+        # The constructor calls on develop, before AUTO-125: no reviewer kwarg.
+        before = {
+            "plan": harness.Harness(self.root, "script", model="sonnet",
+                                    role=narrative.reviewer_role(plan=True), house=w.house,
+                                    **common),
+            "picture": harness.Harness(self.root, "script", model="sonnet",
+                                       role=narrative.picture_role(), house=w.house, **common),
+            "sample": harness.Harness(self.root, "script", model="sonnet",
+                                      role=narrative.reviewer_role(seed=1), house=w.house,
+                                      feedback=True, **common),
+            "cold": harness.Harness(self.root, "script", model="sonnet",
+                                    role=script.COLD_ROLE, house="", feedback=False,
+                                    **common)}
+        now = {"plan": w.reviewer, "picture": w.picture_reviewer, "sample": w._reader(1),
+               "cold": w._reader("cold")}
+        schema = narrative.PLAN_REVIEW_SCHEMA
+        for which, h in now.items():
+            old = before[which]
+            self.assertIsNone(h.engine, which)
+            self.assertIsNone(h.gateway, which)
+            self.assertEqual(h.effort, "high", which)
+            self.assertEqual(h.fallback_model, "haiku", which)
+            self.assertEqual(h._asked_as, "sonnet@high", which)
+            self.assertEqual((h._asked_as, h.effort, h.fallback_model, h.system, h.timeout),
+                             (old._asked_as, old.effort, old.fallback_model, old.system,
+                              old.timeout), which)
+            self.assertEqual(harness._digest(h.system, "the plan", schema, h._asked_as),
+                             harness._digest(old.system, "the plan", schema, old._asked_as),
+                             which)
             engine = h._engine(tools=())
             self.assertIsInstance(engine, CliEngine)
             self.assertEqual(engine.config, EngineConfig(
-                model="sonnet", effort=h.effort, fallback_model=h.fallback_model,
-                timeout=h.timeout, max_turns_budget_usd=2.0, tools=()))
+                model="sonnet", effort="high", fallback_model="haiku", timeout=900.0,
+                max_turns_budget_usd=2.0, tools=()), which)
+            self.assertEqual(engine.config, old._engine(tools=()).config, which)
         data = w.run(review=True)
         self.assertEqual(GatewayFake.seen, [])
         for key in ("plan_review", "review", "picture"):
             self.assertNotIn("reviewer", data[key], key)
+
+
+class SendsBack(GatewayFake):
+    """A pool reviewer that sends things back: a plan revise naming nothing
+    (asked again), then naming a problem (planned again, read again), one
+    sample flagging a shot the script lacks (asked again), every sample
+    flagging shot 1 and section 2 as a whole, and a bare number on shot 1."""
+    seen: list = []
+    count: dict = {}
+
+    def ask_json(self, prompt, schema, system=None, **kw):
+        which = kind(schema)
+        n = type(self).count[which] = type(self).count.get(which, 0) + 1
+        type(self).seen.append({"kind": which, "model": self.config.model,
+                                "config": self.config})
+        if which == "plan-review":
+            if n == 1:
+                return dict(ACCEPT, verdict="revise", problems=[])
+            if n == 2:
+                return dict(ACCEPT, verdict="revise", problems=[
+                    {"section": 1, "problem": "the hook lists", "fix": "open on the river"}])
+            return copy.deepcopy(ACCEPT)
+        if which == "review" and "previous" not in schema.get("required", []):
+            if n == 1:
+                return sample("consider", flags=[flag(n=99)])
+            return sample("consider", flags=[flag(), flag(n=0, section=2)])
+        if "sections" in schema.get("properties", {}) and which == "":
+            return {"sections": [{"section": i, "claim": f"claim {i}", "carries_beat": True,
+                                  "missing": "", "confused_at": []} for i in (1, 2, 3)],
+                    "reports": [{"n": 1, "bare_number": "40 percent", "unshown_claim": "",
+                                 "unsignposted_list": ""}]}
+        return answer(schema, prompt)
+
+
+class Rejects(GatewayFake):
+    """A pool reviewer that rejects the plan."""
+
+    def ask_json(self, prompt, schema, system=None, **kw):
+        if kind(schema) == "plan-review":
+            return dict(ACCEPT, verdict="reject", problems=[
+                {"section": 0, "problem": "no story here", "fix": "find one"}])
+        return answer(schema, prompt)
 
 
 class Command(Offline):
@@ -628,9 +805,25 @@ class Run(Offline):
             self.assertEqual(args.reviewer_model, "sdk:google/gemini-3.6-flash")
 
     def test_run_without_the_gateway_refuses_pool(self):
-        code, said, _ = self.walk("--model", "sonnet", "--reviewer-model", "pool")
-        self.assertEqual(code, 2)
-        self.assertIn("YT_GATEWAY=vercel", said)
+        for dry in ((), ("--dry-run",)):
+            code, said, _ = self.walk("--model", "sonnet", "--reviewer-model", "pool", *dry)
+            self.assertEqual(code, 2, dry)
+            self.assertIn("YT_GATEWAY=vercel", said)
+
+    def test_a_dry_run_checks_the_pool_reviewer_but_fetches_nothing(self):
+        # The plan is priced for the chosen row; the switch, the engine's
+        # readiness and the maker rule are checked as for a real run, and
+        # the gateway's lists are read by the script stage when it runs.
+        stub = self.ready()
+        fetch = mock.Mock(side_effect=AssertionError("a dry run fetched"))
+        with mock.patch.dict(os.environ, GATEWAY_ON), \
+                mock.patch.object(reviewers, "_get_json", fetch):
+            code, said, args = self.walk("--model", "opus", "--reviewer-model", "pool",
+                                         "--skip", "keyframe,vfx", "--dry-run")
+        self.assertIsNone(code, said)
+        self.assertEqual(args.reviewer_model, "sdk:google/gemini-3.6-flash")
+        fetch.assert_not_called()
+        stub.assert_called()
 
 
 # --------------------------------------------------------------------------- #

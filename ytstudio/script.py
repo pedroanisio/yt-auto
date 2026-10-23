@@ -2029,6 +2029,10 @@ class Screenwriter:
                   "retried": previous is not None, "model": self.reviewer.model,
                   "prechecks": checks, "unsettled": rounds[-1]["unsettled"],
                   "rounds": rounds}
+        if self.pool_reviewer is not None:
+            # On the record a stop writes to plan_review.json too: which pool
+            # reviewer read it, served by whom, priced from where.
+            record["reviewer"] = self.pool_reviewer.record()
         if verdict == "reject" or (verdict == "revise" and fix):
             # script.json is not written on a stop (its existence marks the
             # stage done for `yt run`), so the command keeps this elsewhere.

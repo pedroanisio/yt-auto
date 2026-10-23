@@ -40,8 +40,11 @@ POOL is pinned, never widened by what the gateway lists today:
     endpoints, unauthenticated, and keeps the pinned providers that are
     live now (status 0), offer structured output, are not of a quantization
     in $YT_REVIEWER_EXCLUDE_QUANT (default fp4), and are priced at or below
-    the row. When the fetch fails the pinned list stands, with one note.
-    What it found is kept in this process only and recorded in script.json.
+    the row. When the fetch fails the pinned list stands, with one note,
+    but only for a row whose providers were checked live (`verified`); an
+    unchecked row is refused then, since nothing would keep an fp4
+    provider or one billing above the row off it. What it found is kept
+    in this process only and recorded in script.json.
   - Every row's price is at or below opus's, so the plan review's and the
     picture check's fixed estimates still bound a pool reviewer.
 
@@ -70,7 +73,8 @@ from . import flags, gateway, models
 from .models import maker
 
 __all__ = ["POOL", "POOL_VALUE", "PREFIX", "HAS", "EXCLUDE_QUANT_ENV", "Resolved",
-           "maker", "is_gateway", "choose", "preflight", "resolve", "harness_kwargs",
+           "maker", "is_gateway", "choose", "preflight", "admit", "resolve",
+           "harness_kwargs",
            "agent_refusal", "priced_as", "clear_cache"]
 
 #: The value that asks for the pool's choice, and the mark of one pinned row.
@@ -87,10 +91,11 @@ ENDPOINTS_URL = "https://ai-gateway.vercel.sh/v1/models/{id}/endpoints"
 FETCH_TIMEOUT = 10.0
 
 
-def _row(model: str, input: float, output: float, providers: tuple[str, ...]) -> dict:
+def _row(model: str, input: float, output: float, providers: tuple[str, ...],
+         verified: bool = False) -> dict:
     return {"model": model, "maker": model.split("/", 1)[0],
             "price": {"input": input, "output": output},
-            "providers": providers, "priced_on": "2026-10-23"}
+            "providers": providers, "priced_on": "2026-10-23", "verified": verified}
 
 
 #: The reviewers, in the order `pool` tries them (the owner decides it: the
@@ -98,7 +103,11 @@ def _row(model: str, input: float, output: float, providers: tuple[str, ...]) ->
 #: 2026-10-23. Only the rows whose SO providers the research named carry
 #: them; the others wait for the card's live check (each provider's
 #: endpoint fields and one call per script schema) and are passed over
-#: until then. No anthropic/ or openai/ row: the CLIs are those makers'.
+#: until then. `verified` says that check was made for the row's providers
+#: and price; none has been yet, so a row whose providers come from the
+#: research alone is used only when preflight reads them live, never on
+#: its pinned list after a failed read. No anthropic/ or openai/ row: the
+#: CLIs are those makers'.
 POOL: tuple[dict, ...] = (
     # 22 of 24 providers offer SO; baseten, crusoe, deepinfra, inceptron and
     # togetherai serve fp4. Which of the rest pass is the live check's.
@@ -199,8 +208,11 @@ def priced_as(reviewer: Any, author: Any = "sonnet") -> str:
 # preflight
 # --------------------------------------------------------------------------- #
 
-#: What preflight found, by model id, for this process only.
-_CACHE: dict[str, dict] = {}
+#: What preflight read live, for this process only, by model id, the
+#: quantizations excluded and the row's providers: a stricter exclusion or
+#: another allowlist is another answer. A failed read is not kept, so the
+#: next resolve in the process reads again.
+_CACHE: dict[tuple, dict] = {}
 
 
 def clear_cache() -> None:
@@ -286,29 +298,35 @@ def preflight(row: dict, fetch: Callable[[str], Any] | None = None,
     one with no provider left, raises ValueError naming why; a fetch that
     fails keeps the pinned list ("pinned") with one note."""
     model_id = row["model"]
-    if model_id in _CACHE:
-        return dict(_CACHE[model_id])
-    fetch = fetch or _get_json
     env = os.environ if env is None else env
     pinned = tuple(row["providers"])
+    excluded = _excluded(env)
+    key = (model_id, frozenset(excluded), pinned)
+    if key in _CACHE:
+        return dict(_CACHE[key])
+    fetch = fetch or _get_json
     try:
         listed = _listed(fetch(MODELS_URL), model_id)
         endpoints = _endpoints(fetch(ENDPOINTS_URL.format(id=model_id))) if listed else []
     except (OSError, ValueError, TypeError, AttributeError) as exc:
+        if not row.get("verified"):
+            raise ValueError(
+                f"error: the gateway's list of {model_id}'s providers could not be read "
+                f"({exc}), and the row's pinned providers ({', '.join(pinned)}) were not "
+                "checked live for quantization, structured output or price (reviewers.POOL "
+                "`verified`), so nothing would keep an excluded or dearer provider off it; "
+                "run again when the gateway's catalogue can be read") from exc
         print(f"note: reviewer pool: the gateway's list of {model_id}'s providers could not "
               f"be read ({exc}); its pinned providers stand: {', '.join(pinned)}",
               file=sys.stderr)
-        found = {"providers": pinned, "price_source": "pinned", "live_price": None,
-                 "fetched_at": None}
-        _CACHE[model_id] = found
-        return dict(found)
+        return {"providers": pinned, "price_source": "pinned", "live_price": None,
+                "fetched_at": None}
     if listed is None:
         raise ValueError(f"error: {model_id} is not in the gateway's catalogue now")
     if listed.get("deprecated_at"):
         raise ValueError(f"error: {model_id} is deprecated (deprecated_at "
                          f"{listed['deprecated_at']}): a pool reviewer must be current")
     by_name = {e["provider"]: e for e in endpoints}
-    excluded = _excluded(env)
     kept, dropped = [], []
     for name in pinned:
         why = _why_not(by_name.get(name), row["price"], excluded)
@@ -322,7 +340,7 @@ def preflight(row: dict, fetch: Callable[[str], Any] | None = None,
     found = {"providers": tuple(kept), "price_source": "live",
              "live_price": {k: max(by_name[n][k] for n in kept) for k in ("input", "output")},
              "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
-    _CACHE[model_id] = found
+    _CACHE[key] = found
     return dict(found)
 
 
@@ -330,18 +348,15 @@ def preflight(row: dict, fetch: Callable[[str], Any] | None = None,
 # the entry point
 # --------------------------------------------------------------------------- #
 
-def resolve(author: str, value: Any, *, env: Mapping[str, str] | None = None,
-            fetch: Callable[[str], Any] | None = None) -> Resolved | None:
-    """The pool reviewer `value` names for `author`, or None for any value
-    that is not `pool` or `sdk:...` (a CLI reviewer: nothing here runs).
-    Raises ValueError, a message for the operator, when it cannot be used:
-    the row (unknown author, no pinned row), the gateway (the switch, the
-    engine's readiness) are named together, before anything is fetched;
-    then the maker rule; then the providers live now."""
-    if not is_gateway(value):
-        return None
+def admit(author: str, value: Any, *, env: Mapping[str, str] | None = None) -> dict:
+    """The POOL row `value` (`pool` or `sdk:...`) names for `author`, once
+    everything this machine can say without the network allows it. Raises
+    ValueError naming, together, what the row (unknown author, no pinned
+    row) and the gateway (the switch, the engine's readiness) lack; then
+    the maker rule. `yt run --dry-run` stops here: it fetches nothing, and
+    the script stage reads the providers when it runs."""
     env = os.environ if env is None else env
-    value = str(value).strip()
+    value = str(value or "").strip()
     problems: list[str] = []
     row = None
     try:
@@ -360,6 +375,20 @@ def resolve(author: str, value: Any, *, env: Mapping[str, str] | None = None,
     own = flags.own_reviewer(author, PREFIX + row["model"])
     if own:
         raise ValueError(own)
+    return row
+
+
+def resolve(author: str, value: Any, *, env: Mapping[str, str] | None = None,
+            fetch: Callable[[str], Any] | None = None) -> Resolved | None:
+    """The pool reviewer `value` names for `author`, or None for any value
+    that is not `pool` or `sdk:...` (a CLI reviewer: nothing here runs).
+    Raises ValueError, a message for the operator, when it cannot be used:
+    what `admit` refuses, before anything is fetched; then the providers
+    live now (`preflight`)."""
+    if not is_gateway(value):
+        return None
+    env = os.environ if env is None else env
+    row = admit(author, value, env=env)
     found = preflight(row, fetch=fetch, env=env)
     return Resolved(model=row["model"], maker=row["maker"], providers=found["providers"],
                     has=HAS, price=dict(row["price"]), price_source=found["price_source"],

@@ -398,7 +398,10 @@ def _run_pipeline(args) -> int:
     if reviewers.is_gateway(asked):
         # A pool reviewer (AUTO-125) reads the script only; keyframe and vfx
         # keep vfx.REVIEWER_MODEL, checked by family as before. It is
-        # resolved once here and handed to the script as its gateway id.
+        # resolved once here and handed to the script as its gateway id. A
+        # dry run checks what this machine can (the switch, the engine's
+        # readiness, the maker rule) and fetches nothing: the providers are
+        # read by the script stage when it runs.
         if "script" not in reviews:
             print(f"error: --reviewer-model {asked} reviews the script only, and this run "
                   f"makes no script review ({'--quick' if args.quick else '--skip script'}); "
@@ -412,11 +415,12 @@ def _run_pipeline(args) -> int:
                   "--model", file=sys.stderr)
             return 2
         try:
-            pooled = reviewers.resolve(args.model, asked)
+            pooled = (reviewers.admit(args.model, asked)["model"] if args.dry_run
+                      else reviewers.resolve(args.model, asked).model)
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 2
-        args.reviewer_model = reviewers.PREFIX + pooled.model
+        args.reviewer_model = reviewers.PREFIX + pooled
     elif reviews and (own := flags.own_reviewer(args.model, asked or vfx.REVIEWER_MODEL)):
         print(own, file=sys.stderr)
         return 2

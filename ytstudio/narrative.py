@@ -983,8 +983,8 @@ def calibrate(directory: Any, *, work: Any, model: str = "sonnet",
         w = script.Screenwriter(
             Idea.from_raw(raw), model=model, minutes=max(seconds, 60) / 60,
             reviewer_model=reviewer_model, reviewer=pooled,
-            review_budget_usd=review_budget_usd, house=block, house_digest=digest, fresh=fresh, verbose=verbose,
-            root=work / "calibration" / name, review_log=None)
+            review_budget_usd=review_budget_usd, house=block, house_digest=digest,
+            fresh=fresh, verbose=verbose, root=work / "calibration" / name, review_log=None)
         writers.append(w)
         return w
 

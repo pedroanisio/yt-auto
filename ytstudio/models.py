@@ -29,7 +29,8 @@ import re
 
 from claude_engine import VIRTUAL_PROVIDER, canonical_model as canonical
 
-__all__ = ["canonical", "VIRTUAL_PROVIDER", "is_virtual", "maker", "SDK_PREFIX"]
+__all__ = ["canonical", "VIRTUAL_PROVIDER", "is_virtual", "maker", "SDK_PREFIX",
+           "SERVING_PROVIDERS"]
 
 #: What a reviewer value leads with when it names a gateway model for the
 #: gateway engine (`sdk:zai/glm-5.3`, ytstudio/reviewers.py, AUTO-125).
@@ -37,6 +38,17 @@ SDK_PREFIX = "sdk:"
 
 #: A bare OpenAI name, as the codex CLI takes it: gpt-*, the o-series, codex.
 _OPENAI_BARE = re.compile(r"^(gpt-|o\d|codex)")
+
+#: Prefixes that name who serves a model, not who made it: the clouds and
+#: the hosts the gateway routes to that make no model of their own in its
+#: catalogue. `bedrock/zai.glm-5` is Z.ai's model on Bedrock, so an id led
+#: by one of these has no maker `maker` can read (a Claude id excepted:
+#: it is Anthropic's wherever it is served).
+SERVING_PROVIDERS = frozenset({
+    "bedrock", "amazon-bedrock", "vertex", "google-vertex", "azure", "azure-openai",
+    "baseten", "cerebras", "crusoe", "deepinfra", "fireworks", "friendli", "gmicloud",
+    "groq", "inceptron", "novita", "parasail", "relace", "runinfra", "sambanova",
+    "togetherai", "wafer"})
 
 
 def is_virtual(name: str | None) -> bool:
@@ -53,7 +65,9 @@ def maker(name: str | None) -> str | None:
     Claude model is Anthropic's whichever provider serves it (the
     `codex_engine.is_claude_model` check), and a bare gpt-*, o-series or
     codex name is OpenAI's. A virtual model (`vmc/<slug>`) may route to any
-    maker, so it has none; neither has a bare name nobody recognises.
+    maker, so it has none; neither has a bare name nobody recognises, nor
+    an id led by a serving provider (SERVING_PROVIDERS), which says who
+    hosts the model and never who made it.
     `sdk:` in front is the reviewer flag's mark, not part of the id."""
     text = str(name or "").strip()
     if text.lower().startswith(SDK_PREFIX):
@@ -66,6 +80,8 @@ def maker(name: str | None) -> str | None:
     import codex_engine          # an engine file; models is imported by the engines' users
     if codex_engine.is_claude_model(text):
         return "anthropic"
+    if provider in SERVING_PROVIDERS:
+        return None
     if provider:
         return provider
     if _OPENAI_BARE.match(model.lower()):
