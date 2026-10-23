@@ -118,6 +118,20 @@ class Evidence(unittest.TestCase):
         self.assertIn("yt sound", unheard["music_score"]["command"])
         self.assertIn("no sound.json", unheard["music_score"]["missing"])
 
+    def test_every_step_of_a_remedy_names_the_project(self):
+        where = "--project /films/one-take"
+        rows = qa.listening_evidence(None, None, where=where) + qa.listening_evidence(
+            _sound(), _voice(), built_before={"sound"}, where=where)
+        commands = [r["command"] for r in rows if not r["current"]]
+        self.assertEqual(len(commands), 3)
+        for command in commands:
+            steps = command.replace(", then ", ", ").replace(" and ", ", ").split(", ")
+            self.assertGreater(len(steps), 1, command)
+            for step in steps:
+                self.assertTrue(step.startswith("yt "), command)
+                self.assertIn(where, step, command)
+        self.assertTrue(commands[-1].startswith(f"yt build {where}, then yt render"))
+
     def test_a_wordless_film_has_no_take_review_to_stand_in(self):
         unheard = qa.audio_unheard(qa.listening_evidence(
             _sound(), {"wordless": True, "takes": []}))

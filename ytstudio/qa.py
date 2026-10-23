@@ -902,6 +902,14 @@ def _yt(stage_args: str, where: str = "") -> str:
     return " ".join(part for part in ("yt", stage, where, rest) if part)
 
 
+def _then_rebuild(first: str, where: str = "") -> str:
+    """`first`, then build, render and QA again, every step aimed at the
+    same project, so each one pastes as it stands."""
+    build, render, review = (_yt(s, where) for s in ("build", "render", "qa"))
+    return f"{first}, then {build}, {render} and {review}" if first \
+        else f"{build}, then {render} and {review}"
+
+
 def _said(source: str, review: dict) -> dict:
     """What a current review found, as the reviewer is shown it: the
     listen-back's flags and verdict, or the director's retakes and notes."""
@@ -934,7 +942,6 @@ def listening_evidence(sound: dict | None, voice: dict | None, *,
     since ridden, of takes since re-recorded, or of a sheet the film was
     not built from is stale, said so, and never stands in for the mix."""
     rows = []
-    after = ", then yt build, yt render and yt qa"
     for source, data in (("sound", sound), ("voice", voice)):
         spec = LISTENERS[source]
         data = data if isinstance(data, dict) else {}
@@ -946,7 +953,7 @@ def listening_evidence(sound: dict | None, voice: dict | None, *,
         row = {"source": source, "file": spec["file"], "review": spec["review"],
                "covers": list(spec["covers"]), "heard": mark.get("sha256"),
                "now": now["sha256"] if data else None, "current": False, "why": "",
-               "command": _yt(spec["redo"], where) + after}
+               "command": _then_rebuild(_yt(spec["redo"], where), where)}
         if not data:
             row["why"] = f"no {spec['file']}"
         elif source == "voice" and data.get("wordless"):
@@ -967,7 +974,7 @@ def listening_evidence(sound: dict | None, voice: dict | None, *,
         elif source in set(built_before or ()):
             row["why"] = (f"stale: build.json predates {spec['file']}, so the film "
                           f"carries older {what} than the ones reviewed")
-            row["command"] = _yt("build", where) + ", then yt render and yt qa"
+            row["command"] = _then_rebuild("", where)
         else:
             row["current"] = True
             row["said"] = _said(source, review)
