@@ -1020,9 +1020,17 @@ class ClaudeEngine:
                 print(proc.stderr, file=sys.stderr, end="")
 
             if proc.returncode != 0:
+                # The CLI often reports an API error as an is_error result
+                # on stdout before exiting 1: its text decides whether a
+                # retry can help (a gateway budget's 402 cannot).
+                try:
+                    printed = json.loads(proc.stdout or "")
+                except json.JSONDecodeError:
+                    printed = None
                 last_error = ClaudeExecutionError(
                     f"claude exited with code {proc.returncode}",
                     returncode=proc.returncode, stderr=proc.stderr.strip(),
+                    payload=printed if isinstance(printed, dict) else None,
                 )
                 if not last_error.transient or not self._sleep_before_retry(attempt):
                     raise last_error
