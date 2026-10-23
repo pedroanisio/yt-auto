@@ -467,6 +467,36 @@ class Refused(QaCase):
         self.assertFalse((self.root / "qa" / "pass-02" / "comparison.json").exists())
 
 
+class Unrecorded(QaCase):
+    """Author reports that name no model: the author is the default CLI's,
+    so a compare model of either CLI's provider is refused (AUTO-128)."""
+
+    def refused(self, model):
+        err_ = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err_):
+            code = qa.run(self.args(against=str(self.old), compare_model=model))
+        self.assertEqual(code, 2, err_.getvalue())
+        self.assertEqual(self.node.count, 0)
+        return err_.getvalue()
+
+    def test_reports_naming_no_model_refuse_a_cli_provider(self):
+        write_json(self.root / "vfx.json", {"usage": {"cost_usd": 1.0}})
+        for model in ("anthropic/claude-sonnet-5", "openai/gpt-5"):
+            with self.subTest(model=model):
+                said = self.refused(model)
+                self.assertIn("vfx.json", said)
+                self.assertIn("names no model", said)
+
+    def test_a_named_model_or_another_provider_passes(self):
+        self.assertEqual(cutcompare.refusal(
+            "x.mp4", MODEL, MODEL, [("vfx.json", "")]), "")
+        self.assertEqual(cutcompare.refusal(
+            "x.mp4", None, "anthropic/claude-sonnet-5",
+            [("vfx.json", ""), ("sound.json", "gpt-5")]), "")
+        self.assertEqual(cutcompare.author_models(
+            {"vfx": None, "sound": self.root / "missing.json"}), [])
+
+
 class Off(QaCase):
     def test_against_off_is_identical(self):
         self.against(against=None, compare_model=None)

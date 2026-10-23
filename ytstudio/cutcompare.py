@@ -149,18 +149,25 @@ AUTHORS = ("script", "styles", "keyframe", "vfx", "sound", "build")
 
 def author_models(reports: dict[str, Any]) -> list[tuple[str, str]]:
     """(file, model) for each author report given, {stage: path or None}:
-    the model its `usage` and its `engine` name."""
+    the model its `usage` and its `engine` name, or (file, "") for a report
+    that names none."""
     out = []
     for stage in AUTHORS:
         path = reports.get(stage)
         doc = read_json(Path(path), warn=False) if path else None
         if not isinstance(doc, dict):
             continue
-        for key in ("usage", "engine"):
-            model = (doc.get(key) or {}).get("model") if isinstance(doc.get(key), dict) else None
-            if model and (Path(path).name, str(model)) not in out:
-                out.append((Path(path).name, str(model)))
+        named = [str(row["model"]) for row in (doc.get("usage"), doc.get("engine"))
+                 if isinstance(row, dict) and row.get("model")]
+        for model in named or [""]:
+            if (Path(path).name, model) not in out:
+                out.append((Path(path).name, model))
     return out
+
+
+#: The providers of the default CLIs (claude, codex): a report that names
+#: no model was most likely made by one of them.
+CLI_PROVIDERS = ("anthropic", "openai")
 
 
 def refusal(against: Any, flag_model: Any, model: Any,
@@ -182,7 +189,17 @@ def refusal(against: Any, flag_model: Any, model: Any,
     problem = gateway_engine.model_problem(model)
     if problem:
         return f"error: --compare-model {model}: {problem}"
+    if authors and not any(author for _, author in authors) and (
+            models.canonical(model)[0] in CLI_PROVIDERS):
+        # Nothing says who made them, and the default CLIs' models are
+        # these providers': whether it is the author's family is unknown.
+        # A family across one provider's models is AUTO-125's maker().
+        return (f"error: {', '.join(dict.fromkeys(f for f, _ in authors))} names no model, "
+                f"so whether --compare-model {model} is of the author's family cannot be "
+                "known; pass --compare-model with a model of another provider")
     for file, author in authors:
+        if not author:
+            continue
         if models.is_virtual(author):
             return (f"error: {file} was made with {author}, a virtual gateway model that "
                     "may route to any model, so whether --compare-model "

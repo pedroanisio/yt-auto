@@ -1451,7 +1451,9 @@ it. `qa/pass-NN/comparison.json` keeps both cuts' sha256, each order's answer
 and the reconciled rows; the scorecard keeps the comparison's own account as
 `compare_engine`, and `usage` is both. Either option alone, a model the
 gateway engine cannot ask, or one of the family that made the script,
-styles, keyframes, vfx, sound or build exits 2 before anything renders.
+styles, keyframes, vfx, sound or build exits 2 before anything renders; when
+none of their reports names a model, an `anthropic/` or `openai/` one is
+refused, since the default CLIs made them.
 `$YT_COMPARE_MODEL` names the model when `--compare-model` is not given; it
 turns nothing on by itself.
 
