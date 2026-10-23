@@ -17,6 +17,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -175,6 +176,15 @@ class Media(Case):
         plain = json.loads((self.root / "decisions" / "qa" / "plain.json").read_text())
         self.assertEqual(plain["digest"], harness._digest(h.system, "P", SCHEMA, h._asked_as))
         self.assertEqual(self.node.requests()[-1]["media"], [])
+
+    def test_media_are_hashed_without_reading_them_whole(self):
+        # A full render may be hundreds of MB: the digest reads it in chunks,
+        # and comes out the same as one hash of all its bytes.
+        clip = self.clip(data=b"x" * (3 * 1024 * 1024 + 7))
+        h = self.make()
+        with mock.patch.object(Path, "read_bytes", side_effect=AssertionError("whole file")):
+            rows = h._media_digest([clip])
+        self.assertEqual(rows, [[hashlib.sha256(clip.read_bytes()).hexdigest(), "video/mp4"]])
 
     def test_missing_media_fails_the_decision(self):
         with self.assertRaises(harness.HarnessError):

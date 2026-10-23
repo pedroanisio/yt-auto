@@ -494,12 +494,14 @@ class Harness:
         import gateway_engine
         rows = []
         for path in media:
-            try:
-                data = Path(path).read_bytes()
+            sha = hashlib.sha256()
+            try:   # in chunks: a full render may be hundreds of MB
+                with open(path, "rb") as handle:
+                    for chunk in iter(lambda: handle.read(1 << 20), b""):
+                        sha.update(chunk)
             except OSError as exc:
                 raise HarnessError(f"[{self.stage}] cannot read media {path}: {exc}") from exc
-            rows.append([hashlib.sha256(data).hexdigest(),
-                         gateway_engine.media_type(path) or ""])
+            rows.append([sha.hexdigest(), gateway_engine.media_type(path) or ""])
         return rows
 
     def decide(self, name: str, prompt: str, schema: dict, *,
