@@ -502,13 +502,16 @@ Through the gateway a claude call is booked at its model's price row times
 the tokens in `modelUsage`, an estimate of the gateway's bill (list price,
 no markup; a discount or a surcharge is not in it), and the CLI's own
 figure stays on the `by_model` row as `cli_cost_usd` beside
-`cost_table_calls` or `cost_cli_calls`: a model with no row, or a result
-with no tokens, is booked at the CLI's figure, counted in `cost_cli_calls`
-and warned about by `yt doctor`. The stream meter's budget check reads the
+`cost_table_calls` or `cost_cli_calls`. Each web search
+(`webSearchRequests`) adds $0.01, which the CLI's figure holds and the
+tokens do not; a model with no row, a result with no tokens, a prompt above
+a model's tier (Haiku 5.5 bills 5x above 100K prompt tokens) or another
+server tool's requests is booked at the CLI's figure, counted in
+`cost_cli_calls` and warned about by `yt doctor`. The stream meter's budget check reads the
 table's figure; the CLI's `--max-budget-usd` stays as a backstop. A gateway
 budget's 402 (`quota_for_entity_exceeded`, "budget exceeded", an API key's
-"Quota limit exceeded") is permanent, so the call stops on the first one,
-and a 429 is retried. Under
+"Quota limit exceeded") is permanent, on stderr or in an `is_error`
+result, so the call stops on the first one, and a 429 is retried. Under
 `YT_ENGINE=codex` the switch makes the gateway Codex's model provider with
 `-c` pairs instead (base URL `https://ai-gateway.vercel.sh/codex/v1`, the key
 read from `AI_GATEWAY_API_KEY`, nothing written to `$CODEX_HOME/config.toml`,

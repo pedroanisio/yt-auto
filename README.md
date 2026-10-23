@@ -62,13 +62,18 @@ research and screenplay work; it is not an unattended model service.
   the bill, short of a model priced below list and of surcharges such as
   zero data retention. The CLI's figure stays on the record's `by_model` row
   as `cli_cost_usd`, beside a count of the calls booked each way
-  (`cost_table_calls`, `cost_cli_calls`); a model with no row, or a result
-  with no tokens, is booked at the CLI's figure and counted in
+  (`cost_table_calls`, `cost_cli_calls`). A web search the CLI ran
+  (`webSearchRequests`) is added at $0.01 each, Anthropic's rate, since the
+  CLI's figure holds it and the tokens do not. A model with no row, a result
+  with no tokens, a prompt above a model's tier (Haiku 5.5 bills 5x above
+  100K prompt tokens, which its row does not model) or another server
+  tool's requests is booked at the CLI's figure instead and counted in
   `cost_cli_calls`, which `yt doctor` warns about. The CLI's own
   `--max-budget-usd` stays on as a backstop. A gateway budget's 402
   (`quota_for_entity_exceeded`, a team or project's "budget exceeded", an
   API key's "Quota limit exceeded") ends the call at the first one with no
-  retry, and a 429 is retried as any transient failure is. Under `YT_ENGINE=codex` the same switch makes
+  retry, whether the CLI prints it on stderr or in an `is_error` result,
+  and a 429 is retried as any transient failure is. Under `YT_ENGINE=codex` the same switch makes
   the gateway Codex's model provider with `-c` pairs on the command line
   (`model_provider="vercel"`, base URL `https://ai-gateway.vercel.sh/codex/v1`,
   `env_key="AI_GATEWAY_API_KEY"`, `wire_api="responses"`), so codex reads the

@@ -468,7 +468,8 @@ class Docs(unittest.TestCase):
     def test_the_readme_and_the_skill_name_the_booking(self):
         for path in (ROOT / "README.md", ROOT / "ytstudio" / "SKILL.md"):
             text = path.read_text(encoding="utf-8")
-            for word in ("cli_cost_usd", "cost_cli_calls", "quota_for_entity_exceeded"):
+            for word in ("cli_cost_usd", "cost_cli_calls", "quota_for_entity_exceeded",
+                         "webSearchRequests", "100K"):
                 with self.subTest(path=path.name, word=word):
                     self.assertIn(word, text)
 
