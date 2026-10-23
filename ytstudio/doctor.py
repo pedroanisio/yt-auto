@@ -445,6 +445,10 @@ def check_house(project: workspace.Project, report: Report,
 #: The verdict `yt qa` writes into qa.json when the bar is met (qa.READY;
 #: kept here so doctor stays model-free, and held equal by a test).
 READY_TO_PUBLISH = "READY TO PUBLISH"
+#: The verdict `yt qa` writes when fewer than two of its scoring samples
+#: answered (qa.NOT_EVIDENCED, AUTO-107): nothing to route, only to score
+#: again. Held equal by a test, like READY_TO_PUBLISH.
+QA_NOT_EVIDENCED = "not_evidenced"
 
 #: Engine finding severities that `--strict` refuses.
 STRICT_SEVERITIES = ("warning", "error")
@@ -548,6 +552,9 @@ def delivery_evidence(project: workspace.Project, build: dict | None
     elif _mtime(qa_file) < (rendered_at if qa.get("scene_sha256") else judged_after):
         missing.append((f"QA {qa.get('pass', '')} predates the render it should judge",
                         _cmd("qa", project)))
+    elif qa.get("verdict") == QA_NOT_EVIDENCED:
+        missing.append((f"QA {qa.get('pass', '')} is not evidenced (fewer than two "
+                        "scoring samples answered)", _cmd("qa", project)))
     elif qa.get("verdict") != READY_TO_PUBLISH:
         missing.append((f"QA {qa.get('pass', '')} says {qa.get('verdict')} at "
                         f"{qa.get('overall', '?')}", _cmd("qa", project)))
@@ -1067,7 +1074,12 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
                                       "missing": [m for m, _ in missing]}
         for problem, fix in missing:
             report.add("fail", "delivery", problem, fix)
-        if qa_done.get("verdict") and qa_done.get("verdict") != READY_TO_PUBLISH:
+        if qa_done.get("verdict") == QA_NOT_EVIDENCED:
+            # Nothing was scored, so nothing is routed: QA is run again.
+            report.add("note", "delivery", f"QA {qa_done.get('pass', '')} is not evidenced "
+                       "(fewer than two scoring samples answered): score the video again",
+                       _cmd("qa", project))
+        elif qa_done.get("verdict") and qa_done.get("verdict") != READY_TO_PUBLISH:
             # QA names an owner per finding; the loop routes them back.
             report.add("note", "delivery", f"QA {qa_done.get('pass', '')} is not ready: "
                        "route its findings to their stages and re-run them",

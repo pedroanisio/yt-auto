@@ -95,7 +95,7 @@ TOLERANCE = 0.5
 SURVIVOR_PASSES = 3
 
 IMPROVE_DIR = "improve"
-QA_FAILED = "qa filed no new pass"
+QA_FAILED = "qa filed no new scored pass"
 #: Stages whose own cache replays an attempt: vfx keeps every planning and
 #: authoring step by name, so run without --fresh it re-materialises the
 #: last run's version instead of authoring a new one.
@@ -912,6 +912,15 @@ def blocking_mechanical(card: dict) -> set[str]:
             for f in card.get("mechanical") or [] if f.get("severity") == "blocking"}
 
 
+def spread(card: dict, key: str) -> float:
+    """The samples' spread (max - min) a scorecard recorded for `key`, a
+    category or `overall` (AUTO-107); 0 for a card scored once."""
+    try:
+        return max(0.0, float((card.get("spread") or {}).get(key) or 0))
+    except (TypeError, ValueError, AttributeError):
+        return 0.0
+
+
 def judge(best: dict, new: dict, *, tolerance: float = TOLERANCE) -> dict:
     """Keep only a measured improvement: the overall up, no category down by
     more than the tolerance, no new blocking mechanical finding. A category
@@ -919,16 +928,32 @@ def judge(best: dict, new: dict, *, tolerance: float = TOLERANCE) -> dict:
     has no delta and neither drops nor counts as a gain: when the passes
     did not score the same categories, the overall is compared over the
     ones both scored (qa.compare), so a pass that only lost its low audio
-    scores is not kept on the overall they no longer pull down."""
+    scores is not kept on the overall they no longer pull down. A change
+    smaller than the samples' spread (the larger of the two passes',
+    AUTO-107) is no change: a gain inside it is not kept, and a drop inside
+    it is no regression. A pass QA could not score (`not_evidenced`) is
+    never kept."""
+    if new.get("verdict") == qa.NOT_EVIDENCED:
+        return {"keep": False, "deltas": {}, "overall_delta": 0.0,
+                "against": best.get("pass"),
+                "reasons": [f"{new.get('pass')} is not evidenced: fewer than two of its "
+                            "scoring samples answered, so nothing is measured"]}
     diff = qa.compare(best, new)
     reasons = []
+    noise = max(spread(best, "overall"), spread(new, "overall"))
     if diff["overall_delta"] <= 0:
         over = (f", over the categories both passes scored ({', '.join(diff['unscored'])} "
                 "not evidenced on one side)" if diff.get("unscored") else "")
         reasons.append(f"overall {new.get('overall')} did not improve on "
                        f"{best.get('overall')} ({diff['overall_delta']:+.2f}{over})")
+    elif diff["overall_delta"] < noise - 1e-9:
+        reasons.append(f"overall {diff['overall_delta']:+.2f} is inside the samples' "
+                       f"spread of {noise:.2f}: no change")
     for key, delta in diff["deltas"].items():
-        if delta is not None and delta < -tolerance - 1e-9:
+        if delta is None:           # not evidenced on one side: nothing to compare
+            continue
+        inside = -delta < max(spread(best, key), spread(new, key)) - 1e-9
+        if delta < -tolerance - 1e-9 and not inside:
             reasons.append(f"{key} dropped {delta:+.1f}, more than the {tolerance:g} "
                            "tolerance")
     for fp in sorted(blocking_mechanical(new) - blocking_mechanical(best)):
@@ -1000,6 +1025,8 @@ class Improver:
                          fallback_model=fallback_model, role=ROLE, house=house_rules,
                          house_digest=house_digest or {}, verbose=not quiet)
         self.spent_stages = 0.0
+        #: What the last `yt qa` this run asked cost, scored or not (`_qa`).
+        self.qa_cost = 0.0
         self.defects: dict[str, dict] = {}
         self.assigned: dict[str, dict[str, str]] = {}
         self.findings: dict[str, list[dict]] = {}
@@ -1046,6 +1073,10 @@ class Improver:
         return None
 
     def _qa(self) -> dict | None:
+        """Run QA and read the pass it filed. None when it filed none, or
+        one it could not score (`not_evidenced`); either way `qa_cost` is
+        what the call cost, which the pass's row adds even then."""
+        self.qa_cost = 0.0
         before = qa.latest_pass(self.root)
         self._run(["qa", *self.base])
         after = qa.latest_pass(self.root)
@@ -1053,12 +1084,23 @@ class Improver:
             return None
         card = self._card(after)
         if card:
-            self.spent_stages += _cost_in(card) or 0.0
+            self.qa_cost = _cost_in(card) or 0.0
+            self.spent_stages += self.qa_cost
+        if card and card.get("verdict") == qa.NOT_EVIDENCED:
+            # Fewer than two scoring samples answered (AUTO-107): what the
+            # pass made stays, unjudged, and the next run scores it again.
+            self._log(f"[improve] {after.name} is not evidenced: fewer than two of its "
+                      "scoring samples answered")
+            return None
         return card
 
     def _stale(self, pdir: Path) -> bool:
+        """No scorecard, one older than the video it should judge, or one QA
+        could not score (`not_evidenced`): the pass is scored again first."""
         card = pdir / "scorecard.json"
         if not card.is_file():
+            return True
+        if (read_json(card, warn=False) or {}).get("verdict") == qa.NOT_EVIDENCED:
             return True
         newest = max((p.stat().st_mtime for p in (self.root / "video.mp4",
                                                   self.root / "scene.xml") if p.exists()),
@@ -1070,6 +1112,13 @@ class Improver:
             card = self._card(self.root / qa.QA_DIR / self.from_pass)
             if card is None:
                 self.say(f"error: qa/{self.from_pass} has no scorecard.json")
+            elif card.get("verdict") == qa.NOT_EVIDENCED:
+                # No scores to start from: every pass would be judged against
+                # nothing and reverted.
+                self.say(f"error: qa/{self.from_pass} is not evidenced (fewer than two "
+                         "scoring samples answered); run `yt qa` to score the video, "
+                         "or name a scored pass")
+                return None
             return card
         latest = qa.latest_pass(self.root)
         earlier = read_json(self.root / REPORT_JSON, warn=False) or {}
@@ -1087,9 +1136,15 @@ class Improver:
                 self.say("error: no QA pass to route, and a dry run renders nothing; "
                          "run `yt qa` first")
                 return None
-            self.say(f"note: {latest.name} is older than the video it should judge; a "
-                     "dry run routes it anyway")
-            return self._card(latest)
+            card = self._card(latest)
+            if (card or {}).get("verdict") == qa.NOT_EVIDENCED:
+                self.say(f"note: {latest.name} is not evidenced (fewer than two scoring "
+                         "samples answered), so it has no reviewed findings; a dry run "
+                         "routes its measured ones only; run `yt qa` to score it")
+            else:
+                self.say(f"note: {latest.name} is older than the video it should judge; "
+                         "a dry run routes it anyway")
+            return card
         self._log("the latest QA pass is missing or older than the video; scoring first")
         return self._qa()
 
@@ -1206,7 +1261,7 @@ class Improver:
         self._gate(entry, pdir, stamps)
         entry["argv"].append(["qa", *self.base])
         new = self._qa()
-        cost = stage_cost(self.root, "gate", stamps) + (_cost_in(new) or 0.0)
+        cost = stage_cost(self.root, "gate", stamps) + self.qa_cost
         self.spent_stages += stage_cost(self.root, "gate", stamps)
         entry["cost_usd"] = round(float(last.get("cost_usd") or 0) + cost, 4)
         if new is None:
@@ -1276,7 +1331,7 @@ class Improver:
             if code:
                 failed = f"{stage} exited {code}"
                 break
-        new = None
+        new, self.qa_cost = None, 0.0
         if failed is None:
             self._gate(entry, pdir, stamps)
             entry["argv"].append(["qa", *self.base])
@@ -1284,7 +1339,7 @@ class Improver:
         cost = sum(stage_cost(self.root, st, stamps) for st, _ in steps) + stage_cost(
             self.root, "gate", stamps)
         self.spent_stages += cost
-        cost += _cost_in(new) or 0.0
+        cost += self.qa_cost
         entry["cost_usd"] = round(float(last.get("cost_usd") or 0) + cost, 4)
         snap = pdir / "snapshot"
         if failed:
@@ -1521,7 +1576,7 @@ class Improver:
                     # pass on a story the reviewer would not voice.
                     failed = rejected
                     break
-            new = None
+            new, self.qa_cost = None, 0.0
             if failed is None:
                 self._gate(entry, pdir, before)
                 entry["argv"].append(["qa", *self.base])
@@ -1530,7 +1585,7 @@ class Improver:
                     failed = QA_FAILED
             cost = sum(stage_cost(self.root, s, before) for s in stages + ["gate"])
             self.spent_stages += cost
-            cost += _cost_in(new) or 0.0
+            cost += self.qa_cost
             entry["cost_usd"] = round(cost, 4)
             last_cost = cost or None
 

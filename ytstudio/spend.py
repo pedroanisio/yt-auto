@@ -166,9 +166,14 @@ MANIFEST = {"research": "dossier.json", "styles": "styles.json", "script": "scri
 
 #: What a pass is guessed to cost before one has been measured.
 VFX_PASS_USD = 10.0
+#: One scoring sample of a QA pass, assumed until a scorecard measures it. A
+#: pass asks qa.QA_SAMPLES of them (AUTO-107); qa imports this module, so
+#: the default below is that product written out, and test_qa_samples pins it.
+QA_SAMPLE_USD = 0.5
 DEFAULT_USD = {"research": 5.0, "styles": 2.0, "script": 3.0, "props": 0.0,
                "keyframe": 5.0, "voice": 2.0, "retime": 0.5, "vfx": VFX_PASS_USD,
-               "sound": 0.5, "build": 0.1, "render": 0.0, "gate": 0.1, "qa": 0.5}
+               "sound": 0.5, "build": 0.1, "render": 0.0, "gate": 0.1,
+               "qa": 3 * QA_SAMPLE_USD}
 
 #: What the plan review adds to a script (AUTO-92), assumed until a record
 #: measures it: the reviewer's one reading of the plan and, at most, a
@@ -306,12 +311,24 @@ def _section_costs(root: Path) -> dict[int, float]:
     return out
 
 
-def _qa_cost(root: Path) -> float | None:
+def _qa_card(root: Path) -> dict:
     from . import qa  # qa reads this module; it is only asked where its passes live
     qa_json = read_json(Path(root) / "qa.json", warn=False) or {}
-    card = read_json(Path(root) / qa.QA_DIR / str(qa_json.get("pass", "")) / "scorecard.json",
+    return read_json(Path(root) / qa.QA_DIR / str(qa_json.get("pass", "")) / "scorecard.json",
                      warn=False) or qa_json
-    return cost_in(card)
+
+
+def _qa_cost(root: Path) -> float | None:
+    """What the latest QA pass cost."""
+    return cost_in(_qa_card(root))
+
+
+def _qa_pass_usd(root: Path) -> float | None:
+    """What the next QA pass costs, priced from the latest: its cost per
+    scoring sample, times qa.QA_SAMPLES (AUTO-107), so a pass scored once
+    prices the samples it did not ask."""
+    from . import qa
+    return qa.pass_usd(_qa_card(root))
 
 
 def _reported(root: Path, stage: str, sections: list[int] | None) -> float | None:
@@ -319,7 +336,7 @@ def _reported(root: Path, stage: str, sections: list[int] | None) -> float | Non
     A zero on a stage that is never free is a cache replay, not a measurement."""
     root = Path(root)
     if stage == "qa":
-        cost = _qa_cost(root)
+        cost = _qa_pass_usd(root)
     elif stage == "vfx":
         per = _section_costs(root)
         if sections:

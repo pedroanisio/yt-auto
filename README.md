@@ -170,7 +170,7 @@ Or all of it at once, for one idea:
 | `yt pilot` | 30/60/180-second cuts of the finished film, nested, with what each proves | no model calls |
 | `yt gate` | the delivery verdict: loudness, scopes, frames, caption limits, run on a render host and naming the requirement that stopped it; plus the geometry check (a hero that penetrates the set, or reads merged into it on screen, blocks whatever the tool and the triage said) | one triage call |
 | `yt review` | the PDF review sheet: frames, captions, markers, sources, credits | no model calls |
-| `yt qa` | the scorecard per pass: every shot sampled at its midpoint, up to 60 stills (`--frames N` above the shot count adds evenly spaced stills; below it, or past 60 shots by default, names the shots left out), one frame window per sample (the still is its middle frame), a contact sheet, the mechanical findings (flat, clipped, frozen, jump, off-camera, `penetration`: the hero inside a set solid, and `reads-merged`: the hero over a surface on screen with no shadow, from the engine's evaluated geometry and camera), the model's review | one inspection call per pass; one render job per sample (by default one per shot, at most 60; `--frames N` sets it), one eval job per pass; `yt improve` pays this every pass |
+| `yt qa` | the scorecard per pass: every shot sampled at its midpoint, up to 60 stills (`--frames N` above the shot count adds evenly spaced stills; below it, or past 60 shots by default, names the shots left out), one frame window per sample (the still is its middle frame), a contact sheet, the mechanical findings (flat, clipped, frozen, jump, off-camera, `penetration`: the hero inside a set solid, and `reads-merged`: the hero over a surface on screen with no shadow, from the engine's evaluated geometry and camera), the model's review, scored as the median of three samples (an audio category no current listening review covers is null in every sample, never a median) | `qa.QA_SAMPLES` (3) inspection calls per pass and at most one merge decision; one render job per sample (by default one per shot, at most 60; `--frames N` sets it), one eval job per pass; `yt improve` pays this every pass |
 | `yt improve` | routes each QA finding to the stage that owns it, briefs that stage through `feedback/`, re-runs it and everything downstream, keeps the pass only if it measurably improved | one routing decision per pass, plus the stages it runs |
 | `yt doctor` | every video's state and the command that advances it | no model calls |
 | `yt probe` | the realism probe suite: one neutral brief per class of material, light or motion, composed by an agent coding with the SDK, built and framed by the harness, scored by a different model with each defect's cause | **$1.06** for one probe and one round; up to three author sessions and three reviews per probe |
@@ -1302,6 +1302,29 @@ revert. A wordless film has no take review, so its `voiceover` stays not
 evidenced and READY is out of reach for it until a review that hears the
 rendered track exists (AUTO-126); the bar and `improve.md` say so.
 
+One reading is not a measurement: scored once, a category moves about ±0.5
+from run to run on the same frames, the size of the steps a pass is read
+for. So the scorecard is asked `qa.QA_SAMPLES` (3) times on the same
+evidence, each its own inspection (`pass-NN-scorecard-s1`, `-s2`, `-s3`)
+with the ten categories in a different order. Each category scores the
+median of the valid samples, and the scorecard records its `spread` (max -
+min; the overall's as `spread.overall`) beside it and in `findings.md`. The
+samples' findings are grouped by one decision (`pass-NN-scorecard-merge`,
+the improve loop's "same problem" test): a finding two or more samples
+report stands (blocking only when two called it blocking) and names them in
+`samples`; one only a single sample reports is listed under
+`low_confidence`, not routed by `yt improve` and blocking nothing. The
+reviewer's list of what it calls blocking goes through the same decision:
+one sample's claim is low-confidence, and only a claim two samples make
+stops READY. A category a rule sets (a silent film's sound, a capped
+category) records no spread, since its score is no sample's. A sample
+whose call fails is a failed row in the harness report, billed and never a
+score; with fewer than two valid samples the pass is `not_evidenced`: no
+scores, never READY, exit 1. The next pass compares with the last scored
+one, `yt improve` scores a not-evidenced pass again before judging it, and
+`yt doctor` points at `yt qa`, not at routing. `scoring` in the scorecard records every
+sample (its order, its overall, whether it failed).
+
 The story is read from the film as well. The reviewer's role carries the
 narrative rubric's rows for the hook, stakes, open loops, reveal setup and
 ending, rendered from `ytstudio/narrative.py`, for scoring
@@ -1371,12 +1394,17 @@ runs with `--fresh`, every stage downstream of it runs up to `yt render`, `yt
 gate` and `yt qa` score a new pass, and the pass is kept only if the overall
 improves, no category drops more than 0.5 and no new blocking mechanical
 finding appears (a category QA left not evidenced has no score, so it neither
-drops nor gains). Otherwise the snapshot in `improve/pass-NN/snapshot/` is
-restored. QA's finding owner is one of the stages, `upstream-fact` or `external`, so routing is a lookup, and `--resume` and `--rejudge` carry the earlier passes and survivor counts forward in `improve.json`. It stops at READY TO PUBLISH, at the pass or budget limit, or when
+drops nor gains, and when two passes scored different categories the overall
+is compared over the ones both scored); a change smaller than the scoring
+samples' spread is no change, so a gain inside it is not kept and a drop
+inside it is no regression. Otherwise the snapshot in `improve/pass-NN/snapshot/` is
+restored. A QA pass that is `not_evidenced` leaves the pass unjudged, and
+the next run scores it again first. QA's finding owner is one of the stages, `upstream-fact` or `external`, so routing is a lookup, and `--resume` and `--rejudge` carry the earlier passes and survivor counts forward in `improve.json`. It stops at READY TO PUBLISH, at the pass or budget limit, or when
 a defect survives three briefed passes, and writes `improve.json` and an
 `improve.md` in the shape of the §11 report. The estimate is per stage, read from
 each stage's own report (else a like project's) and marked measured, like or
-assumed, and a routed vfx pass re-authors only the sections its findings fall in
+assumed (QA at its cost per scoring sample times the three samples, so a
+pass scored once prices the two it did not ask), and a routed vfx pass re-authors only the sections its findings fall in
 (`--sections`), the whole film (`--fresh`) when a finding cannot be placed. A
 routed script pass whose findings all name a shot sends only those lines back
 (`yt script --revise feedback`, read from the brief's `.json` twin); one
