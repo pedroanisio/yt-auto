@@ -26,6 +26,9 @@ example under a ChatGPT sign-in), set `CODEX_PRICES` or a token cap with
 `CODEX_BUDGET_TOKENS`, or the budgeted call refuses to start. The claude
 models are priced in `ytstudio/spend.py` (`CLAUDE_PRICES` overrides a row),
 so a call cut off by its timeout is billed from its stream, not booked at $0.
+A Vercel AI Gateway id (`anthropic/claude-opus-5`, `openai/gpt-5`) is priced
+and judged for family as its direct name (`ytstudio/models.py`); a virtual
+model (`vmc/<slug>`) has no price and is refused as an author or a reviewer.
 
 ## Requirements
 
