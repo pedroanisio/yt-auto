@@ -950,16 +950,21 @@ def calibrate(directory: Any, *, work: Any, model: str = "sonnet",
     each valid sample is paired with its padded twin for the length audit.
     Decisions are cached under `<work>/calibration/<case>/`, so a second
     run pays only for what changed. `model` is the writer's: the reviewer
-    is refused in its family, as `yt script --review` refuses it. Once
+    is refused in its family, as `yt script --review` refuses it, and
+    `pool` or `sdk:<id>` is resolved as it resolves them (AUTO-125), so a
+    pool reviewer is calibrated on the gateway engine exactly as it would
+    review, and is refused before any case is read without it. Once
     `budget_usd` is spent no further case is read, and an unread case
     fails. Nothing is revised and nothing is appended to the review log:
     these are not the channel's scripts. The report is also written to
     `<work>/calibration/calibration.json`."""
-    from . import flags, house, script       # script imports this module
+    from . import flags, house, reviewers, script       # script imports this module
     from .core import Idea, write_json
 
-    own = flags.own_reviewer(model, reviewer_model)
-    if own:
+    pooled = reviewers.resolve(model, reviewer_model)
+    if pooled is not None:
+        reviewer_model = pooled.model
+    elif own := flags.own_reviewer(model, reviewer_model):
         raise ValueError(own)
     work = Path(work)
     rules = house.load(work)
@@ -977,8 +982,8 @@ def calibrate(directory: Any, *, work: Any, model: str = "sonnet",
             "description": plan.get("logline") or ""}
         w = script.Screenwriter(
             Idea.from_raw(raw), model=model, minutes=max(seconds, 60) / 60,
-            reviewer_model=reviewer_model, review_budget_usd=review_budget_usd,
-            house=block, house_digest=digest, fresh=fresh, verbose=verbose,
+            reviewer_model=reviewer_model, reviewer=pooled,
+            review_budget_usd=review_budget_usd, house=block, house_digest=digest, fresh=fresh, verbose=verbose,
             root=work / "calibration" / name, review_log=None)
         writers.append(w)
         return w
@@ -1035,6 +1040,7 @@ def calibrate(directory: Any, *, work: Any, model: str = "sonnet",
     log = read_review_log(work / script.REVIEW_LOG)
     agreed, count = agreement(log)
     report = {"directory": str(directory), "model": model, "reviewer_model": reviewer_model,
+              **({"reviewer": pooled.record()} if pooled is not None else {}),
               "cases": rows, "audit": audit,
               "passed": all(r["passed"] for r in rows) and audit["passed"],
               "verdicts": len(log), "labelled": count, "agreed": agreed,

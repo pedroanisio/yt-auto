@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from claude_engine import ClaudeError, EngineConfig
-from . import flags, harness, sdkkit
+from . import flags, harness, reviewers, sdkkit
 from .core import read_json, write_json
 
 PROBES_DIR = ".probes"
@@ -455,6 +455,11 @@ def run(args) -> int:
                   f"have {', '.join(BY_ID)}", file=sys.stderr)
             return 2
         selected = [BY_ID[w] for w in wanted]
+    # The gateway reviewer pool (AUTO-125) answers text decisions only; this
+    # stage's reviewer opens images through an agent.
+    if refused := reviewers.agent_refusal("probe", args.reviewer_model):
+        print(refused, file=sys.stderr)
+        return 2
     if own := flags.own_reviewer(args.model, args.reviewer_model):
         print(own, file=sys.stderr)
         return 2

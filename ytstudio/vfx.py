@@ -60,7 +60,7 @@ from pathlib import Path
 
 from claude_engine import ClaudeError, EngineConfig, Usage
 from . import (flags, fonts, framecheck, geometry, harness, house, reach, render, sdkkit, spend,
-               workspace)
+               reviewers, workspace)
 from .core import Idea, _key, _merge_usage, read_json, slugify, write_json
 from .framecheck import DIM_STD, FLAT_STD, frame_stats, judge_frame  # noqa: F401  (re-exported)
 from .ideas import CHANNEL_STYLES
@@ -4277,6 +4277,11 @@ def run(args) -> int:
         print(f"finish asked: {path}\n  the run reads it between rounds; every section ends on "
               "its best reviewed round, then continuity, reach and plan run", file=sys.stderr)
         return 0
+    # The gateway reviewer pool (AUTO-125) answers text decisions only; this
+    # stage's reviewer opens images through an agent.
+    if refused := reviewers.agent_refusal("vfx", getattr(args, "reviewer_model", REVIEWER_MODEL)):
+        print(refused, file=sys.stderr)
+        return 2
     # A model never grades its own work: `--model opus` needs a reviewer of
     # another family, as `yt probe` rules, before anything is paid.
     if own := flags.own_reviewer(args.model, getattr(args, "reviewer_model", REVIEWER_MODEL)):
