@@ -268,19 +268,67 @@ class Gateway(unittest.TestCase):
         self.assertIn("never replaces a CLI call", text)
         self.assertIn("No dependencies.", "\n".join(read("README.md")))
 
-    def test_the_readme_does_not_state_the_unchecked_as_fact(self):
-        m = re.search(r"Not yet checked against the live gateway:(.*?)\.(?: |$)",
-                      readme_section(self.SECTION))
-        self.assertIsNotNone(m, "the section does not list what is unchecked")
-        for words in ("structured output", "bare", "1-hour", "model ids", "credits"):
-            self.assertIn(words, m.group(1))
+    UNCHECKED = r"Not yet checked against the live gateway:(.*?)\.(?: |$)"
 
-    def test_skill_says_the_invariants_hold_under_the_gateway(self):
+    def test_the_readme_does_not_state_the_unchecked_as_fact(self):
+        text = readme_section(self.SECTION)
+        m = re.search(self.UNCHECKED, text)
+        self.assertIsNotNone(m, "the section does not list what is unchecked")
+        for words in ("structured output", "bare", "1-hour", "model ids", "credits",
+                      "`npx vercel ai-gateway setup`"):
+            self.assertIn(words, m.group(1))
+        # Outside that list, neither the section nor SKILL.md's paragraph
+        # states an unchecked item as a fact.
+        for where, rest in (("README.md", text[:m.start()] + text[m.end():]),
+                            ("ytstudio/SKILL.md", self.skill_paragraph())):
+            low = rest.lower()
+            for words in ("1-hour", "generation id", "generation-id", "--json-schema",
+                          "schema flag"):
+                self.assertNotIn(words, low, f"{where} states '{words}' outside the list")
+            for sentence in re.split(r"(?<=\.) ", low):
+                if "bare" in sentence:
+                    self.assertNotRegex(sentence, r"\bworks\b|signs? in",
+                                        f"{where}: {sentence}")
+
+    def test_the_readme_cites_vercel_for_its_pricing(self):
+        text = readme_section(self.SECTION)
+        self.assertIn("https://vercel.com/docs/ai-gateway/pricing", text)
+
+    def test_the_readme_says_any_other_failure_is_transient(self):
+        text = readme_section(self.SECTION)
+        self.assertIn("Any other failure text", text)
+        self.assertIn("treated as transient", text)
+        self.assertNotIn("unless it matches one of those", text)
+
+    def test_the_readme_section_names_no_ticket(self):
+        """A pointer to a pass on another branch names what holds either way,
+        not a ticket a reader cannot follow."""
+        self.assertNotRegex(readme_section(self.SECTION), r"AUTO-\d+")
+
+    def test_the_reviewer_differs_by_family_or_maker_in_both(self):
+        for where, text in (("README.md", readme_section(self.SECTION)),
+                            ("ytstudio/SKILL.md", self.skill_paragraph())):
+            self.assertIn("by maker", text, where)
+            self.assertIn("`sdk:<id>`", text, where)
+
+    def test_both_say_how_a_call_is_booked(self):
+        """The booking order is the code's (gateway_engine.COST_SOURCES and
+        claude_engine's cli fallback): the gateway's reported cost, else a
+        price row, else the CLI's own figure."""
+        para = self.skill_paragraph()
+        self.assertNotIn("at list price from the price table", para)
+        for words in ("the cost the gateway reports", "price row", "the CLI's own figure"):
+            self.assertIn(words, para)
+
+    def skill_paragraph(self) -> str:
         text = "\n".join(read("ytstudio/SKILL.md"))
         inv = re.search(r"^## The invariants\n(.*?)^## ", text, re.S | re.M).group(1)
         para = next((p for p in inv.split("\n\n") if "hold under Vercel AI Gateway" in p), "")
         self.assertTrue(para, "ytstudio/SKILL.md: The invariants says nothing of the gateway")
-        para = " ".join(para.split())
+        return " ".join(para.split())
+
+    def test_skill_says_the_invariants_hold_under_the_gateway(self):
+        para = self.skill_paragraph()
         for words in ("CLIs stay the default", "`YT_GATEWAY=vercel`", "not evidenced",
                       "`Harness.decide`", "family", "`vmc/<slug>`", "dependency-free"):
             self.assertIn(words, para)
