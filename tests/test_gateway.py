@@ -326,5 +326,26 @@ class Codex(GatewayCase):
             self.assertEqual(eng._popen_kwargs()["env"], expected)
 
 
+class Documented(unittest.TestCase):
+    """The operator can find the switch: each variable the module reads is named."""
+
+    def test_the_readme_and_the_skill_name_every_variable(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        skill = (ROOT / "ytstudio" / "SKILL.md").read_text(encoding="utf-8")
+        for name in (gateway.SWITCH, gateway.KEY, gateway.AUTH, gateway.URL):
+            with self.subTest(name=name):
+                self.assertIn(name, readme)
+                self.assertIn(name, skill)
+
+    def test_the_bare_field_and_flag_name_the_refusal(self):
+        # Both said "auth is ANTHROPIC_API_KEY only" and nothing more, which
+        # reads as a way round the gateway rather than a conflict with it.
+        help_text = " ".join(claude_engine.build_parser().format_help().split())
+        self.assertIn("so refused under YT_GATEWAY=vercel in key mode", help_text)
+        text = (ROOT / "claude_engine.py").read_text(encoding="utf-8")
+        field = text[text.index("    bare: bool = False"):text.index("# --- streaming")]
+        self.assertIn("refused under YT_GATEWAY=vercel", field)
+
+
 if __name__ == "__main__":
     unittest.main()

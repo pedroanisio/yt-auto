@@ -467,7 +467,12 @@ Beside the chain:
 Keys load from `--env-file`, then `$YT_ENV_FILE`, `./_tmp/do_not_delete.env`,
 `./.env`, `~/.config/pals-notes/.env`; `yt sound --fetch` wants
 `FREESOUND_CLIENT_ID` and `FREESOUND_CLIENT_SECRET` (the secret is the
-token), and without them nothing is fetched. Every stage that asks the
+token), and without them nothing is fetched. `YT_GATEWAY=vercel` with
+`AI_GATEWAY_API_KEY` sends the claude engine's calls through Vercel AI Gateway
+(`ytstudio/gateway.py`; `YT_GATEWAY_AUTH=subscription` keeps the Claude login,
+`YT_GATEWAY_URL` replaces the host); it is never on by itself, a set switch
+with no key stops the call before it starts, and with it unset each call, its
+argv and the decision cache are as they were. Every stage that asks the
 model takes `--model`, `--effort` and `--fallback-model` (default sonnet);
 `yt doctor`, `yt ls` and `yt assets` call no model.
 
