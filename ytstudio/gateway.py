@@ -24,13 +24,29 @@ is left as it is, so a direct key still set in the shell is what the CLI
 sends to the gateway in place of the login; the docs say to unset it.
 `YT_GATEWAY_URL` replaces the host, for a proxy in front of the gateway.
 
+The codex CLI goes through the gateway by another door: not variables but a
+model provider, named with `-c` pairs on its command line (`codex_config`).
+Vercel's Codex page (https://vercel.com/docs/ai-gateway/coding-agents/openai-codex,
+manual setup) gives the provider:
+
+    model_provider                   vercel
+    model_providers.vercel.name      Vercel AI Gateway
+    model_providers.vercel.base_url  https://ai-gateway.vercel.sh/codex/v1
+    model_providers.vercel.env_key   AI_GATEWAY_API_KEY: codex reads the key
+                                     from the variable this names, so the key
+                                     itself never goes on a command line
+    model_providers.vercel.wire_api  responses: Codex removed Chat Completions
+
+Nothing is written to $CODEX_HOME/config.toml, and no WebSocket setting is
+sent. YT_GATEWAY_AUTH is the claude CLI's alone: codex always sends the key.
+
 A switch that is set but cannot be honoured raises GatewayError, a permanent
 failure: a typo must not quietly mean "direct". That covers an unknown value,
 no key, a key with whitespace or control characters inside it (in a header
 a newline would start another header), a URL that already names a path, and
 a CLAUDE_CODE_USE_BEDROCK, _VERTEX or _FOUNDRY switch, which Claude Code
 honours ahead of ANTHROPIC_BASE_URL so the call would not reach the gateway
-at all. No message here carries the key, and nothing writes
+at all (the claude CLI's only: codex does not read them). No message here carries the key, and nothing writes
 ~/.claude/settings.json or runs a setup command.
 
 Stdlib only, and no import of claude_engine, which imports this.
@@ -58,6 +74,13 @@ AUTH_MODES = ("key", "subscription")
 URL = "YT_GATEWAY_URL"
 DEFAULT_HOST = "https://ai-gateway.vercel.sh"
 CLAUDE_PATH = "/claude-code"
+#: The Codex endpoint's path on the host, /v1 included: codex appends
+#: /responses and /models to a provider's base_url.
+CODEX_PATH = "/codex/v1"
+#: The provider's id and display name in Codex's config, as Vercel's page
+#: writes them.
+CODEX_PROVIDER = "vercel"
+CODEX_PROVIDER_NAME = "Vercel AI Gateway"
 #: The header that carries the key in subscription mode.
 HEADER = "x-ai-gateway-api-key"
 #: Claude Code's own provider switches. Any one of them on sends the CLI to
@@ -102,16 +125,21 @@ def host(environ: Mapping[str, str] | None = None) -> str:
     if parts.scheme not in ("https", "http") or not parts.netloc:
         raise GatewayError(f"{URL} must be an http(s) URL such as {DEFAULT_HOST}")
     path = parts.path.rstrip("/")
-    if path.endswith("/v1") or path.endswith(CLAUDE_PATH):
+    if path.endswith(("/v1", CLAUDE_PATH, "/codex")):
         raise GatewayError(
-            f"{URL} is the gateway's host: leave off /v1 and {CLAUDE_PATH}, "
-            "which yt and the CLI add themselves")
+            f"{URL} is the gateway's host: leave off /v1, {CLAUDE_PATH} and "
+            f"{CODEX_PATH}, which yt and the CLIs add themselves")
     return raw.rstrip("/")
 
 
 def claude_base_url(environ: Mapping[str, str] | None = None) -> str:
     """The claude CLI's ANTHROPIC_BASE_URL: the host plus /claude-code."""
     return host(environ) + CLAUDE_PATH
+
+
+def codex_base_url(environ: Mapping[str, str] | None = None) -> str:
+    """The codex provider's base_url: the host plus /codex/v1."""
+    return host(environ) + CODEX_PATH
 
 
 def _key(environ: Mapping[str, str]) -> str:
@@ -135,17 +163,23 @@ def _cloud_switch(environ: Mapping[str, str]) -> str | None:
     return None
 
 
+def _vercel(environ: Mapping[str, str]) -> bool:
+    """True when the switch names the gateway, False when it is off; a
+    value that names neither is refused, not read as off."""
+    switch = _switch(environ)
+    if switch and switch != VERCEL:
+        raise GatewayError(
+            f"{SWITCH} names no known gateway: set it to {VERCEL}, "
+            "or unset it to call the providers directly")
+    return bool(switch)
+
+
 def claude_env(environ: Mapping[str, str] | None = None) -> dict[str, str]:
     """The variables to lay over the claude CLI's environment, from `environ`
     (default os.environ). Empty when the switch is unset."""
     environ = _env(environ)
-    switch = _switch(environ)
-    if not switch:
+    if not _vercel(environ):
         return {}
-    if switch != VERCEL:
-        raise GatewayError(
-            f"{SWITCH} names no known gateway: set it to {VERCEL}, "
-            "or unset it to call the providers directly")
     cloud = _cloud_switch(environ)
     if cloud:
         raise GatewayError(
@@ -162,3 +196,25 @@ def claude_env(environ: Mapping[str, str] | None = None) -> dict[str, str]:
                 "ANTHROPIC_CUSTOM_HEADERS": "\n".join(kept + [f"{HEADER}: Bearer {key}"])}
     return {"ANTHROPIC_BASE_URL": base, "ANTHROPIC_AUTH_TOKEN": key,
             "ANTHROPIC_API_KEY": ""}
+
+
+def codex_config(environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """The `-c` pairs that make the codex CLI's model provider the gateway,
+    from `environ` (default os.environ), in the order Vercel's page lists
+    them. Empty when the switch is unset.
+
+    The key is checked here although only its variable's name is sent:
+    without it codex would start and fail on its first request, after the
+    run had begun, and a retry would fail the same way."""
+    environ = _env(environ)
+    if not _vercel(environ):
+        return {}
+    base = codex_base_url(environ)
+    _key(environ)
+    return {
+        "model_provider": CODEX_PROVIDER,
+        f"model_providers.{CODEX_PROVIDER}.name": CODEX_PROVIDER_NAME,
+        f"model_providers.{CODEX_PROVIDER}.base_url": base,
+        f"model_providers.{CODEX_PROVIDER}.env_key": KEY,
+        f"model_providers.{CODEX_PROVIDER}.wire_api": "responses",
+    }

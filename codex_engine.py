@@ -61,11 +61,23 @@ meaning: accepted, ignored, one warning when set to a non-default value):
                                     prepended to the prompt under
                                     SYSTEM_HEADING instead                    E
     model                           -m; a Claude name (sonnet, opus, fable,   S/E
-                                    haiku, claude-*) is not passed: Codex's
-                                    default (or $CODEX_ENGINE_MODEL) answers
+                                    haiku, claude-*, anthropic/claude-*) is
+                                    not passed: Codex's default (or
+                                    $CODEX_ENGINE_MODEL) answers
     effort                          -c model_reasoning_effort; xhigh/max are  S/E
                                     passed only when ~/.codex/models_cache
-                                    lists them for the model, else -> high
+                                    lists them for the model (as passed, or
+                                    with openai/ added or removed), else ->
+                                    high, with one warning
+    YT_GATEWAY=vercel (opt-in)      -c model_provider="vercel" and the        S
+                                    model_providers.vercel.* pairs (base_url
+                                    https://ai-gateway.vercel.sh/codex/v1,
+                                    env_key AI_GATEWAY_API_KEY, wire_api
+                                    responses; ytstudio/gateway.py), under
+                                    codex_config, whose keys win; a bare
+                                    model goes to -m as openai/<name>, and
+                                    Codex's own default is named that way;
+                                    no key -> a permanent error, no launch
     images (CodexConfig / kwarg)    -i FILE                                  S
     cwd / add_dirs                  -C + process cwd / --add-dir; on resume   S
                                     -c sandbox_mode / writable_roots
@@ -129,6 +141,7 @@ from dataclasses import MISSING, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
+from ytstudio import gateway as _gateway
 from claude_engine import (DEFAULTABLE, EDIT_TOOLS, FULL_TOOLS, PERMANENT_MARKERS,
                            READ_ONLY_TOOLS, Answer, ClaudeEngine, ClaudeError,
                            ClaudeExecutionError, ClaudeNotFound, EngineConfig, Event,
@@ -168,6 +181,10 @@ WRITE_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"})
 
 #: Efforts every Codex model takes; the rest only when the model lists them.
 BASE_EFFORTS = ("minimal", "low", "medium", "high")
+
+#: The provider a bare Codex model name belongs to on the gateway: Vercel
+#: names models `provider/model`, and does not document taking a bare one.
+OPENAI_PREFIX = "openai/"
 
 #: Above this many bytes a system prompt goes in the prompt, not in argv
 #: (Linux refuses a single argument over 128 KiB).
@@ -368,11 +385,25 @@ def codex_default_model(env: dict[str, str]) -> str | None:
     return min(listed, key=lambda m: m.get("priority", 1 << 30))["slug"]
 
 
+def _slug_forms(model: str | None) -> list[str | None]:
+    """`model` as passed, then its other spelling: `openai/gpt-5` for
+    `gpt-5`, `gpt-5` for any `provider/gpt-5`. Under the gateway Codex is
+    sent the prefixed id while a cache written by a direct login lists the
+    bare one, and a cache filled from the gateway's /codex/v1/models may list
+    either; which one it writes is unchecked."""
+    if not model:
+        return [model]
+    provider, bare = canonical_model(model)
+    return [model, bare if provider else OPENAI_PREFIX + model]
+
+
 def _supported_efforts(model: str | None, env: dict[str, str]) -> set[str]:
-    for m in _models_cache(env):
-        if m.get("slug") == model:
-            return {str(level.get("effort")) for level in
-                    m.get("supported_reasoning_levels") or [] if isinstance(level, dict)}
+    cache = _models_cache(env)
+    for slug in _slug_forms(model):
+        for m in cache:
+            if m.get("slug") == slug:
+                return {str(level.get("effort")) for level in
+                        m.get("supported_reasoning_levels") or [] if isinstance(level, dict)}
     return set()
 
 
@@ -597,10 +628,26 @@ class CodexEngine(ClaudeEngine):
     # -- resolution --------------------------------------------------------
 
     def _transport_env(self, environ: dict[str, str]) -> dict[str, str]:
-        """Nothing: the gateway's claude variables are not codex's route, and
-        a missing gateway key must not stop a codex call. Codex's own route
-        is a provider in its config, not these variables."""
+        """Nothing: the gateway's claude variables are not codex's route.
+        Codex's route is a model provider named with -c pairs
+        (`_codex_pairs`), and the gateway key reaches the child as it is,
+        under the name that provider's env_key gives."""
         return {}
+
+    def _codex_pairs(self) -> dict[str, Any]:
+        """The -c pairs that follow the engine's own: the gateway's provider
+        when YT_GATEWAY=vercel (from the parent's environment with
+        config.env on top), then the config's codex_config, whose keys win.
+        With the switch unset this is codex_config alone, in its own order.
+
+        A gateway that cannot be used raises a permanent error before any
+        launch: a missing key would fail every attempt."""
+        try:
+            pairs: dict[str, Any] = _gateway.codex_config(self._env())
+        except _gateway.GatewayError as exc:
+            raise CodexExecutionError(f"gateway: {exc}", transient=False) from exc
+        pairs.update(getattr(self.config, "codex_config", None) or {})
+        return pairs
 
     def _env(self) -> dict[str, str]:
         env = dict(os.environ)
@@ -644,7 +691,14 @@ class CodexEngine(ClaudeEngine):
         return path
 
     def _model_flag(self) -> str | None:
-        """The model to pass with -m, or None for Codex's own default."""
+        """The model to pass with -m, or None for Codex's own default.
+
+        Under the gateway a name with no provider (`gpt-5`, `o3`) is passed
+        as `openai/gpt-5`, since the gateway names models `provider/model`
+        and is not documented to take a bare one; an id with a provider
+        passes as it is. For the same reason Codex's own default is named
+        there, read from its config.toml or models cache, rather than left
+        for codex to send bare. A Claude id is never passed on either route."""
         model = self.config.model
         if is_claude_model(model):
             _warn_once(f"model:{model}", f"model {model!r} is a Claude model; Codex "
@@ -654,6 +708,14 @@ class CodexEngine(ClaudeEngine):
             model = default_for("model")
             if is_claude_model(model):
                 model = None
+        env = self._env()
+        if _gateway.active(env):
+            if not model:
+                model = codex_default_model(env)
+                if is_claude_model(model):
+                    model = None
+            if model and not canonical_model(model)[0]:
+                model = OPENAI_PREFIX + model
         return model or None
 
     def resolved_model(self) -> str:
@@ -667,6 +729,10 @@ class CodexEngine(ClaudeEngine):
             return None
         if effort in BASE_EFFORTS or effort in _supported_efforts(model, self._env()):
             return effort
+        _warn_once(f"effort:{model}:{effort}",
+                   f"effort {effort!r} is not listed for Codex model {model!r} in "
+                   "$CODEX_HOME/models_cache.json (as passed or with openai/ added "
+                   "or removed); sent as 'high'")
         return "high"
 
     def sandbox_for(self, tools: Sequence[str] | None | type(...) = ...) -> str:
@@ -743,7 +809,7 @@ class CodexEngine(ClaudeEngine):
 
         if not cfg.persist_session:
             argv.append("--ephemeral")
-        for key, value in (getattr(cfg, "codex_config", None) or {}).items():
+        for key, value in self._codex_pairs().items():
             argv += ["-c", f"{key}={_toml(value)}"]
         if schema_file:
             argv += ["--output-schema", str(schema_file)]
