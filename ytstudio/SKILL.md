@@ -158,7 +158,8 @@ what the engine spent, so the record bills it; `yt doctor` warns when a
 record's `by_model` names an id neither engine priced (a Codex id is priced
 from `codex_engine.PRICES` and `$CODEX_PRICES`); a row the gateway engine
 priced itself (`cost_gateway_calls`, `cost_generation_calls`) is not warned
-about, `$GATEWAY_PRICES` prices a gateway id too, and where
+about, `$GATEWAY_PRICES` prices a gateway id too, a claude call booked through
+the gateway at the CLI's own figure (`cost_cli_calls`) is warned about, and where
 `gateway/node_modules` exists doctor shows a "gateway engine" block (Node,
 the pinned `ai`, the key by name). A Vercel AI Gateway id is its direct
 name (`ytstudio/models.py`, AUTO-120): `anthropic/claude-opus-5.5`,
@@ -496,7 +497,21 @@ instead, and `YT_GATEWAY_URL` replaces the host); it is never on by itself, a
 set switch with no key stops the call before it starts, as do `bare` and a
 `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` or `CLAUDE_CODE_USE_FOUNDRY`
 left on, and with it unset (or `YT_GATEWAY=off`, `0`, `false`, `no`, `none`)
-each call, its argv and the decision cache are as they were. Under
+each call, its argv, its booking and the decision cache are as they were.
+Through the gateway a claude call is booked at its model's price row times
+the tokens in `modelUsage`, an estimate of the gateway's bill (list price,
+no markup; a discount or a surcharge is not in it), and the CLI's own
+figure stays on the `by_model` row as `cli_cost_usd` beside
+`cost_table_calls` or `cost_cli_calls`. Each web search
+(`webSearchRequests`) adds $0.01, which the CLI's figure holds and the
+tokens do not; a model with no row, a result with no tokens, a prompt above
+a model's tier (Haiku 5.5 bills 5x above 100K prompt tokens) or another
+server tool's requests is booked at the CLI's figure, counted in
+`cost_cli_calls` and warned about by `yt doctor`. The stream meter's budget check reads the
+table's figure; the CLI's `--max-budget-usd` stays as a backstop. A gateway
+budget's 402 (`quota_for_entity_exceeded`, "budget exceeded", an API key's
+"Quota limit exceeded") is permanent, on stderr or in an `is_error`
+result, so the call stops on the first one, and a 429 is retried. Under
 `YT_ENGINE=codex` the switch makes the gateway Codex's model provider with
 `-c` pairs instead (base URL `https://ai-gateway.vercel.sh/codex/v1`, the key
 read from `AI_GATEWAY_API_KEY`, nothing written to `$CODEX_HOME/config.toml`,

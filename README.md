@@ -55,7 +55,25 @@ research and screenplay work; it is not an unattended model service.
   A key alone turns nothing on, a set switch with no key fails before any
   call, and with `YT_GATEWAY` unset (or `YT_GATEWAY=off`, `0`, `false`, `no`,
   `none`) every call goes to Anthropic exactly as before. Nothing writes
-  `~/.claude/settings.json`. Under `YT_ENGINE=codex` the same switch makes
+  `~/.claude/settings.json`. Through the gateway a call is booked at its
+  model's price row times the tokens the CLI reports in `modelUsage`, since
+  the CLI's own `total_cost_usd` is its estimate at Anthropic's rates; the
+  gateway charges list price with no markup, so the table is an estimate of
+  the bill, short of a model priced below list and of surcharges such as
+  zero data retention. The CLI's figure stays on the record's `by_model` row
+  as `cli_cost_usd`, beside a count of the calls booked each way
+  (`cost_table_calls`, `cost_cli_calls`). A web search the CLI ran
+  (`webSearchRequests`) is added at $0.01 each, Anthropic's rate, since the
+  CLI's figure holds it and the tokens do not. A model with no row, a result
+  with no tokens, a prompt above a model's tier (Haiku 5.5 bills 5x above
+  100K prompt tokens, which its row does not model) or another server
+  tool's requests is booked at the CLI's figure instead and counted in
+  `cost_cli_calls`, which `yt doctor` warns about. The CLI's own
+  `--max-budget-usd` stays on as a backstop. A gateway budget's 402
+  (`quota_for_entity_exceeded`, a team or project's "budget exceeded", an
+  API key's "Quota limit exceeded") ends the call at the first one with no
+  retry, whether the CLI prints it on stderr or in an `is_error` result,
+  and a 429 is retried as any transient failure is. Under `YT_ENGINE=codex` the same switch makes
   the gateway Codex's model provider with `-c` pairs on the command line
   (`model_provider="vercel"`, base URL `https://ai-gateway.vercel.sh/codex/v1`,
   `env_key="AI_GATEWAY_API_KEY"`, `wire_api="responses"`), so codex reads the
@@ -1581,7 +1599,9 @@ cost. A row the gateway engine booked says how each call was priced
 (`cost_gateway_calls`, `cost_generation_calls`, `cost_table_calls`,
 `cost_unpriced_calls`): one the gateway priced itself is not warned about, a
 table-priced one is quiet when `$GATEWAY_PRICES` (or the tables above) has its
-row, and one with an unpriced call still warns. Where `gateway/node_modules`
+row, and one with an unpriced call still warns. A claude call booked through
+the gateway at the CLI's own figure rather than the table (`cost_cli_calls`
+on its row) is a warning of its own. Where `gateway/node_modules`
 exists, a "gateway engine" block checks Node 22 or later, `ai` 7.0.150 and
 whether `AI_GATEWAY_API_KEY` is set (by name, never its value). Once a
 published film has been read by `yt retention`, it notes how many the channel

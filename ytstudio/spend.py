@@ -56,8 +56,9 @@ PRICES: dict[str, dict[str, float]] = {
     "claude-sonnet-5-5": _row(2.0, 10.0, 0.20),
     "claude-sonnet-5": _row(2.0, 10.0),
     "claude-sonnet-4-6": _row(3.0, 15.0),
-    # Haiku 5.5's rate above 100K prompt tokens (5x) is not modelled: a long
-    # cut-off call is under-estimated.
+    # Haiku 5.5's rate above 100K prompt tokens (5x) is not in the row: a
+    # long cut-off call is under-estimated, and a call through the gateway
+    # above it is booked at the CLI's figure (claude_engine.TIERED_PROMPT_TOKENS).
     "claude-haiku-5-5": _row(0.10, 0.50),
     "claude-haiku-4-5": _row(1.0, 5.0),
 }

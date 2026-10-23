@@ -26,7 +26,9 @@ CLI:
 Requires: the `claude` CLI on PATH and an authenticated session
 (`claude auth` / `claude setup-token`, or ANTHROPIC_API_KEY). With
 YT_GATEWAY=vercel and AI_GATEWAY_API_KEY set, the CLI goes through Vercel AI
-Gateway instead (ytstudio/gateway.py); with it unset nothing changes.
+Gateway instead (ytstudio/gateway.py), and each call is booked at the price
+table rather than the CLI's own estimate (`book_from_table`); with it unset
+nothing changes.
 
 Every `claude -p` flag is a field on EngineConfig. A field left `None` falls
 back to `set_defaults(...)`, then to `CLAUDE_ENGINE_<FIELD>` in the
@@ -71,6 +73,7 @@ __all__ = [
     "ClaudeNotFound",
     "ClaudeExecutionError",
     "is_transient",
+    "book_from_table",
 ]
 
 
@@ -94,6 +97,14 @@ PERMANENT_MARKERS = (
     "invalid api key", "not logged in", "authentication", "unauthorized",
     "please run /login",
     "error_max_budget_usd", "error_max_turns", "max budget", "budget exceeded",
+    # Vercel AI Gateway's 402 for a budget (AUTO-121): its type, and the
+    # message an API key's budget carries ('Quota limit exceeded for
+    # "api_key_id_..."'); a team's or a project's reads 'budget exceeded',
+    # above. A budget is a soft cap, so the request that crossed it was
+    # paid and the next is refused the same way. A 429 (rate_limit_exceeded)
+    # is left transient. No broad word ('credits', 'insufficient') is
+    # added: it could match an unrelated failure's text.
+    "quota_for_entity_exceeded", "quota limit exceeded",
     "invalid json schema", "no such file", "permission denied",
 )
 
@@ -133,11 +144,26 @@ class ClaudeExecutionError(ClaudeError):
 
 
 #: USD per 1M tokens (`input`, `cached_input`, `output`, optional
-#: `cache_creation`) by model id, used only to estimate the cost of a call
-#: that timed out (its `result` event, which carries the real cost, never
-#: arrived). Empty: no price is guessed. Fill it with
+#: `cache_creation`) by model id. It estimates the cost of a call that timed
+#: out (its `result` event, which carries the CLI's figure, never arrived),
+#: and under YT_GATEWAY it books every completed call (`book_from_table`):
+#: there a model with no row is booked at the CLI's own figure and counted
+#: in `cost_cli_calls`, which `yt doctor` warns about. Empty: no price is
+#: guessed (ytstudio/spend.py installs its rows). Fill it with
 #: $CLAUDE_PRICES='{"model": {"input": .., "cached_input": .., "output": ..}}'.
 PRICES: dict[str, dict[str, float]] = {}
+
+#: USD per server-side web search: Anthropic's $10 per 1000. A `modelUsage`
+#: entry counts them as `webSearchRequests` and the CLI adds them to its
+#: `costUSD`, so `book_from_table` adds them to the tokens' price.
+WEB_SEARCH_USD = 0.01
+
+#: Prompt tokens (input, cache reads and cache writes) above which a model
+#: bills more than its PRICES row says: Haiku 5.5 charges 5x above 100K.
+#: The row holds only the base rate, so `book_from_table` books a call above
+#: the limit at the CLI's figure rather than under-book it. A gateway id
+#: finds its direct name's limit, as it finds its row.
+TIERED_PROMPT_TOKENS: dict[str, int] = {"claude-haiku-5-5": 100_000}
 
 #: The provider of a virtual model on Vercel's AI Gateway (`vmc/<slug>`): the
 #: slug may route to any model, so it has no family and no price.
@@ -217,6 +243,98 @@ def _partial_cost(tokens: dict[str, int], model: str | None) -> float | None:
             + tokens.get("output_tokens", 0) * row.get("output", 0)) / 1_000_000
 
 
+#: A `modelUsage` entry's token counts, by the names `_partial_cost` reads.
+_MODEL_USAGE_TOKENS = (("inputTokens", "input_tokens"), ("outputTokens", "output_tokens"),
+                       ("cacheReadInputTokens", "cache_read_input_tokens"),
+                       ("cacheCreationInputTokens", "cache_creation_input_tokens"))
+
+
+def _count(value: Any) -> int:
+    """A counter from a `modelUsage` entry; anything not a number is 0."""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _table_cost(model: str, entry: dict) -> float | None:
+    """One `modelUsage` entry at the price table, or None when the table
+    cannot price it: no row for the model, no token counts, a prompt above
+    the model's tier (TIERED_PROMPT_TOKENS), or a non-zero per-request
+    counter other than web searches (a server tool whose charge the CLI's
+    `costUSD` holds and the row does not)."""
+    if not any(name in entry for name, _ in _MODEL_USAGE_TOKENS):
+        return None
+    tokens = {mine: _count(entry.get(name)) for name, mine in _MODEL_USAGE_TOKENS}
+    limit = _price_row(TIERED_PROMPT_TOKENS, model)
+    prompt = (tokens["input_tokens"] + tokens["cache_read_input_tokens"]
+              + tokens["cache_creation_input_tokens"])
+    if limit is not None and prompt > limit:
+        return None
+    searches = 0
+    for name, value in entry.items():
+        if name.endswith("Requests") and _count(value):
+            if name != "webSearchRequests":
+                return None
+            searches = _count(value)
+    cost = _partial_cost(tokens, model)
+    return None if cost is None else cost + searches * WEB_SEARCH_USD
+
+
+def book_from_table(payload: dict) -> dict:
+    """Book a result that came through Vercel AI Gateway at the price table,
+    in place, and return it (AUTO-121).
+
+    The CLI's `total_cost_usd` and `costUSD` are its own estimate at
+    Anthropic's rates, not what the gateway bills. Each `modelUsage` entry
+    is booked at its row (PRICES and $CLAUDE_PRICES, a gateway id taking its
+    direct name's row, as a cut-off call is priced) times its four token
+    counts, plus WEB_SEARCH_USD for each of its `webSearchRequests`; the
+    CLI's figure stays beside it as `cliCostUSD`, and `costSource` says
+    which one was booked: "table", or "cli" when the table cannot price the
+    entry (`_table_cost`: no row, no tokens, a prompt above the model's
+    tier, another server tool's requests). The call's `total_cost_usd`
+    becomes their sum, its own figure is kept as `cli_cost_usd`, and
+    `cost_source` is "cli" when any entry fell back, or when there was no
+    `modelUsage` to price. A result already booked is left as it is, so
+    booking twice changes nothing.
+
+    `cost_source` on a claude payload is one of ("table", "cli"). The
+    gateway engine's payload uses the same key with its own vocabulary
+    (gateway_engine.COST_SOURCES); it never passes through here, and both
+    count "table" on the by_model row as `cost_table_calls`, a call booked
+    from the price table either way.
+
+    The table is an estimate of the bill, not a copy of it: the gateway
+    prices some models below list and adds surcharges (zero data retention,
+    custom reporting), and a cache write is priced at one rate whatever its
+    lifetime. Its own per-call figure is behind /v1/generation, which is not
+    asked here. A multi-turn call's entry sums its turns, so the tier test
+    may send a call whose every request was under the limit to the CLI's
+    figure; that over-cautious case books what a direct run would."""
+    if "cli_cost_usd" in payload:
+        return payload
+    usage = payload.get("modelUsage") if isinstance(payload.get("modelUsage"), dict) else {}
+    source = "table" if usage else "cli"
+    total = 0.0
+    for model, entry in usage.items():
+        if not isinstance(entry, dict):
+            continue
+        own = entry.get("costUSD") or 0.0
+        cost = _table_cost(model, entry)
+        priced_by = "table"
+        if cost is None:
+            cost, priced_by = own, "cli"
+            source = "cli"
+        entry.update(costUSD=cost, cliCostUSD=own, costSource=priced_by)
+        total += cost
+    payload["cli_cost_usd"] = payload.get("total_cost_usd") or 0.0
+    payload["cost_source"] = source
+    if usage:
+        payload["total_cost_usd"] = total
+    return payload
+
+
 # --------------------------------------------------------------------------- #
 # value objects
 # --------------------------------------------------------------------------- #
@@ -285,6 +403,13 @@ class Usage:
             row["cache_read_tokens"] += m.get("cacheReadInputTokens", 0)
             row["cache_creation_tokens"] += m.get("cacheCreationInputTokens", 0)
             row["cost_usd"] += m.get("costUSD") or 0.0
+            if m.get("costSource"):
+                # Booked through the gateway (`book_from_table`): the CLI's
+                # own figure, and a count of the calls booked each way. A
+                # direct call's row has neither, so its keys are as before.
+                row["cli_cost_usd"] = row.get("cli_cost_usd", 0.0) + (m.get("cliCostUSD") or 0.0)
+                name = f"cost_{m['costSource']}_calls"
+                row[name] = row.get(name, 0) + 1
 
     def merge(self, other: "Usage") -> None:
         """Add another accounting into this one, per-model rows included."""
@@ -567,6 +692,9 @@ class ClaudeEngine:
         #: pins a fresh one: the CLI refuses an id it has already used.
         self.pending_session_id: str | None = None
         self._log: list[dict] = []
+        #: Whether the last launch went through Vercel AI Gateway, so its
+        #: result is booked from the price table (set by `_popen_kwargs`).
+        self._gateway_booked = False
         #: Guards `usage` and the log when workers report back (`absorb`).
         #: One engine's own calls are not thread-safe: run concurrent work
         #: on workers from `spawn()`, never on a shared instance.
@@ -848,7 +976,13 @@ class ClaudeEngine:
     def _popen_kwargs(self) -> dict:
         env = dict(os.environ)
         # After the parent, before config.env: an explicit config.env wins.
-        env.update(self._transport_env({**env, **(self.config.env or {})}))
+        overlay = self._transport_env({**env, **(self.config.env or {})})
+        # A launch that went through the gateway has its result booked from
+        # the price table (`book_from_table`). Set from the launch itself, so
+        # an engine that sends nothing there (codex's own route, the gateway
+        # engine's program, the chat bridge) never has its booking touched.
+        self._gateway_booked = bool(overlay)
+        env.update(overlay)
         if self.config.env:
             env.update(self.config.env)
         # Keep the child from trying to paint a TUI into our pipe.
@@ -886,9 +1020,17 @@ class ClaudeEngine:
                 print(proc.stderr, file=sys.stderr, end="")
 
             if proc.returncode != 0:
+                # The CLI often reports an API error as an is_error result
+                # on stdout before exiting 1: its text decides whether a
+                # retry can help (a gateway budget's 402 cannot).
+                try:
+                    printed = json.loads(proc.stdout or "")
+                except json.JSONDecodeError:
+                    printed = None
                 last_error = ClaudeExecutionError(
                     f"claude exited with code {proc.returncode}",
                     returncode=proc.returncode, stderr=proc.stderr.strip(),
+                    payload=printed if isinstance(printed, dict) else None,
                 )
                 if not last_error.transient or not self._sleep_before_retry(attempt):
                     raise last_error
@@ -1068,6 +1210,14 @@ class ClaudeEngine:
     def _absorb_result(self, payload: dict) -> None:
         if payload.get("session_id"):
             self.session_id = payload["session_id"]
+        if getattr(self, "_gateway_booked", False):
+            # In place, before anything reads it: the per-call usage, the
+            # result event and a caller's own meter (sdkkit's) see the
+            # table's figure too. The flag is the most recent launch's
+            # (`_popen_kwargs`), which is this payload's, since every
+            # result is absorbed right after its own launch; a payload
+            # absorbed with no launch of its own would take the last one's.
+            book_from_table(payload)
         self.usage.add(payload)
         self._log.append(payload)
 
