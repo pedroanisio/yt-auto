@@ -781,8 +781,11 @@ re-measured" until a new publish and `yt retention` measure it.
   `--compare-model MODEL` (default `$YT_COMPARE_MODEL`; neither: off, every
   argv as before) adds `--against <snapshot>/video.mp4 --compare-model MODEL`
   to every `yt qa` of a pass (the loop's, an unjudged pass scored later,
-  `--resume`'s against `snapshot/`, `--rejudge`'s against
-  `snapshot-rejudge/`), so the video comparison's tally is the one read
+  `--resume`'s and `--rejudge`'s, each against the pass's own `snapshot/`,
+  taken before it changed anything, so the cut is always best_before's,
+  never `snapshot-rejudge/`'s, which after a kept pass is the attempt's own
+  earlier render; `--resume` then names best_before with `--previous` too),
+  so the video comparison's tally is the one read
   (AUTO-128); a snapshot holding no `video.mp4` is noted on the pass
   (`compare`) and QA compares stills; a model the gateway engine cannot ask,
   or one of `--model`'s family, exits 2 before any stage.
@@ -802,7 +805,10 @@ re-measured" until a new publish and `yt retention` measure it.
   `<pass>-compare-pass` decision, AUTO-108); the video comparison is priced
   once the same way (`spend.COMPARE_USD`, 0.10 assumed, as qa's `--against`
   flag unless the latest scorecard's `compare_engine` holds a `cutcompare-`
-  decision, AUTO-128);
+  decision, which then measures `--previous` too, since the still pairs run
+  only when the video comparison fails; without `AI_GATEWAY_API_KEY` it is
+  skipped, so `--against` adds nothing and `--previous` is priced as
+  without it, AUTO-128);
   `--dry-run` prints the table -- when a
   defect survives three briefed passes (a mechanical one by kind, shot and
   objects; a prose one by a cached model decision), when only human

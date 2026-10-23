@@ -1499,7 +1499,14 @@ second: an overall drop beyond the spread, a category drop or a new blocking
 mechanical finding reverts whatever the tally says. With `--compare-model
 MODEL` (or `$YT_COMPARE_MODEL`) every `yt qa` of a pass also gets
 `--against` the `video.mp4` its snapshot kept, so the tally read is the
-video comparison's (AUTO-128); a snapshot with no video.mp4 is noted on the
+video comparison's (AUTO-128). That is the pass's own `snapshot/`, taken
+before it changed anything, for `--resume` and `--rejudge` too, so the cut is
+always the kept pass's: after a pass was kept, the project holds the attempt,
+and a snapshot of it would compare the cut with its own earlier render. The
+estimate adds `spend.COMPARE_USD` ($0.10 assumed) for the comparison until a
+scorecard measures one, nothing without `AI_GATEWAY_API_KEY` (it is skipped),
+and once one is measured no still-pair comparison either, since those run
+only when the video comparison fails. A snapshot with no video.mp4 is noted on the
 pass and the stills are compared, and a model of `--model`'s family is
 refused before any stage. Without a tally the
 pass is kept only if the overall

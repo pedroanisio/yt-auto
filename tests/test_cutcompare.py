@@ -37,13 +37,14 @@ sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
 
 from gateway_fakes import MODEL, USAGE, FakeNode, err, ok  # noqa: E402
-from ytstudio import cutcompare, harness, improve, qa, spend  # noqa: E402
+from ytstudio import cutcompare, gateway, harness, improve, qa, spend  # noqa: E402
 from ytstudio.core import read_json, write_json  # noqa: E402
 from tests.test_improve import FakeRunner, ImproveCase, card, mech  # noqa: E402
 from tests.test_qa_side_by_side import Pass  # noqa: E402
 
 SCHEMA = {"type": "object", "properties": {"answer": {"type": "string"}},
           "required": ["answer"]}
+KEY_VALUE = "test-gateway-key"
 PRICES = json.dumps({MODEL: {"input": 0.75, "output": 3.75}})
 
 
@@ -643,6 +644,19 @@ class Estimate(ImproveCase):
         rows = improve.stage_estimates(self.root, ["sound"], extras={"qa": list(argv)})
         return next(r for r in rows if r["stage"] == "qa")
 
+    def setUp(self):
+        super().setUp()
+        self.key(KEY_VALUE)
+
+    def key(self, value):
+        """$AI_GATEWAY_API_KEY for the rest of the test (None: unset)."""
+        patch = mock.patch.dict(os.environ)
+        patch.start()
+        self.addCleanup(patch.stop)
+        os.environ.pop(gateway.KEY, None)
+        if value:
+            os.environ[gateway.KEY] = value
+
     def test_an_unmeasured_comparison_adds_compare_usd_once(self):
         self.start_pass(dict(card(7.0), usage=spend.record(1.5, "m", 3),
                              scoring={"asked": 3, "valid": 3}))
@@ -651,6 +665,49 @@ class Estimate(ImproveCase):
                            "--compare-model", MODEL])
         self.assertAlmostEqual(row["usd"], round(plain["usd"] + spend.COMPARE_USD, 2))
         self.assertIn("--against", row["source"])
+
+    def test_without_the_gateway_key_the_comparison_adds_nothing(self):
+        # cutcompare.skip_reason skips it for want of the key: the still
+        # pairs stand in, and they are what --previous prices
+        self.assertEqual(spend.GATEWAY_KEY, gateway.KEY)
+        self.key(None)
+        self.start_pass(dict(card(7.0), usage=spend.record(1.5, "m", 3),
+                             scoring={"asked": 3, "valid": 3}))
+        plain = self.qa_row(["qa", "--previous", "pass-01"])
+        row = self.qa_row(["qa", "--previous", "pass-01", "--against", "x.mp4",
+                           "--compare-model", MODEL])
+        self.assertEqual(row["usd"], plain["usd"])
+        self.assertNotIn("--against", row["source"])
+        self.assertIn("--previous", row["source"])
+
+    def measured_video_pass(self):
+        """pass-01 whose video comparison answered: its compare_engine holds
+        both orders, and the still pairs were not asked."""
+        compare = {"cost_usd": 0.06, "decisions": [
+            {"name": "cutcompare-pass-01-ab", "cost_usd": 0.03, "cached": False},
+            {"name": "cutcompare-pass-01-ba", "cost_usd": 0.03, "cached": False}]}
+        self.start_pass(dict(card(7.0), usage=spend.record(1.56, "m", 5),
+                             scoring={"asked": 3, "valid": 3},
+                             engine={"cost_usd": 1.5, "decisions": [
+                                 {"name": f"pass-01-scorecard-s{k}", "cost_usd": 0.5}
+                                 for k in (1, 2, 3)]},
+                             compare_engine=compare))
+
+    def test_a_measured_video_comparison_stands_in_for_the_still_pairs(self):
+        # with --against the still pairs are asked only when the comparison
+        # fails, so a scorecard without them is not missing them
+        self.measured_video_pass()
+        argv = ["qa", "--previous", "pass-01", "--against", "x.mp4", "--compare-model", MODEL]
+        row = self.qa_row(argv)
+        self.assertEqual(row["basis"], "measured")
+        self.assertNotIn("--previous", row["source"])
+        self.assertNotIn("--against", row["source"])
+        # without the key the comparison is skipped and the still pairs run
+        self.key(None)
+        self.assertIn("--previous", self.qa_row(argv)["source"])
+        # and without --against they are asked as before
+        self.key(KEY_VALUE)
+        self.assertIn("--previous", self.qa_row(["qa", "--previous", "pass-01"])["source"])
 
     def test_a_measured_comparison_is_not_added_again(self):
         compare = {"cost_usd": 0.06, "decisions": [
