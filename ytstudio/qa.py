@@ -20,7 +20,27 @@ is how many stills: above the shot count the extra stills are evenly spaced
 over the runtime, each inside a shot and at least half a second from every
 other sample; below it the priority order decides what is kept, the
 reviewer is told which shots it has no still of, and the scorecard names
-them (`unsampled`, and a line under not_evidenced). The stills are rendered by the engine on the render host, from the very document the
+them (`unsampled`, and a line under not_evidenced).
+
+A midpoint misses what happens elsewhere in its shot, and the narration
+says when each line lands (AUTO-104). So each narrated line -- one
+sentence of a take in voice.json, placed on the film by build.json's shot
+`at` -- also gets a still where its first word is said, half a burst
+inside its shot like the evenly spaced ones, labelled `line: <first
+words>`, and the brief carries the line (`lines`, with when it starts
+and `frame`, the file that shows that moment) beside it, so "is it on
+screen when it is said" is judged at that moment. A line merges into a
+still of its own shot only when that still's burst has the frame where
+the line starts: half a second off, a still does not show it. Line stills
+come after every shot's own: the payoff, re-hook and reveal lines
+(`KEY_LINES`) first, then the lines said inside a shot before the ones
+that open their take, spread over the runtime; without --frames they are
+added up to EVERY_SHOT_UP_TO stills in all, and under --frames they count
+against N before the evenly spaced ones. The lines left without a still
+are named to the reviewer and in the scorecard (`lines_unsampled`, and a
+line under not_evidenced). A wordless film has none.
+
+The stills are rendered by the engine on the render host, from the very document the
 encode uses. A still cannot evidence motion, so each sample is rendered as
 one contiguous window of frames around its midpoint (`BURST_SECONDS`, at
 most `BURST_MAX_FRAMES` consecutive frames, planned in `samples.json`) in a
@@ -129,7 +149,7 @@ from .core import read_json, timecode, write_json
 from .harness import Harness, HarnessError, brief
 from .script import SILENT as SILENT_LINE, Shot, spoken, visible_text
 from .sound import heard as sheet_heard
-from .voice import heard as takes_heard
+from .voice import heard as takes_heard, words_estimated
 
 QA_DIR = "qa"
 READY, NOT_READY = "READY TO PUBLISH", "NOT READY"
@@ -734,7 +754,120 @@ def _spread_times(shots: list[dict], taken: list[float],
     return out
 
 
-def sample(build: dict, *, limit: int | None = None) -> list[dict]:
+#: A narrated line (AUTO-104) is one sentence of a take: its still is taken
+#: where its first word is said, labelled `line: ` and its first LINE_WORDS
+#: words. The screenplay's functions whose lines a tight --frames keeps
+#: first, in this order: the moments the film is built to land.
+LINE_WHY, LINE_WORDS = "line: ", 5
+KEY_LINES = ("payoff", "rehook", "reveal")
+#: What ends a sentence, once closing quotes and brackets are set aside.
+_SENTENCE_END = (".", "!", "?", "\u2026")
+_CLOSERS = "\"')]}\u201d\u2019\u00bb"
+#: A word that ends on a period without ending its sentence: a title before
+#: a name, and an initialism or initial (U.S., e.g., J.), which the pattern
+#: below catches. Numbers ("in 1923.") still end one.
+_TITLES = frozenset(("mr.", "mrs.", "ms.", "dr.", "prof.", "st.", "jr.", "sr.",
+                     "vs.", "mt.", "gen.", "col.", "capt.", "lt.", "sgt."))
+_INITIALS = re.compile(r"^(?:[^\W\d_]\.)+$")
+
+
+def _ends_sentence(word: str) -> bool:
+    word = word.rstrip(_CLOSERS)
+    if not word.endswith(_SENTENCE_END):
+        return False
+    if word.endswith(".") and not word.endswith(".."):
+        bare = word.lstrip("\"'([{\u201c\u2018\u00ab")
+        if bare.lower() in _TITLES or _INITIALS.match(bare):
+            return False
+    return True
+
+
+def _sentences(take: dict) -> list[tuple[float, str]]:
+    """A take's sentences, each as (its first word's start in the take,
+    its words). The take's own word timings when it has them; without
+    them its length is shared by the words' lengths, as `yt voice` does
+    for a local engine. A word is a sentence's last when it ends on . ! ?
+    or an ellipsis, a closing quote or bracket aside, unless it is a title
+    (Dr., Mr.) or an initialism (U.S.): so "Dr. Lee left" is one line. The
+    cost is the other way round: a sentence that ends on an initialism runs
+    on into the next, whose start then has no still of its own."""
+    words = [w for w in take.get("words") or [] if isinstance(w, dict)]
+    try:
+        timed = [(float(w["start"]), str(w.get("text", ""))) for w in words]
+    except (KeyError, TypeError, ValueError):
+        timed = []
+    if not timed:
+        try:
+            seconds = float(take.get("seconds") or 0)
+        except (TypeError, ValueError):
+            seconds = 0.0
+        timed = [(w.start, w.text) for w in words_estimated(str(take.get("text", "")), seconds)]
+    out: list[tuple[float, str]] = []
+    start, said = None, []
+    for at, text in timed:
+        if not text.strip():
+            continue
+        if start is None:
+            start = at
+        said.append(text.strip())
+        if _ends_sentence(text.strip()):
+            out.append((start, " ".join(said)))
+            start, said = None, []
+    if said:
+        out.append((start, " ".join(said)))
+    return out
+
+
+def narrated_lines(build: dict, voice: dict | None) -> list[dict]:
+    """Every narrated line on the film (AUTO-104), in time order: each
+    sentence of each take in voice.json, placed on the film by build.json's
+    shot `at` for the take's label (a take's word times count from its own
+    start, which is its shot's), with `t` the moment its still is taken:
+    the line's start, kept half a burst inside the shot so the burst is the
+    shot's own and never straddles a cut. A line that starts outside its
+    shot, a take no shot carries, a bracketed direction and a wordless film
+    have none. Each line carries its shot, the shot's `function`, and
+    `first`: whether it opens its take. Two takes with one label are the
+    last one, as build.timeline places them: the other is not on the
+    soundtrack."""
+    if not voice or voice.get("wordless"):
+        return []
+    shots: dict[str, dict] = {}
+    for shot in (build or {}).get("shots") or []:
+        if isinstance(shot, dict):
+            shots.setdefault(str(shot.get("label", "")), shot)
+    takes = {str(take.get("label", "")): take for take in voice.get("takes") or []
+             if isinstance(take, dict)}
+    out = []
+    for label, take in takes.items():
+        shot = shots.get(label)
+        if not shot:
+            continue
+        at, seconds = float(shot["at"]), float(shot.get("seconds") or 0)
+        if seconds <= 0:
+            continue
+        edge = min(BURST_SECONDS / 2, seconds / 2)
+        for n, (start, text) in enumerate(_sentences(take)):
+            text = spoken(text)
+            when = round(at + start, 3)
+            if not text or not at <= when < at + seconds:
+                continue
+            out.append({"shot": shot, "at": when, "text": text,
+                        "function": str(shot.get("function") or ""), "first": n == 0,
+                        "t": round(min(max(when, at + edge), at + seconds - edge), 3)})
+    return sorted(out, key=lambda line: (line["at"], line["text"]))
+
+
+def _line_why(text: str) -> str:
+    """`line: ` and the line's first LINE_WORDS words. A `;` is a comma
+    here: `why` is a list of reasons joined by "; "."""
+    words = text.replace(";", ",").split()
+    head = " ".join(words[:LINE_WORDS]) + (" ..." if len(words) > LINE_WORDS else "")
+    return LINE_WHY + head
+
+
+def sample(build: dict, *, limit: int | None = None,
+           voice: dict | None = None) -> list[dict]:
     """Where the evidence is taken, per docs/production.md §7: every shot,
     at its midpoint (AUTO-103), each row's `why` naming the priority
     reasons that shot has (hook, ending, payoff, section start, re-hook,
@@ -748,7 +881,20 @@ def sample(build: dict, *, limit: int | None = None) -> list[dict]:
     left out. A row is one shot's: two shots with the same midpoint get a
     row each, the second moved a frame inside itself. Each row carries its
     shot's `at`, which with `label` says which shot it is, and its burst
-    plan, the frames that evidence motion, kept inside its shot."""
+    plan, the frames that evidence motion, kept inside its shot.
+
+    With `voice` (voice.json), each narrated line also gets a still where
+    it starts (AUTO-104, `narrated_lines`), so a picture is judged at the
+    moment its line is said: `why` is `line: <first words>` and `lines`
+    carries the line, when it starts and the frame that shows that moment.
+    A line whose start is a frame of the burst of a still of its own shot
+    merges into it (its reason and its line added there, no new still); a
+    still a few frames off still shows the moment, one half a second off
+    does not. The line stills come after every shot's still, so they never
+    cost a shot its only one; `_add_lines` says which lines come first.
+    Without --frames they are added up to EVERY_SHOT_UP_TO stills in all;
+    under --frames they count against it, before the evenly spaced ones.
+    `lines_unsampled` says which lines got no still."""
     shots = sorted(build.get("shots", []), key=lambda s: float(s["at"]))
     if not shots:
         return []
@@ -790,10 +936,149 @@ def sample(build: dict, *, limit: int | None = None) -> list[dict]:
         t = _free_moment(shot, {r["t"] for r in out}, fps)
         by_shot[id(shot)] = row(shot, t, why)
         out.append(by_shot[id(shot)])
+    _add_lines(out, narrated_lines(build, voice), row,
+               cap=limit if limit is not None else EVERY_SHOT_UP_TO, fps=fps)
     if limit is not None and limit > len(out):
         for t, shot in _spread_times(shots, [r["t"] for r in out], limit - len(out)):
             out.append(row(shot, t, SPREAD_WHY))
     return sorted(out, key=lambda r: r["t"])
+
+
+def _add_lines(out: list[dict], lines: list[dict], row, *, cap: int,
+               fps: float) -> None:
+    """The line stills (AUTO-104), added to `out` in place.
+
+    A line whose start is a frame of the burst of a still of its own shot
+    is shown by that still: it merges into it at no cost, whatever the cap.
+    Each other line needs a still of its own, taken while `out` is under
+    `cap`, in this order: the payoff, re-hook and reveal lines (KEY_LINES,
+    in that order, each in time order); then the lines said inside a shot
+    before the ones that open their take, because a take opens on its
+    shot's cut, so its first line is said as the shot begins, which the
+    shot's own still stands for, while a later line marks something that
+    happens in the shot; and within each, the line farthest from every
+    still that already shows a line, so what the cap leaves out is spread
+    over the runtime instead of all taken from its end (ties: the line
+    farthest from its shot's stills, then the earlier). A line is never
+    merged into another shot's still: the line is its own shot's."""
+    rank = {name: n for n, name in enumerate(KEY_LINES)}
+
+    def own(line: dict) -> list[dict]:
+        shot = line["shot"]
+        return [r for r in out if r["label"] == shot.get("label", "")
+                and r["at"] == float(shot["at"])]
+
+    def holder(line: dict) -> dict | None:
+        start = max(int(round(line["at"] * fps)), 0)
+        rows = [r for r in own(line) if start in (r.get("burst") or {}).get("frames", ())]
+        return min(rows, key=lambda r: abs(r["t"] - line["at"]), default=None)
+
+    def attach(r: dict, line: dict) -> None:
+        why = _line_why(line["text"])
+        if why not in r["why"].split("; "):
+            r["why"] = f"{r['why']}; {why}" if r["why"] else why
+        burst, start = r.get("burst") or {}, max(int(round(line["at"] * fps)), 0)
+        frames, files = burst.get("frames") or [], burst.get("files") or []
+        frame = r["frame"]
+        if start != burst.get("still_frame") and start in frames and len(files) == len(frames):
+            frame = files[frames.index(start)]
+        r.setdefault("lines", []).append({"at": line["at"], "text": line["text"],
+                                          "frame": frame})
+
+    def after(line: dict) -> tuple:
+        shown = [r["t"] for r in out if r.get("lines")]
+        return (min((abs(line["t"] - t) for t in shown), default=math.inf),
+                min((abs(line["t"] - r["t"]) for r in own(line)), default=math.inf),
+                -line["at"])
+
+    pending = list(lines)
+    while pending:
+        unseen = []
+        for line in pending:
+            hit = holder(line)
+            if hit:
+                attach(hit, line)
+            else:
+                unseen.append(line)
+        pending = unseen
+        if not pending or len(out) >= cap:
+            return
+        key = [line for line in pending if line["function"] in rank]
+        if key:
+            line = min(key, key=lambda ln: (rank[ln["function"]], ln["at"]))
+        else:
+            inner = [ln for ln in pending if not ln.get("first")] or pending
+            line = max(inner, key=after)
+        pending.remove(line)
+        shot, t, used = line["shot"], line["t"], {r["t"] for r in out}
+        if t in used:
+            # another shot's still has this millisecond (nested shots): the
+            # nearest frame inside the line's shot that none has
+            at, seconds = float(shot["at"]), float(shot["seconds"])
+            t = next((m for k in range(1, int(seconds * fps) + 1)
+                      for m in (round(t + k / fps, 3), round(t - k / fps, 3))
+                      if at < m < at + seconds and m not in used), t)
+        new = row(shot, t, "")
+        attach(new, line)
+        out.append(new)
+
+
+def lines_unsampled(build: dict, voice: dict | None, samples: list[dict]) -> list[dict]:
+    """The narrated lines (AUTO-104) no sampled still shows where they start,
+    in time order, each as its shot, when it starts and its text: what the
+    cap on stills left unchecked. Empty for a wordless film."""
+    shown = {(str(r.get("label", "")), ln.get("at"), ln.get("text"))
+             for r in samples for ln in r.get("lines") or [] if isinstance(ln, dict)}
+    out = []
+    for line in narrated_lines(build, voice):
+        label = str(line["shot"].get("label", ""))
+        if (label, line["at"], line["text"]) not in shown:
+            out.append({"shot": label, "at": line["at"], "text": line["text"]})
+    return out
+
+
+#: How many unsampled lines the not_evidenced line names; the scorecard's
+#: `lines_unsampled` keeps them all.
+LINES_NAMED = 10
+
+
+def unseen_lines_brief(dropped: list[dict], total: int) -> str:
+    """The line that tells the reviewer, before it scores, how many
+    narrated lines have no still where they start. Empty when none."""
+    if not dropped:
+        return ""
+    return (f"{len(dropped)} of the {total} narrated lines have no still where they "
+            "start: do not judge from the other stills whether the picture shows "
+            "them when they are said; the scorecard names them under not_evidenced.")
+
+
+def note_lines_unsampled(card: dict, dropped: list[dict], *, total: int,
+                         limit: int | None, stills: int, reused: bool = False) -> dict:
+    """The scorecard says which narrated lines got no still (AUTO-104):
+    `lines_unsampled` lists them all and a not_evidenced line counts them
+    and names the first LINES_NAMED by shot and time. A film with no
+    narrated line (`total` 0) is left as it is."""
+    if not total:
+        return card
+    card = dict(card, lines_unsampled=list(dropped))
+    if dropped:
+        if reused:
+            under = "in the reused pass"
+        elif limit is not None:
+            under = f"under --frames {limit}"
+        elif stills >= EVERY_SHOT_UP_TO:
+            under = (f"past the default of {EVERY_SHOT_UP_TO} stills "
+                     "(--frames N samples more)")
+        else:
+            under = "by the sampler"
+        names = ", ".join(f"{d['shot']} at {_stamp(d['at'])}" for d in dropped[:LINES_NAMED])
+        if len(dropped) > LINES_NAMED:
+            names += f" and {len(dropped) - LINES_NAMED} more (`lines_unsampled`)"
+        card["not_evidenced"] = list(card.get("not_evidenced") or []) + [
+            f"lines: {len(dropped)} of {total} narrated lines have no still where "
+            f"they start {under}: {names}; whether the picture shows them when "
+            "they are said was not seen"]
+    return card
 
 
 def _free_moment(shot: dict, used: set[float], fps: float) -> float:
@@ -1180,11 +1465,15 @@ def mechanical_findings(samples: list[dict], diagnostics: dict | None = None,
     # (AUTO-103: a shot can have several stills), on its midpoint still
     # when it has one. A shot is its label and its `at`; a row without `at`
     # (a pass sampled before AUTO-103) is its own shot.
+    # An evenly spaced still or a line's (AUTO-104) is never the home while
+    # the shot has its own.
+    def extra(row: dict) -> bool:
+        return all(why == SPREAD_WHY or why.startswith(LINE_WHY)
+                   for why in str(row.get("why", "")).split("; "))
     home: dict[tuple, int] = {}
     for i, row in enumerate(samples):
         key = (str(row.get("label", "")), row.get("at", row.get("t")))
-        if key not in home or (samples[home[key]].get("why") == SPREAD_WHY
-                               and row.get("why") != SPREAD_WHY):
+        if key not in home or (extra(samples[home[key]]) and not extra(row)):
             home[key] = i
     for i, row in enumerate(samples):
         base = {"timestamp": row["t"], "frame": row.get("frame", ""),
@@ -2172,8 +2461,11 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
     p.add_argument("--frames", type=_positive, default=None, dest="frame_limit",
                    metavar="N",
                    help="how many stills to sample (default: every shot once, at its "
-                        f"midpoint, up to {EVERY_SHOT_UP_TO}). Above the shot count the extra stills are evenly "
-                        "spaced over the runtime; below it the hook, the ending, the "
+                        "midpoint, and the start of each narrated line, up to "
+                        f"{EVERY_SHOT_UP_TO}). The shots come first, then the line "
+                        "stills (payoff, re-hook and reveal lines before the rest); "
+                        "above that the extra stills are evenly "
+                        "spaced over the runtime; below the shot count the hook, the ending, the "
                         "payoff and the section starts are kept first and the shots "
                         "left out are named under not_evidenced")
     p.add_argument("--quality", default="preview",
@@ -2224,7 +2516,7 @@ def run(args) -> int:
         problems = []
     else:
         pass_dir = next_pass(home)
-        samples = sample(build, limit=args.frame_limit)
+        samples = sample(build, limit=args.frame_limit, voice=voice)
         if not samples:
             print("error: the build manifest has no shots to sample", file=sys.stderr)
             return 1
@@ -2305,6 +2597,12 @@ def run(args) -> int:
             **{k: str(shot[k])[:300] for k in ("function", "shows") if shot.get(k)},
             **super_fields(shot),
             "narration": str(shot.get("narration", ""))[:300],
+            # The line said where this still was taken (AUTO-104), with the
+            # time it starts and the frame that shows that moment: is it on
+            # screen when it is said?
+            **({"lines": [{"at": ln.get("at"), "text": str(ln.get("text", ""))[:300],
+                           "frame": ln.get("frame", row["frame"])}
+                          for ln in row["lines"]]} if row.get("lines") else {}),
             "drawn_by": row.get("asset", ""),
             "take": {k: take.get(k) for k in ("seconds", "planned_seconds", "cps")
                      if k in take},
@@ -2356,6 +2654,9 @@ def run(args) -> int:
     # unseen is said to the reviewer before it scores, and in the scorecard.
     missing = unsampled(build, samples)
     total_shots = len(build.get("shots", []))
+    # And which narrated lines no still shows where they start (AUTO-104).
+    narrated = narrated_lines(build, voice)
+    dropped_lines = lines_unsampled(build, voice, samples)
 
     # What heard the film's sound (AUTO-105): each listening review marked
     # with what it heard, current only while the film carries that. A
@@ -2395,11 +2696,19 @@ def run(args) -> int:
         "difference between consecutive frames, and `motion.total`, first frame "
         "against last: both near zero is frozen, one step far above the rest is "
         "a jump; read the burst frames themselves only where those numbers or "
-        "the still call for it. The "
+        "the still call for it. A frame sampled where a line of the narration "
+        "starts (`why_sampled` has `line: ...`) carries that line under `lines` "
+        "with the time it starts and `frame`, the file under `frames/` that shows "
+        "that moment: the still itself, or the burst frame when the line starts "
+        "a few frames from the still. Judge from that file whether the picture "
+        "shows what the line says at the moment it is said; a picture that does "
+        "not is a finding on its shot. The "
         "mechanical findings are measured, not judged: do not repeat them as "
         "your own, but score as if they stand, because they do. Blocking items "
         "already proven by the manifests are listed; add what the frames show."
-        + (" " + unseen_brief(missing, total_shots) if missing else ""),
+        + (" " + unseen_brief(missing, total_shots) if missing else "")
+        + (" " + unseen_lines_brief(dropped_lines, len(narrated))
+           if dropped_lines else ""),
         (f"Read `{NARRATION}` too: the whole narration, one shot a line with its "
          "time on the film. Judge narrative_clarity and editing_pacing on the film "
          "as told: can the explanation be followed by ear alone, from the "
@@ -2473,6 +2782,12 @@ def run(args) -> int:
     if missing and not args.quiet:
         print(f"note: {len(missing)} shot(s) not sampled: {', '.join(missing)}",
               file=sys.stderr)
+    card = note_lines_unsampled(card, dropped_lines, total=len(narrated),
+                                limit=args.frame_limit, stills=len(samples),
+                                reused=bool(args.reuse))
+    if dropped_lines and not args.quiet:
+        print(f"note: {len(dropped_lines)} of {len(narrated)} narrated line(s) have "
+              "no still where they start (scorecard: lines_unsampled)", file=sys.stderr)
     capped: list[str] = []
     if evidenced:
         # The unheard audio categories were left out of the medians

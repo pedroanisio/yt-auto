@@ -194,7 +194,7 @@ Or all of it at once, for one idea:
 | `yt pilot` | 30/60/180-second cuts of the finished film, nested, with what each proves | no model calls |
 | `yt gate` | the delivery verdict: loudness, scopes, frames, caption limits, run on a render host and naming the requirement that stopped it; plus the geometry check (a hero that penetrates the set, or reads merged into it on screen, blocks whatever the tool and the triage said) | one triage call |
 | `yt review` | the PDF review sheet: frames, captions, markers, sources, credits | no model calls |
-| `yt qa` | the scorecard per pass: every shot sampled at its midpoint, up to 60 stills (`--frames N` above the shot count adds evenly spaced stills; below it, or past 60 shots by default, names the shots left out), one frame window per sample (the still is its middle frame), a contact sheet, the mechanical findings (flat, clipped, frozen, jump, off-camera, `penetration`: the hero inside a set solid, and `reads-merged`: the hero over a surface on screen with no shadow, from the engine's evaluated geometry and camera), the model's review, scored as the median of three samples (an audio category no current listening review covers is null in every sample, never a median) | `qa.QA_SAMPLES` (3) inspection calls per pass and at most one merge decision; one render job per sample (by default one per shot, at most 60; `--frames N` sets it), one eval job per pass; `yt improve` pays this every pass |
+| `yt qa` | the scorecard per pass: every shot sampled at its midpoint and each narrated line where it starts (`line: <first words>`, AUTO-104), up to 60 stills (`--frames N` above the shot count adds the line stills first, then evenly spaced stills; below it, or past 60 shots by default, names the shots left out; the lines left without a still are named in `lines_unsampled`), one frame window per sample (the still is its middle frame), a contact sheet, the mechanical findings (flat, clipped, frozen, jump, off-camera, `penetration`: the hero inside a set solid, and `reads-merged`: the hero over a surface on screen with no shadow, from the engine's evaluated geometry and camera), the model's review, scored as the median of three samples (an audio category no current listening review covers is null in every sample, never a median) | `qa.QA_SAMPLES` (3) inspection calls per pass and at most one merge decision; one render job per sample (by default one per shot and per narrated line, at most 60; `--frames N` sets it), one eval job per pass; `yt improve` pays this every pass |
 | `yt improve` | routes each QA finding to the stage that owns it, briefs that stage through `feedback/`, re-runs it and everything downstream, keeps the pass only if it measurably improved | one routing decision per pass, plus the stages it runs |
 | `yt doctor` | every video's state and the command that advances it | no model calls |
 | `yt probe` | the realism probe suite: one neutral brief per class of material, light or motion, composed by an agent coding with the SDK, built and framed by the harness, scored by a different model with each defect's cause | **$1.06** for one probe and one round; up to three author sessions and three reviews per probe |
@@ -1271,7 +1271,23 @@ gives more evidence; a film too short for N gets every moment that fits.
 Below the shot count the hook, the ending, the payoff and the section
 starts are kept first, then the other shots spread over the runtime; the
 reviewer is told which shots it has no still of before it scores, and the
-scorecard names them (`unsampled`, and a line under `not_evidenced`). The stills are rendered by the engine on the render
+scorecard names them (`unsampled`, and a line under `not_evidenced`).
+A midpoint misses what happens elsewhere in its shot (AUTO-104): each
+narrated line, one sentence of a take in `voice.json` placed on the film by
+`build.json`'s shot `at`, also gets a still where its first word is said,
+half a burst inside its shot, labelled `line: <first words>`; the line,
+when it starts and `frame`, the file that shows that moment, sit beside
+that still in the brief (`lines`), so whether it is on screen when it is
+said is judged at that moment. A line merges into a still of its own shot
+only when that still's burst has the frame where the line starts. The line
+stills come after every shot's own: the payoff, re-hook and reveal lines
+(`qa.KEY_LINES`) first, then the lines said inside a shot before the ones
+that open their take, spread over the runtime; without `--frames` they are
+added up to 60 stills in all, and under `--frames N` they count against N
+before the evenly spaced ones. The lines left without a still are named to
+the reviewer and in the scorecard (`lines_unsampled`, and a `lines:` line
+under `not_evidenced`). A wordless film has none.
+The stills are rendered by the engine on the render
 host from the very document the encode uses. A still cannot evidence motion,
 so each sample is rendered as one contiguous window of frames centred on
 its midpoint — half a second, at most 16 consecutive frames, kept inside
@@ -1385,8 +1401,9 @@ numbers included), the next pass is compared with it, and a category that
 drops by 0.5 is a regression. `qa.json` at the project root carries the
 latest verdict. The exit code is 0 only when the film is ready.
 
-`--frames N` stills (default: every shot once, up to 60; more adds evenly
-spaced stills, fewer names the shots left out) · `--quality` of the stills ·
+`--frames N` stills (default: every shot once and each narrated line's
+start, up to 60; more adds evenly spaced stills, fewer names the shots left
+out) · `--quality` of the stills ·
 `--reuse PASS` to
 score an earlier pass's frames again, measuring them again and rendering
 nothing but proof frames that were rendered graded ·
