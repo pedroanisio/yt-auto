@@ -437,6 +437,52 @@ class KeepInTheLoop(ImproveCase):
         self.assertEqual(runner.stages()[0], "qa")
 
 
+class NotEvidencedInTheLoop(ImproveCase):
+    def not_evidenced(self, cost=0.7):
+        return dict(improve_card(7.0, mechanical=[mech()], cost=cost),
+                    verdict=qa.NOT_EVIDENCED, scores={}, overall=None)
+
+    def test_a_not_evidenced_pass_mid_loop_is_unjudged_and_scored_again_next_run(self):
+        self.start_pass(improve_card(5.0, mechanical=[mech()]))
+        runner = FakeRunner(self.root, [self.not_evidenced(0.7)])
+        record = self.improver(runner, max_passes=1).run()
+        p = record["passes"][0]
+        self.assertEqual(p["decision"], "unjudged")
+        self.assertEqual(record["stop"]["reason"], "qa-failed")
+        self.assertTrue((self.root / "improve" / "pass-01" / "snapshot").is_dir())
+        # the samples that were asked are paid for, and the pass row says so
+        self.assertGreaterEqual(p["cost_usd"], 0.7)
+        runner = FakeRunner(self.root, [improve_card(6.0)])
+        record = self.improver(runner, max_passes=1).run()
+        self.assertEqual(runner.stages(), ["qa"])          # only the judging ran
+        p = record["passes"][0]
+        self.assertTrue(p["resumed"])
+        self.assertEqual(p["decision"], "keep")
+        self.assertEqual(p["qa_pass"], "pass-03")
+
+    def test_from_pass_refuses_a_not_evidenced_pass(self):
+        self.start_pass(improve_card(5.0, mechanical=[mech()]), "pass-01")
+        self.start_pass(self.not_evidenced(), "pass-02")
+        out = []
+        runner = FakeRunner(self.root, [])
+        record = self.improver(runner, max_passes=1, from_pass="pass-02",
+                               say=out.append).run()
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(record["stop"]["reason"], "no-evidence")
+        text = "\n".join(out)
+        self.assertIn("not evidenced", text)
+        self.assertIn("yt qa", text)
+
+    def test_a_dry_run_says_its_pass_is_not_evidenced(self):
+        self.start_pass(self.not_evidenced())
+        out = []
+        self.improver(FakeRunner(self.root, []), dry_run=True, say=out.append).run()
+        text = "\n".join(out)
+        self.assertIn("pass-01 is not evidenced", text)
+        self.assertIn("yt qa", text)
+        self.assertNotIn("older than the video", text)
+
+
 class Estimate(ImproveCase):
     def qa_row(self):
         rows = improve.stage_estimates(self.root, ["sound"])
