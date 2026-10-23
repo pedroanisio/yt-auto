@@ -182,6 +182,12 @@ DEFAULT_USD = {"research": 5.0, "styles": 2.0, "script": 3.0, "props": 0.0,
 #: costs. It is asked once a pass, never per sample.
 COMPARE_PASS_USD = 0.5
 
+#: What the video comparison adds to a QA pass (`--against`, AUTO-128),
+#: assumed until a scorecard measures it: two gateway requests, each
+#: carrying both cuts. A guess until a live run prices one (TO VERIFY).
+#: Asked once a pass, never per sample.
+COMPARE_USD = 0.10
+
 #: What the plan review adds to a script (AUTO-92), assumed until a record
 #: measures it: the reviewer's one reading of the plan and, at most, a
 #: second plan and its reading.
@@ -276,7 +282,10 @@ FLAG_USD = {"script": {"--review": ((PLAN_REVIEW_USD, "plan-review"),
             # QA compares the new cut side by side with the pass `--previous`
             # names, or with the latest scored one when there is one, so
             # stage_estimates asks the flag of a plain `yt qa` too (AUTO-108).
-            "qa": {"--previous": ((COMPARE_PASS_USD, "compare-pass"),)}}
+            "qa": {"--previous": ((COMPARE_PASS_USD, "compare-pass"),),
+                   # the video comparison's two orders, `cutcompare-<pass>-ab`
+                   # and `-ba`, on the scorecard's compare_engine (AUTO-128)
+                   "--against": ((COMPARE_USD, "cutcompare"),)}}
 
 
 def qa_compares(root: Path | None) -> bool:
@@ -305,10 +314,12 @@ def flag_increments(root: Path | None, stage: str, argv: Iterable[str]) -> list[
         # whose decisions are named by their pass (`pass-03-compare-pass`).
         doc = (_qa_card(root) if stage == "qa" else
                read_json(Path(root) / rel, warn=False) if rel else None)
-        engine = doc.get("engine") if isinstance(doc, dict) else None
-        rows = engine.get("decisions") if isinstance(engine, dict) else None
+        rows: list = []
+        for key in ("engine", "compare_engine"):     # compare_engine: AUTO-128
+            engine = doc.get(key) if isinstance(doc, dict) else None
+            rows += (engine.get("decisions") if isinstance(engine, dict) else None) or []
         names = {re.sub(r"^pass-\d+-", "", str(d.get("name")))
-                 for d in rows or [] if isinstance(d, dict)}
+                 for d in rows if isinstance(d, dict)}
     out = []
     for flag in dict.fromkeys(argv):
         parts = FLAG_USD.get(stage, {}).get(flag)
