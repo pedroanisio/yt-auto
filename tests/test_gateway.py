@@ -436,6 +436,18 @@ class Documented(unittest.TestCase):
         self.assertIn("refused under YT_GATEWAY=vercel", field)
         self.assertNotIn("in key mode", " ".join(field.split()))
 
+    def test_the_docs_say_off_and_warn_about_a_direct_key(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        skill = (ROOT / "ytstudio" / "SKILL.md").read_text(encoding="utf-8")
+        for text in (readme, skill):
+            flat = " ".join(text.split())
+            self.assertIn("YT_GATEWAY=off", flat)
+            # Subscription mode leaves ANTHROPIC_API_KEY alone, and the CLI
+            # would send a key left set to the gateway instead of the login.
+            self.assertIn("unset `ANTHROPIC_API_KEY`", flat)
+            for name in ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX"):
+                self.assertIn(name, flat)
+
 
 if __name__ == "__main__":
     unittest.main()
