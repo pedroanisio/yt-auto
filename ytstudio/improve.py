@@ -1830,7 +1830,9 @@ def report_md(record: dict, root: Path) -> str:
         lines += ["", "### Not evidenced (READY cannot be judged)", ""]
         lines += [f"- {key}: no current listening review ({gap.get('missing', '?')}) -- "
                   + (f"run {gap['command']}" if gap.get("command")
-                     else "nothing in the pipeline produces one yet")
+                     else "nothing in the pipeline produces one yet, so READY is out "
+                          "of reach for this film until a review that hears the "
+                          "rendered track exists; another pass will not change that")
                   for key, gap in unheard.items()]
     if record.get("human"):
         lines += ["", "### Needs a human decision (not looped)", ""]

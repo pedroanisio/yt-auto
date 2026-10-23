@@ -218,6 +218,27 @@ class Unscored(unittest.TestCase):
         self.assertEqual(card["overall"], 9.05)
         self.assertNotIn("overall_filed", card)
 
+    def test_a_wordless_film_is_told_ready_is_out_of_reach_not_left_to_loop(self):
+        # nothing in the pipeline hears a wordless film's voiceover yet, so
+        # the bar says that rather than a gap some stage could close
+        unheard = qa.audio_unheard(qa.listening_evidence(
+            _sound(), {"wordless": True, "takes": []}))
+        card = qa.score_unheard(self.card(), unheard)
+        verdict, reasons = qa.verdict_of(card["scores"], card["overall"], blocking=[],
+                                         unheard=card["audio_not_evidenced"])
+        self.assertEqual(verdict, qa.NOT_READY)
+        said = [r for r in reasons if r.startswith("voiceover")]
+        self.assertEqual(len(said), 1, reasons)
+        self.assertIn("wordless", said[0])
+        self.assertIn("nothing in the pipeline produces", said[0])
+        self.assertIn("out of reach", said[0])
+        # a gap a command closes keeps the plain reason
+        unheard = qa.audio_unheard(qa.listening_evidence(None, None))
+        card = qa.score_unheard(self.card(), unheard)
+        reasons = qa.verdict_of(card["scores"], card["overall"], blocking=[],
+                                unheard=unheard)[1]
+        self.assertFalse(any("out of reach" in r for r in reasons), reasons)
+
     def test_a_silent_films_rule_stands_beside_it(self):
         card = qa.score_silence(self.card(), motion._build(audio_tracks=0))
         unheard = qa.audio_unheard(qa.listening_evidence(None, None), silent=True)
@@ -360,6 +381,15 @@ class Stage(unittest.TestCase):
         self.assertEqual(self.card["scores"]["voiceover"], 9.2)
         self.assertTrue(self.card["audio_not_evidenced"]["sound_design"]["command"]
                         .startswith("yt build"))
+
+    def test_a_wordless_films_bar_says_why_ready_is_out_of_reach(self):
+        self.put("sound.json", _sound())
+        self.put("voice.json", {"engine": "none", "wordless": True, "takes": []})
+        self.built_last()
+        self.assertEqual(self.run_qa(), 1)
+        self.assertIsNone(self.card["scores"]["voiceover"])
+        self.assertTrue(any(r.startswith("voiceover") and "wordless" in r
+                            for r in self.card["bar"]), self.card["bar"])
 
     def test_with_no_listening_evidence_the_three_are_not_evidenced_and_unscored(self):
         self.built_last()

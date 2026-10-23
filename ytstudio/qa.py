@@ -1096,15 +1096,27 @@ def next_pass(root: Path) -> Path:
     return root / QA_DIR / f"pass-{n:02d}"
 
 
-def verdict_of(scores: dict, overall: float, *, blocking: list) -> tuple[str, list[str]]:
+def verdict_of(scores: dict, overall: float, *, blocking: list,
+               unheard: dict | None = None) -> tuple[str, list[str]]:
     """The bar of §2, applied mechanically to whatever the reviewer scored.
     A category recorded not evidenced (None) is not under the bar: READY
-    cannot be judged for it, and the reason says so (AUTO-105)."""
+    cannot be judged for it, and the reason says so (AUTO-105). Where
+    `unheard` (the card's `audio_not_evidenced`) says no command produces
+    the evidence, as for a wordless film's voiceover, the reason says READY
+    is out of reach until a review that hears the rendered track exists,
+    so nobody loops on a gap no stage can close."""
     reasons = []
     if overall < OVERALL_BAR:
         reasons.append(f"overall {overall:.1f} is under {OVERALL_BAR}")
     for key in CATEGORIES:
         if key in scores and scores[key] is None:
+            gap = (unheard or {}).get(key)
+            if gap and not gap.get("command"):
+                reasons.append(f"{key} is not evidenced: {gap.get('missing')}; nothing "
+                               "in the pipeline produces a listening review for it yet, "
+                               "so READY cannot be judged and is out of reach for this "
+                               "film until a review that hears the rendered track exists")
+                continue
             reasons.append(f"{key} is not evidenced: no current listening review "
                            "heard it, so READY cannot be judged for it")
             continue
@@ -1825,7 +1837,8 @@ def run(args) -> int:
     all_blocking += [f"mechanical: {f['problem']} at {f['timestamp']}s (shot {f['shot']})"
                      for f in mechanical if f["severity"] == "blocking"]
     verdict, reasons = verdict_of(card.get("scores", {}), float(card.get("overall", 0)),
-                                  blocking=all_blocking)
+                                  blocking=all_blocking,
+                                  unheard=card.get("audio_not_evidenced"))
     if card.get("verdict") != verdict and not args.quiet:
         print(f"note: the reviewer said {card.get('verdict')!r}; the bar says "
               f"{verdict!r} ({'; '.join(reasons)})", file=sys.stderr)

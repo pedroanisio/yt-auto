@@ -1696,6 +1696,26 @@ class UnheardAudio(unittest.TestCase):
         self.assertIn("| voiceover | not evidenced | not evidenced |", md)
         self.assertIn("voiceover is not evidenced", md)        # the bar, in §6
 
+    def test_improve_md_says_when_no_stage_can_close_the_gap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            unheard = qa.audio_unheard(qa.listening_evidence(
+                None, {"wordless": True, "takes": []}))
+            card = qa.score_unheard(self.card(), {"voiceover": unheard["voiceover"]})
+            card |= {"verdict": qa.NOT_READY, "findings": [], "blocking": [],
+                     "mechanical": [], "bar": []}
+            (root / "qa" / "pass-01").mkdir(parents=True)
+            write_json(root / "qa" / "pass-01" / "scorecard.json", card)
+            summary = {"pass": "pass-01", "overall": 9.2, "scores": card["scores"],
+                       "verdict": qa.NOT_READY}
+            md = improve.report_md({"idea": {"title": "A wordless film"}, "passes": [],
+                                    "stop": {"reason": "nothing", "detail": "-"},
+                                    "start": summary, "best": summary}, root)
+        section = md.split("### Not evidenced")[1].split("###")[0]
+        self.assertIn("wordless", section)
+        self.assertIn("nothing in the pipeline produces one yet", section)
+        self.assertIn("READY is out of reach", section)
+
 
 if __name__ == "__main__":
     unittest.main()
