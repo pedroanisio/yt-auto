@@ -497,7 +497,9 @@ each call, its argv and the decision cache are as they were. Under
 `-c` pairs instead (base URL `https://ai-gateway.vercel.sh/codex/v1`, the key
 read from `AI_GATEWAY_API_KEY`, nothing written to `$CODEX_HOME/config.toml`,
 your own `codex_config` pairs winning), sends a bare model as `openai/<name>`,
-Codex's own default included, and never a Claude id; an effort above `high`
+Codex's own default included, and never a Claude id, not even one atop the
+models cache (a `model_provider` of your own gets the model as given, and a
+key with whitespace around it is refused); an effort above `high`
 that `models_cache.json` lists for neither spelling goes as `high`, with a
 warning. Every stage that asks the
 model takes `--model`, `--effort` and `--fallback-model` (default sonnet);

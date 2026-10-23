@@ -61,8 +61,10 @@ research and screenplay work; it is not an unattended model service.
   `env_key="AI_GATEWAY_API_KEY"`, `wire_api="responses"`), so codex reads the
   key from the environment and nothing is written to `$CODEX_HOME/config.toml`.
   A `codex_config` pair of your own wins over the gateway's, a bare model
-  name goes to `-m` with `openai/` in front (Codex's own default too), and a
-  Claude id is never passed to codex.
+  name goes to `-m` with `openai/` in front (Codex's own default too, passing
+  over any Claude slug in its models cache), and a Claude id is never passed
+  to codex. A `model_provider` of your own in `codex_config` gets the model
+  as given. Codex reads the key as it is, so whitespace around it is refused.
 - Python 3.10+
 
 ---
