@@ -66,6 +66,22 @@ class ProductionDoc(unittest.TestCase):
             self.assertIn(term, row)
             self.assertIn(term, duty)
 
+    def test_listen_role_from_production_doc(self):
+        # AUTO-126: the listener judges rows 6-8 of the bar, word for word;
+        # no checklist of its own lives in code.
+        from ytstudio import listen
+        rows = {}
+        for line in _section("## 2. The publication bar").splitlines():
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            if len(cells) == 3 and cells[0] in ("6", "7", "8"):
+                rows[cells[1]] = cells[2]
+        self.assertEqual({name: words for name, words in listen.LISTEN_CRITERIA.values()},
+                         rows)
+        self.assertEqual(list(listen.LISTEN_CRITERIA), ["voiceover", "sound_design",
+                                                        "music_score"])
+        for name, words in rows.items():
+            self.assertIn(f"{name}: {words}", listen.LISTEN_ROLE)
+
     def test_the_story_criteria_are_house_priors_with_rule_numbers(self):
         text = _section("## 6. Craft criteria")
         self.assertIn("**Story.**", text)

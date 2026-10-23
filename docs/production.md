@@ -526,7 +526,11 @@ An honest spec says where it is blind, so nobody mistakes silence for a pass:
   be judged for it; the overall is the mean of what was scored, and the
   scorecard and `improve.md` name the missing review and the command that
   produces it. A wordless film has no take review, so READY is out of reach
-  for it until a review hears the rendered track. The measurements (the cue list, the mix settings, the
+  for it until a review hears the rendered track. `yt qa --listen` is that
+  review, opt-in on the gateway (AUTO-126). A model hears the film's own
+  audio track against rows 6-8 above and files findings, never scores, as
+  `listening.json` in the pass, and while it is current it is listening
+  evidence for all three categories. The measurements (the cue list, the mix settings, the
   narration's numbers) are context, never a score.
 - **The music and effects are library previews.** `yt sound --fetch` fills
   each cue with a CC0 or CC-BY high-quality mp3 preview from Freesound and

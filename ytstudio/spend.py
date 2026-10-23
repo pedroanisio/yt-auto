@@ -125,6 +125,30 @@ def from_report(report: dict) -> dict:
                   unmetered_calls=report.get("unmetered_calls", 0))
 
 
+def merge_records(first: dict, *others: dict) -> dict:
+    """Records of several harnesses as one (AUTO-126: QA's reviewer and its
+    listener): `cost_usd`, `calls` and `unmetered_calls` summed, `by_model`
+    merged model by model with each numeric counter summed (a text field
+    keeps the first value seen), and `model` the first record's, whose
+    stage it is. Neither input is changed."""
+    def number(value: Any) -> bool:
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    by_model: dict[str, dict] = {}
+    for doc in (first, *others):
+        for model, row in ((doc or {}).get("by_model") or {}).items():
+            have = by_model.setdefault(model, {})
+            for key, value in (row or {}).items():
+                if number(value) and number(have.get(key, 0)):
+                    total = have.get(key, 0) + value
+                    have[key] = round(total, 6) if isinstance(total, float) else total
+                else:
+                    have.setdefault(key, value)
+    docs = [d or {} for d in (first, *others)]
+    return record(sum(float(d.get("cost_usd") or 0) for d in docs), (first or {}).get("model"),
+                  sum(int(d.get("calls") or 0) for d in docs), by_model=by_model,
+                  unmetered_calls=sum(int(d.get("unmetered_calls") or 0) for d in docs))
+
+
 def from_usage(usage: Any, model: Any = "") -> dict:
     """From an engine's `Usage`, keeping its counters beside the shared keys."""
     return {**asdict(usage), **record(usage.cost_usd, model, usage.calls)}
@@ -292,6 +316,14 @@ def story_review_usd(root: Path | None, argv: Iterable[str] = ()) -> float:
     return round(STORY_SAMPLES * rounds * sample + min(rounds, 2) * cold, 2)
 
 
+def listen_usd(root: Path | None, argv: Iterable[str] = ()) -> float:
+    """What `yt qa --listen` adds (AUTO-126): the listen's preflight
+    estimate for the film under `root` at `--listen-model`, its retry
+    included; 0 when the model has no price, which the stage refuses."""
+    from .listen import estimate_for   # listen reads this module; asked only here
+    return estimate_for(root, argv) or 0.0
+
+
 #: A flag that adds to what its stage costs: stage -> flag -> its parts, each
 #: (the increment, the decision whose row in the stage's record shows that
 #: part was on). An increment is dollars, or a function of the project and
@@ -308,10 +340,16 @@ FLAG_USD = {"script": {"--review": ((PLAN_REVIEW_USD, "plan-review"),
             # QA compares the new cut side by side with the pass `--previous`
             # names, or with the latest scored one when there is one, so
             # stage_estimates asks the flag of a plain `yt qa` too (AUTO-108).
+            # `--listen` is the listening pass (AUTO-126), priced as its
+            # preflight prices it. Its decisions are on the scorecard's
+            # `listen.engine`, never among the reviewer's, so no record holds
+            # it: qa.pass_usd leaves a past listen out of the base, and the
+            # flag adds the next one's estimate each time it is asked.
             "qa": {"--previous": ((COMPARE_PASS_USD, "compare-pass"),),
                    # the video comparison's two orders, `cutcompare-<pass>-ab`
                    # and `-ba`, on the scorecard's compare_engine (AUTO-128)
-                   "--against": ((_compare_usd, "cutcompare"),)}}
+                   "--against": ((_compare_usd, "cutcompare"),),
+                   "--listen": ((listen_usd, "listen"),)}}
 
 
 def qa_compares(root: Path | None) -> bool:
