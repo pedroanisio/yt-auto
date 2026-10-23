@@ -458,6 +458,59 @@ class _Listener(Harness):
         return None, None
 
 
+def served_before(pass_dir: Path, decisions: list[dict]) -> tuple[str | None, str | None]:
+    """Who served an answer this run took from decisions/qa/: the latest
+    earlier listening.json that holds the same decisions (name and digest,
+    so the same question) and says who answered. The cache keeps the
+    answer, not the routing, so the record of the pass that asked does.
+    ("cached", "cached") when no such record is left."""
+    asked = [(d.get("name"), d.get("digest")) for d in decisions if isinstance(d, dict)]
+    for path in sorted(Path(pass_dir).parent.glob(f"pass-*/{LISTENING}"), reverse=True):
+        if path.parent == Path(pass_dir):
+            continue
+        old = read_json(path, warn=False)
+        if not isinstance(old, dict) or old.get("served_model") in (None, "cached"):
+            continue
+        if [(d.get("name"), d.get("digest")) for d in old.get("decisions") or []
+                if isinstance(d, dict) and d.get("kind") != "failed"] == asked:
+            return old.get("served_model"), old.get("provider")
+    return "cached", "cached"
+
+
+def _problem(text: Any) -> str:
+    return " ".join(str(text or "").casefold().split())
+
+
+def _same(a: dict, b: dict) -> bool:
+    """Two kept findings that say one thing: one category, and the same
+    problem, or the same owner within half a second."""
+    if a.get("category") != b.get("category"):
+        return False
+    if _problem(a.get("problem")) == _problem(b.get("problem")):
+        return True
+    return (a.get("owner") == b.get("owner")
+            and abs(float(a["timestamp"]) - float(b["timestamp"])) <= 0.5)
+
+
+def merged(first: tuple[list[dict], list[dict]], second: tuple[list[dict], list[dict]]
+           ) -> tuple[list[dict], list[dict]]:
+    """The first answer's kept findings with what the ask-again adds: each
+    finding it kept that the first did not say (its replacements for the
+    findings that failed), and dropped what failed in the first and was
+    not replaced by one of the same problem, plus what failed again."""
+    kept1, dropped1 = first
+    kept2, dropped2 = second
+    added = [f for f in kept2 if not any(_same(f, k) for k in kept1)]
+
+    def key(category: Any, finding: Any) -> tuple:
+        return category, _problem((finding or {}).get("problem"))
+    replaced = {key(f.get("category"), f) for f in added}
+    failed = {key(d.get("category"), d.get("finding")) for d in dropped1}
+    dropped = [d for d in dropped1 if key(d.get("category"), d.get("finding")) not in replaced]
+    dropped += [d for d in dropped2 if key(d.get("category"), d.get("finding")) not in failed]
+    return kept1 + added, dropped
+
+
 def check(result: Any, seconds: float) -> tuple[list[dict], list[dict], list[str]]:
     """The answer past the schema: (kept findings, dropped [{finding,
     category, why}], the problems as one line each, for an ask-again)."""
@@ -517,24 +570,30 @@ def listen(project, pass_dir: Path, prepared: Prepared, args, *, house: str = ""
     media = [prepared.audio["path"]]
     reason = ""
     result: Any = None
+    second: Any = None
     kept: list[dict] = []
     dropped: list[dict] = []
     try:
         result = listener.decide(name, prepared.prompt, LISTEN_SCHEMA, media=media)
         kept, dropped, problems = check(result, seconds)
         if problems:
+            # Only the findings that failed are asked again: the ones the
+            # check kept stand, so a second answer that leaves them out
+            # loses nothing (and one that repeats them adds nothing).
             again = (prepared.prompt + "\n\nYour last answer filed findings this check "
-                     "cannot keep: " + "; ".join(problems[:10]) + ". Answer again in "
-                     "full: every timestamp inside the audio, every owner and severity one "
-                     "of the schema's values. A finding you cannot place, leave out.")
+                     "cannot keep: " + "; ".join(problems[:10]) + ". Answer again, filing "
+                     "under findings only these, corrected: every timestamp inside the "
+                     "audio, every owner and severity one of the schema's values. The "
+                     "findings the check kept are kept, so do not file them again. A "
+                     "finding you cannot place, leave out.")
             try:
                 second = listener.decide(f"{name}-again", again, LISTEN_SCHEMA, media=media)
             except HarnessError as exc:
                 listener._say(f"[qa] {name}-again: {exc}; the first answer's sound "
                               "findings are kept")
             else:
-                result = second
-                kept, dropped, _ = check(result, seconds)
+                more, failed, _ = check(second, seconds)
+                kept, dropped = merged((kept, dropped), (more, failed))
     except HarnessError as exc:
         reason = str(exc)
     if not reason:
@@ -547,6 +606,10 @@ def listen(project, pass_dir: Path, prepared: Prepared, args, *, house: str = ""
             reason = f"{video.name} is now older than {scene.name}; render and listen again"
         kept, dropped = ([], []) if reason else (kept, dropped)
     served, provider = listener.served()
+    report = listener.report()
+    if served is None and not listener.built and report["decisions"]:
+        # Nothing was asked: every answer came from decisions/qa/.
+        served, provider = served_before(pass_dir, report["decisions"])
     current = not reason
     findings = kept
     if reason:
@@ -558,15 +621,14 @@ def listen(project, pass_dir: Path, prepared: Prepared, args, *, house: str = ""
                      "fix": f"settle what stopped it, then run "
                             f"{qa._yt('qa --listen', _where(project))} again",
                      "severity": "minor", "source": "listen", "frame": LISTENING}]
-    report = listener.report()
     record = {
         "pass": pass_dir.name, "model": prepared.model, "served_model": served,
         "provider": provider, "providers": list(prepared.providers),
         "audio": dict(prepared.audio), "film": dict(prepared.film),
         "scene_sha256": prepared.scene_sha256, "current": current, "reason": reason,
         "estimate_usd": prepared.estimate_usd, "budget_usd": prepared.budget_usd,
-        "decisions": report["decisions"], "result": result, "findings": findings,
-        "dropped": dropped,
+        "decisions": report["decisions"], "result": result, "again": second,
+        "findings": findings, "dropped": dropped,
         "not_heard": [str(x) for x in ((result or {}).get("not_heard") or [])
                       if str(x).strip()] if isinstance(result, dict) and current else [],
         "engine": report,
