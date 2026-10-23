@@ -37,10 +37,16 @@ loop as code:
    of it up to render (research and the screenplay only when routed to
    them; a stage the film never ran is left out), the gate, then `yt qa`
    for a new pass -- all through `runner`, a callable taking argv.
-5. **Keep or revert** (§8.8, §9). Against the best pass so far: kept when
-   the overall improves, no category drops by more than `TOLERANCE` and no
-   new blocking mechanical finding appears; otherwise the snapshot taken
-   before the pass (`improve/pass-NN/snapshot/`) is restored. vfx versions
+5. **Keep or revert** (§8.8, §9). Against the best pass so far, which QA
+   was told with `--previous` and compared side by side at the same
+   timestamps (AUTO-108). The side-by-side tally is read first: more moments
+   where the new cut was better than worse keeps the pass even when its
+   overall moved inside the samples' spread, more worse reverts it, a tie
+   leaves it to the score delta. The score delta is read second: kept
+   when the overall improves beyond the spread; an overall drop beyond the
+   spread, a category drop of more than `TOLERANCE` or a new blocking
+   mechanical finding reverts whatever the tally says. A pass not kept has
+   the snapshot taken before it (`improve/pass-NN/snapshot/`) restored. vfx versions
    are kept anyway, so reverting vfx restores `vfx.json`'s active version.
    A pass whose stages all ran but whose QA filed nothing (a render host
    down) is `unjudged`: its outputs and snapshot stay, and the next run
@@ -921,8 +927,37 @@ def spread(card: dict, key: str) -> float:
         return 0.0
 
 
+def side_by_side(best: dict, new: dict) -> dict | None:
+    """The new pass's side-by-side tally against `best` (AUTO-108): the
+    moments its entries vote for (`qa.tally`'s `total`, one vote a moment
+    however many categories it bears on, whatever path filed them: stills,
+    or a video comparison in the same shape), or None when it has no
+    entries or was compared with another pass, which says nothing about
+    this keep."""
+    side = new.get("side_by_side")
+    if not isinstance(side, dict) or side.get("against") != best.get("pass"):
+        return None
+    total = qa.tally(side.get("entries"))["total"]
+    if not any(total.values()):
+        return None
+    return dict(total, against=side.get("against"))
+
+
 def judge(best: dict, new: dict, *, tolerance: float = TOLERANCE) -> dict:
-    """Keep only a measured improvement: the overall up, no category down by
+    """Keep only a measured improvement, read from the side-by-side tally
+    first and the score delta second (AUTO-108). Shown the same moments of
+    both cuts, the reviewer said where the new one is better or worse:
+    more moments better than worse (one vote a moment, `qa.tally`'s
+    `total`) is the improvement, even when the overall moved
+    inside the samples' spread, which two absolute scores cannot resolve;
+    more worse than better is no improvement, whatever the overall did; a
+    tie, or no tally against `best`, leaves the overall to decide as
+    before. The score delta is then read as a check: a kept pass's overall
+    may not fall by more than the spread, and in every case no category
+    may drop by more than the tolerance and no new blocking mechanical
+    finding may appear.
+
+    Without a tally: the overall up, no category down by
     more than the tolerance, no new blocking mechanical finding. A category
     not evidenced on either side (no current listening review, AUTO-105)
     has no delta and neither drops nor counts as a gain: when the passes
@@ -941,7 +976,20 @@ def judge(best: dict, new: dict, *, tolerance: float = TOLERANCE) -> dict:
     diff = qa.compare(best, new)
     reasons = []
     noise = max(spread(best, "overall"), spread(new, "overall"))
-    if diff["overall_delta"] <= 0:
+    side = side_by_side(best, new)
+    if side:
+        side["read"] = "first"
+        counts = (f"better {side['better']}, worse {side['worse']}, same {side['same']} "
+                  f"against {side['against']}")
+    if side and side["better"] > side["worse"]:
+        # the tally says improved; the overall only vetoes from outside the noise
+        if diff["overall_delta"] < -noise - 1e-9:
+            reasons.append(f"overall {diff['overall_delta']:+.2f} fell by more than the "
+                           f"samples' spread of {noise:.2f}, against a side-by-side tally "
+                           f"of {counts}")
+    elif side and side["worse"] > side["better"]:
+        reasons.append(f"side by side the previous cut was better more often: {counts}")
+    elif diff["overall_delta"] <= 0:
         over = (f", over the categories both passes scored ({', '.join(diff['unscored'])} "
                 "not evidenced on one side)" if diff.get("unscored") else "")
         reasons.append(f"overall {new.get('overall')} did not improve on "
@@ -959,7 +1007,8 @@ def judge(best: dict, new: dict, *, tolerance: float = TOLERANCE) -> dict:
     for fp in sorted(blocking_mechanical(new) - blocking_mechanical(best)):
         reasons.append(f"new blocking mechanical finding: {fp}")
     return {"keep": not reasons, "reasons": reasons, "deltas": diff["deltas"],
-            "overall_delta": diff["overall_delta"], "against": best.get("pass")}
+            "overall_delta": diff["overall_delta"], "against": best.get("pass"),
+            "side_by_side": side}
 
 
 def reached(card: dict, target: float) -> bool:
@@ -1072,13 +1121,24 @@ class Improver:
             return card
         return None
 
-    def _qa(self) -> dict | None:
-        """Run QA and read the pass it filed. None when it filed none, or
-        one it could not score (`not_evidenced`); either way `qa_cost` is
-        what the call cost, which the pass's row adds even then."""
+    def _qa_argv(self, best: dict | None = None) -> list[str]:
+        """The `yt qa` argv, recorded and run alike. With the best kept pass
+        it names that pass (`--previous`), so QA compares the new cut with
+        the kept one side by side and its deltas are against it (AUTO-108),
+        not against the latest pass, which may be one this loop reverted."""
+        argv = ["qa", *self.base]
+        if best and best.get("pass") and best.get("verdict") != qa.NOT_EVIDENCED:
+            argv += ["--previous", str(best["pass"])]
+        return argv
+
+    def _qa(self, argv: list[str] | None = None) -> dict | None:
+        """Run QA (`argv`, default a plain `yt qa`) and read the pass it
+        filed. None when it filed none, or one it could not score
+        (`not_evidenced`); either way `qa_cost` is what the call cost,
+        which the pass's row adds even then."""
         self.qa_cost = 0.0
         before = qa.latest_pass(self.root)
-        self._run(["qa", *self.base])
+        self._run(argv or self._qa_argv())
         after = qa.latest_pass(self.root)
         if after is None or after == before:
             return None
@@ -1167,7 +1227,7 @@ class Improver:
             new = self._card(latest)
         if new is None:
             self._log(f"[improve] {entry['name']} was never judged; scoring it first")
-            new = self._qa()
+            new = self._qa(self._qa_argv(before))
         if new is None:
             self.say(f"error: {entry['name']} still has no QA pass; the render host may "
                      "be down")
@@ -1198,6 +1258,7 @@ class Improver:
                      scores_after=new.get("scores"), verdict_after=new.get("verdict"),
                      deltas=verdict["deltas"], overall_delta=verdict["overall_delta"],
                      reasons=verdict["reasons"],
+                     side_by_side=verdict.get("side_by_side"),
                      decision="keep" if verdict["keep"] else "revert")
         if not verdict["keep"]:
             pdir = self.root / IMPROVE_DIR / entry["name"]
@@ -1259,8 +1320,9 @@ class Improver:
                     "stop": {"reason": "stage-failed", "detail": f"render exited {code}; "
                              "the state before the re-judge was restored"}}
         self._gate(entry, pdir, stamps)
-        entry["argv"].append(["qa", *self.base])
-        new = self._qa()
+        qa_argv = self._qa_argv(before)
+        entry["argv"].append(qa_argv)
+        new = self._qa(qa_argv)
         cost = stage_cost(self.root, "gate", stamps) + self.qa_cost
         self.spent_stages += stage_cost(self.root, "gate", stamps)
         entry["cost_usd"] = round(float(last.get("cost_usd") or 0) + cost, 4)
@@ -1512,8 +1574,9 @@ class Improver:
                                     by_id[fid] for fid in (routing["stages"].get("script")
                                                            or {}).get("findings", [])
                                     if fid in by_id], survived=survived)
+            qa_argv = self._qa_argv(best)
             rows = stage_estimates(self.root, stages, sections,
-                                   extras=dict(zip(stages, argvs)))
+                                   extras=dict(zip(stages, argvs)) | {"qa": qa_argv})
             guess = total(rows)
             if last_cost and not any(r["basis"] != "assumed" for r in rows):
                 guess = estimate(stages, last_cost)
@@ -1531,7 +1594,7 @@ class Improver:
                                   "routed": self._routed(routing, findings),
                                   "routes": routing["routes"], "stages": stages,
                                   "sections": sections,
-                                  "argv": argvs + [["gate", *self.base], ["qa", *self.base]],
+                                  "argv": argvs + [["gate", *self.base], qa_argv],
                                   "estimates": rows, "estimate_usd": guess}
                 record["stop"] = {"reason": "dry-run", "detail": "routed and briefed; "
                                   "nothing run"}
@@ -1579,8 +1642,8 @@ class Improver:
             new, self.qa_cost = None, 0.0
             if failed is None:
                 self._gate(entry, pdir, before)
-                entry["argv"].append(["qa", *self.base])
-                new = self._qa()
+                entry["argv"].append(qa_argv)
+                new = self._qa(qa_argv)
                 if new is None:
                     failed = QA_FAILED
             cost = sum(stage_cost(self.root, s, before) for s in stages + ["gate"])
@@ -1619,6 +1682,7 @@ class Improver:
                          scores_after=new.get("scores"), verdict_after=new.get("verdict"),
                          deltas=verdict["deltas"], overall_delta=verdict["overall_delta"],
                          reasons=verdict["reasons"],
+                         side_by_side=verdict.get("side_by_side"),
                          decision="keep" if verdict["keep"] else "revert")
             briefed = {assigned[fid] for e in routing["stages"].values()
                        for fid in e["findings"] if fid in assigned}
@@ -1824,6 +1888,11 @@ def report_md(record: dict, root: Path) -> str:
                   f"cost ${p.get('cost_usd', 0):.2f}."
                   + (f" Why not kept: {'; '.join(p.get('reasons') or [])}."
                      if p.get("decision") != "keep" else ""), ""]
+        side = p.get("side_by_side")
+        if isinstance(side, dict):
+            lines += [f"Side by side against {side.get('against')}: better "
+                      f"{side.get('better', 0)}, worse {side.get('worse', 0)}, same "
+                      f"{side.get('same', 0)} (read first; the score delta second).", ""]
         fixed = set(p.get("fixed") or [])
         unmeasured = set(p.get("unmeasured") or [])
         defect_of = p.get("briefed_defects") or {}

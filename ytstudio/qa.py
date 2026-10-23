@@ -121,6 +121,33 @@ problem -> root cause -> owner stage -> fix), so "measurably improved" is a
 comparison with the pass before and a regression is a category that dropped.
 `qa.json` at the project root carries the latest verdict for `yt doctor`.
 
+Two scores inside the samples' spread cannot say whether a revision helped,
+so each pass is also judged against the previous kept cut side by side
+(AUTO-108). The previous pass is `--previous PASS` (`yt improve` names its
+best kept pass), else the latest scored one, else, when improve.json says
+that one was reverted, the best kept pass it records. At every sampled
+moment the new cut's still and the previous cut's still at the same
+timestamp are shown as A and B: the previous one reused from that pass's
+frames when it was sampled at the same time, else rendered from the
+improve snapshot whose document and every file it references (the
+renderer's own `render.reference_files`) match the `cut` digest that pass
+recorded, else the moment is unpaired and named under not_evidenced. Which
+cut is A is drawn per moment (`side_order`, half each, seeded by the pass)
+and recorded, so position bias can be checked. One inspection
+(`<pass>-compare-pass`, `SIDE_SCHEMA`), reading the pairs in a temporary
+directory outside the pass, answers per moment A, B or same, why, and the
+visual categories the moment bears on; the reviewer is not shown the
+scores. The scorecard files `side_by_side`: the pass compared against,
+each moment (order, reused or rendered, the answer), the engine-agnostic
+`entries` (`{category, result: better|worse|same, source: "stills",
+moment, t}`, one per category the moment bears on, or one with category
+None; the shape a video comparison files with `source: "video"`) and their
+`tally` (`qa.tally`: entries per category, and under `total` one vote a
+moment). Nothing is compared with no earlier scored pass, with the same
+cut, under --reuse (which keeps the `cut` the reused frames were drawn
+from), or when the pass is not evidenced. findings.md has a "Side by side"
+section. `yt improve` reads the tally before the score delta.
+
 The loop is: fix the owning stage's source, rebuild, run `yt qa` again. This
 stage changes no file but its own; it says what to change and who owns it.
 """
@@ -132,10 +159,13 @@ import bisect
 import copy
 import hashlib
 import math
+import os
+import random
 import re
 import shutil
 import statistics
 import sys
+import tempfile
 from collections import Counter
 from pathlib import Path
 
@@ -523,7 +553,11 @@ def merge_findings(samples: list[dict], groups) -> tuple[list[dict], list[dict]]
 def pass_usd(card: dict | None) -> float | None:
     """What a pass of QA_SAMPLES samples costs, from one that was scored: its
     cost per sample asked, times QA_SAMPLES. A pass from before the samples
-    (no `scoring`) asked one. None when the card holds no cost."""
+    (no `scoring`) asked one. The side-by-side comparison (AUTO-108) is
+    asked once a pass, not per sample, so what it cost is added once, not
+    scaled; a pass without one is priced without it, and the estimate adds
+    spend.COMPARE_PASS_USD where QA is told the pass to compare with. None
+    when the card holds no cost."""
     cost = spend.cost_in(card)
     if cost is None:
         return None
@@ -532,7 +566,13 @@ def pass_usd(card: dict | None) -> float | None:
         asked = max(1, int((scoring or {}).get("asked") or 1))
     except (TypeError, ValueError):
         asked = 1
-    return round(cost / asked * QA_SAMPLES, 2)
+    engine = card.get("engine") if isinstance(card, dict) else None
+    rows = engine.get("decisions") if isinstance(engine, dict) else None
+    once = sum(float(d.get("cost_usd") or 0) for d in rows or []
+               if isinstance(d, dict) and not d.get("cached")
+               and str(d.get("name", "")).endswith("-compare-pass"))
+    once = min(max(once, 0.0), cost)
+    return round((cost - once) / asked * QA_SAMPLES + once, 2)
 
 
 # --------------------------------------------------------------------------- #
@@ -1934,6 +1974,349 @@ def compare(prev: dict | None, cur: dict) -> dict:
     return out
 
 
+# --------------------------------------------------------------------------- #
+# side by side with the previous kept cut (AUTO-108)
+# --------------------------------------------------------------------------- #
+
+#: What a pair of stills can bear on: what a picture shows. The audio
+#: categories are scored only from a listening review (AUTO-105), so no
+#: still pair moves them.
+SIDE_CATEGORIES = tuple(k for k in CATEGORIES if k not in AUDIO)
+#: A tally entry's result: the new cut against the previous one.
+SIDE_RESULTS = ("better", "worse", "same")
+#: Under the pass: the pairs the reviewer reads, named only by moment and
+#: slot (`m01-A.png`), and the previous cut's stills they were copied from.
+SIDE_DIR, PREVIOUS_DIR = "side-by-side", "previous"
+#: Where `yt improve` keeps a cut's document before a pass changes it
+#: (`improve/<pass>/snapshot/`, `attempt/`, `snapshot-rejudge/`): the copies
+#: of the previous kept cut's scene.xml that QA can render it from.
+SNAPSHOT_DOCUMENTS = "improve/*/*/scene.xml"
+
+SIDE_SCHEMA = {
+    "type": "object",
+    "properties": {"moments": {"type": "array", "items": {
+        "type": "object",
+        "properties": {
+            "id": {"type": "string", "description": "the moment's id, as listed"},
+            "better": {"type": "string", "enum": ["A", "B", "same"],
+                       "description": "the cut whose still is better at this moment, "
+                                      "or same when neither is"},
+            "why": {"type": "string", "description": "what is visibly better, in the "
+                                                     "pictures"},
+            "bears_on": {"type": "array",
+                         "items": {"type": "string", "enum": list(SIDE_CATEGORIES)},
+                         "description": "the categories this moment bears on, whatever "
+                                        "the answer: where the two differ, or for same, "
+                                        "what was compared"}},
+        "required": ["id", "better", "why", "bears_on"]}}},
+    "required": ["moments"],
+}
+
+
+def compare_name(pass_name: str) -> str:
+    """The comparison's decision, `<pass>-compare-pass`, beside the scoring samples'."""
+    return f"{pass_name}-compare-pass"
+
+
+def _sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def cut_digest(document: bytes, base: Path) -> dict | None:
+    """What a cut's pictures are made of: the document's sha256 and that of
+    every file it references as the renderer resolves them against `base`,
+    the directory the document renders from (`render.reference_files`, the
+    still cache's own inputs: textures, images, models and their
+    directories, HDRIs, fonts, included documents and what they name),
+    keyed by the path relative to `base`. Two cuts with the same digest draw
+    the same frames; a copy of a document whose texture was rewritten at the
+    same path since would render a cut nobody judged. None when a reference
+    cannot be read: what the cut draws is then not known, so it matches
+    nothing, not even itself."""
+    files = render_stage.reference_files(document.decode("utf-8", "replace"), Path(base))
+    if files is None:
+        return None
+    return {"scene": _sha(document),
+            "files": {os.path.relpath(path, base): _sha(data)
+                      for path, data in sorted(files.items())}}
+
+
+def side_order(pass_name: str, count: int) -> list[str]:
+    """Which cut is shown as A at each of `count` moments, "previous" or
+    "new": half each (the odd one previous), shuffled by a generator seeded
+    with the pass's name, so the order varies from moment to moment and
+    from pass to pass, and the same pass asks the same question again
+    (the inspection's cache holds). Recorded per moment, so how often A
+    wins can be checked against how often A was the new cut."""
+    order = ["previous" if k % 2 == 0 else "new" for k in range(count)]
+    random.Random(f"side-by-side {pass_name}").shuffle(order)
+    return order
+
+
+def tally(entries) -> dict:
+    """The tally of comparison entries, from any source (`stills` here; a
+    video comparison files the same shape, AUTO-128).
+
+    An entry is `{category, result, source, moment}`, more fields allowed:
+    `result` is the new cut against the previous one, better, worse or
+    same (anything else counts nowhere); `category` the one it bears on, or
+    None for a moment that names none; `moment` the moment it was judged
+    at, unique within its `source`. Per category: how many entries were
+    better, worse and the same. Under `total`: one vote a moment, so a
+    reviewer who names more categories does not outweigh the moments. A
+    moment's vote is the result most of its entries give, a tie between
+    them same; an entry with no `moment` is a moment of its own."""
+    out: dict[str, dict[str, int]] = {}
+    votes: dict[object, Counter] = {}
+    for k, e in enumerate(entries or []):
+        if not isinstance(e, dict) or e.get("result") not in SIDE_RESULTS:
+            continue
+        if e.get("category") is not None:
+            row = out.setdefault(str(e["category"]), dict.fromkeys(SIDE_RESULTS, 0))
+            row[e["result"]] += 1
+        moment = e.get("moment")
+        key = (str(e.get("source")), str(moment)) if moment is not None else k
+        votes.setdefault(key, Counter())[e["result"]] += 1
+    total = dict.fromkeys(SIDE_RESULTS, 0)
+    for said in votes.values():
+        top = said.most_common()
+        tied = len(top) > 1 and top[0][1] == top[1][1]
+        total["same" if tied else top[0][0]] += 1
+    out["total"] = total
+    return out
+
+
+def _side(against: str | None, status: str, why: str = "", **more) -> dict:
+    """The scorecard's `side_by_side` record: against which pass, whether
+    the comparison was asked (`done`), not needed or not possible
+    (`skipped`) or failed (`failed`), why, the moments compared and the
+    tally entries. A record that is not `done` carries no entries."""
+    out = {"against": against, "status": status, "why": why, "decision": None,
+           "moments": [], "unpaired": [], "entries": [], "tally": tally([]),
+           "picked": {"A": 0, "B": 0, "same": 0}}
+    out.update(more)
+    return out
+
+
+def previous_document(home: Path, base: Path, want: dict | None) -> bytes | None:
+    """A copy of the previous cut's document that still renders that cut:
+    one of `yt improve`'s snapshots (SNAPSHOT_DOCUMENTS) whose sha256 and
+    whose includes' sha256, as they are now under `base`, are what the
+    previous pass recorded in `cut`. None when the previous pass recorded
+    no `cut` (it was scored before AUTO-108, or a reference could not be
+    read) or no copy matches."""
+    if not isinstance(want, dict) or not want.get("scene"):
+        return None
+    for path in sorted(Path(home).glob(SNAPSHOT_DOCUMENTS)):
+        data = path.read_bytes()
+        if _sha(data) == want["scene"] and cut_digest(data, base) == want:
+            return data
+    return None
+
+
+#: `yt improve`'s record at the project root (improve.REPORT_JSON; improve
+#: imports this module, so the name is repeated here).
+IMPROVE_JSON = "improve.json"
+
+
+def kept_instead(home: Path, latest: dict) -> dict | None:
+    """The best kept pass's scorecard when `yt improve` reverted `latest`,
+    the latest scored pass: that pass judged a cut that was put back, and
+    the cut on disk is the best kept one's, so a plain `yt qa` compares with
+    that one, as `yt improve` does with --previous. None when improve.json
+    does not say `latest` was reverted, or names no scored best pass."""
+    record = read_json(Path(home) / IMPROVE_JSON, warn=False)
+    if not isinstance(record, dict) or not isinstance(record.get("best"), dict):
+        return None
+    reverted = {p.get("qa_pass") for p in record.get("passes") or []
+                if isinstance(p, dict) and p.get("decision") == "revert"}
+    best = str(record["best"].get("pass") or "")
+    if latest.get("pass") not in reverted or not best or best == latest.get("pass"):
+        return None
+    card = read_json(Path(home) / QA_DIR / best / "scorecard.json", warn=False)
+    if not isinstance(card, dict) or card.get("verdict") == NOT_EVIDENCED:
+        return None
+    return card | {"pass": card.get("pass") or best}
+
+
+def side_by_side(args, reviewer: Harness, pass_dir: Path, previous: dict | None, *,
+                 home: Path, scene: str, samples: list[dict], cut: dict | None,
+                 script: dict, quiet: bool = True) -> dict:
+    """The pass against the previous kept cut, moment by moment (AUTO-108).
+
+    Each sampled still of this pass is paired with the previous cut's still
+    at the same timestamp: the previous pass's own still when it sampled
+    that moment (`reused`), else rendered by RENDERER from a copy of the
+    previous cut's document placed beside this one (`rendered`, only when
+    `previous_document` finds one whose referenced files are unchanged),
+    else the moment is `unpaired` with the reason. The pairs are laid out
+    as `<id>-A.png` and `<id>-B.png`, the cut at A chosen by `side_order`,
+    in a temporary directory outside the pass, and one inspection there,
+    `<pass>-compare-pass`, says per moment which is better (A, B or same),
+    why, and the categories it bears on; the pairs are then kept under
+    SIDE_DIR. Its prompt names no pass, score or finding, and nothing says
+    which cut is the new one. Each answered moment becomes one tally entry
+    per category it bears on, or one with category None when it names
+    none: better when the new cut won, worse when the previous one did,
+    same otherwise. A failed inspection is a failed engine row, billed, and
+    leaves no entries, so `yt improve` decides on the score delta alone."""
+    if previous is None:
+        return _side(None, "skipped", "no earlier scored pass to compare with")
+    against = str(previous.get("pass"))
+    before = previous.get("cut")
+    # Only two full digests say the same cut: a pass from before AUTO-108
+    # recorded the document alone, which says nothing of its textures.
+    if before and cut and before == cut:
+        return _side(against, "skipped", f"the same cut as {against}: the document and "
+                     "every file it references are unchanged, so every still is the "
+                     "same picture")
+    prev_frames = home / QA_DIR / against / "frames"
+    frames = pass_dir / "frames"
+    out_dir = pass_dir / PREVIOUS_DIR
+    rows, todo, unpaired = [], [], []
+    for row in samples:
+        if not (frames / row["frame"]).is_file():
+            continue                     # this pass has no still there: nothing to pair
+        if (prev_frames / row["frame"]).is_file():
+            out_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(prev_frames / row["frame"], out_dir / row["frame"])
+            rows.append((row, "reused"))
+        else:
+            todo.append(row)
+    if todo:
+        base = Path(scene).parent
+        document = previous_document(home, base, before)
+        if document is None:
+            why = (f"{against} recorded no cut digest (scored before AUTO-108, or a file "
+                   "its document references could not be read), so no copy of its "
+                   "document can be checked" if not before else
+                   f"no copy of {against}'s document whose referenced files are "
+                   f"unchanged is on disk ({SNAPSHOT_DOCUMENTS})")
+            unpaired += [{"t": r["t"], "label": r.get("label", ""), "why": why} for r in todo]
+        else:
+            # Beside scene.xml, so its includes resolve as they did; removed
+            # after, so nothing else ever reads it as the project's document.
+            copy = base / f".{pass_dir.name}-previous.scene.xml"
+            copy.write_bytes(document)
+            try:
+                render = RENDERER(args, str(copy))
+                out_dir.mkdir(parents=True, exist_ok=True)
+                for row in todo:
+                    still = out_dir / row["frame"]
+                    code = render({"still": row["t"], "out": str(still)})
+                    if code or not still.is_file():
+                        unpaired.append({"t": row["t"], "label": row.get("label", ""),
+                                         "why": f"the previous cut's still did not render "
+                                                f"(engine exited {code})"})
+                    else:
+                        rows.append((row, "rendered"))
+            finally:
+                copy.unlink(missing_ok=True)
+    rows.sort(key=lambda r: r[0]["t"])
+    if not rows:
+        return _side(against, "skipped", "no moment could be paired with the previous cut",
+                     unpaired=unpaired)
+
+    shows = {s.get("label"): s.get("shows") for sec in script.get("sections") or []
+             for s in sec.get("shots") or [] if isinstance(s, dict)}
+    moments, listed = [], []
+    with tempfile.TemporaryDirectory(prefix="side-by-side-") as tmp:
+        # The reviewer reads the pairs from a directory outside the pass:
+        # beside frames/ and previous/, an agent listing `..` could match A
+        # and B to the cuts by name or bytes and learn which one is new.
+        pairs = Path(tmp)
+        for k, ((row, how), first) in enumerate(
+                zip(rows, side_order(pass_dir.name, len(rows))), 1):
+            mid = f"m{k:02d}"
+            order = {"A": first, "B": "new" if first == "previous" else "previous"}
+            for slot, cut_name in order.items():
+                source = (frames if cut_name == "new" else out_dir) / row["frame"]
+                shutil.copyfile(source, pairs / f"{mid}-{slot}.png")
+            moments.append({"id": mid, "t": row["t"], "label": row.get("label", ""),
+                            "frame": row["frame"], "order": order, "previous": how})
+            listed.append({"id": mid, "timestamp": row["t"], "shot": row.get("label", ""),
+                           "files": [f"{mid}-A.png", f"{mid}-B.png"],
+                           **({"shows": str(shows[row.get("label")])[:300]}
+                              if shows.get(row.get("label")) else {})})
+        prompt = "\n\n".join([
+            "Side by side: each moment below is the same timestamp of a film in two cuts, "
+            "A and B, as two stills in this directory (`<id>-A.png` and `<id>-B.png`). "
+            "Read both stills of every moment and say which is better by professional "
+            "standards (A, B, or same when neither is), why, in what the pictures show, "
+            "and which of these categories the moment bears on, whatever the answer "
+            "(what differs, or for same, what you compared): "
+            f"{', '.join(SIDE_CATEGORIES)}. Which cut is A changes from moment to moment "
+            "and says nothing about either; judge the pictures only. Answer every moment "
+            "by its id.",
+            brief("Moments", listed)])
+        name = compare_name(pass_dir.name)
+        record = dict(decision=name, moments=moments, unpaired=unpaired)
+        try:
+            answer = reviewer.inspect(name, prompt, SIDE_SCHEMA, cwd=pairs)
+            failed = None
+        except HarnessError as exc:
+            failed = exc
+        # The pairs are kept with the pass, for whoever checks the answers.
+        side = pass_dir / SIDE_DIR
+        shutil.rmtree(side, ignore_errors=True)
+        shutil.copytree(pairs, side)
+    if failed is not None:
+        if not quiet:
+            print(f"[qa] {name} failed ({failed}); no side-by-side tally", file=sys.stderr)
+        return _side(against, "failed", str(failed), **record)
+    said = {}
+    for a in answer.get("moments") or [] if isinstance(answer, dict) else []:
+        if isinstance(a, dict) and str(a.get("id")) not in said:
+            said[str(a.get("id"))] = a
+    entries, picked = [], {"A": 0, "B": 0, "same": 0}
+    for m in moments:
+        a = said.get(m["id"])
+        if not a or a.get("better") not in picked:
+            m["unjudged"] = True
+            continue
+        picked[a["better"]] += 1
+        result = ("same" if a["better"] == "same" else
+                  "better" if m["order"][a["better"]] == "new" else "worse")
+        bears = [c for c in dict.fromkeys(a.get("bears_on") or []) if c in SIDE_CATEGORIES]
+        m.update(better=a["better"], result=result, why=str(a.get("why", "")),
+                 bears_on=bears)
+        # One entry per category the moment bears on; a moment that names
+        # none still files one, category None, so it is counted in `total`.
+        entries += [{"category": c, "result": result, "source": "stills",
+                     "moment": m["id"], "t": m["t"]} for c in bears or [None]]
+    return _side(against, "done", **record, entries=entries, tally=tally(entries),
+                 picked=picked)
+
+
+def side_lines(side: dict | None) -> list[str]:
+    """findings.md's side-by-side section."""
+    if not isinstance(side, dict):
+        return []
+    lines = ["## Side by side", ""]
+    unpaired = [f"- {_stamp(u['t'])} shot {u.get('label', '')}: not compared -- "
+                f"{u.get('why', '')}" for u in side.get("unpaired") or []]
+    if side.get("status") != "done":
+        lines += [f"{side.get('status', 'skipped').capitalize()}: {side.get('why', '')}", ""]
+        return lines + (unpaired + [""] if unpaired else [])
+    total = (side.get("tally") or {}).get("total") or {}
+    lines += [f"Against {side.get('against')}, the previous kept cut, at the same "
+              f"timestamps: the new cut better at {total.get('better', 0)} moments, worse "
+              f"at {total.get('worse', 0)}, the same {total.get('same', 0)} times (one "
+              "vote a moment; the table counts each category a moment bears on).", "",
+              "| Category | Better | Worse | Same |", "|---|---|---|---|"]
+    for key, row in (side.get("tally") or {}).items():
+        if key != "total":
+            lines.append(f"| {key} | {row['better']} | {row['worse']} | {row['same']} |")
+    lines.append("")
+    for m in side.get("moments") or []:
+        lines.append(f"- {_stamp(m['t'])} shot {m.get('label', '')}: "
+                     + (f"{m['result']} ({', '.join(m.get('bears_on') or []) or 'no category'})"
+                        f" -- {m.get('why', '')} [A was the {m['order']['A']} cut, "
+                        f"previous still {m['previous']}]"
+                        if m.get("result") else "not answered"))
+    return lines + unpaired + [""]
+
+
 def findings_md(name: str, card: dict, samples: list[dict], diff: dict, *,
                 reasons: list[str]) -> str:
     stamp = _stamp
@@ -1960,6 +2343,7 @@ def findings_md(name: str, card: dict, samples: list[dict], diff: dict, *,
     lines.append("")
     if diff.get("regressions"):
         lines += ["**Regressions:** " + ", ".join(diff["regressions"]), ""]
+    lines += side_lines(card.get("side_by_side"))
 
     def finding_lines(row: dict) -> list[str]:
         seen_in = (f" (samples {', '.join(map(str, row['samples']))})"
@@ -2474,6 +2858,11 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
     p.add_argument("--reuse", metavar="PASS",
                    help="score the frames of this earlier pass again, rendering nothing "
                         "but proof frames that were rendered graded")
+    p.add_argument("--previous", metavar="PASS",
+                   help="the earlier pass this one is compared with: its scores for the "
+                        "deltas, and its cut side by side at the same timestamps "
+                        "(default: the latest scored pass; yt improve names its best "
+                        "kept pass)")
     p.add_argument("--host", help="ssh target of the render host")
     p.add_argument("--local", action="store_true", help="render the stills here")
     p.add_argument("--fresh", action="store_true",
@@ -2505,6 +2894,18 @@ def run(args) -> int:
     gate = read_json(src("gate"), warn=False)
     styles = read_json(src("styles"), warn=False) or {}
     home = Path(scene).parent if project.standalone else project.root
+    # The pass this one is compared with (AUTO-108): named by --previous
+    # (`yt improve` names its best kept pass), else the latest scored one.
+    # A name that is not a scored pass stops here, before anything renders.
+    named = getattr(args, "previous", None)
+    chosen = None
+    if named:
+        chosen = read_json(home / QA_DIR / named / "scorecard.json", warn=False)
+        if not isinstance(chosen, dict) or chosen.get("verdict") == NOT_EVIDENCED:
+            print(f"error: --previous {named}: {home / QA_DIR / named} has no scored "
+                  "scorecard.json to compare with", file=sys.stderr)
+            return 2
+        chosen.setdefault("pass", named)
 
     # -- the evidence --------------------------------------------------------
     if args.reuse:
@@ -2639,8 +3040,8 @@ def run(args) -> int:
                                if project.source("vfx") else None),
     }
     blockers = mechanical_blockers(build, gate=gate) + problems
-    previous = None
-    for earlier in reversed(_passes(home)):
+    previous = chosen
+    for earlier in [] if named else reversed(_passes(home)):
         if earlier != pass_dir:
             previous = read_json(earlier / "scorecard.json", warn=False)
             # A pass QA could not score (AUTO-107) has nothing to compare
@@ -2648,6 +3049,8 @@ def run(args) -> int:
             if previous and previous.get("verdict") != NOT_EVIDENCED:
                 break
             previous = None
+    if not named and previous is not None:
+        previous = kept_instead(home, previous) or previous
 
     story = story_brief(script, build)
     # What a --frames below the shot count (or past the default) left
@@ -2771,6 +3174,31 @@ def run(args) -> int:
               f"{card['scoring']['asked']} scoring samples answered; not evidenced",
               file=sys.stderr)
 
+    # -- side by side with the previous kept cut (AUTO-108) ----------------------
+    # One reading's absolute scores move about as much as a revision does;
+    # the same moment of both cuts, side by side, says which is better. Its
+    # own decision after the scoring samples, whose prompts it leaves alone.
+    cut = cut_digest(Path(scene).read_bytes(), Path(scene).parent)
+    if args.reuse:
+        # The frames are that pass's, drawn from the cut it recorded then,
+        # whatever scene.xml is now: the card keeps that cut (None for a
+        # pass from before AUTO-108), so no later pass takes these frames
+        # for another cut's.
+        cut = (read_json(pass_dir / "scorecard.json", warn=False) or {}).get("cut")
+        side = _side(previous.get("pass") if previous else None, "skipped",
+                     "--reuse scores the frames of an earlier pass again; its cut is "
+                     "not compared")
+    elif not evidenced:
+        side = _side(previous.get("pass") if previous else None, "skipped",
+                     "the pass is not evidenced; it is compared when it is scored again")
+    else:
+        side = side_by_side(args, reviewer, pass_dir, previous, home=home, scene=scene,
+                            samples=samples, cut=cut, script=script, quiet=args.quiet)
+    if side.get("unpaired"):
+        card["not_evidenced"] = list(card.get("not_evidenced") or []) + [
+            f"side by side: {len(side['unpaired'])} moment(s) not compared with "
+            f"{side['against']}: {side['unpaired'][0]['why']}"]
+
     # -- the bar, applied; the pass, kept ----------------------------------------
     # What the measurements proved overrides what the reviewer awarded: a
     # silent film scores no sound, and a blocking mechanical finding caps
@@ -2827,6 +3255,7 @@ def run(args) -> int:
                          "blocking": all_blocking, "frames": sorted(have),
                          "samples": samples, "mechanical": mechanical, "capped": capped,
                          "proof_note": proof_note, "listening": listening,
+                         "cut": cut, "side_by_side": side,
                          "contact_sheet": sheet.name, "engine": reviewer.report(),
                          "usage": spend.from_report(reviewer.report())}
     diff = compare(previous, card)
@@ -2844,6 +3273,8 @@ def run(args) -> int:
         "mechanical": len(mechanical), "capped": capped,
         "audio_not_evidenced": card.get("audio_not_evidenced") or {},
         "regressions": diff["regressions"], "reasons": reasons,
+        "side_by_side": {"against": side["against"], "status": side["status"],
+                         "total": side["tally"]["total"]},
         "scorecard": str(pass_dir / "scorecard.json"), "house": digest,
         "usage": card["usage"]})
 
@@ -2869,6 +3300,11 @@ def run(args) -> int:
                   f"{f['kind']}: {f['problem'][:90]} -> {f['owner']}")
     if diff["regressions"]:
         print(f"\n  REGRESSED since {diff['against']}: {', '.join(diff['regressions'])}")
+    if side["status"] == "done":
+        total = side["tally"]["total"]
+        print(f"\n  side by side against {side['against']}: better {total['better']}, "
+              f"worse {total['worse']}, same {total['same']} "
+              f"({len(side['moments'])} moments)")
     owners = {}
     for f in card.get("findings", []):
         owners.setdefault(f.get("owner", "?"), []).append(f)
