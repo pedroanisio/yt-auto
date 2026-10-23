@@ -94,6 +94,14 @@ PERMANENT_MARKERS = (
     "invalid api key", "not logged in", "authentication", "unauthorized",
     "please run /login",
     "error_max_budget_usd", "error_max_turns", "max budget", "budget exceeded",
+    # Vercel AI Gateway's 402 for a budget (AUTO-121): its type, and the
+    # message an API key's budget carries ('Quota limit exceeded for
+    # "api_key_id_..."'); a team's or a project's reads 'budget exceeded',
+    # above. A budget is a soft cap, so the request that crossed it was
+    # paid and the next is refused the same way. A 429 (rate_limit_exceeded)
+    # is left transient. No broad word ('credits', 'insufficient') is
+    # added: it could match an unrelated failure's text.
+    "quota_for_entity_exceeded", "quota limit exceeded",
     "invalid json schema", "no such file", "permission denied",
 )
 
