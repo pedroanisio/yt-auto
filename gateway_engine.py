@@ -55,7 +55,10 @@ What it does, and why:
     cost_generation_calls, cost_table_calls, cost_unpriced_calls), so rows
     from every engine still merge.
   - The key never appears in a message: it is replaced by *** in every
-    error and stderr the engine raises.
+    error and stderr the engine raises. The program is handed only the
+    environment it needs (PROGRAM_ENV: PATH, HOME, temp dir, locale,
+    NODE_*, proxies, the key) and the config's `env`; the other
+    credentials in the process (Anthropic, OpenAI, Codex) stay out of it.
 
 Requires: `node` (or $YT_GATEWAY_NODE) at 22 or later, and gateway/
 installed with `cd gateway && npm ci --ignore-scripts`.
@@ -272,6 +275,25 @@ def installed_ai_version(program_dir: str | Path | None = None) -> str | None:
     return str(version) if version else None
 
 
+#: The environment the Node program is handed, besides the config's `env`:
+#: what Node needs to start, find its temp dir and locale, reach the gateway
+#: through a proxy or a private CA (NODE_EXTRA_CA_CERTS, NODE_OPTIONS), and
+#: the key. Nothing else.
+PROGRAM_ENV = frozenset({"PATH", "HOME", "USERPROFILE", "TMPDIR", "TEMP", "TMP", "LANG",
+                         "LANGUAGE", "TZ", "SYSTEMROOT", "SSL_CERT_FILE", "SSL_CERT_DIR",
+                         _gateway.KEY,
+                         "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY"})
+PROGRAM_ENV_PREFIXES = ("LC_", "NODE_")
+
+
+def passed_to_program(name: str) -> bool:
+    """Whether the variable `name` reaches the Node program. Proxy names
+    count in either case, as curl and undici read both."""
+    upper = name.upper()
+    return ((upper if upper.endswith("PROXY") else name) in PROGRAM_ENV
+            or name.startswith(PROGRAM_ENV_PREFIXES))
+
+
 def node_executable(environ: dict | None = None, executable: str = "node") -> str:
     """The node to run: `executable`, or $YT_GATEWAY_NODE when that is "node"."""
     environ = os.environ if environ is None else environ
@@ -402,7 +424,18 @@ class GatewayEngine(ClaudeEngine):
     # -- preparation -------------------------------------------------------
 
     def _env(self) -> dict[str, str]:
+        """What the engine reads its settings from: the process's
+        environment and the config's `env` over it."""
         env = dict(os.environ)
+        env.update(self.config.env or {})
+        return env
+
+    def _program_env(self) -> dict[str, str]:
+        """What the program is handed: the names `passed_to_program` lets
+        through, and the config's `env` as given. The program reads only the
+        key; the other credentials here (Anthropic, OpenAI, Codex, ...) have
+        no reason to reach an npm-installed process."""
+        env = {k: v for k, v in os.environ.items() if passed_to_program(k)}
         env.update(self.config.env or {})
         return env
 
@@ -483,7 +516,7 @@ class GatewayEngine(ClaudeEngine):
         }
         if host:
             request["host"] = host
-        return [node, str(program_dir / PROGRAM)], request, env
+        return [node, str(program_dir / PROGRAM)], request, self._program_env()
 
     # -- the call ----------------------------------------------------------
 

@@ -4,6 +4,8 @@ It stands in for `node gateway/gateway-engine.mjs`: `--version` prints
 $FAKE_NODE_VERSION, and any other launch records its argv, the names (never
 the values) of its environment and its stdin, counts itself, then answers
 from `replies.json`, the n-th launch the n-th reply (the last one repeats).
+It finds those files beside itself, not through a variable, because the
+engine hands the program only an allowlisted environment.
 A reply is {"stdout": object or text, "stderr": text, "code": int}; "$KEY"
 in stderr or stdout is replaced by the key the child was given, so a test
 can check that no message carries it. No network, no model.
@@ -26,7 +28,7 @@ MODEL = "google/gemini-3.6-flash"
 
 FAKE_NODE = r'''#!/usr/bin/env python3
 import json, os, sys
-here = os.environ["FAKE_NODE_DIR"]
+here = os.path.dirname(os.path.abspath(__file__))
 if sys.argv[1:] == ["--version"]:
     print(os.environ.get("FAKE_NODE_VERSION", "v24.11.0"))
     sys.exit(0)
@@ -97,8 +99,7 @@ class FakeNode:
         self.exe.chmod(self.exe.stat().st_mode | stat.S_IEXEC)
         saved = {k: os.environ.pop(k) for k in list(os.environ) if k in VARS}
         case.addCleanup(os.environ.update, saved)
-        patch = mock.patch.dict(os.environ, {"FAKE_NODE_DIR": str(self.dir),
-                                             "AI_GATEWAY_API_KEY": KEY,
+        patch = mock.patch.dict(os.environ, {"AI_GATEWAY_API_KEY": KEY,
                                              "YT_GATEWAY_NODE": str(self.exe)})
         patch.start()
         case.addCleanup(patch.stop)

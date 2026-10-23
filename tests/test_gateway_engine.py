@@ -193,6 +193,25 @@ class Request(Case):
             with self.subTest(bad=bad), self.assertRaises(TypeError):
                 GatewayConfig(providers=bad)
 
+    def test_the_program_gets_only_the_environment_it_needs(self):
+        # The program reads AI_GATEWAY_API_KEY and nothing else of ours; the
+        # other credentials stay out of an npm-installed process.
+        secrets = {"ANTHROPIC_API_KEY": "a", "OPENAI_API_KEY": "o",
+                   "CLAUDE_CODE_OAUTH_TOKEN": "c", "CODEX_API_KEY": "x",
+                   "GITHUB_TOKEN": "g", "YT_GATEWAY_URL": "https://proxy.example/"}
+        passed = {"HTTPS_PROXY": "http://proxy:3128", "no_proxy": "localhost",
+                  "LC_ALL": "C.UTF-8", "NODE_EXTRA_CA_CERTS": "/etc/ca.pem",
+                  "TMPDIR": "/tmp"}
+        with mock.patch.dict(os.environ, {**secrets, **passed}):
+            self.node.engine(env={"FOR_THE_PROGRAM": "1"}).ask_json("q", SCHEMA)
+        (call,) = self.node.calls()
+        names = set(call["env"])
+        self.assertFalse(names & set(secrets), sorted(names & set(secrets)))
+        for name in ("AI_GATEWAY_API_KEY", "PATH", "FOR_THE_PROGRAM", *passed):
+            self.assertIn(name, names)
+        for name in names - {"FOR_THE_PROGRAM"}:
+            self.assertTrue(gateway_engine.passed_to_program(name), name)
+
     def test_the_host_is_sent_only_when_yt_gateway_url_is_set(self):
         os.environ["YT_GATEWAY_URL"] = "https://proxy.example/"
         self.addCleanup(os.environ.pop, "YT_GATEWAY_URL", None)
