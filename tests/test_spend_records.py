@@ -67,6 +67,32 @@ class Helper(unittest.TestCase):
         self.assertEqual(out["usage"]["input_tokens"], 7)
         self.assertEqual(spend.stamp({}, "x")["usage"], spend.record(0, "x", 0))
 
+    def test_merge_records(self):
+        # Two harnesses' records as one (AUTO-126: QA's reviewer and its
+        # listener): the totals summed, each model's numeric counters summed
+        # key by key, a text field kept from the first, the first's model.
+        a = spend.record(1.5, "sonnet", 3, unmetered_calls=0, by_model={
+            "claude-sonnet-5-5": {"inputTokens": 100, "costUSD": 1.5, "note": "a"},
+            "google/gemini-3.6-flash": {"inputTokens": 10, "costUSD": 0.01}})
+        b = spend.record(0.02, "google/gemini-3.6-flash", 1, unmetered_calls=1, by_model={
+            "google/gemini-3.6-flash": {"inputTokens": 20, "costUSD": 0.02,
+                                        "cost_gateway_calls": 1, "note": "b"}})
+        got = spend.merge_records(a, b)
+        self.assertEqual(got["model"], "sonnet")
+        self.assertEqual(got["cost_usd"], 1.52)
+        self.assertEqual(got["calls"], 4)
+        self.assertEqual(got["unmetered_calls"], 1)
+        self.assertEqual(got["by_model"]["claude-sonnet-5-5"], a["by_model"]["claude-sonnet-5-5"])
+        self.assertEqual(got["by_model"]["google/gemini-3.6-flash"],
+                         {"inputTokens": 30, "costUSD": 0.03, "cost_gateway_calls": 1,
+                          "note": "b"})
+        # an unmetered call stays unmetered, so the merged cost is not a bill
+        self.assertIsNone(spend.cost_in({"usage": got}))
+        metered = spend.merge_records(a, dict(b, unmetered_calls=0))
+        self.assertEqual(spend.cost_in({"usage": metered}), 1.52)
+        # neither input is changed
+        self.assertEqual(a["by_model"]["google/gemini-3.6-flash"]["inputTokens"], 10)
+
     def test_cost_in_reads_the_new_shape_and_every_old_one(self):
         self.assertEqual(spend.cost_in({"usage": spend.record(1.25, "m", 1)}), 1.25)
         self.assertEqual(spend.cost_in({"usage": {"cost_usd": 2.0}}), 2.0)

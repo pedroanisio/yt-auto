@@ -171,6 +171,7 @@ from pathlib import Path
 
 from . import geometry as geo
 from . import framecheck, house, narrative, reach, spend, workspace
+from . import listen as listen_pass
 from .proofframes import (PROOF_DIFF, PROOF_LIMIT, mismatch_text,  # noqa: F401
                           proof_diff, proof_plan, ungraded)
 from . import render as render_stage
@@ -221,8 +222,9 @@ SILENT = ("sound_design", "music_score")
 AUDIO = ("voiceover", "sound_design", "music_score")
 #: The listening reviews the pipeline writes: where each lives, what it
 #: heard, the categories it evidences, and the command that produces it
-#: again. A review that hears the rendered track would be one more row here,
-#: read by `listening_evidence` like these two.
+#: again. The review that hears the rendered track, `yt qa --listen`
+#: (AUTO-126, ytstudio/listen.py), is made in the pass itself, so it joins
+#: these two as one more row (`listen.evidence_row`), not as an entry here.
 LISTENERS = {
     "sound": {"file": "sound.json", "covers": ("sound_design", "music_score"),
               "review": "the listen-back of `yt sound --review`: the cue sheet as "
@@ -277,6 +279,13 @@ ROLE += (
     "screenplay declares. A 9 there shows what each of these criteria of the "
     "narrative rubric aims for; the further a film falls short of them, the lower:\n"
     + narrative.rubric_text("writer", keys=STORY_RUBRIC))
+
+#: The role when a current `--listen` heard the film (AUTO-126): ROLE with
+#: the listener's record named among the listening reviews. Without one,
+#: ROLE is used unchanged.
+_HEARD_AFTER = "or the fact that a track exists."
+assert ROLE.count(_HEARD_AFTER) == 1
+ROLE_LISTENED = ROLE.replace(_HEARD_AFTER, f"{_HEARD_AFTER} {listen_pass.LISTENED}")
 
 #: What the screenplay owns of the story, named in DUTIES so a story finding
 #: has an owner; docs/production.md §2 row 9 names the same (test_doc_production).
@@ -571,6 +580,10 @@ def pass_usd(card: dict | None) -> float | None:
     once = sum(float(d.get("cost_usd") or 0) for d in rows or []
                if isinstance(d, dict) and not d.get("cached")
                and str(d.get("name", "")).endswith("-compare-pass"))
+    # A --listen (AUTO-126) is one more decision a pass, on its own harness.
+    heard = card.get("listen") if isinstance(card, dict) else None
+    if isinstance(heard, dict) and isinstance(heard.get("engine"), dict):
+        once += float(heard["engine"].get("cost_usd") or 0)
     once = min(max(once, 0.0), cost)
     return round((cost - once) / asked * QA_SAMPLES + once, 2)
 
@@ -2867,6 +2880,7 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
     p.add_argument("--local", action="store_true", help="render the stills here")
     p.add_argument("--fresh", action="store_true",
                    help="score again even if the evidence did not change")
+    listen_pass.add_flags(p)
     workspace.add_inputs(p, "build", "script", "voice", "sound", "styles", "gate")
     p.set_defaults(run=run)
     return p
@@ -2906,6 +2920,18 @@ def run(args) -> int:
                   "scorecard.json to compare with", file=sys.stderr)
             return 2
         chosen.setdefault("pass", named)
+    # --listen (AUTO-126): everything it needs, checked before anything renders.
+    prepared = None
+    if getattr(args, "listen", False):
+        try:
+            prepared = listen_pass.preflight(
+                args, project, home=home, scene=scene, build=build, script=script,
+                voice=voice, sound=sound, title=idea.title,
+                house=house.for_args(args, project, "qa")[0])
+        except listen_pass.Refused as exc:
+            for line in str(exc).splitlines():
+                print(f"error: --listen: {line}", file=sys.stderr)
+            return 1
 
     # -- the evidence --------------------------------------------------------
     if args.reuse:
@@ -3077,11 +3103,23 @@ def run(args) -> int:
     listening = listening_evidence(
         sound, voice, built_before=built_before,
         where="" if project.standalone else f"--project {project.root}")
+    # The film's own audio, heard (AUTO-126): one more row of the same
+    # evidence, current when the listener answered.
+    rules, digest = house.for_args(args, project, "qa")
+    heard = None
+    if prepared is not None:
+        heard = listen_pass.listen(project, pass_dir, prepared, args, house=rules,
+                                   house_digest=digest)
+        listening.append(listen_pass.evidence_row(
+            heard, "" if project.standalone else f"--project {project.root}"))
+        if not heard["current"] and not args.quiet:
+            print(f"warning: --listen: {heard['reason']}", file=sys.stderr)
+    listened = bool(heard and heard["current"])
     unheard = audio_unheard(listening, silent=silent(build))
 
     # -- the review ------------------------------------------------------------
-    rules, digest = house.for_args(args, project, "qa")
-    reviewer = Harness(project.root, "qa", model=args.model, role=ROLE,
+    reviewer = Harness(project.root, "qa", model=args.model,
+                       role=ROLE_LISTENED if listened else ROLE,
                        house=rules, house_digest=digest,
                        fresh=getattr(args, "fresh", False), verbose=not args.quiet,
                        timeout=1800.0)
@@ -3149,6 +3187,7 @@ def run(args) -> int:
          "has a current listening review: score it from what that review heard, "
          "with the measurements as context only."),
         brief("Measurements and decisions from the stages", measurements),
+        *([listen_pass.brief_for(heard)] if listened else []),
         brief("Blocking, already proven", blockers),
         brief("Each finding's owner is exactly one of these; one you cannot place is "
               "`external`, with the reason in `fix`", {o: DUTIES[o] for o in OWNERS}),
@@ -3168,6 +3207,8 @@ def run(args) -> int:
     if gaps:
         card["not_evidenced"] = list(card.get("not_evidenced") or []) + [
             f"story.sections (structure 20): {'; '.join(gaps)}, asked once more"]
+    if heard is not None:
+        card = listen_pass.merge_into(card, heard)     # the listener's own findings
     evidenced = card["verdict"] != NOT_EVIDENCED
     if not evidenced and not args.quiet:
         print(f"[qa] {pass_dir.name}: {card['scoring']['valid']} of "
@@ -3258,6 +3299,11 @@ def run(args) -> int:
                          "cut": cut, "side_by_side": side,
                          "contact_sheet": sheet.name, "engine": reviewer.report(),
                          "usage": spend.from_report(reviewer.report())}
+    if heard is not None:
+        # The listener is a harness of its own: its record beside the
+        # reviewer's, its cost in the pass's usage.
+        card["listen"] = listen_pass.card_entry(heard)
+        card["usage"] = spend.merge_records(card["usage"], spend.from_report(heard["engine"]))
     diff = compare(previous, card)
     card["comparison"] = diff
     write_json(pass_dir / "scorecard.json", card)
