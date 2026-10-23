@@ -200,30 +200,72 @@ class Overlap(FetchCase):
                       lines[0])
         self.assertEqual([m["cue_id"] for m in data["unfilled"]], ["A1"])
 
+    def interrupted(self, run, started: threading.Event):
+        """`run()` with a SIGINT whose handler is slow to act, as CPython's
+        can be when the signal lands while the main thread waits on a lock
+        (it may see it only once the lock is released, AUTO-129): the
+        handler waits for a second job to start before it raises, so a job
+        the pool could still pick up after the interrupt always is, and one
+        never handed to the pool times the wait out."""
+        def late(signum, frame):
+            started.wait(0.5)
+            raise KeyboardInterrupt
+        before = signal.signal(signal.SIGINT, late)
+        try:
+            with self.assertRaises(KeyboardInterrupt):
+                run()
+        finally:
+            signal.signal(signal.SIGINT, before)
+
+    @staticmethod
+    def interrupt() -> None:
+        signal.pthread_kill(threading.main_thread().ident, signal.SIGINT)
+
     def test_an_interrupt_drops_the_rounds_queued_judgements(self):
         # Ctrl-C while the first judge is out: the pool's exit would otherwise
-        # run every queued session before the interrupt reaches the operator.
-        # The judge sends the signal to the main thread from its own and stays
-        # out a while, so the queued cues are still pending when it lands.
+        # run every queued session before the interrupt reaches the operator,
+        # and a worker that finishes takes the next queued one before the
+        # main thread acts on a late signal. No sleep: the handler's wait
+        # decides the race, so a judgement that can run after it always does.
         self.catalogue["knock"] = [row(3, "Knock.wav", 1.0)]
         self.cues += (cue("sfx", "S2", "Knock", 1, query="knock"),)
-        judged: list[str] = []
+        judged, started = [], threading.Event()
 
         def judge(c, evidence):
             judged.append(c["cue_id"])
             if c["cue_id"] == "A1":
-                signal.pthread_kill(threading.main_thread().ident, signal.SIGINT)
-                time.sleep(0.2)
+                self.interrupt()
+            else:
+                started.set()
             return {"verdict": "accept", "reason": "fits", "confidence": 0.9}
         data = self.data(*self.cues)
-        before = signal.signal(signal.SIGINT, signal.default_int_handler)
-        try:
-            with self.assertRaises(KeyboardInterrupt):
-                sound.fetch(self.root, data, token="t", jobs=1, say=self.hush,
-                            measure=lambda paths: [levels() for _ in paths], judge=judge)
-        finally:
-            signal.signal(signal.SIGINT, before)
+        self.interrupted(lambda: sound.fetch(
+            self.root, data, token="t", jobs=1, say=self.hush,
+            measure=lambda paths: [levels() for _ in paths], judge=judge), started)
         self.assertEqual(judged, ["A1"])
+
+    def test_an_interrupt_drops_the_rounds_queued_searches_and_downloads(self):
+        # The same for the round's first half: a Ctrl-C during the first
+        # cue's download leaves the other cues unsearched.
+        self.catalogue["knock"] = [row(3, "Knock.wav", 1.0)]
+        self.cues += (cue("sfx", "S2", "Knock", 1, query="knock"),)
+        inner, started = freesound.fetch_json, threading.Event()
+
+        def fake_json(url, **kw):
+            if "hum" not in url:
+                started.set()
+            return inner(url, **kw)
+
+        def fake_bytes(url, **kw):
+            self.downloads.append(url)
+            self.interrupt()
+            return b"ID3" + url.encode()
+        freesound.fetch_json, freesound.fetch_bytes = fake_json, fake_bytes
+        data = self.data(*self.cues)
+        self.interrupted(lambda: sound.fetch(self.root, data, token="t", jobs=1,
+                                             say=self.hush), started)
+        self.assertEqual(self.searches, ["hum"])
+        self.assertEqual(len(self.downloads), 1)
 
     def test_a_rounds_judgements_overlap(self):
         wait = self.meeting("judge")
