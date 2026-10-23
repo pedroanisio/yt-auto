@@ -423,7 +423,12 @@ more than `qa.PROOF_DIFF` in the stage band, both frames rendered ungraded
 so an applied look is no mismatch, which is what a world split into
 includes that restart at t=0 looks like; the other mechanical findings on
 that world's shots are re-owned to `build`), has the model read the frames and the contact sheet as images
-and file the scorecard, applies the bar of section 2 mechanically (a blocking
+and file the scorecard three times on the same evidence (`qa.QA_SAMPLES`,
+the categories in a different order each; one reading's noise, about ±0.5 a
+category, is the size of the steps read as progress), takes each category's
+median and records its spread (max - min), keeps a finding two samples
+report and lists one a single sample reports as low-confidence, calls a pass
+with fewer than two valid samples `not_evidenced` (never READY), applies the bar of section 2 mechanically (a blocking
 mechanical finding caps `visual_quality` and `animation_vfx` at 6; no audio
 track in `build.json` fixes `sound_design` and `music_score` at 2.0), and
 compares the pass with the one before. Its findings name the owning stage;
@@ -437,7 +442,7 @@ work/<slug>/qa/
 ├── pass-01/frames/burst/      each sample's frame window, the still's stem and the frame index
 ├── pass-01/samples.json       what was sampled, where, and each window's plan (frames, range, still frame)
 ├── pass-01/contact-sheet.png  the stills tiled with their timestamps
-├── pass-01/scorecard.json     ten categories, overall, verdict, the caps and the mechanical findings
+├── pass-01/scorecard.json     ten categories (the scoring samples' medians and spread), overall, verdict, the caps, the mechanical and low-confidence findings, each scoring sample
 ├── pass-01/findings.md        timestamp → problem → root cause → owner → fix → result, with the burst numbers
 └── pass-02/…                  the next cycle, for before-and-after comparison
 ```

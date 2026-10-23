@@ -350,5 +350,30 @@ class Estimate(ImproveCase):
         self.assertAlmostEqual(by["qa"]["usd"], 1.8)
 
 
+class Docs(unittest.TestCase):
+    """The manual, the README and the brief say what the samples do."""
+
+    ROOT = Path(__file__).resolve().parent.parent
+
+    def flat(self, rel):
+        return " ".join((self.ROOT / rel).read_text(encoding="utf-8").split())
+
+    def test_the_manual_names_the_samples_the_spread_and_not_evidenced(self):
+        skill = self.flat("ytstudio/SKILL.md")
+        for needle in ("`qa.QA_SAMPLES`", "`<pass>-scorecard-s1`", "`spread`",
+                       "`low_confidence`", "`<pass>-scorecard-merge`", "`improve.judge`",
+                       "`qa.pass_usd`", "`spend.QA_SAMPLE_USD`"):
+            self.assertIn(needle, skill)
+        self.assertEqual(qa.QA_SAMPLES, 3)       # "(3)" in the manual and the README
+
+    def test_the_readme_and_the_brief_say_it(self):
+        readme = self.flat("README.md")
+        for needle in ("`qa.QA_SAMPLES` (3)", "pass-NN-scorecard-s1", "`low_confidence`",
+                       "`not_evidenced`: no scores, never READY", "samples' spread"):
+            self.assertIn(needle, readme)
+        self.assertIn("`qa.QA_SAMPLES`", self.flat("docs/production.md"))
+        self.assertIn("QA_SAMPLES", qa.__doc__)
+
+
 if __name__ == "__main__":
     unittest.main()
