@@ -1469,8 +1469,11 @@ have none yet, so they are refused); and a render host (`--host`, else the
 one an encode would use; `--local` does not move it). A `video.mp4` that
 `doctor.cut_problems` calls stale or partial is not watched: the problem
 and its `yt render` command are a `not_evidenced` line, and scoring goes on.
-The cut is sent as it is when it is under `watch.WATCH_MAX_BYTES` (14 MiB)
-and `WATCH_MAX_SECONDS` (600); otherwise the render host re-encodes it at
+The sound is never sent (the listener hears the mix). The cut's picture is
+sent as it is when it is under `watch.WATCH_MAX_BYTES` (14 MiB) and
+`WATCH_MAX_SECONDS` (600), straight from here when build.json has no audio
+track, else copied without its sound on the render host first; otherwise
+the render host re-encodes it at
 `WATCH_HEIGHT` (480) and `WATCH_KBPS` (600) with no audio, split at shot
 boundaries when it is still too long or too large (a shot longer than a
 piece is cut inside, with 1 s of overlap). The cut goes up once by rsync,
@@ -1479,23 +1482,28 @@ the host's directory is removed; a piece over the limit or off its planned
 length is an error and nothing is sent. Each piece is one gateway decision,
 `watch-sNN`, cached by its bytes; an answer whose times fall outside the
 piece, or whose `watched_seconds` is not near its length, is asked once
-more (`-again`) and then recorded unwatched. A 402 stops the watch.
+more (`-again`) and then recorded unwatched, both answers forgotten so the
+next run asks again. A failed call (a 401, a model mismatch, an exhausted
+retry) leaves its piece unwatched and the rest are asked; a 402 stops the
+watch.
 `qa/pass-NN/watch.json` keeps the model, the catalogue row, who served each
 call, the plan, the findings (W1.., film times) and what was not watched;
-the same cut, model and constants reuse an earlier pass's record
-(`reused_from`) unless `--fresh`. Each finding's start becomes a still of
+the same cut, model, providers, constants and role reuse an earlier pass's
+record (`reused_from`) when it watched every piece, unless `--fresh`. Each finding's start becomes a still of
 the pass beyond `--frames` (at most `qa.WATCH_SAMPLES_MAX`, 12, blocking
 ones first; one under `qa.WATCHED_NEAR`, 0.5 s, from a still merges into it), and the scorecard
 gains a `Watched findings:` brief and a required `watched` verdict per
-finding (confirmed, not_visible or disagree, naming the frame). A finding
+finding (confirmed, not_visible or disagree, naming the frame as `frames`
+lists it; `frames/<name>` is read as `<name>`). A finding
 two scoring samples confirm on its own still joins the findings as `source:
 "watched:Wn"`; the rest are listed in findings.md as watched, not confirmed
 or not sampled, and block nothing. The scorecard's `watch` and
 `watch_engine` hold the record and the watcher's report, and `usage` merges
 it. `--reuse PASS --watch` reads that pass's watch.json and watches nothing.
 The estimate adds `watch_usd` (the programme at 258 tokens a second plus an
-answer a piece, at the pinned price) unless the last scorecard's
-`watch_engine` already holds a `watch-sNN`. The size, length, height,
+answer a piece, at the pinned price) each time `--watch` is asked, and, as
+for a listen, `qa.pass_usd` leaves a past watch out of a plain `yt qa`. The
+size, length, height,
 bitrate, providers and token rate are the card's starting values, to be
 measured live.
 

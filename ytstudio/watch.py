@@ -20,24 +20,31 @@ moments QA renders and its own reviewer confirms:
 2. The cut is the project's video.mp4. When doctor's rules say it is stale
    or partial (`doctor.cut_problems`), nothing is watched or uploaded: the
    problem and its `yt render` command go under not_evidenced and scoring
-   goes on. An earlier pass's watch.json of the same cut, model, constants
-   and role is copied (`reused_from`) unless --fresh.
+   goes on. An earlier pass's watch.json that watched every segment of the
+   same cut with the same model, providers, constants and role is copied
+   (`reused_from`) unless --fresh.
 3. The plan (`watch_plan`): the cut as it is when it fits WATCH_MAX_BYTES
-   and WATCH_MAX_SECONDS, else re-encoded at WATCH_HEIGHT and WATCH_KBPS
-   with no audio, split at shot boundaries when it is still too long or too
-   large. The re-encode runs on a render host (`prepare_remote`), never on
-   this workstation: the cut goes up once, one ssh cuts every segment, the
-   segments come back, the host's directory is removed.
+   and WATCH_MAX_SECONDS, else re-encoded at WATCH_HEIGHT and WATCH_KBPS,
+   split at shot boundaries when it is still too long or too large. The
+   sound is never sent (open question 1's default: the pass is visual, and
+   the listener, AUTO-126, hears the mix), so a cut as it is goes straight
+   to the gateway only when build.json has no audio track; otherwise its
+   picture is copied without its sound. Both run on a render host
+   (`prepare_remote`), never on this workstation: the cut goes up once,
+   one ssh cuts every segment, the segments come back, the host's
+   directory is removed.
 4. One decision per segment through the gateway engine, the segment as
    media (`watch-sNN`), cached by its bytes. The answer is checked past the
    schema (times inside the segment, `watched_seconds` near its length) and
    asked once more (`watch-sNN-again`) with the problems named; a segment
-   that still fails, or whose call fails, is recorded unwatched. A budget
-   402 stops the watch; the segments left are recorded unwatched.
+   that still fails is recorded unwatched and both answers forgotten, so
+   the next run asks again. One whose call fails (a 401, a model mismatch,
+   an exhausted retry) is recorded unwatched and the rest are asked. A
+   budget 402 stops the watch; the segments left are recorded unwatched.
 5. The record, `qa/<pass>/watch.json`: segment times shifted to film times,
-   findings in an overlap merged, ids W1.. . Each finding's start becomes a
-   still of the pass (qa.sample's `watched`), and the scorecard's reviewer
-   says of each whether its still shows it. Only a finding at least two
+   findings seen twice in an overlap merged, ids W1.. . Each finding's
+   start becomes a still of the pass (qa.sample's `watched`), and the
+   scorecard's reviewer says of each whether its still shows it. Only a finding at least two
    scoring samples confirm with its still enters the scorecard's findings
    (`source: watched:Wn`); the rest are listed, blocking nothing.
 

@@ -164,9 +164,9 @@ google/gemini-3.6-flash, a catalog row tagged video-input and
 structured-output from another maker than every model that made the film.
 The gateway (YT_GATEWAY=vercel, AI_GATEWAY_API_KEY, Node >=22 and
 gateway/node_modules), the catalog, the model and a render host are checked
-before a pass directory is made; a missing one exits 1. A cut too large to
-send is cut down on the render host (downscaled, no audio, split at shot
-boundaries), never here. A stale or partial cut is not watched: the
+before a pass directory is made; a missing one exits 1. The sound is never
+sent: the render host copies the picture without it, and a cut too large to
+send is cut down there (downscaled, split at shot boundaries), never here. A stale or partial cut is not watched: the
 problem is a not_evidenced line. Each moment the watcher reports (W1..,
 qa/pass-NN/watch.json) becomes a still of the pass beyond --frames (at most
 WATCH_SAMPLES_MAX), and the scorecard's reviewer says of each whether its
