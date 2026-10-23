@@ -72,8 +72,10 @@ ALIASES = {"fable": "claude-fable-5-1", "opus": "claude-opus-5-5",
 
 def price_for(model: Any, env: dict | None = None) -> dict[str, float] | None:
     """The price row the engine would use for `model`: this table, the
-    engine's own, then `$CLAUDE_PRICES`; a short name resolves to its
-    generation's row; None when nobody priced it."""
+    engine's own, then `$CLAUDE_PRICES`; a gateway id
+    (`anthropic/claude-haiku-4.5`) resolves to its direct id's row when it
+    has none of its own, a short name to its generation's row; None when
+    nobody priced it (a gateway virtual model, `vmc/<slug>`, never is)."""
     table: dict[str, Any] = {**PRICES, **claude_engine.PRICES}
     raw = (os.environ if env is None else env).get("CLAUDE_PRICES")
     if raw:
@@ -83,10 +85,7 @@ def price_for(model: Any, env: dict | None = None) -> dict[str, float] | None:
                 table.update(parsed)
         except (ValueError, TypeError):
             pass
-    name = str(model or "")
-    row = table.get(name)
-    if row is None and name in ALIASES:
-        row = table.get(ALIASES[name])
+    row = claude_engine._price_row(table, str(model or ""), ALIASES)
     return row if isinstance(row, dict) and row else None
 
 

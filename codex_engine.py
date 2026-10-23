@@ -132,7 +132,8 @@ from typing import Any, Callable, Iterator, Sequence
 from claude_engine import (DEFAULTABLE, EDIT_TOOLS, FULL_TOOLS, PERMANENT_MARKERS,
                            READ_ONLY_TOOLS, Answer, ClaudeEngine, ClaudeError,
                            ClaudeExecutionError, ClaudeNotFound, EngineConfig, Event,
-                           Task, TaskResult, TaskRunner, Usage, _loads_loose)
+                           Task, TaskResult, TaskRunner, Usage, VIRTUAL_PROVIDER,
+                           _loads_loose, _price_row, canonical_model)
 
 __all__ = [
     "CodexEngine", "CodexConfig", "EngineConfig", "DEFAULTS", "DEFAULTABLE",
@@ -303,9 +304,17 @@ def _field_defaults() -> dict[str, Any]:
 
 
 def is_claude_model(name: str | None) -> bool:
+    """Whether `name` is a Claude model, direct (`opus`, `claude-opus-5-5`,
+    Bedrock's `us.anthropic.`) or a gateway id (`anthropic/claude-opus-5`,
+    `claude-code/anthropic/...[1m]`). A gateway virtual model is not known
+    to be one."""
     if not name:
         return False
     low = name.lower()
+    provider, model = canonical_model(name)
+    if provider:
+        return provider == "anthropic" or (provider != VIRTUAL_PROVIDER
+                                            and model.lower().startswith("claude"))
     return (low in CLAUDE_MODEL_NAMES or low.startswith(("claude", "anthropic.",
                                                          "us.anthropic."))
             or "[1m]" in low)
@@ -370,7 +379,9 @@ def usage_tokens(usage: dict) -> int:
 
 def price_for(model: str | None, *, overrides: dict | None = None,
               env: dict[str, str] | None = None) -> dict[str, float] | None:
-    """The price row for `model`: PRICES, then $CODEX_PRICES, then `overrides`."""
+    """The price row for `model`: PRICES, then $CODEX_PRICES, then `overrides`,
+    by the id as passed, then, for a gateway id (`openai/gpt-5`), by its
+    direct id. A gateway virtual model (`vmc/<slug>`) has no row."""
     table = dict(PRICES)
     raw = (env or os.environ).get("CODEX_PRICES")
     if raw:
@@ -379,7 +390,7 @@ def price_for(model: str | None, *, overrides: dict | None = None,
         except ValueError:
             _warn_once("prices-env", "CODEX_PRICES is not valid JSON; ignored")
     table.update(overrides or {})
-    return table.get(model or "")
+    return _price_row(table, model)
 
 
 # --------------------------------------------------------------------------- #
