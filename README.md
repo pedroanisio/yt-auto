@@ -114,6 +114,12 @@ research and screenplay work; it is not an unattended model service.
   providers were checked live (`verified` in the row), and an unchecked row
   is refused until the read succeeds. The script is sent to those
   third-party providers, and script.json says which ones.
+  The second is `yt qa --listen` (AUTO-126): the film's own audio track,
+  copied out of `video.mp4` with no re-encode, goes to a listener from
+  `models.LISTEN_MODELS` (default `google/gemini-3.6-flash`, served by
+  Google only). It also needs `ffmpeg` and `ffprobe` on PATH, which run
+  here: a stream copy and a probe decode and encode nothing. Without
+  `YT_GATEWAY=vercel` the flag is refused, never replaced.
 - Python 3.10+
 
 ---
@@ -228,7 +234,7 @@ Or all of it at once, for one idea:
 | `yt pilot` | 30/60/180-second cuts of the finished film, nested, with what each proves | no model calls |
 | `yt gate` | the delivery verdict: loudness, scopes, frames, caption limits, run on a render host and naming the requirement that stopped it; plus the geometry check (a hero that penetrates the set, or reads merged into it on screen, blocks whatever the tool and the triage said) | one triage call |
 | `yt review` | the PDF review sheet: frames, captions, markers, sources, credits | no model calls |
-| `yt qa` | the scorecard per pass: every shot sampled at its midpoint and each narrated line where it starts (`line: <first words>`, AUTO-104), up to 60 stills (`--frames N` above the shot count adds the line stills first, then evenly spaced stills; below it, or past 60 shots by default, names the shots left out; the lines left without a still are named in `lines_unsampled`), one frame window per sample (the still is its middle frame), a contact sheet, the mechanical findings (flat, clipped, frozen, jump, off-camera, `penetration`: the hero inside a set solid, and `reads-merged`: the hero over a surface on screen with no shadow, from the engine's evaluated geometry and camera), the model's review, scored as the median of three samples (an audio category no current listening review covers is null in every sample, never a median), and a side-by-side comparison with the previous kept cut at the same timestamps | `qa.QA_SAMPLES` (3) inspection calls per pass, at most one merge decision and one `<pass>-compare-pass` inspection when an earlier scored pass exists; one render job per sample (by default one per shot and per narrated line, at most 60; `--frames N` sets it), one eval job per pass; `yt improve` pays this every pass |
+| `yt qa` | the scorecard per pass: every shot sampled at its midpoint and each narrated line where it starts (`line: <first words>`, AUTO-104), up to 60 stills (`--frames N` above the shot count adds the line stills first, then evenly spaced stills; below it, or past 60 shots by default, names the shots left out; the lines left without a still are named in `lines_unsampled`), one frame window per sample (the still is its middle frame), a contact sheet, the mechanical findings (flat, clipped, frozen, jump, off-camera, `penetration`: the hero inside a set solid, and `reads-merged`: the hero over a surface on screen with no shadow, from the engine's evaluated geometry and camera), the model's review, scored as the median of three samples (an audio category no current listening review covers is null in every sample, never a median), and a side-by-side comparison with the previous kept cut at the same timestamps | `qa.QA_SAMPLES` (3) inspection calls per pass, at most one merge decision and one `<pass>-compare-pass` inspection when an earlier scored pass exists; one render job per sample (by default one per shot and per narrated line, at most 60; `--frames N` sets it), one eval job per pass; `yt improve` pays this every pass; `--listen` (gateway, opt-in, AUTO-126) adds one `listen-<audio sha>` decision on the film's audio and at most one `-again`, priced by its preflight and refused over `--listen-budget-usd` (0.50), none when the same mix was heard before |
 | `yt improve` | routes each QA finding to the stage that owns it, briefs that stage through `feedback/`, re-runs it and everything downstream, keeps the pass only if it measurably improved | one routing decision per pass, plus the stages it runs |
 | `yt doctor` | every video's state and the command that advances it | no model calls |
 | `yt probe` | the realism probe suite: one neutral brief per class of material, light or motion, composed by an agent coding with the SDK, built and framed by the harness, scored by a different model with each defect's cause | **$1.06** for one probe and one round; up to three author sessions and three reviews per probe |
@@ -1377,9 +1383,57 @@ overall is then the mean of the categories that were scored, whatever the
 reviewer filed (kept as `overall_filed`). Two passes that did not score the
 same categories compare their overalls over the ones both scored, so a pass
 that only lost its low audio scores is no gain for `yt improve`'s keep or
-revert. A wordless film has no take review, so its `voiceover` stays not
-evidenced and READY is out of reach for it until a review that hears the
-rendered track exists (AUTO-126); the bar and `improve.md` say so.
+revert. A wordless film has no take review, so in the default pipeline its
+`voiceover` stays not evidenced and READY is out of reach for it; the bar
+and `improve.md` say so. Only the opt-in `--listen` below hears the
+rendered track.
+
+`--listen` (AUTO-126, `ytstudio/listen.py`) is the review that hears the
+film itself. It is off by default, and `YT_GATEWAY` never turns it on.
+Before a frame renders or a pass directory is made, it checks every piece
+and refuses with exit 1, naming each one that is missing: `YT_GATEWAY=vercel`
+and the gateway engine's key, Node and `ai`; a `--listen-model` in
+`models.LISTEN_MODELS` with a provider verified to take audio (the mimo
+models have none yet, so they are refused); a listener from another maker
+than every model that wrote what is heard (script.json's and sound.json's
+`engine` and `usage` models and answering models, and voice.json's engine
+when it names a model, judged by `flags.own_reviewer`); `video.mp4` present
+and not older than `scene.xml`; an audio track in build.json; `ffmpeg` and
+`ffprobe` on PATH; with `--reuse PASS`, a pass whose scorecard records this
+scene's digest; the track under `listen.LISTEN_MAX_MB` (14); a price row for
+the model; and an estimate within `--listen-budget-usd` (0.50). The estimate
+is the track at `LISTEN_TOKENS_PER_SECOND` (32) plus the prompt, and
+`LISTEN_OUTPUT_TOKENS` out, doubled for the one retry. The track is the
+film's first audio stream by stream copy (`ffmpeg -vn -map 0:a:0 -c copy -f
+adts`) into `qa/listen/<film sha256[:16]>.aac`. It is reused while the film
+is the same, and its length is ffprobe's stream duration of `video.mp4`. One
+gateway decision, `listen-<audio sha256[:16]>` (`google/gemini-3.6-flash`
+allows Google as its only provider), hears it under a role that lists
+docs/production.md §2 rows 6-8 word for word. It is given the narration and
+the cue sheet as the writer's declaration, not evidence. It answers, per
+category, what it heard and its findings (timestamp in seconds, problem,
+why, root cause, owner of voice, sound, build, render or external, fix,
+blocking or minor), plus what it could not hear (`not_heard`), with no
+score. The same mix asks nothing again. A finding whose owner or severity
+is outside the schema, or whose timestamp is outside the measured duration,
+is named in one more decision (`-again`). What still fails is dropped and
+named under `not_evidenced`, never repaired. The record is
+`qa/pass-NN/listening.json`: the model asked and the one that answered, the
+provider, the audio and film digests, the decisions, the answer, the kept
+and dropped findings and the listener's report. It is current only while
+`video.mp4` is the film heard and not older than `scene.xml`.
+
+A current listen is one more row of the listening evidence, covering all
+three audio categories. The reviewer then runs under `qa.ROLE_LISTENED`,
+with a `Listening review:` brief after the measurements, and the listen's
+findings join the scorecard's with `source: "listen"` and `frame:
+listening.json`, so they block, route and print like any other. The
+scorecard's `listen` holds the listener's report, and `usage` (and
+qa.json's) is the reviewer's and the listener's merged
+(`spend.merge_records`). A listen that fails (a 402, a different model
+answering, a missing field) is recorded not current, with its reason, its
+billed `failed` row and one `external` finding, and the frame review runs
+under today's role. `yt improve` and `yt run` do not pass `--listen`.
 
 One reading is not a measurement: scored once, a category moves about ±0.5
 from run to run on the same frames, the size of the steps a pass is read
