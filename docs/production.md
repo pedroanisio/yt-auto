@@ -264,9 +264,11 @@ Never judge from the opening. For every review pass, inspect across the
 
 Stills are sampled at the **midpoint of a shot**, never at its boundary: the
 gaps between takes are real, and a frame at a shot's start lands in one and
-shows an empty stage. **Every shot** is sampled once; the list above is the
-priority order, which decides what is kept when fewer stills are asked for
-than there are shots, and the shots left out are named as not evidenced.
+shows an empty stage. **Every shot** is sampled once (up to 60 stills
+unless more are asked for: one inspection reads them all); the list above
+is the priority order, which decides what is kept when fewer stills are
+asked for than there are shots, and the shots left out are named to the
+reviewer and as not evidenced.
 More stills than shots are spread evenly over the runtime, each inside a
 shot and at least half a second from every other, so more stills are more
 evidence rather than the same moments again.
