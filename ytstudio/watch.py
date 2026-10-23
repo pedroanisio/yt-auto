@@ -503,7 +503,7 @@ def prepare_remote(prep: WatchPrep, dest: Path | None = None) -> list[dict]:
             if up.returncode != 0:
                 raise WatchError(f"the cut could not be sent to {prep.host}: "
                                  f"{(up.stderr or '').strip()[-300:]}")
-            render.refuse_remote("ssh")
+            render.refuse_remote()
             done = subprocess.run(render.ssh_argv(prep.host, prep.script),
                                   capture_output=True, text=True, timeout=PREPARE_TIMEOUT)
             out = done.stdout or ""

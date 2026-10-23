@@ -1485,7 +1485,7 @@ call, the plan, the findings (W1.., film times) and what was not watched;
 the same cut, model and constants reuse an earlier pass's record
 (`reused_from`) unless `--fresh`. Each finding's start becomes a still of
 the pass beyond `--frames` (at most `qa.WATCH_SAMPLES_MAX`, 12, blocking
-ones first; one within 0.5 s of a still merges into it), and the scorecard
+ones first; one under `qa.WATCHED_NEAR`, 0.5 s, from a still merges into it), and the scorecard
 gains a `Watched findings:` brief and a required `watched` verdict per
 finding (confirmed, not_visible or disagree, naming the frame). A finding
 two scoring samples confirm on its own still joins the findings as `source:
