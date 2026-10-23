@@ -2088,6 +2088,13 @@ def run(args) -> int:
         print(said, file=sys.stderr)
         return 2
     idea, project = workspace.resolve(args)
+    # ... and against the models the project's reports name, as `yt qa
+    # --against` checks them, so no paid pass ends on QA's refusal
+    if compare_model and (said := cutcompare.refusal(
+            True, compare_model, compare_model, cutcompare.author_models(
+                {stage: project.source(stage) for stage in cutcompare.AUTHORS}))):
+        print(said, file=sys.stderr)
+        return 2
     rules, digest = house.for_args(args, project, "improve")
     improver = Improver(project, idea, model=args.model,
                         effort=getattr(args, "effort", None),

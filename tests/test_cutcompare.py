@@ -584,6 +584,17 @@ class Improve(ImproveCase):
                 contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(improve.run(args), 2)
 
+    def test_a_compare_model_of_a_recorded_author_is_refused_before_any_stage(self):
+        # flags.model_family: a non-Claude id is its own family until
+        # AUTO-125's maker() names families across a provider's models
+        write_json(self.root / "vfx.json", {"usage": spend.record(1.0, "gemini-3.6-flash", 3)})
+        args = argparse.Namespace(model="sonnet", compare_model="google/gemini-3.6-flash",
+                                  quiet=True, project=str(self.root))
+        with mock.patch.object(improve, "Improver", side_effect=AssertionError("ran")), \
+                contextlib.redirect_stderr(io.StringIO()) as said:
+            self.assertEqual(improve.run(args), 2)
+        self.assertIn("vfx.json", said.getvalue())
+
 
 class Estimate(ImproveCase):
     def qa_row(self, argv):
