@@ -490,10 +490,14 @@ class Harness:
 
     def _media_digest(self, media: Sequence[Any]) -> list[list[str]]:
         """Each file's bytes and media type, for the digest: the same
-        evidence under another name is the same question."""
+        evidence under another name is the same question. A labelled file
+        ({"path": ..., "label": ...}) adds its label, since "Cut A:" before
+        one file is a different question from "Cut A:" before the other; an
+        unlabelled one digests as it did before labels existed."""
         import gateway_engine
         rows = []
-        for path in media:
+        for entry in media:
+            path, label = gateway_engine.media_item(entry)
             sha = hashlib.sha256()
             try:   # in chunks: a full render may be hundreds of MB
                 with open(path, "rb") as handle:
@@ -501,7 +505,8 @@ class Harness:
                         sha.update(chunk)
             except OSError as exc:
                 raise HarnessError(f"[{self.stage}] cannot read media {path}: {exc}") from exc
-            rows.append([sha.hexdigest(), gateway_engine.media_type(path) or ""])
+            rows.append([sha.hexdigest(), gateway_engine.media_type(path) or "",
+                         *([label] if label else [])])
         return rows
 
     def decide(self, name: str, prompt: str, schema: dict, *,

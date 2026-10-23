@@ -89,6 +89,27 @@ test('file parts carry the basename, the media type and the bytes', async () => 
   assert.equal(Buffer.from(file.data).toString(), 'frames');
 });
 
+test('a label is a text part immediately before its file, and only where given', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'gw-'));
+  const a = join(dir, 'cut-a.mp4');
+  const b = join(dir, 'cut-b.mp4');
+  await writeFile(a, Buffer.from('first'));
+  await writeFile(b, Buffer.from('second'));
+  const { seen, deps } = fakes();
+  await run(request({ media: [
+    { path: a, mediaType: 'video/mp4', label: 'Cut A:' },
+    { path: b, mediaType: 'video/mp4', label: 'Cut B:' },
+    { path: a, mediaType: 'video/mp4' },
+  ] }), deps, ENV);
+  const parts = seen.calls[0].messages[0].content;
+  assert.deepEqual(parts.map((p) => p.type), ['text', 'text', 'file', 'text', 'file', 'file']);
+  assert.equal(parts[1].text, 'Cut A:');
+  assert.equal(parts[2].filename, 'cut-a.mp4');
+  assert.equal(parts[3].text, 'Cut B:');
+  assert.equal(Buffer.from(parts[4].data).toString(), 'second');
+  assert.equal(parts[5].filename, 'cut-a.mp4');
+});
+
 test('a success line carries the answer, usage, model, generation and cost', async () => {
   const { deps } = fakes();
   const r = await run(request(), deps, ENV);

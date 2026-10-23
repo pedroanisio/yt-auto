@@ -87,7 +87,8 @@ from ytstudio import gateway as _gateway
 
 __all__ = ["GatewayEngine", "GatewayConfig", "GatewayExecutionError", "GatewayNotFound",
            "AI_VERSION", "MIN_NODE", "PROGRAM_DIR", "PROGRAM", "MEDIA_TYPES",
-           "GATEWAY_PERMANENT_MARKERS", "model_problem", "media_type", "node_major",
+           "GATEWAY_PERMANENT_MARKERS", "model_problem", "media_type", "media_item",
+           "node_major",
            "installed_ai_version", "price_for"]
 
 #: The `ai` release gateway/package.json pins and the research verified.
@@ -248,6 +249,14 @@ def model_problem(model: Any) -> str | None:
 def media_type(path: str | Path) -> str | None:
     """The media type of a file the request may carry, by its extension."""
     return MEDIA_TYPES.get(Path(path).suffix.lower())
+
+
+def media_item(entry: Any) -> tuple[Any, str]:
+    """A media entry's path and label: a path alone (no label), or a dict
+    {"path": ..., "label": ...} whose label names the file to the model."""
+    if isinstance(entry, dict):
+        return entry["path"], str(entry.get("label") or "")
+    return entry, ""
 
 
 #: `node --version` per executable path, read once per process.
@@ -468,9 +477,14 @@ class GatewayEngine(ClaudeEngine):
         """Nothing: the claude CLI's gateway variables are not this program's."""
         return {}
 
-    def _media(self, media: Sequence[str | Path]) -> list[dict[str, str]]:
+    def _media(self, media: Sequence[str | Path | dict]) -> list[dict[str, str]]:
+        """Each file as the program reads it. An entry may be a dict,
+        {"path": ..., "label": "Cut A:"}: the program sends the label as a
+        text part immediately before that file, so a model shown two files
+        can tell which is which. A plain path is sent exactly as before."""
         files, total = [], 0
-        for item in media or ():
+        for entry in media or ():
+            item, label = media_item(entry)
             path = Path(item).expanduser().resolve()
             if not path.is_file():
                 raise _permanent(f"media file {item} does not exist")
@@ -480,7 +494,8 @@ class GatewayEngine(ClaudeEngine):
                                  f"the gateway engine does not send: one of "
                                  f"{', '.join(sorted(MEDIA_TYPES))}")
             total += path.stat().st_size
-            files.append({"path": str(path), "mediaType": kind})
+            files.append({"path": str(path), "mediaType": kind,
+                          **({"label": label} if label else {})})
         cap = self.config.max_media_mb
         if files and total > cap * 1024 * 1024:
             raise _permanent(f"the media come to {total / 1024 / 1024:.1f} MB, over "
