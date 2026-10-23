@@ -26,7 +26,9 @@ CLI:
 Requires: the `claude` CLI on PATH and an authenticated session
 (`claude auth` / `claude setup-token`, or ANTHROPIC_API_KEY). With
 YT_GATEWAY=vercel and AI_GATEWAY_API_KEY set, the CLI goes through Vercel AI
-Gateway instead (ytstudio/gateway.py); with it unset nothing changes.
+Gateway instead (ytstudio/gateway.py), and each call is booked at the price
+table rather than the CLI's own estimate (`book_from_table`); with it unset
+nothing changes.
 
 Every `claude -p` flag is a field on EngineConfig. A field left `None` falls
 back to `set_defaults(...)`, then to `CLAUDE_ENGINE_<FIELD>` in the
