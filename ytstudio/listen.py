@@ -400,7 +400,7 @@ def listen_prompt(title: str, seconds: float, *, script: dict, build: dict, voic
         "the audio was and whether it carries narration, music and effects. What the audio "
         "alone cannot settle goes under not_heard.",
         brief("The narration as written: what the film should say, context and not "
-              "evidence of what is audible", said or "no narration"),
+              "evidence of what is audible", said.splitlines() if said else []),
         brief("The cue sheet as spotted: context, not evidence", cues),
         brief("Each finding's owner is exactly one of these; one you cannot place is "
               "`external`, with the reason in `fix`",
