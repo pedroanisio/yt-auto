@@ -82,6 +82,8 @@ from .build import EVEN_SHOTS, shots_from_scene  # noqa: F401  (standalone sampl
 from .core import read_json, timecode, write_json
 from .harness import Harness, HarnessError, brief
 from .script import SILENT as SILENT_LINE, Shot, spoken, visible_text
+from .sound import heard as sheet_heard
+from .voice import heard as takes_heard
 
 QA_DIR = "qa"
 READY, NOT_READY = "READY TO PUBLISH", "NOT READY"
@@ -104,6 +106,26 @@ CAPPED = ("visual_quality", "animation_vfx")
 #: A film with no audio track scores this where sound would be judged.
 SILENT_SCORE = 2.0
 SILENT = ("sound_design", "music_score")
+#: What a still cannot evidence (AUTO-105): each is scored only from a
+#: listening review that heard what the film carries, and without one it is
+#: recorded not_evidenced with no score (None), never a number from the
+#: measurements or from the fact that a track exists.
+AUDIO = ("voiceover", "sound_design", "music_score")
+#: The listening reviews the pipeline writes: where each lives, what it
+#: heard, the categories it evidences, and the command that produces it
+#: again. A review that hears the rendered track would be one more row here,
+#: read by `listening_evidence` like these two.
+LISTENERS = {
+    "sound": {"file": "sound.json", "covers": ("sound_design", "music_score"),
+              "review": "the listen-back of `yt sound --review`: the cue sheet as "
+                        "spotted (each cue's place, level, fades and design), read cue "
+                        "by cue, not the rendered track",
+              "redo": "sound --fresh --review --fetch --synth"},
+    "voice": {"file": "voice.json", "covers": ("voiceover",),
+              "review": "the director's take review in `yt voice`: the recorded takes, "
+                        "by their words, lengths and pace",
+              "redo": "voice"},
+}
 #: The contact sheet: stills tiled with their timestamps, for the reviewer.
 SHEET_COLUMNS, SHEET_TILE, SHEET_CAPTION = 4, (480, 270), 28
 
@@ -122,9 +144,12 @@ ROLE = (
     "subscribe to; 8 is competent and unremarkable; 6 is functional; 3 is a "
     "document that renders. Every finding has a timestamp, what is visible, why "
     "it lowers quality, the root cause in a source file or stage, the owning "
-    "stage and the fix. What the frames cannot show you score from the "
-    "measurements given and list under not_evidenced; never infer audio quality "
-    "from the fact that a track exists."
+    "stage and the fix. voiceover, sound_design and music_score are scored only "
+    "from the listening reviews given that heard what the film carries; one that "
+    "none of them covers you do not score (its number is discarded and it is "
+    "recorded not evidenced), and nothing stands in for a review: never infer "
+    "audio quality from the measurements, the cue sheet or the fact that a track "
+    "exists. Whatever else the frames cannot show you list under not_evidenced."
 )
 
 #: The rubric rows narrative_clarity and editing_pacing are read against: the
@@ -796,13 +821,17 @@ def mechanical_findings(samples: list[dict], diagnostics: dict | None = None,
 
 
 def _mean(scores: dict) -> float:
+    """The mean of the scored categories; one recorded not evidenced (None)
+    has no score to average."""
     values = []
     for key in CATEGORIES:
+        if key in scores and scores[key] is None:
+            continue
         try:
             values.append(float(scores.get(key, 0)))
         except (TypeError, ValueError):
             values.append(0.0)
-    return round(sum(values) / len(values), 2)
+    return round(sum(values) / len(values), 2) if values else 0.0
 
 
 def cap_scores(scores: dict, overall: float, mechanical: list[dict]
@@ -855,6 +884,123 @@ def score_silence(card: dict, build: dict) -> dict:
     except (TypeError, ValueError):
         overall = 0.0
     card["overall"] = round(min(overall, _mean(card["scores"])), 2)
+    return card
+
+
+def _yt(stage_args: str, where: str = "") -> str:
+    """`yt <stage> <where> <flags>`: a command the operator can paste."""
+    stage, _, rest = stage_args.partition(" ")
+    return " ".join(part for part in ("yt", stage, where, rest) if part)
+
+
+def _said(source: str, review: dict) -> dict:
+    """What a current review found, as the reviewer is shown it: the
+    listen-back's flags and verdict, or the director's retakes and notes."""
+    if source == "sound":
+        flags = [{k: f.get(k) for k in ("cue", "severity", "problem", "fix", "rule", "kept")
+                  if f.get(k)} for f in review.get("flags") or [] if isinstance(f, dict)]
+        return {"verdict": review.get("verdict"), "flags": flags[:40],
+                "revisions": len(review.get("revisions") or []),
+                "unresolved": len(review.get("unresolved") or []),
+                **({"recheck": review["recheck"]} if review.get("recheck") else {})}
+    retakes = [{k: r.get(k) for k in ("label", "reason", "speed") if r.get(k)}
+               for r in review.get("retakes") or [] if isinstance(r, dict)]
+    return {"verdict": review.get("verdict"), "retakes": retakes[:40],
+            "notes": review.get("notes", "")}
+
+
+def listening_evidence(sound: dict | None, voice: dict | None, *,
+                       built_before=(), where: str = "") -> list[dict]:
+    """The listening reviews the film has (AUTO-105), one row per LISTENERS
+    entry, each marked with what it heard and whether that is what the film
+    carries. A row holds `source`, `file`, `review` (what kind of listening
+    it is), `covers` (the categories it can evidence), `heard` (the mark the
+    review recorded) and `now` (the same mark computed from the file as it
+    is), `current`, `why` (what makes it stale or absent, "" when current),
+    `command` (what produces a current one, "" when nothing does yet) and,
+    only when current, `said`: its findings and verdict, all the reviewer is
+    shown of it. A review is current when it answered, its mark matches the
+    file, and the build is not older than the file (`built_before` names
+    the sources whose file is newer than build.json): a review of a sheet
+    since ridden, of takes since re-recorded, or of a sheet the film was
+    not built from is stale, said so, and never stands in for the mix."""
+    rows = []
+    after = ", then yt build, yt render and yt qa"
+    for source, data in (("sound", sound), ("voice", voice)):
+        spec = LISTENERS[source]
+        data = data if isinstance(data, dict) else {}
+        review = data.get("review") if isinstance(data.get("review"), dict) else {}
+        mark = review.get("heard") if isinstance(review.get("heard"), dict) else {}
+        what = "cue sheet" if source == "sound" else "takes"
+        now = (sheet_heard(data.get("cues") or []) if source == "sound"
+               else takes_heard(data.get("takes") or []))
+        row = {"source": source, "file": spec["file"], "review": spec["review"],
+               "covers": list(spec["covers"]), "heard": mark.get("sha256"),
+               "now": now["sha256"] if data else None, "current": False, "why": "",
+               "command": _yt(spec["redo"], where) + after}
+        if not data:
+            row["why"] = f"no {spec['file']}"
+        elif source == "voice" and data.get("wordless"):
+            row["why"] = ("a wordless film: voice.json has no takes, so there is no "
+                          "take review")
+            row["command"] = ""
+        elif not str(review.get("verdict") or "").strip():
+            row["why"] = (f"{spec['file']} has no answered review"
+                          + (" (`yt sound` ran without --review, or the listen-back "
+                             "did not answer)" if source == "sound" else ""))
+        elif not mark.get("sha256"):
+            row["why"] = (f"the review does not record which {what} it heard (written "
+                          "before AUTO-105), so it cannot be shown to have heard what "
+                          "the film carries")
+        elif mark["sha256"] != now["sha256"]:
+            row["why"] = (f"stale: it heard {what} that {spec['file']} no longer holds "
+                          f"({mark['sha256'][:12]} then, {now['sha256'][:12]} now)")
+        elif source in set(built_before or ()):
+            row["why"] = (f"stale: build.json predates {spec['file']}, so the film "
+                          f"carries older {what} than the ones reviewed")
+            row["command"] = _yt("build", where) + ", then yt render and yt qa"
+        else:
+            row["current"] = True
+            row["said"] = _said(source, review)
+        rows.append(row)
+    return rows
+
+
+def audio_unheard(rows: list[dict], *, silent: bool = False) -> dict[str, dict]:
+    """Each AUDIO category no current row covers: {category: {"missing":
+    what is absent or stale, "command": what produces a current review, ""
+    when nothing does yet}}. A silent film's SILENT categories are left to
+    their rule (`score_silence`)."""
+    out = {}
+    for key in AUDIO:
+        if silent and key in SILENT:
+            continue
+        covering = [r for r in rows if key in (r.get("covers") or [])]
+        if any(r.get("current") for r in covering):
+            continue
+        out[key] = {"missing": "; ".join(f"{r['file']}: {r['why']}" for r in covering)
+                    or "no listening review covers it",
+                    "command": next((r["command"] for r in covering if r.get("command")), "")}
+    return out
+
+
+def score_unheard(card: dict, unheard: dict[str, dict]) -> dict:
+    """No current listening evidence, no score: each category in `unheard`
+    is recorded not evidenced with its score None (whatever the reviewer
+    wrote), named under not_evidenced with what is missing and the command
+    that produces it, and kept as `audio_not_evidenced`, so the bar says
+    READY cannot be judged for it rather than NOT READY on a frozen number."""
+    card = dict(card)
+    card["scores"] = dict(card.get("scores") or {})
+    noted = list(card.get("not_evidenced") or [])
+    for key, gap in unheard.items():
+        card["scores"][key] = None
+        noted.append(f"{key}: not evidenced -- no current listening review "
+                     f"({gap['missing']}); unscored, so READY cannot be judged for it; "
+                     + (f"run {gap['command']}" if gap.get("command")
+                        else "nothing in the pipeline produces one yet"))
+    card["not_evidenced"] = noted
+    card["audio_not_evidenced"] = dict(unheard)
     return card
 
 
@@ -922,11 +1068,17 @@ def next_pass(root: Path) -> Path:
 
 
 def verdict_of(scores: dict, overall: float, *, blocking: list) -> tuple[str, list[str]]:
-    """The bar of §2, applied mechanically to whatever the reviewer scored."""
+    """The bar of §2, applied mechanically to whatever the reviewer scored.
+    A category recorded not evidenced (None) is not under the bar: READY
+    cannot be judged for it, and the reason says so (AUTO-105)."""
     reasons = []
     if overall < OVERALL_BAR:
         reasons.append(f"overall {overall:.1f} is under {OVERALL_BAR}")
     for key in CATEGORIES:
+        if key in scores and scores[key] is None:
+            reasons.append(f"{key} is not evidenced: no current listening review "
+                           "heard it, so READY cannot be judged for it")
+            continue
         try:
             value = float(scores.get(key, 0))
         except (TypeError, ValueError):
@@ -962,15 +1114,19 @@ def compare(prev: dict | None, cur: dict) -> dict:
         return {"against": None, "deltas": {}, "overall_delta": 0.0, "regressions": []}
     deltas = {}
     for key in CATEGORIES:
+        before, after = (prev.get("scores") or {}).get(key, 0), cur["scores"].get(key, 0)
+        if before is None or after is None:
+            deltas[key] = None      # not evidenced on one side: nothing to compare
+            continue
         try:
-            deltas[key] = round(float(cur["scores"].get(key, 0))
-                                - float(prev.get("scores", {}).get(key, 0)), 2)
+            deltas[key] = round(float(after) - float(before), 2)
         except (TypeError, ValueError):
             deltas[key] = 0.0
     return {"against": prev.get("pass"), "deltas": deltas,
             "overall_delta": round(float(cur.get("overall", 0))
                                    - float(prev.get("overall", 0)), 2),
-            "regressions": [k for k, d in deltas.items() if d <= -REGRESSION]}
+            "regressions": [k for k, d in deltas.items()
+                            if d is not None and d <= -REGRESSION]}
 
 
 def findings_md(name: str, card: dict, samples: list[dict], diff: dict, *,
@@ -986,7 +1142,8 @@ def findings_md(name: str, card: dict, samples: list[dict], diff: dict, *,
     lines += ["| Category | Score | Δ vs previous |", "|---|---|---|"]
     for key in CATEGORIES:
         delta = diff.get("deltas", {}).get(key)
-        lines.append(f"| {key} | {card.get('scores', {}).get(key, '?')} | "
+        score = card.get("scores", {}).get(key, "?")
+        lines.append(f"| {key} | {'not evidenced' if score is None else score} | "
                      f"{'' if delta is None else f'{delta:+.1f}'} |")
     lines.append("")
     if diff.get("regressions"):
@@ -1017,6 +1174,19 @@ def findings_md(name: str, card: dict, samples: list[dict], diff: dict, *,
     if card.get("not_evidenced"):
         lines += ["## Not evidenced by this pass",
                   *[f"- {n}" for n in card["not_evidenced"]], ""]
+    if card.get("listening"):
+        lines += ["## Listening evidence", "",
+                  f"{', '.join(AUDIO)} are scored only from a review that heard what "
+                  "the film carries; a stale or absent one scores nothing.", ""]
+        for row in card["listening"]:
+            covers = ", ".join(row.get("covers") or [])
+            if row.get("current"):
+                lines.append(f"- {row.get('file')} ({covers}): current, heard "
+                             f"{str(row.get('heard') or '')[:12]} -- {row.get('review')}")
+            else:
+                lines.append(f"- {row.get('file')} ({covers}): not used -- {row.get('why')}"
+                             + (f"; run {row['command']}" if row.get("command") else ""))
+        lines.append("")
     lines += ["## Mechanical", "",
               "Measured from the stills, the bursts and the engine's diagnostics before "
               f"the review; a blocking one caps {' and '.join(CAPPED)} at {MECHANICAL_CAP:g}.",
@@ -1135,10 +1305,11 @@ def render_frames(args, project, scene: str, samples: list[dict],
 def narration_measurements(voice: dict) -> dict:
     """What voice.json says the narration is. A wordless film says so (and how
     many descriptive captions it carries), so no reviewer reads engine "none"
-    as a narration that failed to record."""
+    as a narration that failed to record. The director's take review is not
+    among them: it is listening evidence, handed over only while it heard
+    the takes the film carries (`listening_evidence`)."""
     out = {k: voice.get(k) for k in ("engine", "voice", "timing", "drift_seconds",
-                                     "too_fast_for_captions", "overlaps", "review",
-                                     "casting")}
+                                     "too_fast_for_captions", "overlaps", "casting")}
     if voice.get("wordless"):
         out["wordless"] = True
         out["descriptive_captions"] = (voice.get("descriptive_captions") or {}).get("cues")
@@ -1471,6 +1642,24 @@ def run(args) -> int:
 
     story = story_brief(script, build)
 
+    # What heard the film's sound (AUTO-105): each listening review marked
+    # with what it heard, current only while the film carries that. A
+    # build older than the file a review heard carries an older mix.
+    built_before = set()
+    build_file = src("build")
+    for source, spec in LISTENERS.items():
+        heard_file = src(source)
+        try:
+            if (build_file and heard_file and Path(build_file).stat().st_mtime
+                    < Path(heard_file).stat().st_mtime):
+                built_before.add(source)
+        except OSError:
+            pass
+    listening = listening_evidence(
+        sound, voice, built_before=built_before,
+        where="" if project.standalone else f"--project {project.root}")
+    unheard = audio_unheard(listening, silent=silent(build))
+
     # -- the review ------------------------------------------------------------
     rules, digest = house.for_args(args, project, "qa")
     reviewer = Harness(project.root, "qa", model=args.model, role=ROLE,
@@ -1518,6 +1707,18 @@ def run(args) -> int:
         brief("Frames and what each should show", evidence),
         brief("Mechanical findings, measured before this review (a blocking one "
               f"caps {' and '.join(CAPPED)} at {MECHANICAL_CAP:g})", mechanical),
+        brief("Listening evidence: the reviews that heard the film's sound, each "
+              "marked with what it heard (`heard`) and whether that is what the film "
+              "carries (`current`); what a stale or absent one said is left out and "
+              "`why` says what is missing", listening),
+        (f"No current listening review covers {', '.join(unheard)}: do not score "
+         f"{'it' if len(unheard) == 1 else 'them'} (enter 0; the number is discarded "
+         "and each is recorded not evidenced), leave them out of `overall`, and file no "
+         "finding on how they sound, since nothing heard them."
+         if unheard else
+         f"Every one of {', '.join(k for k in AUDIO if k not in SILENT or not silent(build))} "
+         "has a current listening review: score it from what that review heard, "
+         "with the measurements as context only."),
         brief("Measurements and decisions from the stages", measurements),
         brief("Blocking, already proven", blockers),
         brief("Each finding's owner is exactly one of these; one you cannot place is "
@@ -1559,6 +1760,7 @@ def run(args) -> int:
     # silent film scores no sound, and a blocking mechanical finding caps
     # the categories the frames measure.
     card = score_silence(dict(card), build)
+    card = score_unheard(card, unheard)
     work = Path(args.work) if getattr(args, "work", None) else Path(project.root).parent
     card = unproven_satisfaction(card, retention=(work / RETENTION).is_file())
     scores, overall, capped = cap_scores(card.get("scores", {}), card.get("overall", 0),
@@ -1583,7 +1785,7 @@ def run(args) -> int:
                          "scene_sha256": seen,
                          "blocking": all_blocking, "frames": sorted(have),
                          "samples": samples, "mechanical": mechanical, "capped": capped,
-                         "proof_note": proof_note,
+                         "proof_note": proof_note, "listening": listening,
                          "contact_sheet": sheet.name, "engine": reviewer.report(),
                          "usage": spend.from_report(reviewer.report())}
     diff = compare(previous, card)
@@ -1596,6 +1798,7 @@ def run(args) -> int:
         "overall": card.get("overall"), "scores": card.get("scores"),
         "scene_sha256": seen, "blocking": len(all_blocking), "findings": len(card.get("findings", [])),
         "mechanical": len(mechanical), "capped": capped,
+        "audio_not_evidenced": card.get("audio_not_evidenced") or {},
         "regressions": diff["regressions"], "reasons": reasons,
         "scorecard": str(pass_dir / "scorecard.json"), "house": digest,
         "usage": card["usage"]})
@@ -1603,6 +1806,9 @@ def run(args) -> int:
     print(f"\n{idea.title} — QA {pass_dir.name}: {verdict}  (overall {card.get('overall')})")
     for key in CATEGORIES:
         delta = diff["deltas"].get(key)
+        if card["scores"].get(key, 0) is None:
+            print(f"  {key:<20}  --   not evidenced: READY cannot be judged")
+            continue
         print(f"  {key:<20} {float(card['scores'].get(key, 0)):>4.1f}"
               + (f"  ({delta:+.1f})" if delta is not None else "")
               + ("  capped" if key in capped else ""))
