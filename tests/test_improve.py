@@ -553,7 +553,9 @@ class Plan(ImproveCase):
         self.assertEqual(improve.estimate(["vfx", "sound", "build", "render"], None), 10.0)
         self.assertEqual(improve.estimate(["keyframe", "vfx", "build", "render"], None), 15.0)
         self.assertEqual(improve.estimate(["vfx"], 7.25), 7.25)
-        self.assertEqual(improve.estimate(["build", "render"], None), 0.7)
+        # a QA pass is priced at its samples (AUTO-107)
+        self.assertEqual(improve.estimate(["build", "render"], None),
+                         round(0.2 + improve.DEFAULT_USD["qa"], 2))
 
     def test_script_keeps_the_films_length(self):
         base = ["--project", str(self.root)]

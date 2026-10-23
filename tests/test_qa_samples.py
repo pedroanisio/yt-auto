@@ -316,5 +316,39 @@ class KeepInTheLoop(ImproveCase):
         self.assertEqual(runner.stages()[0], "qa")
 
 
+class Estimate(ImproveCase):
+    def qa_row(self):
+        rows = improve.stage_estimates(self.root, ["sound"])
+        return next(r for r in rows if r["stage"] == "qa")
+
+    def test_the_assumed_pass_prices_every_sample(self):
+        row = self.qa_row()
+        self.assertEqual(row["basis"], "assumed")
+        self.assertAlmostEqual(row["usd"], spend.QA_SAMPLE_USD * qa.QA_SAMPLES)
+        self.assertEqual(spend.DEFAULT_USD["qa"], round(spend.QA_SAMPLE_USD * qa.QA_SAMPLES, 2))
+
+    def test_a_pass_scored_once_is_priced_at_the_samples(self):
+        self.start_pass(dict(improve_card(7.0), usage=spend.record(0.6, "m", 1)))
+        row = self.qa_row()
+        self.assertEqual(row["basis"], "measured")
+        self.assertAlmostEqual(row["usd"], round(0.6 * qa.QA_SAMPLES, 2))
+        self.assertEqual(improve._qa_cost(self.root), 0.6)     # what it cost stays read
+
+    def test_a_pass_already_sampled_is_priced_as_measured(self):
+        self.start_pass(dict(improve_card(7.0), usage=spend.record(1.8, "m", 3),
+                             scoring={"asked": 3, "valid": 3}))
+        self.assertAlmostEqual(self.qa_row()["usd"], 1.8)
+
+    def test_the_dry_run_estimate_rises_by_the_samples(self):
+        write_json(self.root / "sound.json", {"cues": [], "usage": {"cost_usd": 0.5}})
+        self.start_pass(dict(improve_card(5.0, mechanical=[mech(owner="sound", kind="flat")]),
+                             usage=spend.record(0.6, "m", 1)))
+        out = []
+        plan = self.improver(FakeRunner(self.root, []), dry_run=True,
+                             say=out.append).run()["plan"]
+        by = {r["stage"]: r for r in plan["estimates"]}
+        self.assertAlmostEqual(by["qa"]["usd"], 1.8)
+
+
 if __name__ == "__main__":
     unittest.main()
