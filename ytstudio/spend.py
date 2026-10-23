@@ -324,6 +324,14 @@ def listen_usd(root: Path | None, argv: Iterable[str] = ()) -> float:
     return estimate_for(root, argv) or 0.0
 
 
+def watch_usd(root: Path | None, argv: Iterable[str] = ()) -> float:
+    """What `yt qa --watch` adds (AUTO-127): the programme's seconds of
+    video and an answer a segment at `--watch-model`'s pinned price
+    (watch.WATCH_PRICE); it never fetches."""
+    from .watch import watch_usd as estimate   # watch reads qa, which reads this module
+    return estimate(root, argv)
+
+
 #: A flag that adds to what its stage costs: stage -> flag -> its parts, each
 #: (the increment, the decision whose row in the stage's record shows that
 #: part was on). An increment is dollars, or a function of the project and
@@ -345,11 +353,15 @@ FLAG_USD = {"script": {"--review": ((PLAN_REVIEW_USD, "plan-review"),
             # `listen.engine`, never among the reviewer's, so no record holds
             # it: qa.pass_usd leaves a past listen out of the base, and the
             # flag adds the next one's estimate each time it is asked.
+            # `--watch` (AUTO-127) is priced the same way: its decisions are
+            # on the scorecard's `watch_engine`, which pass_usd leaves out
+            # and this record never reads.
             "qa": {"--previous": ((COMPARE_PASS_USD, "compare-pass"),),
                    # the video comparison's two orders, `cutcompare-<pass>-ab`
                    # and `-ba`, on the scorecard's compare_engine (AUTO-128)
                    "--against": ((_compare_usd, "cutcompare"),),
-                   "--listen": ((listen_usd, "listen"),)}}
+                   "--listen": ((listen_usd, "listen"),),
+                   "--watch": ((watch_usd, "watch"),)}}
 
 
 def qa_compares(root: Path | None) -> bool:

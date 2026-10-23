@@ -473,6 +473,8 @@ work/<slug>/qa/
 ├── pass-01/previous/          the previous kept cut's stills at the same timestamps (reused or rendered)
 ├── pass-01/side-by-side/      each moment's A and B, the order recorded in the scorecard
 ├── pass-01/comparison.json    with --against: both cuts watched whole in both orders, each answer and the reconciled categories
+├── pass-01/watch.json         with --watch: the watcher's record, its findings W1.. and what was not watched
+├── pass-01/watch/             with --watch: the pieces a render host cut the video into
 ├── pass-01/scorecard.json     ten categories (the scoring samples' medians and spread), overall, verdict, the caps, the mechanical and low-confidence findings, each scoring sample
 ├── pass-01/findings.md        timestamp → problem → root cause → owner → fix → result, with the burst numbers
 └── pass-02/…                  the next cycle, for before-and-after comparison
