@@ -194,6 +194,21 @@ DEFAULT_USD = {"research": 5.0, "styles": 2.0, "script": 3.0, "props": 0.0,
 #: costs. It is asked once a pass, never per sample.
 COMPARE_PASS_USD = 0.5
 
+#: What the video comparison adds to a QA pass (`--against`, AUTO-128),
+#: assumed until a scorecard measures it: two gateway requests, each
+#: carrying both cuts. A guess until a live run prices one (TO VERIFY).
+#: Asked once a pass, never per sample.
+COMPARE_USD = 0.10
+
+#: The gateway key (gateway.KEY): without it the video comparison is
+#: skipped (cutcompare.skip_reason), so the estimate prices none.
+GATEWAY_KEY = "AI_GATEWAY_API_KEY"
+
+
+def _compare_usd(root: Path | None, argv: list[str]) -> float:
+    """What `--against` adds: COMPARE_USD, or nothing without the key."""
+    return COMPARE_USD if os.environ.get(GATEWAY_KEY) else 0.0
+
 #: What the plan review adds to a script (AUTO-92), assumed until a record
 #: measures it: the reviewer's one reading of the plan and, at most, a
 #: second plan and its reading.
@@ -293,7 +308,10 @@ FLAG_USD = {"script": {"--review": ((PLAN_REVIEW_USD, "plan-review"),
             # QA compares the new cut side by side with the pass `--previous`
             # names, or with the latest scored one when there is one, so
             # stage_estimates asks the flag of a plain `yt qa` too (AUTO-108).
-            "qa": {"--previous": ((COMPARE_PASS_USD, "compare-pass"),)}}
+            "qa": {"--previous": ((COMPARE_PASS_USD, "compare-pass"),),
+                   # the video comparison's two orders, `cutcompare-<pass>-ab`
+                   # and `-ba`, on the scorecard's compare_engine (AUTO-128)
+                   "--against": ((_compare_usd, "cutcompare"),)}}
 
 
 def qa_compares(root: Path | None) -> bool:
@@ -322,10 +340,17 @@ def flag_increments(root: Path | None, stage: str, argv: Iterable[str]) -> list[
         # whose decisions are named by their pass (`pass-03-compare-pass`).
         doc = (_qa_card(root) if stage == "qa" else
                read_json(Path(root) / rel, warn=False) if rel else None)
-        engine = doc.get("engine") if isinstance(doc, dict) else None
-        rows = engine.get("decisions") if isinstance(engine, dict) else None
+        rows: list = []
+        for key in ("engine", "compare_engine"):     # compare_engine: AUTO-128
+            engine = doc.get(key) if isinstance(doc, dict) else None
+            rows += (engine.get("decisions") if isinstance(engine, dict) else None) or []
         names = {re.sub(r"^pass-\d+-", "", str(d.get("name")))
-                 for d in rows or [] if isinstance(d, dict)}
+                 for d in rows if isinstance(d, dict)}
+        # A video comparison that runs stands in for the still pairs, which
+        # are asked only when it fails: its record measures --previous too.
+        if (stage == "qa" and "--against" in argv and os.environ.get(GATEWAY_KEY)
+                and any(n.startswith("cutcompare-") for n in names)):
+            names.add("compare-pass")
     out = []
     for flag in dict.fromkeys(argv):
         parts = FLAG_USD.get(stage, {}).get(flag)

@@ -39,7 +39,9 @@ loop as code:
    for a new pass -- all through `runner`, a callable taking argv.
 5. **Keep or revert** (§8.8, §9). Against the best pass so far, which QA
    was told with `--previous` and compared side by side at the same
-   timestamps (AUTO-108). The side-by-side tally is read first: more moments
+   timestamps (AUTO-108); with `--compare-model` QA also gets `--against`
+   the video.mp4 that snapshot kept, and watches both cuts whole instead
+   (AUTO-128). The side-by-side tally is read first: more moments
    where the new cut was better than worse keeps the pass even when its
    overall moved inside the samples' spread, more worse reverts it, a tie
    leaves it to the score delta. The score delta is read second: kept
@@ -65,6 +67,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import sys
@@ -72,7 +75,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from . import flags, house, narrative, qa, spend, workspace
+from . import cutcompare, flags, house, narrative, qa, spend, workspace
 from .core import read_json, write_json
 from .harness import FEEDBACK_DIR, Harness, HarnessError, brief
 from .retention import current as measured_retention
@@ -849,6 +852,24 @@ def snapshot(root: Path, stages: Iterable[str], dest: Path) -> dict:
     return files
 
 
+#: A pass's note when the video comparison was asked for and its snapshot
+#: holds no cut to compare with (AUTO-128).
+NO_PREVIOUS_CUT = "no previous cut: the snapshot holds no video.mp4"
+
+
+def previous_cut(root: Path, snap: Path) -> Path | None:
+    """The kept cut a pass's QA compares the new one with: `snap`'s
+    video.mp4 when `snapshot` copied one there. Before the snapshot is
+    taken (the estimate), the one it will hold: there when the project
+    has a video.mp4 now. None when it holds, or will hold, none."""
+    if (snap / "snapshot.json").is_file():
+        files = (read_json(snap / "snapshot.json", warn=False) or {}).get("files") or {}
+        held = files.get("video.mp4") and (snap / "video.mp4").is_file()
+    else:
+        held = (Path(root) / "video.mp4").is_file()
+    return snap / "video.mp4" if held else None
+
+
 def restore(root: Path, dest: Path) -> list[str]:
     """Put back what `snapshot` copied; remove what did not exist then."""
     root, dest = Path(root), Path(dest)
@@ -1051,7 +1072,8 @@ class Improver:
                  runner: Callable[[list[str]], int] | None = None,
                  doctor: Callable[[workspace.Project], list[tuple]] | None = None,
                  house_rules: str = "", house_digest: dict | None = None,
-                 say: Callable[[str], None] | None = None) -> None:
+                 say: Callable[[str], None] | None = None,
+                 compare_model: str | None = None) -> None:
         self.project = project
         self.root = Path(project.root)
         self.idea = idea
@@ -1070,6 +1092,9 @@ class Improver:
         self.runner = runner or cli_runner
         self.doctor = doctor or doctor_rows
         self.say = say or print
+        #: The gateway video model QA compares the kept cut with the new one
+        #: through (`yt qa --against`, AUTO-128); None: no video comparison.
+        self.compare_model = compare_model
         self.h = Harness(self.root, "improve", model=model, effort=effort,
                          fallback_model=fallback_model, role=ROLE, house=house_rules,
                          house_digest=house_digest or {}, verbose=not quiet)
@@ -1121,14 +1146,25 @@ class Improver:
             return card
         return None
 
-    def _qa_argv(self, best: dict | None = None) -> list[str]:
+    def _qa_argv(self, best: dict | None = None, snap: Path | None = None,
+                 entry: dict | None = None) -> list[str]:
         """The `yt qa` argv, recorded and run alike. With the best kept pass
         it names that pass (`--previous`), so QA compares the new cut with
         the kept one side by side and its deltas are against it (AUTO-108),
-        not against the latest pass, which may be one this loop reverted."""
+        not against the latest pass, which may be one this loop reverted.
+        With a compare model and `snap`, the snapshot taken before the pass
+        changed anything, it hands QA the kept cut that snapshot holds
+        (`--against <snap>/video.mp4 --compare-model M`, AUTO-128); a
+        snapshot without one is noted on `entry` and QA compares stills."""
         argv = ["qa", *self.base]
         if best and best.get("pass") and best.get("verdict") != qa.NOT_EVIDENCED:
             argv += ["--previous", str(best["pass"])]
+        if self.compare_model and snap is not None:
+            cut = previous_cut(self.root, Path(snap))
+            if cut is not None:
+                argv += ["--against", str(cut), "--compare-model", self.compare_model]
+            elif entry is not None:
+                entry["compare"] = NO_PREVIOUS_CUT
         return argv
 
     def _qa(self, argv: list[str] | None = None) -> dict | None:
@@ -1227,13 +1263,24 @@ class Improver:
             new = self._card(latest)
         if new is None:
             self._log(f"[improve] {entry['name']} was never judged; scoring it first")
-            new = self._qa(self._qa_argv(before))
+            new = self._qa(self._qa_argv(before, self._kept_snapshot(entry), entry))
         if new is None:
             self.say(f"error: {entry['name']} still has no QA pass; the render host may "
                      "be down")
             return None
         self.spent_stages += float(earlier.get("spent_usd") or 0)
         return self._settle(entry, before, new)
+
+    def _kept_snapshot(self, entry: dict) -> Path:
+        """The snapshot that holds the cut `entry` is judged against: the one
+        taken before the pass changed anything, which holds best_before's
+        cut whatever came after. Not `entry["snapshot"]`: after a --rejudge
+        that is snapshot-rejudge, the project as it stood then, which after
+        a kept pass is the attempt's own earlier render (AUTO-128)."""
+        own = self.root / IMPROVE_DIR / entry["name"] / "snapshot"
+        if (own / "snapshot.json").is_file() or not entry.get("snapshot"):
+            return own
+        return Path(entry["snapshot"])
 
     def _gate(self, entry: dict, pdir: Path, stamps: dict[str, int]) -> None:
         """Run the gate on the new video. A gate that wrote nothing (it can
@@ -1320,7 +1367,9 @@ class Improver:
                     "stop": {"reason": "stage-failed", "detail": f"render exited {code}; "
                              "the state before the re-judge was restored"}}
         self._gate(entry, pdir, stamps)
-        qa_argv = self._qa_argv(before)
+        # best_before's cut, not snapshot-rejudge's: after a kept pass that
+        # is the attempt's own earlier render
+        qa_argv = self._qa_argv(before, self._kept_snapshot(last), entry)
         entry["argv"].append(qa_argv)
         new = self._qa(qa_argv)
         cost = stage_cost(self.root, "gate", stamps) + self.qa_cost
@@ -1396,8 +1445,13 @@ class Improver:
         new, self.qa_cost = None, 0.0
         if failed is None:
             self._gate(entry, pdir, stamps)
-            entry["argv"].append(["qa", *self.base])
-            new = self._qa()
+            qa_argv = self._qa_argv(None, pdir / "snapshot", entry)
+            if "--against" in qa_argv:
+                # the cut is best_before's: name that pass, so the tally is
+                # filed against the pass it was measured against
+                qa_argv = self._qa_argv(before, pdir / "snapshot")
+            entry["argv"].append(qa_argv)
+            new = self._qa(qa_argv)
         cost = sum(stage_cost(self.root, st, stamps) for st, _ in steps) + stage_cost(
             self.root, "gate", stamps)
         self.spent_stages += cost
@@ -1574,13 +1628,14 @@ class Improver:
                                     by_id[fid] for fid in (routing["stages"].get("script")
                                                            or {}).get("findings", [])
                                     if fid in by_id], survived=survived)
-            qa_argv = self._qa_argv(best)
+            name = self._next_name()
+            # before the snapshot: the kept cut it will hold, for the estimate
+            qa_argv = self._qa_argv(best, self.root / IMPROVE_DIR / name / "snapshot")
             rows = stage_estimates(self.root, stages, sections,
                                    extras=dict(zip(stages, argvs)) | {"qa": qa_argv})
             guess = total(rows)
             if last_cost and not any(r["basis"] != "assumed" for r in rows):
                 guess = estimate(stages, last_cost)
-            name = self._next_name()
 
             if not routing["stages"]:
                 record["stop"] = {"reason": "human" if routing["human"] else "nothing",
@@ -1621,6 +1676,8 @@ class Improver:
                      "overall_before": best.get("overall"), "scores_before": best.get("scores"),
                      "best_before": best.get("pass")}
             record["passes"].append(entry)
+            # the kept cut the snapshot now holds, if any (AUTO-128)
+            qa_argv = self._qa_argv(best, snap, entry)
             self._log(f"\n[improve] {name}: {', '.join(stages)} from {evidence['pass']} "
                       f"(estimated ${guess:.2f})")
             failed = None
@@ -2019,6 +2076,11 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
     p.add_argument("--resume", action="store_true",
                    help="run the last failed pass again from the stage that failed, "
                         "once its cause is fixed, replaying what came before it")
+    p.add_argument("--compare-model", metavar="MODEL", dest="compare_model",
+                   help="a gateway video model (provider/model) that watches the "
+                        "snapshot's kept cut and each pass's new one whole, wherever "
+                        "the loop runs QA (yt qa --against); default "
+                        f"${cutcompare.MODEL_ENV}, else no video comparison (AUTO-128)")
     p.set_defaults(run=run)
     return p
 
@@ -2032,7 +2094,22 @@ def run(args) -> int:
     if own := flags.own_reviewer(args.model, REVIEWER_MODEL):
         print(own, file=sys.stderr)
         return 2
+    # The video comparison's model (AUTO-128) watches what --model made, so
+    # it is refused here too, not by the first `yt qa` of a paid pass.
+    compare_model = (getattr(args, "compare_model", None)
+                     or os.environ.get(cutcompare.MODEL_ENV) or None)
+    if compare_model and (said := cutcompare.refusal(
+            True, compare_model, compare_model, [("the pass's stages (--model)", args.model)])):
+        print(said, file=sys.stderr)
+        return 2
     idea, project = workspace.resolve(args)
+    # ... and against the models the project's reports name, as `yt qa
+    # --against` checks them, so no paid pass ends on QA's refusal
+    if compare_model and (said := cutcompare.refusal(
+            True, compare_model, compare_model, cutcompare.author_models(
+                {stage: project.source(stage) for stage in cutcompare.AUTHORS}))):
+        print(said, file=sys.stderr)
+        return 2
     rules, digest = house.for_args(args, project, "improve")
     improver = Improver(project, idea, model=args.model,
                         effort=getattr(args, "effort", None),
@@ -2041,7 +2118,7 @@ def run(args) -> int:
                         target=args.target, dry_run=args.dry_run, from_pass=args.from_pass,
                         resume=args.resume, rejudge=args.rejudge,
                         quality=args.quality, quiet=args.quiet, house_rules=rules,
-                        house_digest=digest)
+                        house_digest=digest, compare_model=compare_model)
     try:
         record = improver.run()
     except HarnessError as exc:

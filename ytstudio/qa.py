@@ -148,6 +148,16 @@ cut, under --reuse (which keeps the `cut` the reused frames were drawn
 from), or when the pass is not evidenced. findings.md has a "Side by side"
 section. `yt improve` reads the tally before the score delta.
 
+`--against FILE --compare-model MODEL` (AUTO-128) watches the cuts instead
+of reading stills: a gateway video model is shown FILE, the previous kept
+cut, and this pass's video.mp4 whole, in both orders and blind
+(cutcompare.py has the rules). When it answers, its entries, `source:
+"video"`, one a category, are `side_by_side` and the still pairs are not
+asked; when it fails or is skipped it files nothing, a not_evidenced line
+says why, and the stills are compared as above. qa/pass-NN/comparison.json
+keeps the record, and the scorecard keeps its account as `compare_engine`
+beside `engine`. Without --against nothing here changes.
+
 The loop is: fix the owning stage's source, rebuild, run `yt qa` again. This
 stage changes no file but its own; it says what to change and who owns it.
 """
@@ -556,8 +566,9 @@ def pass_usd(card: dict | None) -> float | None:
     (no `scoring`) asked one. The side-by-side comparison (AUTO-108) is
     asked once a pass, not per sample, so what it cost is added once, not
     scaled; a pass without one is priced without it, and the estimate adds
-    spend.COMPARE_PASS_USD where QA is told the pass to compare with. None
-    when the card holds no cost."""
+    spend.COMPARE_PASS_USD where QA is told the pass to compare with. The
+    video comparison's decisions (`compare_engine`, AUTO-128) are likewise
+    added once. None when the card holds no cost."""
     cost = spend.cost_in(card)
     if cost is None:
         return None
@@ -571,6 +582,12 @@ def pass_usd(card: dict | None) -> float | None:
     once = sum(float(d.get("cost_usd") or 0) for d in rows or []
                if isinstance(d, dict) and not d.get("cached")
                and str(d.get("name", "")).endswith("-compare-pass"))
+    # The video comparison (AUTO-128) is asked once a pass too, on its own
+    # harness: every decision there is one.
+    video = card.get("compare_engine") if isinstance(card, dict) else None
+    once += sum(float(d.get("cost_usd") or 0)
+                for d in (video.get("decisions") if isinstance(video, dict) else None) or []
+                if isinstance(d, dict) and not d.get("cached"))
     once = min(max(once, 0.0), cost)
     return round((cost - once) / asked * QA_SAMPLES + once, 2)
 
@@ -2299,6 +2316,8 @@ def side_lines(side: dict | None) -> list[str]:
         lines += [f"{side.get('status', 'skipped').capitalize()}: {side.get('why', '')}", ""]
         return lines + (unpaired + [""] if unpaired else [])
     total = (side.get("tally") or {}).get("total") or {}
+    if side.get("source") == "video":
+        return lines + video_lines(side, total)
     lines += [f"Against {side.get('against')}, the previous kept cut, at the same "
               f"timestamps: the new cut better at {total.get('better', 0)} moments, worse "
               f"at {total.get('worse', 0)}, the same {total.get('same', 0)} times (one "
@@ -2315,6 +2334,26 @@ def side_lines(side: dict | None) -> list[str]:
                         f"previous still {m['previous']}]"
                         if m.get("result") else "not answered"))
     return lines + unpaired + [""]
+
+
+def video_lines(side: dict, total: dict) -> list[str]:
+    """The side-by-side section when the two cuts were watched whole
+    (AUTO-128): per category, both orders' answers and the result."""
+    against = side.get("against") or side.get("file")
+    lines = [f"Video comparison against {against}, the previous kept cut ({side.get('file')}): "
+             f"both cuts watched whole by {side.get('model')}, once in each order. The new "
+             f"cut better in {total.get('better', 0)} categories, worse in "
+             f"{total.get('worse', 0)}, the same in {total.get('same', 0)}; overall "
+             f"{side.get('overall')}. A category the two orders call for different cuts is "
+             f"the same; one either could not tell is left out ({side.get('comparison')}).",
+             "", "| Category | Result | Cut A first | Cut B first | Timestamps |",
+             "|---|---|---|---|---|"]
+    for row in side.get("criteria") or []:
+        stamps = ", ".join(_stamp(t) for t in row.get("timestamps") or [])
+        lines.append(f"| {row['category']} | {row['result'] or 'cannot tell'} | "
+                     f"{row['ab']['said']} ({row['ab']['cut'] or '-'}) | "
+                     f"{row['ba']['said']} ({row['ba']['cut'] or '-'}) | {stamps} |")
+    return lines + [""]
 
 
 def findings_md(name: str, card: dict, samples: list[dict], diff: dict, *,
@@ -2836,6 +2875,7 @@ def combine_samples(reviewer: Harness, pass_name: str, rows: list[dict], *,
 
 
 def register(sub, parents=()) -> argparse.ArgumentParser:
+    from . import cutcompare      # it reads this module's categories and tally
     p = sub.add_parser(
         "qa", parents=list(parents),
         help="score the rendered film against the publication bar, per pass",
@@ -2863,6 +2903,14 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                         "deltas, and its cut side by side at the same timestamps "
                         "(default: the latest scored pass; yt improve names its best "
                         "kept pass)")
+    p.add_argument("--against", metavar="FILE",
+                   help="the previous kept cut (a video.mp4): a gateway video model "
+                        "watches it and this pass's video.mp4 whole, in both orders, and "
+                        "its verdicts join the side-by-side tally as source video; needs "
+                        "--compare-model and AI_GATEWAY_API_KEY (AUTO-128)")
+    p.add_argument("--compare-model", metavar="MODEL", dest="compare_model",
+                   help="the gateway video model for --against, provider/model "
+                        f"(default ${cutcompare.MODEL_ENV}); never of an author's family")
     p.add_argument("--host", help="ssh target of the render host")
     p.add_argument("--local", action="store_true", help="render the stills here")
     p.add_argument("--fresh", action="store_true",
@@ -2873,6 +2921,7 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
 
 
 def run(args) -> int:
+    from . import cutcompare      # it reads this module's categories and tally
     idea, project = workspace.resolve(args, inputs=("scene",))
     src = lambda name: project.source(name, workspace.override(args, name))  # noqa: E731
     scene = project.source("scene", args.scene)
@@ -2906,6 +2955,18 @@ def run(args) -> int:
                   "scorecard.json to compare with", file=sys.stderr)
             return 2
         chosen.setdefault("pass", named)
+    # The video comparison (AUTO-128): asked for by --against alone, and
+    # refused here, before anything renders, when it could not be asked
+    # fairly. $YT_COMPARE_MODEL is read only once --against is given.
+    against = getattr(args, "against", None)
+    flag_model = getattr(args, "compare_model", None)
+    compare_model = (flag_model or os.environ.get(cutcompare.MODEL_ENV) or None
+                     if against else None)
+    said = cutcompare.refusal(against, flag_model, compare_model, cutcompare.author_models(
+        {stage: src(stage) for stage in cutcompare.AUTHORS}) if against else [])
+    if said:
+        print(said, file=sys.stderr)
+        return 2
 
     # -- the evidence --------------------------------------------------------
     if args.reuse:
@@ -3179,7 +3240,45 @@ def run(args) -> int:
     # the same moment of both cuts, side by side, says which is better. Its
     # own decision after the scoring samples, whose prompts it leaves alone.
     cut = cut_digest(Path(scene).read_bytes(), Path(scene).parent)
-    if args.reuse:
+    # The video comparison (AUTO-128), when --against asks for it: the two
+    # cuts watched whole through the gateway, on a harness of its own (no
+    # revision notes, its own timeout and account). Done, its entries are
+    # the tally and the still pairs are not asked; skipped or failed, it
+    # files nothing and the still pairs run as they would without it.
+    compared, watcher = None, None
+    if against:
+        old_cut, new_cut = Path(against).expanduser(), home / "video.mp4"
+        why = ("--reuse scores the frames of an earlier pass again; its cut is not "
+               "compared" if args.reuse else
+               "the pass is not evidenced; it is compared when it is scored again"
+               if not evidenced else cutcompare.skip_reason(old_cut, new_cut, Path(scene)))
+        if not why:
+            try:
+                watcher = Harness(project.root, "qa", model=compare_model, engine="gateway",
+                                  role=cutcompare.COMPARE_ROLE, house=rules,
+                                  house_digest=digest, feedback=False,
+                                  fresh=getattr(args, "fresh", False),
+                                  verbose=not args.quiet, timeout=cutcompare.COMPARE_TIMEOUT)
+            except HarnessError as exc:
+                why = str(exc)
+        compared = (cutcompare.compare_cuts(watcher, old_cut, new_cut, pass_name=pass_dir.name)
+                    if watcher else cutcompare.record("skipped", why, model=compare_model,
+                                                      previous=old_cut, new=new_cut))
+        write_json(pass_dir / cutcompare.RECORD, compared)
+        if compared["status"] != "done":
+            card["not_evidenced"] = list(card.get("not_evidenced") or []) + [
+                f"video comparison {compared['status']}: {compared['reason']}"]
+            if not args.quiet:
+                print(f"[qa] video comparison {compared['status']}: {compared['reason']}",
+                      file=sys.stderr)
+    if compared and compared["status"] == "done":
+        side = _side(previous.get("pass") if previous else None, "done", source="video",
+                     model=compare_model, file=str(against),
+                     decision=[o["decision"] for o in compared["orders"].values()],
+                     entries=compared["entries"], tally=compared["tally"],
+                     overall=compared["overall"], criteria=compared["criteria"],
+                     comparison=cutcompare.RECORD)
+    elif args.reuse:
         # The frames are that pass's, drawn from the cut it recorded then,
         # whatever scene.xml is now: the card keeps that cut (None for a
         # pass from before AUTO-108), so no later pass takes these frames
@@ -3258,6 +3357,16 @@ def run(args) -> int:
                          "cut": cut, "side_by_side": side,
                          "contact_sheet": sheet.name, "engine": reviewer.report(),
                          "usage": spend.from_report(reviewer.report())}
+    if compared is not None:
+        # The comparison's own account beside the reviewer's; `usage` is
+        # both, so what the pass cost counts it once (AUTO-128).
+        card["against"] = {k: compared.get(k) for k in ("status", "reason", "model",
+                                                         "overall", "cost_usd")}
+        card["against"] |= {"file": str(against), "record": cutcompare.RECORD,
+                            "decisions": [o["decision"] for o in compared["orders"].values()]}
+    if watcher is not None:
+        card["compare_engine"] = watcher.report()
+        card["usage"] = cutcompare.merged_usage(reviewer.report(), watcher.report())
     diff = compare(previous, card)
     card["comparison"] = diff
     write_json(pass_dir / "scorecard.json", card)
@@ -3300,7 +3409,12 @@ def run(args) -> int:
                   f"{f['kind']}: {f['problem'][:90]} -> {f['owner']}")
     if diff["regressions"]:
         print(f"\n  REGRESSED since {diff['against']}: {', '.join(diff['regressions'])}")
-    if side["status"] == "done":
+    if side["status"] == "done" and side.get("source") == "video":
+        total = side["tally"]["total"]
+        print(f"\n  video comparison against {side['against'] or against}: better "
+              f"{total['better']}, worse {total['worse']}, same {total['same']} "
+              f"({len(side['entries'])} categories)")
+    elif side["status"] == "done":
         total = side["tally"]["total"]
         print(f"\n  side by side against {side['against']}: better {total['better']}, "
               f"worse {total['worse']}, same {total['same']} "

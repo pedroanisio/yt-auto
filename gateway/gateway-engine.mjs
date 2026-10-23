@@ -8,7 +8,9 @@
 // stdin, one JSON request:
 //   {"model": "google/gemini-3.6-flash", "instructions": "...", "prompt": "...",
 //    "schema": {...} | null, "schemaName": "answer",
-//    "media": [{"path": "/abs/clip.mp4", "mediaType": "video/mp4"}],
+//    "media": [{"path": "/abs/clip.mp4", "mediaType": "video/mp4",
+//               "label": "Cut A:"}],            (label optional: a text part
+//                                                immediately before its file)
 //    "gateway": {"only": ["google"], "has": ["structured-output"]},
 //    "timeoutMs": 900000, "maxRetries": 0,
 //    "costPoll": {"tries": 0, "intervalMs": 2000},
@@ -157,6 +159,7 @@ export async function run(req, deps = {}, env = process.env) {
 
     const content = [{ type: 'text', text: req.prompt ?? '' }];
     for (const m of req.media ?? []) {
+      if (m.label) content.push({ type: 'text', text: m.label });
       content.push({ type: 'file', mediaType: m.mediaType, filename: basename(m.path),
         data: await d.readFile(m.path) });
     }
