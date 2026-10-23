@@ -201,6 +201,23 @@ class Delivery(DeliveryCase):
         from ytstudio import qa
         self.assertEqual(doctor.READY_TO_PUBLISH, qa.READY)
 
+    def test_doctor_reads_the_not_evidenced_verdict_qa_writes(self):
+        from ytstudio import qa
+        self.assertEqual(doctor.QA_NOT_EVIDENCED, qa.NOT_EVIDENCED)
+
+    def test_a_not_evidenced_pass_is_scored_again_not_routed(self):
+        self.rendered(); self.gated(); self.scored(verdict="not_evidenced", overall=None)
+        fails = self.fails_about("not evidenced")
+        self.assertEqual(len(fails), 1)
+        self.assertNotIn("None", fails[0].message)
+        self.assertTrue(fails[0].fix.startswith("yt qa"), fails[0].fix)
+        notes = [f for f in self.delivery("note")]
+        self.assertTrue(notes)
+        for note in notes:
+            self.assertIn("not evidenced", note.message)
+            self.assertNotIn("route", note.message)
+            self.assertTrue(note.fix.startswith("yt qa"), note.fix)
+
     def test_the_first_next_step_repairs_the_render(self):
         self.rendered(quality="draft")
         steps = self.report().next_steps
