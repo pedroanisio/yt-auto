@@ -27,13 +27,18 @@ says when each line lands (AUTO-104). So each narrated line -- one
 sentence of a take in voice.json, placed on the film by build.json's shot
 `at` -- also gets a still where its first word is said, half a burst
 inside its shot like the evenly spaced ones, labelled `line: <first
-words>`, and the brief carries the line (`lines`, with when it starts)
-beside it, so "is it on screen when it is said" is judged at that moment.
-A line within half a second of a still of its own shot merges into it.
-Line stills come after every shot's own, the payoff, re-hook and reveal
-lines (`KEY_LINES`) first; without --frames they are added up to
-EVERY_SHOT_UP_TO stills in all, and under --frames they count against N
-before the evenly spaced ones. A wordless film has none.
+words>`, and the brief carries the line (`lines`, with when it starts
+and `frame`, the file that shows that moment) beside it, so "is it on
+screen when it is said" is judged at that moment. A line merges into a
+still of its own shot only when that still's burst has the frame where
+the line starts: half a second off, a still does not show it. Line stills
+come after every shot's own: the payoff, re-hook and reveal lines
+(`KEY_LINES`) first, then the lines said inside a shot before the ones
+that open their take, spread over the runtime; without --frames they are
+added up to EVERY_SHOT_UP_TO stills in all, and under --frames they count
+against N before the evenly spaced ones. The lines left without a still
+are named to the reviewer and in the scorecard (`lines_unsampled`, and a
+line under not_evidenced). A wordless film has none.
 
 The stills are rendered by the engine on the render host, from the very document the
 encode uses. A still cannot evidence motion, so each sample is rendered as

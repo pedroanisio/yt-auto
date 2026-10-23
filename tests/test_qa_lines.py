@@ -433,9 +433,20 @@ class Docs(unittest.TestCase):
             self.assertIn("AUTO-104", text, rel)
         for rel in ("ytstudio/SKILL.md", "README.md"):
             self.assertIn("`qa.KEY_LINES`", self.flat(rel), rel)
+        # the merge is the burst's, not half a second, and the lines left
+        # without a still are named
+        for rel in ("ytstudio/SKILL.md", "README.md", "docs/production.md"):
+            text = self.flat(rel)
+            self.assertIn("`lines_unsampled`", text, rel)
+            self.assertNotIn("within half a second of a still", text, rel)
+            self.assertNotIn("within 0.5 s of a still", text, rel)
+        readme = self.flat("README.md")
+        self.assertIn("adds the line stills first, then evenly spaced stills", readme)
         doc = " ".join(qa.__doc__.split())
         self.assertIn("`line: <first words>`", doc)
         self.assertIn("KEY_LINES", doc)
+        self.assertIn("lines_unsampled", doc)
+        self.assertNotIn("within half a second of a still", doc)
 
     def test_the_frames_help_counts_the_line_stills(self):
         parser = argparse.ArgumentParser()
