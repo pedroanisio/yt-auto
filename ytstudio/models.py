@@ -6,7 +6,10 @@ with a dot (`anthropic/claude-haiku-4.5`), and its Claude Code picker shows
 `claude-code/anthropic/claude-opus-5[1m]`. `canonical` turns any of them into
 `(provider, model)`, so a family (`flags.model_family`), a price row
 (`spend.price_for`, the engines' tables) and the Claude check
-(`codex_engine.is_claude_model`) see one model. A virtual model,
+(`codex_engine.is_claude_model`) see one model. A price row is the table's
+own provider's (`anthropic/` for Claude's, `openai/` for Codex's), and a
+1M-token context (`[1m]`) is unpriced on either route, since it may bill
+above the base row. A virtual model,
 `vmc/<slug>`, may route anywhere: it has no family and no price, and a stage
 refuses it as an author or a reviewer.
 

@@ -163,15 +163,27 @@ def canonical_model(name: str | None) -> tuple[str, str]:
     return provider, model
 
 
-def _price_row(table: dict, model: str | None, aliases: dict | None = None) -> Any:
+#: The mark Claude Code's gateway picker (and the CLI's own `opus[1m]`) puts on
+#: a model run with a 1M-token context.
+LONG_CONTEXT_MARK = "[1m]"
+
+
+def _price_row(table: dict, model: str | None, aliases: dict | None = None,
+               provider: str = "anthropic") -> Any:
     """`model`'s row in `table`: the id exactly as reported, then, for a
-    gateway id (`anthropic/claude-opus-5`), its direct id, then the
-    generation `aliases` resolves a short name to. A name with no provider
-    is looked up as it always was, and a virtual model has no row."""
+    gateway id of the table's own `provider` (`anthropic/claude-opus-5`),
+    its direct id, then the generation `aliases` resolves a short name to.
+    A name with no provider is looked up as it always was. Another
+    provider's id has no row here, a Claude model on Bedrock or Vertex
+    included, since its rate is that provider's; nor has a virtual model.
+    A 1M-token context (`...[1m]`) has no row unless one names it: it may
+    bill above the base rate, so neither route prices it at the base row,
+    and its session keeps the CLI's own budget stop (sdkkit.stream_round)."""
     name = model or ""
     names = [name]
-    provider, direct = canonical_model(name)
-    if provider and provider != VIRTUAL_PROVIDER and direct not in names:
+    found, direct = canonical_model(name)
+    if (found == provider and not name.lower().endswith(LONG_CONTEXT_MARK)
+            and direct not in names):
         names.append(direct)
     for each in names:
         if table.get(each) is not None:

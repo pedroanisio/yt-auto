@@ -304,13 +304,17 @@ def _field_defaults() -> dict[str, Any]:
 
 
 def is_claude_model(name: str | None) -> bool:
-    """Whether `name` is a Claude model, direct (`opus`, `claude-opus-5-5`,
-    Bedrock's `us.anthropic.`) or a gateway id (`anthropic/claude-opus-5`,
-    `claude-code/anthropic/...[1m]`). A gateway virtual model is not known
-    to be one."""
+    """Whether `name` is a Claude model, which Codex cannot run: direct
+    (`opus`, `claude-opus-5-5`, Bedrock's `us.anthropic.`), a gateway id
+    (`anthropic/claude-opus-5`, `bedrock/claude-opus-5`), or any id from
+    Claude Code's gateway picker (`claude-code/...`, its virtual
+    `claude-code/vmc/<slug>` too), which only the Claude CLI sends. A bare
+    gateway virtual model (`vmc/<slug>`) is not known to be one."""
     if not name:
         return False
     low = name.lower()
+    if low.startswith("claude-code/"):
+        return True
     provider, model = canonical_model(name)
     if provider:
         return provider == "anthropic" or (provider != VIRTUAL_PROVIDER
@@ -380,8 +384,9 @@ def usage_tokens(usage: dict) -> int:
 def price_for(model: str | None, *, overrides: dict | None = None,
               env: dict[str, str] | None = None) -> dict[str, float] | None:
     """The price row for `model`: PRICES, then $CODEX_PRICES, then `overrides`,
-    by the id as passed, then, for a gateway id (`openai/gpt-5`), by its
-    direct id. A gateway virtual model (`vmc/<slug>`) has no row."""
+    by the id as passed, then, for an OpenAI gateway id (`openai/gpt-5`), by
+    its direct id. Another provider's id (`azure/gpt-5`) and a gateway
+    virtual model (`vmc/<slug>`) have no row."""
     table = dict(PRICES)
     raw = (env or os.environ).get("CODEX_PRICES")
     if raw:
@@ -390,7 +395,7 @@ def price_for(model: str | None, *, overrides: dict | None = None,
         except ValueError:
             _warn_once("prices-env", "CODEX_PRICES is not valid JSON; ignored")
     table.update(overrides or {})
-    return _price_row(table, model)
+    return _price_row(table, model, provider="openai")
 
 
 # --------------------------------------------------------------------------- #
