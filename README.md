@@ -92,8 +92,10 @@ research and screenplay work; it is not an unattended model service.
   the model's providers (no key needed) and keeps only the pinned ones that
   are up, offer structured output, are priced within the row and are not of
   a quantization in `YT_REVIEWER_EXCLUDE_QUANT` (comma-separated, default
-  `fp4`); when that read fails the pinned list stands. The script is sent to
-  those third-party providers, and script.json says which ones.
+  `fp4`); when that read fails the pinned list stands only for a row whose
+  providers were checked live (`verified` in the row), and an unchecked row
+  is refused until the read succeeds. The script is sent to those
+  third-party providers, and script.json says which ones.
 - Python 3.10+
 
 ---
@@ -1664,7 +1666,11 @@ leaves the old record whole rather than a truncated one.
 stands, one row per stage with its estimated cost (`spend.stage_estimates`:
 measured from the project's own report, else a like project's, else
 assumed) and the total, and runs nothing (the project is planted, as for any
-stage). `--budget-usd N` caps the whole
+stage). With `--reviewer-model pool` it still checks what the real run
+would refuse on this machine (`YT_GATEWAY=vercel`, the gateway engine's key,
+Node and install, the maker rule) and prices the chosen row, but reads
+nothing from the gateway: the providers are read when the script runs.
+`--budget-usd N` caps the whole
 run: a stage whose estimate plus what the run has spent does not fit is not
 started, the refusal names the estimate and the run exits 3
 (`retime.UNSETTLED`), and `yt vfx` gets what is left as `--stage-budget-usd`.

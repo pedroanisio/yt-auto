@@ -177,6 +177,8 @@ class ReviewerPool(unittest.TestCase):
         self.assertEqual(missing, [], "\n" + "\n".join(missing))
         self.assertIn('"YT_REVIEWER_EXCLUDE_QUANT"',
                       (ROOT / "ytstudio" / "reviewers.py").read_text(encoding="utf-8"))
+        for doc in ("README.md", "ytstudio/SKILL.md"):
+            self.assertIn("YT_REVIEWER_EXCLUDE_QUANT", "\n".join(read(doc)), doc)
 
     def test_the_reviewer_row_of_the_flag_table_names_the_pool(self):
         row = next((line for line in read("ytstudio/SKILL.md")

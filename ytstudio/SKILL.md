@@ -515,7 +515,9 @@ warning. The gateway engine
 --ignore-scripts`, after `npm install --package-lock-only --ignore-scripts`
 while no lockfile is committed; `YT_GATEWAY_NODE` names the binary,
 `AI_GATEWAY_API_KEY` is its key, `GATEWAY_PRICES` prices a gateway id the
-gateway returns no cost for).
+gateway returns no cost for, `YT_REVIEWER_EXCLUDE_QUANT` the quantizations
+a pool reviewer's providers may not serve at, comma-separated, default
+`fp4`).
 It serves `decide` (with `media=` files) only, never `inspect`; `YT_GATEWAY`
 and `YT_ENGINE` do not select it, and Python stays dependency-free. Every stage that asks the
 model takes `--model`, `--effort` and `--fallback-model` (default sonnet);
