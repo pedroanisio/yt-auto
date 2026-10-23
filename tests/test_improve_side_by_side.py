@@ -35,9 +35,13 @@ def scored(overall, *, spread=0.5, side=None, name="pass-02", **kw):
 
 
 def side(better=0, worse=0, same=0, against="pass-01", source="stills"):
-    entries = ([{"category": "visual_quality", "result": "better", "source": source}] * better
-               + [{"category": "visual_quality", "result": "worse", "source": source}] * worse
-               + [{"category": "visual_quality", "result": "same", "source": source}] * same)
+    """A side_by_side record as qa.side_by_side files it: one moment per
+    answer, a won or lost moment bearing on visual_quality, a same moment
+    on no category (one entry, category None)."""
+    results = ["better"] * better + ["worse"] * worse + ["same"] * same
+    entries = [{"category": None if r == "same" else "visual_quality", "result": r,
+                "source": source, "moment": f"m{k:02d}", "t": float(k)}
+               for k, r in enumerate(results, 1)]
     return {"against": against, "status": "done", "entries": entries,
             "tally": qa.tally(entries)}
 
@@ -62,6 +66,28 @@ class Judge(unittest.TestCase):
         self.assertTrue(improve.judge(self.best, scored(8.0, side=side(2, 2, 3)))["keep"])
         self.assertFalse(improve.judge(self.best, scored(7.2, side=side(2, 2, 3)))["keep"])
         self.assertFalse(improve.judge(self.best, scored(7.2, side=side(same=6)))["keep"])
+
+    def test_an_overall_drop_inside_the_noise_is_kept_by_its_tally(self):
+        got = improve.judge(self.best, scored(6.8, spread=0.5, side=side(better=4, worse=1)))
+        self.assertTrue(got["keep"], got["reasons"])
+
+    def test_an_overall_drop_just_outside_the_noise_reverts_whatever_the_tally(self):
+        got = improve.judge(self.best, scored(6.4, spread=0.5, side=side(better=4, worse=1)))
+        self.assertFalse(got["keep"])
+        self.assertTrue(any("spread" in r for r in got["reasons"]), got["reasons"])
+
+    def test_the_tally_is_one_vote_a_moment_not_one_a_category(self):
+        # One moment won on four categories against three moments lost on
+        # one each: the previous cut was better at three moments of four.
+        won = [{"category": c, "result": "better", "source": "stills", "moment": "m01"}
+               for c in ("visual_quality", "cinematography", "animation_vfx",
+                         "editing_pacing")]
+        lost = [{"category": "visual_quality", "result": "worse", "source": "stills",
+                 "moment": m} for m in ("m02", "m03", "m04")]
+        record = {"against": "pass-01", "status": "done", "entries": won + lost}
+        got = improve.judge(self.best, scored(7.0, side=record))
+        self.assertFalse(got["keep"])
+        self.assertEqual((got["side_by_side"]["better"], got["side_by_side"]["worse"]), (1, 3))
 
     def test_a_tally_against_another_pass_is_not_read(self):
         got = improve.judge(self.best, scored(7.2, side=side(better=5, against="pass-07")))

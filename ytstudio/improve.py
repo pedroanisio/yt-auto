@@ -46,7 +46,7 @@ loop as code:
    when the overall improves beyond the spread; an overall drop beyond the
    spread, a category drop of more than `TOLERANCE` or a new blocking
    mechanical finding reverts whatever the tally says. A pass not kept has
-   the snapshot taken before it (`improve/pass-NN/snapshot/`) is restored. vfx versions
+   the snapshot taken before it (`improve/pass-NN/snapshot/`) restored. vfx versions
    are kept anyway, so reverting vfx restores `vfx.json`'s active version.
    A pass whose stages all ran but whose QA filed nothing (a render host
    down) is `unjudged`: its outputs and snapshot stay, and the next run
@@ -928,10 +928,12 @@ def spread(card: dict, key: str) -> float:
 
 
 def side_by_side(best: dict, new: dict) -> dict | None:
-    """The new pass's side-by-side tally against `best` (AUTO-108): the sums
-    of its entries (`qa.tally`, whatever path filed them: stills, or a video
-    comparison in the same shape), or None when it has no entries or was
-    compared with another pass, which says nothing about this keep."""
+    """The new pass's side-by-side tally against `best` (AUTO-108): the
+    moments its entries vote for (`qa.tally`'s `total`, one vote a moment
+    however many categories it bears on, whatever path filed them: stills,
+    or a video comparison in the same shape), or None when it has no
+    entries or was compared with another pass, which says nothing about
+    this keep."""
     side = new.get("side_by_side")
     if not isinstance(side, dict) or side.get("against") != best.get("pass"):
         return None
@@ -945,7 +947,8 @@ def judge(best: dict, new: dict, *, tolerance: float = TOLERANCE) -> dict:
     """Keep only a measured improvement, read from the side-by-side tally
     first and the score delta second (AUTO-108). Shown the same moments of
     both cuts, the reviewer said where the new one is better or worse:
-    more better than worse is the improvement, even when the overall moved
+    more moments better than worse (one vote a moment, `qa.tally`'s
+    `total`) is the improvement, even when the overall moved
     inside the samples' spread, which two absolute scores cannot resolve;
     more worse than better is no improvement, whatever the overall did; a
     tie, or no tally against `best`, leaves the overall to decide as
