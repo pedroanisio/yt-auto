@@ -2,7 +2,8 @@
 
 Opt-in only. Nothing is routed unless `YT_GATEWAY=vercel` is set: a gateway
 key in the environment changes nothing by itself, so direct access to each
-provider stays the default. With the switch unset `claude_env` returns
+provider stays the default. With the switch unset, or set to one of the
+usual ways of saying off (off, 0, false, no, none), `claude_env` returns
 nothing, and every engine's child environment is exactly what it was before
 this module existed.
 
@@ -18,13 +19,19 @@ manual setup) takes three variables:
 
 With a Claude subscription (`YT_GATEWAY_AUTH=subscription`) the login stays
 the CLI's own and the key travels as a header instead: only
-ANTHROPIC_BASE_URL and ANTHROPIC_CUSTOM_HEADERS are set. `YT_GATEWAY_URL`
-replaces the host, for a proxy in front of the gateway.
+ANTHROPIC_BASE_URL and ANTHROPIC_CUSTOM_HEADERS are set. ANTHROPIC_API_KEY
+is left as it is, so a direct key still set in the shell is what the CLI
+sends to the gateway in place of the login; the docs say to unset it.
+`YT_GATEWAY_URL` replaces the host, for a proxy in front of the gateway.
 
-A switch that is set but cannot be honoured (an unknown value, no key, a URL
-that already names a path) raises GatewayError, a permanent failure: a typo
-must not quietly mean "direct". No message here carries the key, and nothing
-writes ~/.claude/settings.json or runs a setup command.
+A switch that is set but cannot be honoured raises GatewayError, a permanent
+failure: a typo must not quietly mean "direct". That covers an unknown value,
+no key, a key with whitespace or control characters inside it (in a header
+a newline would start another header), a URL that already names a path, and
+a CLAUDE_CODE_USE_BEDROCK, _VERTEX or _FOUNDRY switch, which Claude Code
+honours ahead of ANTHROPIC_BASE_URL so the call would not reach the gateway
+at all. No message here carries the key, and nothing writes
+~/.claude/settings.json or runs a setup command.
 
 Stdlib only, and no import of claude_engine, which imports this.
 """
@@ -38,6 +45,9 @@ from urllib.parse import urlsplit
 #: The opt-in switch, and the one gateway it may name.
 SWITCH = "YT_GATEWAY"
 VERCEL = "vercel"
+#: Values of the switch, and of Claude Code's provider switches, that mean
+#: off. Compared after strip() and lower().
+OFF = ("", "off", "0", "false", "no", "none")
 #: The gateway key, under the name Vercel's own docs give it
 #: (https://vercel.com/docs/ai-gateway/authentication-and-byok).
 KEY = "AI_GATEWAY_API_KEY"
@@ -50,6 +60,10 @@ DEFAULT_HOST = "https://ai-gateway.vercel.sh"
 CLAUDE_PATH = "/claude-code"
 #: The header that carries the key in subscription mode.
 HEADER = "x-ai-gateway-api-key"
+#: Claude Code's own provider switches. Any one of them on sends the CLI to
+#: that cloud whatever ANTHROPIC_BASE_URL says.
+CLOUD_SWITCHES = ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
+                  "CLAUDE_CODE_USE_FOUNDRY")
 
 
 class GatewayError(ValueError):
@@ -62,7 +76,9 @@ def _env(environ: Mapping[str, str] | None) -> Mapping[str, str]:
 
 
 def _switch(environ: Mapping[str, str]) -> str:
-    return (environ.get(SWITCH) or "").strip().lower()
+    """The switch's value, "" for any way of saying off."""
+    value = (environ.get(SWITCH) or "").strip().lower()
+    return "" if value in OFF else value
 
 
 def active(environ: Mapping[str, str] | None = None) -> bool:
@@ -102,7 +118,21 @@ def _key(environ: Mapping[str, str]) -> str:
     key = (environ.get(KEY) or "").strip()
     if not key:
         raise GatewayError(f"{SWITCH}={VERCEL} needs the gateway key in {KEY}")
+    # A key is one printable token. A newline from a pasted .env line would
+    # split ANTHROPIC_CUSTOM_HEADERS into an extra header.
+    if any(ch.isspace() or not ch.isprintable() for ch in key):
+        raise GatewayError(
+            f"{KEY} holds whitespace or a control character inside the key; "
+            "set it to the key alone")
     return key
+
+
+def _cloud_switch(environ: Mapping[str, str]) -> str | None:
+    """The first of Claude Code's provider switches that is on, if any."""
+    for name in CLOUD_SWITCHES:
+        if (environ.get(name) or "").strip().lower() not in OFF:
+            return name
+    return None
 
 
 def claude_env(environ: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -116,6 +146,11 @@ def claude_env(environ: Mapping[str, str] | None = None) -> dict[str, str]:
         raise GatewayError(
             f"{SWITCH} names no known gateway: set it to {VERCEL}, "
             "or unset it to call the providers directly")
+    cloud = _cloud_switch(environ)
+    if cloud:
+        raise GatewayError(
+            f"{cloud} is set, and Claude Code would route to that cloud ahead of "
+            f"the gateway: unset it, or unset {SWITCH}")
     mode = auth_mode(environ)
     base = claude_base_url(environ)
     key = _key(environ)

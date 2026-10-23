@@ -453,8 +453,9 @@ class EngineConfig:
     bare: bool = False                  # --bare: no hooks, plugins, memory,
                                         # CLAUDE.md discovery or keychain;
                                         # auth is ANTHROPIC_API_KEY only, so
-                                        # refused under YT_GATEWAY=vercel in
-                                        # key mode, which empties it
+                                        # refused under YT_GATEWAY=vercel:
+                                        # key mode empties it, and
+                                        # subscription mode needs the login
 
     # --- streaming (stream-json only) --------------------------------------
     include_partial_messages: bool = False  # --include-partial-messages
@@ -765,22 +766,24 @@ class ClaudeEngine:
 
         A gateway that cannot be used raises a permanent error before any
         launch: a missing key or a bad switch would fail every attempt. So
-        does `bare` in key mode: --bare authenticates with ANTHROPIC_API_KEY
-        only, and key mode empties it so the gateway key in
-        ANTHROPIC_AUTH_TOKEN is the one the CLI sends. Whether --bare honours
-        ANTHROPIC_AUTH_TOKEN is unchecked, and a call that reached Anthropic
-        directly while the operator believed it went through the gateway is
-        worse than one that stops.
+        does `bare`, in either mode: --bare authenticates with
+        ANTHROPIC_API_KEY only. Key mode empties it so the gateway key in
+        ANTHROPIC_AUTH_TOKEN is the one the CLI sends; subscription mode
+        relies on the login --bare skips, so the CLI would send a direct
+        Anthropic key, if one is set, to the gateway's host. Whether --bare
+        honours ANTHROPIC_AUTH_TOKEN is unchecked, and a call that went
+        somewhere other than the operator believed is worse than one that
+        stops.
         """
         try:
             overlay = _gateway.claude_env(environ)
         except _gateway.GatewayError as exc:
             raise ClaudeExecutionError(f"gateway: {exc}", transient=False) from exc
-        if self.config.bare and "ANTHROPIC_AUTH_TOKEN" in overlay:
+        if self.config.bare and overlay:
             raise ClaudeExecutionError(
-                "gateway: bare is refused under YT_GATEWAY=vercel in key mode: --bare "
-                "authenticates with ANTHROPIC_API_KEY only, which the gateway needs "
-                "empty; run without bare", transient=False)
+                "gateway: bare is refused under YT_GATEWAY=vercel: --bare "
+                "authenticates with ANTHROPIC_API_KEY only, which key mode empties "
+                "and subscription mode does not use; run without bare", transient=False)
         return overlay
 
     def _popen_kwargs(self) -> dict:
@@ -1501,7 +1504,7 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--bare", action="store_true",
                    help="minimal mode: no hooks, plugins, memory, CLAUDE.md "
                         "discovery or keychain; auth is ANTHROPIC_API_KEY only, "
-                        "so refused under YT_GATEWAY=vercel in key mode")
+                        "so refused under YT_GATEWAY=vercel")
     g.add_argument("--restricted", action="store_true",
                    help="no code-running tools or WebFetch unless listed; file "
                         "tools confined to the working directories")

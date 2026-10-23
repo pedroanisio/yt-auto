@@ -32,7 +32,8 @@ HOST = "https://ai-gateway.vercel.sh"
 #: the machine running the tests cannot leak into them.
 GATEWAY_VARS = ("YT_GATEWAY", "YT_GATEWAY_AUTH", "YT_GATEWAY_URL", "AI_GATEWAY_API_KEY",
                 "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY",
-                "ANTHROPIC_CUSTOM_HEADERS")
+                "ANTHROPIC_CUSTOM_HEADERS", "CLAUDE_CODE_USE_BEDROCK",
+                "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY")
 
 FAKE_CLAUDE = r'''#!/usr/bin/env python3
 """A stand-in for `claude -p` that records its argv and environment, then
@@ -44,6 +45,8 @@ sys.stdin.read()
 result = {"type": "result", "subtype": "success", "is_error": False, "result": "ok",
           "session_id": "s-fake", "num_turns": 1, "total_cost_usd": 0.0,
           "usage": {"input_tokens": 1, "output_tokens": 1}, "duration_ms": 1}
+if "--json-schema" in sys.argv:
+    result["structured_output"] = {"verdict": "ok"}
 if "stream-json" in sys.argv:
     print(json.dumps({"type": "system", "subtype": "init", "session_id": "s-fake"}))
 print(json.dumps(result))
@@ -101,6 +104,15 @@ class Overlay(GatewayCase):
         self.assertEqual(gateway.claude_env({}), {})
         self.assertTrue(gateway.active(on()))
         self.assertTrue(gateway.active({"YT_GATEWAY": " Vercel "}))
+
+    def test_the_ways_of_saying_off_mean_unset(self):
+        # An operator who writes YT_GATEWAY=off means "direct", not "refuse
+        # every call"; active() and claude_env() must agree on it.
+        for word in ("off", "0", "false", "no", "none", " OFF ", ""):
+            env = {"YT_GATEWAY": word, "AI_GATEWAY_API_KEY": KEY}
+            with self.subTest(word=word):
+                self.assertFalse(gateway.active(env))
+                self.assertEqual(gateway.claude_env(env), {})
 
     def test_a_key_alone_does_not_turn_it_on(self):
         env = {"AI_GATEWAY_API_KEY": KEY, "YT_GATEWAY_AUTH": "subscription",
@@ -162,6 +174,38 @@ class Overlay(GatewayCase):
                 gateway.claude_env(env)
             self.assertIn("AI_GATEWAY_API_KEY", str(caught.exception))
 
+    def test_a_key_with_whitespace_or_control_characters_is_refused(self):
+        # In subscription mode the key goes into ANTHROPIC_CUSTOM_HEADERS,
+        # one header per line: a newline inside it would add a header.
+        for bad in (KEY + "\nx-evil: 1", KEY + "\r\nx", "vck a", "vck\ta", "vck\x00a", "vck\x7fa"):
+            for mode in ("key", "subscription"):
+                with self.subTest(key=repr(bad), mode=mode):
+                    with self.assertRaises(gateway.GatewayError) as caught:
+                        gateway.claude_env(on(AI_GATEWAY_API_KEY=bad, YT_GATEWAY_AUTH=mode))
+                    self.assertIn("AI_GATEWAY_API_KEY", str(caught.exception))
+                    self.assertNotIn(bad, str(caught.exception))
+                    self.assertNotIn("vck", str(caught.exception))
+
+    def test_cloud_provider_routing_is_refused(self):
+        # Claude Code puts Bedrock, Vertex and Foundry ahead of
+        # ANTHROPIC_BASE_URL: the call would go there, not to the gateway.
+        for name in ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
+                     "CLAUDE_CODE_USE_FOUNDRY"):
+            for mode in ("key", "subscription"):
+                with self.subTest(name=name, mode=mode):
+                    with self.assertRaises(gateway.GatewayError) as caught:
+                        gateway.claude_env(on(**{name: "1", "YT_GATEWAY_AUTH": mode}))
+                    self.assertIn(name, str(caught.exception))
+                    self.assertNotIn(KEY, str(caught.exception))
+
+    def test_cloud_provider_switches_that_are_off_are_ignored(self):
+        for value in ("", "0", "false", "off"):
+            with self.subTest(value=value):
+                env = on(CLAUDE_CODE_USE_BEDROCK=value)
+                self.assertEqual(gateway.claude_env(env)["ANTHROPIC_AUTH_TOKEN"], KEY)
+        # And off, the gateway does not look at them at all.
+        self.assertEqual(gateway.claude_env({"CLAUDE_CODE_USE_VERTEX": "1"}), {})
+
     def test_no_error_carries_the_key(self):
         for env in (on(YT_GATEWAY_URL="https://x/v1"), on(YT_GATEWAY_AUTH="nope"),
                     {"YT_GATEWAY": "other", "AI_GATEWAY_API_KEY": KEY}):
@@ -187,9 +231,20 @@ class Off(GatewayCase):
             expected = dict(os.environ)
             expected.update({"EXTRA": "1"})
             expected.setdefault("CI", "1")
-            self.assertEqual(eng._popen_kwargs()["env"], expected)
+            got = eng._popen_kwargs()["env"]
+            self.assertEqual(got, expected)
+            # Not just the same recipe: the same names, with none added.
+            self.assertEqual(set(got), set(os.environ) | {"EXTRA", "CI"})
             eng.ask("hi")
         env = self.launches()[0]["env"]
+        self.assertEqual(env["ANTHROPIC_API_KEY"], "sk-ant-direct")
+        for name in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_CUSTOM_HEADERS"):
+            self.assertNotIn(name, env)
+
+    def test_the_switch_set_to_off_launches_directly(self):
+        with mock.patch.dict(os.environ, {"YT_GATEWAY": "off", "AI_GATEWAY_API_KEY": KEY,
+                                          "ANTHROPIC_API_KEY": "sk-ant-direct"}):
+            env = self.child_env()
         self.assertEqual(env["ANTHROPIC_API_KEY"], "sk-ant-direct")
         for name in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_CUSTOM_HEADERS"):
             self.assertNotIn(name, env)
@@ -269,6 +324,24 @@ class On(GatewayCase):
         argv = self.launches()[0]["argv"]
         self.assertEqual(argv[argv.index("--betas") + 1], "context-1m-2025-08-07")
 
+    def test_harness_decide_goes_through_the_gateway(self):
+        # The stage path: Harness builds its own engine and asks with a
+        # schema; the overlay must reach that child too.
+        path = f"{self.exe.parent}{os.pathsep}{os.environ.get('PATH', '')}"
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(harness, "ENGINE", ClaudeEngine), \
+                mock.patch.object(harness, "ENGINE_NAME", "claude"), \
+                mock.patch.dict(os.environ, on(ANTHROPIC_API_KEY="sk-ant-direct", PATH=path)):
+            h = harness.Harness(Path(tmp), "build", model="sonnet", verbose=False)
+            schema = {"type": "object", "properties": {"verdict": {"type": "string"}},
+                      "required": ["verdict"]}
+            self.assertEqual(h.decide("probe", "is it ok?", schema), {"verdict": "ok"})
+        (launch,) = self.launches()
+        self.assertEqual(launch["env"]["ANTHROPIC_AUTH_TOKEN"], KEY)
+        self.assertEqual(launch["env"]["ANTHROPIC_API_KEY"], "")
+        self.assertEqual(launch["env"]["ANTHROPIC_BASE_URL"], HOST + "/claude-code")
+        self.assertIn("--json-schema", launch["argv"])
+
     def test_the_key_is_never_on_the_command_line(self):
         with mock.patch.dict(os.environ, on()):
             self.engine(model="opus").ask("hi", schema={"type": "object"})
@@ -303,6 +376,22 @@ class Refused(GatewayCase):
             exc = self.assert_refused_without_launch(
                 lambda: self.engine(bare=True).ask("hi"))
         self.assertIn("bare", str(exc))
+
+    def test_bare_with_gateway_subscription_mode(self):
+        # --bare skips the login that subscription mode keeps, so the CLI
+        # would fall back to a direct ANTHROPIC_API_KEY and send it to the
+        # gateway's host: refused in this mode as well.
+        with mock.patch.dict(os.environ, on(YT_GATEWAY_AUTH="subscription",
+                                            ANTHROPIC_API_KEY="sk-ant-direct")):
+            exc = self.assert_refused_without_launch(
+                lambda: self.engine(bare=True).ask("hi"))
+        self.assertIn("bare", str(exc))
+
+    def test_cloud_provider_routing_stops_the_launch(self):
+        with mock.patch.dict(os.environ, on()):
+            exc = self.assert_refused_without_launch(
+                lambda: self.engine(env={"CLAUDE_CODE_USE_BEDROCK": "1"}).ask("hi"))
+        self.assertIn("CLAUDE_CODE_USE_BEDROCK", str(exc))
 
     def test_bare_without_the_gateway_still_launches(self):
         self.engine(bare=True).ask("hi")
@@ -341,10 +430,11 @@ class Documented(unittest.TestCase):
         # Both said "auth is ANTHROPIC_API_KEY only" and nothing more, which
         # reads as a way round the gateway rather than a conflict with it.
         help_text = " ".join(claude_engine.build_parser().format_help().split())
-        self.assertIn("so refused under YT_GATEWAY=vercel in key mode", help_text)
+        self.assertIn("so refused under YT_GATEWAY=vercel", help_text)
         text = (ROOT / "claude_engine.py").read_text(encoding="utf-8")
         field = text[text.index("    bare: bool = False"):text.index("# --- streaming")]
         self.assertIn("refused under YT_GATEWAY=vercel", field)
+        self.assertNotIn("in key mode", " ".join(field.split()))
 
 
 if __name__ == "__main__":
