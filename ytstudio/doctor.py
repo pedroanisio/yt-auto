@@ -668,8 +668,11 @@ def check_spend(project: workspace.Project, report: Report) -> None:
     or `$CLAUDE_PRICES` is booked at $0 when it times out (a Codex call on one
     is recorded without a cost). keyframe.json keeps its two harness reports
     one level down (`engine.elements`, `engine.review`), so an account
-    without a breakdown is opened once."""
+    without a breakdown is opened once. A row with `cost_cli_calls` was
+    booked through the gateway at the claude CLI's own figure, not the price
+    table (AUTO-121), and is warned about on its own line."""
     unpriced: dict[str, list[str]] = {}
+    estimated: dict[str, list[str]] = {}
     for path in sorted(project.root.glob("*.json")):
         rec = read_json(path, warn=False)
         if not isinstance(rec, dict):
@@ -682,7 +685,11 @@ def check_spend(project: workspace.Project, report: Report) -> None:
                 v for v in account.values() if isinstance(v, dict)]
             for model, row in ((m, r) for a in accounts
                                for m, r in (a.get("by_model") or {}).items()):
-                if not _priced(str(model), row):
+                if isinstance(row, dict) and row.get("cost_cli_calls"):
+                    # Through the gateway with no row or no tokens to price
+                    # it (AUTO-121): booked at the claude CLI's own figure.
+                    estimated.setdefault(str(model), []).append(path.name)
+                elif not _priced(str(model), row):
                     unpriced.setdefault(str(model), []).append(path.name)
     for model, names in sorted(unpriced.items()):
         report.add("warn", "spend", f"{model} has no price; {', '.join(sorted(set(names)))} "
@@ -690,6 +697,12 @@ def check_spend(project: workspace.Project, report: Report) -> None:
                    "a Codex call on it is recorded without a cost",
                    "add its row to ytstudio/spend.PRICES or $CLAUDE_PRICES (a Claude id), "
                    "codex_engine.PRICES or $CODEX_PRICES (a Codex one)")
+    for model, names in sorted(estimated.items()):
+        report.add("warn", "spend", f"{model}: {', '.join(sorted(set(names)))} book calls "
+                   "made through the gateway at the claude CLI's own figure (cost_cli_calls), "
+                   "not the price table, so the record may differ from the gateway's bill",
+                   "add the model's row to ytstudio/spend.PRICES or $CLAUDE_PRICES; a call "
+                   "whose result carried no tokens is booked this way whatever the table says")
 
 
 def check_project(project: workspace.Project, work: Path | None = None) -> Report:
