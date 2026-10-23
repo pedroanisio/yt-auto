@@ -170,6 +170,27 @@ class Block(unittest.TestCase):
         self.assertEqual(len(notes), 1, [f.message for f in rows])
         self.assertIn("ANTHROPIC_API_KEY", notes[0].message)
         self.assertIn("blank", notes[0].message)
+        # the note says what the route does, not what doctor assumes it does
+        self.assertEqual(doctor.gateway.claude_env(os.environ)["ANTHROPIC_API_KEY"], "")
+
+    def test_the_api_key_row_follows_the_route_not_the_mode_name(self):
+        # a route that stopped blanking the key would leave it for the CLI
+        kept = {"ANTHROPIC_BASE_URL": "https://ai-gateway.vercel.sh/claude-code",
+                "ANTHROPIC_AUTH_TOKEN": KEY}
+        with mock.patch.object(doctor.gateway, "claude_env", return_value=kept):
+            rows = self.rows(YT_GATEWAY="vercel", AI_GATEWAY_API_KEY=KEY,
+                             ANTHROPIC_API_KEY="sk-ant-api03-Zq8Lw2Xp9Rv4Tn6")
+        said = [f for f in rows if "ANTHROPIC_API_KEY is set" in f.message]
+        self.assertEqual([f.level for f in said], ["warn"], [f.message for f in rows])
+        self.assertNotIn("blank", said[0].message)
+
+    def test_an_unusable_auth_mode_says_nothing_about_the_api_key(self):
+        # the route cannot run, so no claim about what it does with the key
+        rows = self.rows(YT_GATEWAY="vercel", YT_GATEWAY_AUTH="sometimes",
+                         AI_GATEWAY_API_KEY=KEY, ANTHROPIC_API_KEY="sk-ant-api03-Zq8Lw2Xp9Rv4Tn6")
+        self.assertTrue([f for f in rows if f.level == "fail" and "YT_GATEWAY_AUTH" in f.message])
+        self.assertFalse([f for f in rows if "ANTHROPIC_API_KEY is set" in f.message],
+                         [f.message for f in rows])
 
     def test_subscription_mode_warns_that_a_direct_key_is_sent(self):
         rows = self.rows(YT_GATEWAY="vercel", YT_GATEWAY_AUTH="subscription",

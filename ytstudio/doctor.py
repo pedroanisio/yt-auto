@@ -312,12 +312,16 @@ def check_gateway(report: Report, environ: dict | None = None) -> None:
         return
     area = "gateway"
     problems: list[str] = []
-    for route in (gateway.claude_env, gateway.codex_config):
+
+    def attempt(route):
         try:
-            route(environ)
+            return route(environ)
         except gateway.GatewayError as exc:
             if str(exc) not in problems:    # a missing key fails both routes
                 problems.append(str(exc))
+            return None
+    child = attempt(gateway.claude_env)     # what the claude CLI's child gets
+    attempt(gateway.codex_config)
     for problem in problems:
         fix = (_key_fix() if gateway.KEY in problem
                else f"fix what it names, or unset {gateway.SWITCH} to call the providers directly")
@@ -348,15 +352,19 @@ def check_gateway(report: Report, environ: dict | None = None) -> None:
                    "the gateway's; yt replaces it for the claude CLI, so it is not the one used",
                    f"unset ANTHROPIC_BASE_URL; name a proxy with {gateway.URL}")
 
-    if (environ.get("ANTHROPIC_API_KEY") or "").strip():
-        if mode == "subscription":
-            report.add("warn", area, "ANTHROPIC_API_KEY is set, and in subscription mode the "
-                       "claude CLI sends it to the gateway in place of your login",
-                       "unset ANTHROPIC_API_KEY")
-        else:
+    # Said from what the route lays over the child, not from the mode's name;
+    # with no route (a fail above) there is nothing to say about it.
+    if child is not None and (environ.get("ANTHROPIC_API_KEY") or "").strip():
+        if child.get("ANTHROPIC_API_KEY") == "":
             report.add("note", area, "ANTHROPIC_API_KEY is set in this shell; yt blanks it "
                        "for the claude CLI, which would otherwise send it ahead of the "
                        "gateway key")
+        else:
+            how = ("in place of your login" if mode == "subscription"
+                   else "ahead of the gateway key")
+            report.add("warn", area, f"ANTHROPIC_API_KEY is set, and in {mode} mode the "
+                       f"claude CLI gets it and sends it to the gateway {how}",
+                       "unset ANTHROPIC_API_KEY")
 
 
 def gateway_ping(report: Report, environ: dict | None = None) -> None:
