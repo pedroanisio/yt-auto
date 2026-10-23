@@ -157,12 +157,21 @@ the stream meter. A decision that raised is a `failed` row in the harness report
 what the engine spent, so the record bills it; `yt doctor` warns when a
 record's `by_model` names an id neither engine priced (a Codex id is priced
 from `codex_engine.PRICES` and `$CODEX_PRICES`). A Vercel AI Gateway id is
-its direct name (`ytstudio/models.py`, AUTO-120): `anthropic/claude-haiku-4.5`,
-`claude-code/anthropic/claude-opus-5[1m]` and `openai/gpt-5` take the row,
-the family and the Claude check of `claude-haiku-4-5`, `claude-opus-5` and
+its direct name (`ytstudio/models.py`, AUTO-120): `anthropic/claude-opus-5.5`,
+`claude-code/anthropic/claude-haiku-4.5` and `openai/gpt-5` take the row,
+the family and the Claude check of `claude-opus-5-5`, `claude-haiku-4-5` and
 `gpt-5` when no row names the gateway id itself, while a name with no
-provider is looked up exactly as before; a virtual model (`vmc/<slug>`) has
-no row. The decision cache names the model as passed, so a gateway id is a
+provider is looked up exactly as before. A row is its own provider's:
+Anthropic's rows price `anthropic/` ids, Codex's `openai/` ones, and a Claude
+model from another provider (`bedrock/claude-opus-5`) has no row, its rate
+being that provider's. A 1M-token context (`...[1m]`) has the family of its
+model but no row on either route, as it may bill above the base rate, so its
+session keeps the CLI's budget stop and `yt doctor` warns until a row names
+it; a virtual model (`vmc/<slug>`) has no row, and any `claude-code/` id is
+dropped by Codex as a Claude one. A quiet doctor means `spend.price_for`
+has a row, which for a short name (`opus`, `anthropic/opus`) is an
+estimate's: the engine's table holds no alias, so a cut-off call on one is
+booked at $0. The decision cache names the model as passed, so a gateway id is a
 new question and an alias passed on either route (`--model opus`) reuses
 the same decisions, which is meant: it is the same model.
 
