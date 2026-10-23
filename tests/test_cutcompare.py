@@ -171,9 +171,11 @@ class Compare(unittest.TestCase):
         self.node.replies(ok(verdict()))
         self.compare()
         self.h = self.harness()
-        self.assertEqual(cutcompare.compare_cuts(self.h, self.previous, self.new,
-                                                 pass_name="pass-02")["status"], "done")
+        again = cutcompare.compare_cuts(self.h, self.previous, self.new, pass_name="pass-02")
+        self.assertEqual(again["status"], "done")
         self.assertEqual(self.node.count, 2)
+        # served from the cache: this run paid nothing for it
+        self.assertEqual(again["cost_usd"], 0)
 
     def test_enum_violation_after_retry_fails_comparison(self):
         self.node.replies(ok(verdict(winner="C")))
@@ -307,6 +309,8 @@ class Qa(QaCase):
         for req in self.node.requests():
             self.assertNotIn("REVISION NOTE", req["instructions"])
             self.assertNotIn("REVISION NOTE", req["prompt"])
+            # the comparison's own timeout, not the reviewer's
+            self.assertEqual(req["timeoutMs"], int(cutcompare.COMPARE_TIMEOUT * 1000))
         # the video comparison succeeded: the still pairs were not asked
         self.assertEqual(self.seen["compares"], [])
         side = c["side_by_side"]
@@ -342,6 +346,17 @@ class Qa(QaCase):
             qa.pass_usd(c), round((c["usage"]["cost_usd"] - compare - _once(c))
                                   / c["scoring"]["asked"] * qa.QA_SAMPLES
                                   + compare + _once(c), 2))
+
+    def test_the_compare_cost_is_added_once_whatever_the_samples_asked(self):
+        # two samples asked, not QA_SAMPLES: only the samples' part scales
+        c = {"usage": spend.record(1.2, "m", 5), "scoring": {"asked": 2, "valid": 2},
+             "engine": {"cost_usd": 1.0, "decisions": [
+                 {"name": f"pass-02-scorecard-s{k}", "cost_usd": 0.5} for k in (1, 2)]},
+             "compare_engine": {"cost_usd": 0.2, "decisions": [
+                 {"name": "cutcompare-pass-02-ab", "cost_usd": 0.1, "cached": False},
+                 {"name": "cutcompare-pass-02-ba", "cost_usd": 0.1, "cached": False},
+                 {"name": "cutcompare-pass-01-ab", "cost_usd": 0.3, "cached": True}]}}
+        self.assertEqual(qa.pass_usd(c), round((1.2 - 0.2) / 2 * qa.QA_SAMPLES + 0.2, 2))
 
     def test_enum_violation_falls_back_to_the_still_pairs(self):
         self.node.replies(ok(verdict(winner="C")))
@@ -487,7 +502,11 @@ class Improve(ImproveCase):
     def test_the_main_pass_hands_qa_the_snapshot_cut(self):
         self.start_pass(card(5.0, mechanical=[mech()]))
         runner = FakeRunner(self.root, [card(6.0)])
-        record = self.improver(runner, max_passes=1, compare_model=MODEL).run()
+        with mock.patch.dict(os.environ, {gateway.KEY: KEY_VALUE}):
+            record = self.improver(runner, max_passes=1, compare_model=MODEL).run()
+        # estimated before the snapshot exists, from the cut it will hold
+        qa_row = next(r for r in record["passes"][0]["estimates"] if r["stage"] == "qa")
+        self.assertIn("--against", qa_row["source"])
         (argv,) = self.qa_runs(runner)
         snap = self.root / "improve" / "pass-01" / "snapshot"
         self.assertEqual(self.against_of(argv), (str(snap / "video.mp4"), MODEL))
