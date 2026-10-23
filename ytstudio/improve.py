@@ -95,7 +95,7 @@ TOLERANCE = 0.5
 SURVIVOR_PASSES = 3
 
 IMPROVE_DIR = "improve"
-QA_FAILED = "qa filed no new pass"
+QA_FAILED = "qa filed no new scored pass"
 #: Stages whose own cache replays an attempt: vfx keeps every planning and
 #: authoring step by name, so run without --fresh it re-materialises the
 #: last run's version instead of authoring a new one.
@@ -912,16 +912,39 @@ def blocking_mechanical(card: dict) -> set[str]:
             for f in card.get("mechanical") or [] if f.get("severity") == "blocking"}
 
 
+def spread(card: dict, key: str) -> float:
+    """The samples' spread (max - min) a scorecard recorded for `key`, a
+    category or `overall` (AUTO-107); 0 for a card scored once."""
+    try:
+        return max(0.0, float((card.get("spread") or {}).get(key) or 0))
+    except (TypeError, ValueError, AttributeError):
+        return 0.0
+
+
 def judge(best: dict, new: dict, *, tolerance: float = TOLERANCE) -> dict:
     """Keep only a measured improvement: the overall up, no category down by
-    more than the tolerance, no new blocking mechanical finding."""
+    more than the tolerance, no new blocking mechanical finding. A change
+    smaller than the samples' spread (the larger of the two passes',
+    AUTO-107) is no change: a gain inside it is not kept, and a drop inside
+    it is no regression. A pass QA could not score (`not_evidenced`) is
+    never kept."""
+    if new.get("verdict") == qa.NOT_EVIDENCED:
+        return {"keep": False, "deltas": {}, "overall_delta": 0.0,
+                "against": best.get("pass"),
+                "reasons": [f"{new.get('pass')} is not evidenced: fewer than two of its "
+                            "scoring samples answered, so nothing is measured"]}
     diff = qa.compare(best, new)
     reasons = []
+    noise = max(spread(best, "overall"), spread(new, "overall"))
     if diff["overall_delta"] <= 0:
         reasons.append(f"overall {new.get('overall')} did not improve on "
                        f"{best.get('overall')} ({diff['overall_delta']:+.2f})")
+    elif diff["overall_delta"] < noise - 1e-9:
+        reasons.append(f"overall {diff['overall_delta']:+.2f} is inside the samples' "
+                       f"spread of {noise:.2f}: no change")
     for key, delta in diff["deltas"].items():
-        if delta < -tolerance - 1e-9:
+        inside = -delta < max(spread(best, key), spread(new, key)) - 1e-9
+        if delta < -tolerance - 1e-9 and not inside:
             reasons.append(f"{key} dropped {delta:+.1f}, more than the {tolerance:g} "
                            "tolerance")
     for fp in sorted(blocking_mechanical(new) - blocking_mechanical(best)):
@@ -1047,11 +1070,21 @@ class Improver:
         card = self._card(after)
         if card:
             self.spent_stages += _cost_in(card) or 0.0
+        if card and card.get("verdict") == qa.NOT_EVIDENCED:
+            # Fewer than two scoring samples answered (AUTO-107): what the
+            # pass made stays, unjudged, and the next run scores it again.
+            self._log(f"[improve] {after.name} is not evidenced: fewer than two of its "
+                      "scoring samples answered")
+            return None
         return card
 
     def _stale(self, pdir: Path) -> bool:
+        """No scorecard, one older than the video it should judge, or one QA
+        could not score (`not_evidenced`): the pass is scored again first."""
         card = pdir / "scorecard.json"
         if not card.is_file():
+            return True
+        if (read_json(card, warn=False) or {}).get("verdict") == qa.NOT_EVIDENCED:
             return True
         newest = max((p.stat().st_mtime for p in (self.root / "video.mp4",
                                                   self.root / "scene.xml") if p.exists()),

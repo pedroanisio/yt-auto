@@ -265,5 +265,56 @@ class Merging(unittest.TestCase):
         self.assertEqual(len(low), 1)
 
 
+class Keep(unittest.TestCase):
+    """improve's keep-or-restore reads a change inside the spread as none."""
+
+    def test_a_gain_inside_the_spread_is_not_kept(self):
+        best = dict(improve_card(7.0), spread={"overall": 0.2})
+        new = dict(improve_card(7.3), spread={"overall": 0.5})
+        verdict = improve.judge(best, new)
+        self.assertFalse(verdict["keep"])
+        self.assertTrue(any("spread" in r for r in verdict["reasons"]), verdict["reasons"])
+
+    def test_a_gain_beyond_the_spread_is_kept(self):
+        best = dict(improve_card(7.0), spread={"overall": 0.2})
+        new = dict(improve_card(7.6), spread={"overall": 0.5})
+        self.assertTrue(improve.judge(best, new)["keep"])
+
+    def test_a_drop_inside_the_spread_is_no_regression(self):
+        best = improve_card(7.0)
+        new = dict(improve_card(8.0, scores={"voiceover": 6.2}),
+                   spread={"overall": 0.4, "voiceover": 1.0})
+        self.assertTrue(improve.judge(best, new)["keep"])
+        worse = dict(new, scores=dict(new["scores"], voiceover=5.9))
+        verdict = improve.judge(best, worse)
+        self.assertFalse(verdict["keep"])
+        self.assertTrue(any("voiceover" in r for r in verdict["reasons"]))
+
+    def test_cards_from_before_the_samples_judge_as_before(self):
+        self.assertTrue(improve.judge(improve_card(7.0), improve_card(7.1))["keep"])
+
+    def test_a_not_evidenced_pass_is_never_kept(self):
+        new = dict(improve_card(9.5), verdict=qa.NOT_EVIDENCED, scores={}, overall=None)
+        verdict = improve.judge(improve_card(7.0), new)
+        self.assertFalse(verdict["keep"])
+
+
+class KeepInTheLoop(ImproveCase):
+    def test_improve_does_not_keep_a_pass_whose_gain_is_inside_the_spread(self):
+        self.start_pass(dict(improve_card(7.0, mechanical=[mech()]), spread={"overall": 0.3}))
+        runner = FakeRunner(self.root, [dict(improve_card(7.4), spread={"overall": 0.6})])
+        p = self.improver(runner, max_passes=1).run()["passes"][0]
+        self.assertEqual(p["decision"], "revert")
+        self.assertTrue(any("spread" in r for r in p["reasons"]), p["reasons"])
+
+    def test_a_not_evidenced_latest_pass_is_scored_again_first(self):
+        self.start_pass(dict(improve_card(7.0, mechanical=[mech()]),
+                             verdict=qa.NOT_EVIDENCED, scores={}, overall=None))
+        runner = FakeRunner(self.root, [improve_card(7.0, mechanical=[mech()]),
+                                        improve_card(8.0)])
+        self.improver(runner, max_passes=1).run()
+        self.assertEqual(runner.stages()[0], "qa")
+
+
 if __name__ == "__main__":
     unittest.main()
