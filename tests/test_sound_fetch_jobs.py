@@ -17,12 +17,15 @@ jobs.
 import contextlib
 import io
 import json
+import os
 import signal
+import sys
 import tempfile
 import threading
 import time
 import unittest
 import urllib.error
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
@@ -200,30 +203,102 @@ class Overlap(FetchCase):
                       lines[0])
         self.assertEqual([m["cue_id"] for m in data["unfilled"]], ["A1"])
 
+    def interrupted(self, run, started: threading.Event):
+        """`run()` with a SIGINT whose handler is slow to act, as CPython's
+        can be when the signal lands while the main thread waits on a lock
+        (it may see it only once the lock is released, AUTO-129): the
+        handler waits for a second job to start before it raises, so a job
+        the pool could still pick up after the interrupt always is, and one
+        never handed to the pool times the wait out."""
+        def late(signum, frame):
+            started.wait(0.5)
+            raise KeyboardInterrupt
+        before = signal.signal(signal.SIGINT, late)
+        try:
+            with self.assertRaises(KeyboardInterrupt):
+                run()
+        finally:
+            signal.signal(signal.SIGINT, before)
+
+    @staticmethod
+    def interrupt() -> None:
+        """SIGINT to the main thread once it waits for a pool job to end.
+
+        Not at once: the fakes are so quick that the first job can reach
+        here while the main thread is still inside its first `submit`,
+        starting the pool's thread, and an interrupt there lands before
+        anything else was queued, so the old `pool.map` fetch passed by
+        luck (AUTO-129). Its stack says where it is; the wait is a poll
+        with a deadline, and what the test decides does not hang on its
+        length."""
+        main = threading.main_thread().ident
+        base = os.path.join("concurrent", "futures", "_base.py")
+
+        def waits() -> bool:
+            frame = sys._current_frames().get(main)
+            while frame is not None:
+                code = frame.f_code
+                if code.co_filename.endswith(base) and code.co_name in ("result", "wait"):
+                    return True
+                frame = frame.f_back
+            return False
+        deadline = time.monotonic() + 2.0
+        while not waits() and time.monotonic() < deadline:
+            time.sleep(0.001)
+        signal.pthread_kill(main, signal.SIGINT)
+
     def test_an_interrupt_drops_the_rounds_queued_judgements(self):
         # Ctrl-C while the first judge is out: the pool's exit would otherwise
-        # run every queued session before the interrupt reaches the operator.
-        # The judge sends the signal to the main thread from its own and stays
-        # out a while, so the queued cues are still pending when it lands.
+        # run every queued session before the interrupt reaches the operator,
+        # and a worker that finishes takes the next queued one before the
+        # main thread acts on a late signal. No sleep decides it: the handler
+        # waits for another judgement to start, so one that can run after the
+        # interrupt always does.
         self.catalogue["knock"] = [row(3, "Knock.wav", 1.0)]
         self.cues += (cue("sfx", "S2", "Knock", 1, query="knock"),)
-        judged: list[str] = []
+        judged, started = [], threading.Event()
 
         def judge(c, evidence):
             judged.append(c["cue_id"])
             if c["cue_id"] == "A1":
-                signal.pthread_kill(threading.main_thread().ident, signal.SIGINT)
-                time.sleep(0.2)
+                self.interrupt()
+            else:
+                started.set()
             return {"verdict": "accept", "reason": "fits", "confidence": 0.9}
         data = self.data(*self.cues)
-        before = signal.signal(signal.SIGINT, signal.default_int_handler)
-        try:
-            with self.assertRaises(KeyboardInterrupt):
-                sound.fetch(self.root, data, token="t", jobs=1, say=self.hush,
-                            measure=lambda paths: [levels() for _ in paths], judge=judge)
-        finally:
-            signal.signal(signal.SIGINT, before)
+        self.interrupted(lambda: sound.fetch(
+            self.root, data, token="t", jobs=1, say=self.hush,
+            measure=lambda paths: [levels() for _ in paths], judge=judge), started)
         self.assertEqual(judged, ["A1"])
+
+    def test_an_interrupt_drops_the_rounds_queued_searches_and_downloads(self):
+        # The same for the round's first half: a Ctrl-C during the first
+        # cue's download leaves the other cues unsearched. A search that
+        # starts is written down before the handler is woken, so the
+        # assertion does not depend on how far that worker gets before the
+        # interrupt is raised.
+        self.catalogue["knock"] = [row(3, "Knock.wav", 1.0)]
+        self.cues += (cue("sfx", "S2", "Knock", 1, query="knock"),)
+        inner, started = freesound.fetch_json, threading.Event()
+        late: list[str] = []
+
+        def fake_json(url, **kw):
+            if "hum" not in url:
+                late.append(url)
+                started.set()
+            return inner(url, **kw)
+
+        def fake_bytes(url, **kw):
+            self.downloads.append(url)
+            self.interrupt()
+            return b"ID3" + url.encode()
+        freesound.fetch_json, freesound.fetch_bytes = fake_json, fake_bytes
+        data = self.data(*self.cues)
+        self.interrupted(lambda: sound.fetch(self.root, data, token="t", jobs=1,
+                                             say=self.hush), started)
+        self.assertEqual(late, [])
+        self.assertEqual(self.searches, ["hum"])
+        self.assertEqual(len(self.downloads), 1)
 
     def test_a_rounds_judgements_overlap(self):
         wait = self.meeting("judge")
@@ -251,6 +326,39 @@ class Overlap(FetchCase):
         self.assertEqual([line.split()[0] for line in lines], ["A1", "A1", "S1", "S1"])
         self.assertIn("the judge failed", lines[0])
         self.assertIn("sound/01-room-tone.mp3 <-", lines[1])
+
+
+class InTurn(unittest.TestCase):
+    """`sound._in_turn`, the hand-over the fetch's rounds use in place of
+    `pool.map` (AUTO-129)."""
+
+    def test_the_results_come_in_item_order_whichever_job_ends_first(self):
+        second = threading.Event()
+
+        def fn(x):
+            if x == 0:
+                second.wait(1.0)        # the first item ends after the second
+            else:
+                second.set()
+            return x * 10
+        with ThreadPoolExecutor(2) as pool:
+            self.assertEqual(sound._in_turn(pool, fn, [0, 1, 2], 2), [0, 10, 20])
+
+    def test_a_job_that_fails_stops_the_items_not_yet_handed_over(self):
+        # `pool.map` cancels its queued jobs on a failure too, but a free
+        # worker can take the next one before the cancel; here it is never
+        # handed over.
+        ran: list[int] = []
+
+        def fn(x):
+            ran.append(x)
+            if x == 0:
+                raise OSError("disk full")
+            return x
+        with ThreadPoolExecutor(1) as pool:
+            with self.assertRaises(OSError):
+                sound._in_turn(pool, fn, [0, 1, 2], 1)
+        self.assertEqual(ran, [0])
 
 
 if __name__ == "__main__":
