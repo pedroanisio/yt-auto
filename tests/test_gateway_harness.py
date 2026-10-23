@@ -129,7 +129,15 @@ class Construction(Case):
 
     def test_gateway_does_not_need_yt_gateway(self):
         self.assertNotIn("YT_GATEWAY", os.environ)
+        claude = ClaudeEngine(claude_engine.EngineConfig(executable=str(self.node.exe),
+                                                         model="opus"))
+        kw = dict(output_format="json", resume=False, tools=..., system="S",
+                  schema=SCHEMA)
+        argv, env = claude._build_argv(**kw), claude._popen_kwargs()["env"]
         self.assertEqual(self.make().decide("look", "P", SCHEMA), {"answer": "yes"})
+        # A claude engine built after the gateway decision launches exactly as before.
+        self.assertEqual(claude._build_argv(**kw), argv)
+        self.assertEqual(claude._popen_kwargs()["env"], env)
         self.assertEqual(self.node.count, 1)
         # The global engine is still claude's, and the key alone reroutes nothing.
         self.assertIs(harness.ENGINE, ClaudeEngine)

@@ -56,6 +56,18 @@ research and screenplay work; it is not an unattended model service.
   call, and with `YT_GATEWAY` unset (or `YT_GATEWAY=off`, `0`, `false`, `no`,
   `none`) every call goes to Anthropic exactly as before. Nothing writes
   `~/.claude/settings.json`.
+- Optional, for a stage that opts into the gateway engine only: Node 22 or
+  later and `cd gateway && npm ci --ignore-scripts`. `gateway_engine.py`
+  (stdlib Python, so the pipeline stays dependency-free) runs
+  `gateway/gateway-engine.mjs`, a small program on the AI SDK (`ai` 7.0.150,
+  pinned exactly), for models neither CLI reaches: one that listens to audio
+  or watches video, or a reviewer of another family. A stage chooses it per
+  harness, `Harness(engine="gateway")` behind its own flag, never through
+  `YT_GATEWAY` or `YT_ENGINE`; it needs `AI_GATEWAY_API_KEY`, takes media
+  files with `decide` and serves `decide` only, never `inspect`.
+  `YT_GATEWAY_NODE` names the node binary, and `GATEWAY_PRICES` adds price
+  rows for gateway ids (USD per 1M tokens) for a call the gateway returns no
+  cost for. With no stage asking for it nothing runs Node.
 - Python 3.10+
 
 ---

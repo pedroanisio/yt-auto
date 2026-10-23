@@ -532,5 +532,20 @@ class Cli(Case):
         self.assertEqual(req["media"][0]["mediaType"], "video/mp4")
 
 
+class Documented(unittest.TestCase):
+    """An operator can find the engine and what it needs: the README and
+    SKILL.md name the file, the variables it reads, the install step, and
+    that it is chosen per stage and answers decisions only."""
+
+    def test_the_readme_and_the_skill_name_the_engine(self):
+        for doc in ("README.md", "ytstudio/SKILL.md"):
+            flat = " ".join((ROOT / doc).read_text(encoding="utf-8").split())
+            for needle in ("gateway_engine.py", gateway_engine.NODE_ENV,
+                           gateway_engine.PRICES_ENV, "npm ci --ignore-scripts",
+                           'engine="gateway"', "never `inspect`"):
+                with self.subTest(doc=doc, needle=needle):
+                    self.assertIn(needle, flat)
+
+
 if __name__ == "__main__":
     unittest.main()

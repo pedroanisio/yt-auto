@@ -492,7 +492,15 @@ instead, and `YT_GATEWAY_URL` replaces the host); it is never on by itself, a
 set switch with no key stops the call before it starts, as do `bare` and a
 `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` or `CLAUDE_CODE_USE_FOUNDRY`
 left on, and with it unset (or `YT_GATEWAY=off`, `0`, `false`, `no`, `none`)
-each call, its argv and the decision cache are as they were. Every stage that asks the
+each call, its argv and the decision cache are as they were. The gateway engine
+(`gateway_engine.py`, AUTO-124) is a separate opt-in: a stage builds
+`Harness(engine="gateway")` behind its own flag for a model neither CLI reaches
+(audio, video, another reviewer family), and only that harness runs
+`gateway/gateway-engine.mjs` on Node 22 or later (`cd gateway && npm ci
+--ignore-scripts`; `YT_GATEWAY_NODE` names the binary, `AI_GATEWAY_API_KEY` is
+its key, `GATEWAY_PRICES` prices a gateway id the gateway returns no cost for).
+It serves `decide` (with `media=` files) only, never `inspect`; `YT_GATEWAY`
+and `YT_ENGINE` do not select it, and Python stays dependency-free. Every stage that asks the
 model takes `--model`, `--effort` and `--fallback-model` (default sonnet);
 `yt doctor`, `yt ls` and `yt assets` call no model.
 
