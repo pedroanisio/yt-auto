@@ -431,6 +431,20 @@ class Preflight(Listen):
         self.run_qa()
         self.assertTrue(self.listening_json()["current"])
 
+    def test_listen_family_refusal_names_the_listen_flags(self):
+        # `yt qa --listen` has no --model or --reviewer-model: the refusal
+        # names the stage file and --listen-model, which the operator can act on
+        self.make_project(script={"engine": {"model": "google/gemini-3.6-pro"}})
+        self.refused("script.json", "google/gemini-3.6-pro", "--listen-model", "google")
+        self.assertNotIn("--reviewer-model", self.stderr)
+        self.assertNotIn("--model ", self.stderr)
+        # an author nobody can place is still refused, and says what settles it
+        snd = listening._sound()
+        snd["engine"] = {"model": "mystery-model"}
+        self.make_project(sound=snd)
+        self.refused("sound.json", "nobody can say who made mystery-model", "--listen-model")
+        self.assertNotIn("--reviewer-model", self.stderr)
+
 
 # --------------------------------------------------------------------------- #
 # the audio
@@ -479,8 +493,23 @@ class Audio(Listen):
             self.refused("duration")
 
     def test_listen_sends_media_and_caches(self):
-        self.run_qa()
+        self.node.replies(ok(answer(), routing={"resolvedProvider": "google"}))
+        listener = _listen()._Listener
+        built, engine = [], listener._engine
+
+        def spy(harness, **config):
+            made = engine(harness, **config)
+            built.append(made.config)
+            return made
+        with mock.patch.object(listener, "_engine", spy):
+            self.run_qa(listen_budget_usd=0.37)
         self.assertEqual(self.node.count, 1)
+        # AUTO-124's runtime cap is the operator's budget, and its media cap
+        # is the number the preflight measured the track against
+        self.assertEqual([c.max_turns_budget_usd for c in built], [0.37])
+        self.assertEqual([c.max_media_mb for c in built], [_listen().LISTEN_MAX_MB])
+        self.assertEqual(self.listening_json()["served_model"], MODEL)
+        self.assertEqual(self.listening_json()["provider"], "google")
         media = self.node.requests()[0]["media"]
         self.assertEqual(len(media), 1)
         self.assertTrue(media[0]["path"].endswith(".aac"))
@@ -496,6 +525,10 @@ class Audio(Listen):
         self.assertTrue(all(d["cached"] for d in second["listen"]["engine"]["decisions"]))
         self.assertEqual(second["listen"]["engine"]["cost_usd"], 0)
         self.assertTrue(self.listening_json("pass-02")["current"])
+        # served from the cache, it still says who answered: the pass that asked
+        self.assertEqual(self.listening_json("pass-02")["served_model"], MODEL)
+        self.assertEqual(self.listening_json("pass-02")["provider"], "google")
+        self.assertEqual(second["listen"]["served_model"], MODEL)
         # a changed mix: a new film, a new track, asked again
         (self.root / "video.mp4").write_bytes(b"film-2")
         later = (self.root / "scene.xml").stat().st_mtime + 120
@@ -531,6 +564,56 @@ class Checked(Listen):
                         card["not_evidenced"])
         dropped = self.listening_json()["dropped"]
         self.assertEqual([d["finding"]["problem"] for d in dropped], [outside["problem"]])
+
+    def test_listen_again_keeps_the_first_answers_good_findings(self):
+        good = dict(FINDING, timestamp=8.0, problem="the bed pumps under the voice",
+                    owner="build", severity="minor")
+        outside = dict(FINDING, timestamp=99.0, problem="a pop far past the end",
+                       severity="minor")
+        # the second answer files only the corrected finding, leaving out the
+        # two the check kept, and repeats one of them besides
+        fixed = dict(outside, timestamp=15.0)
+        self.node.replies(ok(answer([FINDING, good, outside])),
+                          ok(answer([fixed, dict(good, timestamp=8.2)])))
+        self.run_qa()
+        self.assertEqual(self.node.count, 2)
+        again = self.node.requests()[1]["prompt"]
+        self.assertIn("only", again)
+        record = self.listening_json()
+        heard = sorted((f["timestamp"], f["problem"]) for f in record["findings"])
+        self.assertEqual(heard, [(3.2, FINDING["problem"]), (8.0, good["problem"]),
+                                 (15.0, outside["problem"])])
+        self.assertEqual(record["dropped"], [])
+        self.assertEqual(record["result"]["categories"]["sound_design"]["findings"][0],
+                         FINDING)
+        self.assertEqual(record["again"]["categories"]["sound_design"]["findings"][0], fixed)
+        card = self.card()
+        self.assertFalse(any("a pop far past the end" in n for n in card["not_evidenced"]))
+
+    def test_listen_prompt_contents(self):
+        listen = _listen()
+        script = {"sections": [{"shots": [{"label": "1.1"}, {"label": "1.2"}]}]}
+        prompt = listen.listen_prompt("One take", SECONDS, script=script,
+                                      build=motion._build(audio_tracks=3),
+                                      voice=listening._voice(), sound=listening._sound())
+        # the narration as lines of text, not one escaped JSON string
+        self.assertIn("This comet is leaving the Sun.", prompt)
+        self.assertIn("And its tail is in front.", prompt)
+        self.assertNotIn("\\n", prompt)
+        self.assertIn("The narration as written", prompt)
+        self.assertIn("context and not evidence", prompt)
+        self.assertIn("The cue sheet as spotted: context, not evidence", prompt)
+        self.assertIn("seconds from the start of this audio", prompt)
+        self.assertIn(f"0 to {SECONDS:g}", prompt)
+        # the cue sheet's place, length, kind and level, nothing else of it
+        for needle in ('"at": 3', '"seconds": 1', '"kind": "sfx"', '"level": "-12 dBFS peak"'):
+            self.assertIn(needle, prompt)
+        self.assertNotIn("sound/s1.mp3", prompt)
+        # and what the gateway was asked is that prompt
+        self.run_qa()
+        sent = self.node.requests()[0]["prompt"]
+        self.assertIn("The cue sheet as spotted: context, not evidence", sent)
+        self.assertIn('"kind": "sfx"', sent)
 
     def test_listen_enum_violation_dropped(self):
         bad = dict(FINDING, owner="editor", severity="major", problem="the bed pumps")
@@ -667,6 +750,38 @@ class Records(Listen):
         self.assertFalse(row["current"])
         self.assertIn(qa.ROLE, Recording.systems[-1])
 
+    def test_a_scene_edited_during_the_listen_is_not_current(self):
+        listener = _listen()._Listener
+        decide = listener.decide
+
+        def then_edit(harness, *a, **kw):
+            out = decide(harness, *a, **kw)
+            later = (self.root / "video.mp4").stat().st_mtime + 60
+            os.utime(self.root / "scene.xml", (later, later))
+            return out
+        with mock.patch.object(listener, "decide", then_edit):
+            self.run_qa()
+        record = self.listening_json()
+        self.assertFalse(record["current"])
+        self.assertIn("older than scene.xml", record["reason"])
+        self.assertEqual([f["owner"] for f in record["findings"]], ["external"])
+        row = next(r for r in self.card()["listening"] if r["source"] == "listen")
+        self.assertFalse(row["current"])
+
+    def test_pass_usd_leaves_the_listen_out(self):
+        # one scoring sample asked, the reviewer's 0.30 and the listen's 0.10:
+        # the next pass is QA_SAMPLES samples of the reviewer's, and a listen
+        # only when --listen is asked again (spend.FLAG_USD prices it then)
+        card = {"usage": spend.record(0.40, "sonnet", 2),
+                "engine": {"cost_usd": 0.30, "decisions": []},
+                "scoring": {"asked": 1},
+                "listen": {"engine": {"cost_usd": 0.10, "decisions": [
+                    {"name": "listen-0123", "cached": False, "cost_usd": 0.10}]}}}
+        self.assertEqual(qa.pass_usd(card), round(0.30 * qa.QA_SAMPLES, 2))
+        # a failed listen is billed on the card, and left out the same way
+        card["listen"]["engine"]["decisions"][0]["kind"] = "failed"
+        self.assertEqual(qa.pass_usd(card), round(0.30 * qa.QA_SAMPLES, 2))
+
     def test_listen_usage_merged(self):
         self.run_qa()
         card = self.card()
@@ -683,8 +798,10 @@ class Records(Listen):
         record = json.loads((self.root / "qa.json").read_text())
         self.assertEqual(record["usage"], card["usage"])
         self.assertAlmostEqual(spend._qa_cost(self.root), card["usage"]["cost_usd"])
-        # the next pass's price counts the listen once, not once per sample
-        self.assertAlmostEqual(qa.pass_usd(card), round(card["usage"]["cost_usd"], 2), places=2)
+        # the next pass's price is the reviewer's alone: a plain `yt qa` does
+        # not listen, and --listen adds its own estimate (spend.FLAG_USD)
+        self.assertAlmostEqual(qa.pass_usd(card), round(card["engine"]["cost_usd"], 2),
+                               places=2)
 
     def test_listen_flag_increment(self):
         self.run_qa(listen=False)
@@ -693,9 +810,28 @@ class Records(Listen):
         row = next(r for r in spend.stage_estimates(self.root, [], extras={"qa": ["--listen"]})
                    if r["stage"] == "qa")
         self.assertIn("--listen", row["source"])
-        # a last pass that listened already holds the listen's cost
+        plain = next(r for r in spend.stage_estimates(self.root, []) if r["stage"] == "qa")
+        # A last pass that listened does not hold the next listen's cost: its
+        # price leaves the listen out (qa.pass_usd), so --listen adds it again,
+        # whether that listen was paid, served from the cache or failed.
         self.run_qa()
-        self.assertEqual(dict(spend.flag_increments(self.root, "qa", ["--listen"])), {})
+        self.assertGreater(dict(spend.flag_increments(self.root, "qa", ["--listen"]))
+                           .get("--listen", 0), 0)
+        again = next(r for r in spend.stage_estimates(self.root, []) if r["stage"] == "qa")
+        self.assertEqual(again["usd"], plain["usd"])
+        self.assertNotIn("--listen", again["source"])
+        self.run_qa()                                          # the same mix: cached
+        self.assertTrue(self.card("pass-03")["listen"]["engine"]["decisions"][0]["cached"])
+        self.assertGreater(dict(spend.flag_increments(self.root, "qa", ["--listen"]))
+                           .get("--listen", 0), 0)
+        self.make_project(film=b"film-3")
+        self.node.replies(err("gateway", 3, usage=USAGE, status=402, retryable=False,
+                              message="Insufficient funds: quota_for_entity_exceeded"))
+        self.run_qa()
+        self.assertEqual(self.card("pass-01")["listen"]["engine"]["decisions"][0]["kind"],
+                         "failed")
+        self.assertGreater(dict(spend.flag_increments(self.root, "qa", ["--listen"]))
+                           .get("--listen", 0), 0)
         # with no record at all the flag is priced from its defaults
         self.assertGreater(dict(spend.flag_increments(None, "qa", ["--listen"]))["--listen"], 0)
 
