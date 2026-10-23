@@ -156,10 +156,11 @@ Both can also go in an env file `yt` loads (`--env-file`, `$YT_ENV_FILE`,
 endpoints in use (never the key) and fails on anything the route would
 refuse, and `yt doctor --gateway-ping` adds one `GET /v1/credits` showing
 the team's balance; doctor makes no gateway call without it. No setup
-command is needed: Vercel's `npx vercel ai-gateway setup` writes the gateway
-into `~/.claude/settings.json` and `~/.codex/config.toml`, where it would
-stay on for every claude and codex session outside `yt`. `yt` sets the
-variables for its own child processes only and writes neither file.
+command is needed: Vercel's `npx vercel ai-gateway setup` is described as
+writing the gateway into the CLIs' own settings (`~/.claude/settings.json`,
+`~/.codex/config.toml`), where it would stay on for every claude and codex
+session outside `yt`. `yt` sets the variables for its own child processes
+only and writes neither file.
 
 | Variable | What it does |
 |---|---|
@@ -189,8 +190,8 @@ for a stage that opts in (installed as Requirements above says).
 row times the tokens the CLI reports, not at the CLI's own
 `total_cost_usd`, which is its estimate at Anthropic's rates; that figure
 stays on the `by_model` row as `cli_cost_usd`. The gateway charges list
-price with no markup, so the booking is an estimate of the bill at list
-price: a model Vercel discounts, or a surcharge such as zero data
+price with no markup ([Vercel's pricing page](https://vercel.com/docs/ai-gateway/pricing)),
+so the booking is an estimate of the bill at list price: a model Vercel discounts, or a surcharge such as zero data
 retention, is not in it. A call with no price row or no tokens is booked at
 the CLI's figure instead and counted in `cost_cli_calls`, which `yt doctor`
 warns about. A gateway-engine call books the cost the gateway reports for
@@ -200,14 +201,17 @@ it, else a price row (`GATEWAY_PRICES` first), and its row says which
 
 **402 and 429.** A gateway budget's 402 (`quota_for_entity_exceeded`, a
 team or project's "budget exceeded", an API key's "Quota limit exceeded")
-is permanent: the call stops at the first one, with no retry. A 429 is
-retried as any transient failure is, within the engine's retries. Other
-wording, such as that of an exhausted credit balance, which Vercel does not
-document, is retried before the call fails unless it matches one of those.
+is permanent: the call stops at the first one, with no retry, as it does on
+the engines' other permanent failures (a spent `--max-budget-usd`, a refused
+sign-in). A 429 is retried as any transient failure is, within the engine's
+retries. Any other failure text, an exhausted credit balance's included
+(Vercel does not document its wording), is treated as transient and retried
+up to the engine's retries before the call fails.
 
 **Models.** A gateway id (`anthropic/claude-opus-5.5`, `openai/gpt-5`) is
 priced and judged for family as its direct name, so the reviewer still
-differs from the author by family. A virtual model (`vmc/<slug>`) may route
+differs from the author by family (or by maker, for a reviewer from another
+maker: `sdk:<id>` or `pool`). A virtual model (`vmc/<slug>`) may route
 anywhere, so it has no family and no price, and is refused as an author or
 a reviewer.
 
@@ -220,16 +224,17 @@ cross families, and narrows providers only through a pass's own allowlist
 **Passes on the gateway engine.** `yt script --review --reviewer-model pool`
 (or `sdk:<provider/model>`), `yt qa --listen` and
 `yt qa --against FILE --compare-model MODEL`, each described in its stage's
-section below.
-`yt qa`'s watch pass (AUTO-127) is documented there too.
+section below. A watch pass, when present, is described with `yt qa`
+below as well.
 
 Not yet checked against the live gateway: structured output through it
 (the claude CLI's schema flag, which every decision relies on), whether
 `bare` can sign in with a gateway token (so it is refused), a 1-hour prompt
 cache (Vercel documents only a 5-minute one), the model ids the Claude Code
 endpoint accepts for an alias such as `opus`, any cost or generation-id
-field in the CLIs' own output, and the wording of the errors for a budget
-or exhausted credits as the CLIs print them. Until they are, treat each as
+field in the CLIs' own output, the wording of the errors for a budget or
+exhausted credits as the CLIs print them, and which files
+`npx vercel ai-gateway setup` writes. Until they are, treat each as
 unknown.
 
 ---

@@ -108,10 +108,12 @@ sits behind its own flag; without the gateway the flag is refused or the
 pass skipped and recorded as not evidenced, and a CLI call is never
 replaced by a gateway one. Through it a judgement is still a
 `Harness.decide` under a schema, validated, asked once more, then failed
-(3); every call is still booked per model, at list price from the price
-table, an estimate of the bill whose row says how it was priced; the
-reviewer still differs from the author by family, a gateway id taking its
-direct name's family and a `vmc/<slug>` refused on either side; nothing
+(3); every call is still booked per model, as an estimate of the bill
+whose row says how it was priced (the cost the gateway reports, else a
+price row at list price, else the CLI's own figure); the reviewer still
+differs from the author by family, or by maker for a reviewer from another
+maker (`sdk:<id>` or `pool`), a gateway id taking its direct name's family
+and a `vmc/<slug>` refused on either side; nothing
 heavy moves here (9); and Python stays dependency-free, the gateway
 engine's Node program installed only for a stage that opts in. The
 README's "Vercel AI Gateway (optional)" section has the variables, the
