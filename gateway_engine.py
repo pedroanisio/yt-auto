@@ -88,7 +88,7 @@ from ytstudio import gateway as _gateway
 __all__ = ["GatewayEngine", "GatewayConfig", "GatewayExecutionError", "GatewayNotFound",
            "AI_VERSION", "MIN_NODE", "PROGRAM_DIR", "PROGRAM", "MEDIA_TYPES",
            "GATEWAY_PERMANENT_MARKERS", "model_problem", "media_type", "node_major",
-           "installed_ai_version", "price_for"]
+           "installed_ai_version", "price_for", "readiness"]
 
 #: The `ai` release gateway/package.json pins and the research verified.
 AI_VERSION = "7.0.150"
@@ -327,6 +327,49 @@ def node_executable(environ: dict | None = None, executable: str = "node") -> st
     return executable
 
 
+def _key_problem(env: dict) -> str | None:
+    if not (env.get(_gateway.KEY) or "").strip():
+        return f"the gateway engine needs the gateway key in {_gateway.KEY}"
+    return None
+
+
+def _node_problem(env: dict, executable: str = "node") -> tuple[str | None, str | None]:
+    """(the node binary's path, None), or (None, why it cannot run)."""
+    exe = node_executable(env, executable)
+    node = shutil.which(exe)
+    if not node:
+        return None, (f"{exe!r} not found. Install Node {MIN_NODE} or later, "
+                      f"or set ${NODE_ENV}.")
+    major = node_major(node)
+    if major is None or major < MIN_NODE:
+        return None, (f"{node} is Node {node_version(node) or 'of unknown version'}; "
+                      f"the gateway engine needs Node {MIN_NODE} or later")
+    return node, None
+
+
+def _install_problem(program_dir: str | Path) -> str | None:
+    installed = installed_ai_version(program_dir)
+    if installed != AI_VERSION:
+        return f"{not_installed(installed, program_dir)}: run `{install_hint(program_dir)}`"
+    return None
+
+
+def readiness(config: EngineConfig | None = None, env: dict | None = None) -> list[str]:
+    """What would stop the engine before any call, each said as the engine
+    says it when it refuses: the key, Node 22 or later, the pinned `ai` in
+    gateway/node_modules. Empty when it is ready. Nothing is asked and the
+    program is not started (only `node --version`, read once per process),
+    so a stage can refuse its gateway option before anything is paid, as
+    the reviewer pool does (AUTO-125). The model and the media are the
+    call's own, checked when it is made."""
+    cfg = _as_gateway_config(config or GatewayConfig())
+    environ = dict(os.environ if env is None else env)
+    environ.update(cfg.env or {})
+    problems = [_key_problem(environ), _node_problem(environ, cfg.executable)[1],
+                _install_problem(Path(cfg.program_dir or PROGRAM_DIR))]
+    return [p for p in problems if p]
+
+
 def price_for(model: Any, env: dict | None = None) -> dict[str, float] | None:
     """The price row for a gateway id: $GATEWAY_PRICES by the id as given or
     as `provider/model` after canonical spelling, then spend.price_for (its
@@ -493,8 +536,9 @@ class GatewayEngine(ClaudeEngine):
         precondition holds. Nothing has started when one fails."""
         cfg = self.config
         env = self._env()
-        if not (env.get(_gateway.KEY) or "").strip():
-            raise _permanent(f"the gateway engine needs the gateway key in {_gateway.KEY}")
+        problem = _key_problem(env)
+        if problem:
+            raise _permanent(problem)
         problem = model_problem(cfg.model)
         if problem:
             raise _permanent(problem)
@@ -502,20 +546,14 @@ class GatewayEngine(ClaudeEngine):
             raise _permanent("the gateway engine takes no effort or fallback model: neither "
                              "reaches the request (a Harness with engine='gateway' clears both)")
         files = self._media(media)
-        exe = node_executable(env, cfg.executable)
-        node = shutil.which(exe)
-        if not node:
-            raise GatewayNotFound(f"{exe!r} not found. Install Node {MIN_NODE} or later, "
-                                  f"or set ${NODE_ENV}.")
-        major = node_major(node)
-        if major is None or major < MIN_NODE:
-            raise _permanent(f"{node} is Node {node_version(node) or 'of unknown version'}; "
-                             f"the gateway engine needs Node {MIN_NODE} or later")
+        node, problem = _node_problem(env, cfg.executable)
+        if problem:   # not found is its own error; too old is permanent
+            raise (_permanent(problem) if shutil.which(node_executable(env, cfg.executable))
+                   else GatewayNotFound(problem))
         program_dir = Path(cfg.program_dir or PROGRAM_DIR)
-        installed = installed_ai_version(program_dir)
-        if installed != AI_VERSION:
-            raise _permanent(f"{not_installed(installed, program_dir)}: "
-                             f"run `{install_hint(program_dir)}`")
+        problem = _install_problem(program_dir)
+        if problem:
+            raise _permanent(problem)
         if cfg.max_turns_budget_usd is not None and price_for(cfg.model, env) is None:
             raise _permanent(f"refusing to start: the ${cfg.max_turns_budget_usd:g} budget "
                              f"cannot be held, {cfg.model!r} has no price. Set its row in "
