@@ -998,7 +998,13 @@ def score_unheard(card: dict, unheard: dict[str, dict]) -> dict:
     is recorded not evidenced with its score None (whatever the reviewer
     wrote), named under not_evidenced with what is missing and the command
     that produces it, and kept as `audio_not_evidenced`, so the bar says
-    READY cannot be judged for it rather than NOT READY on a frozen number."""
+    READY cannot be judged for it rather than NOT READY on a frozen number.
+
+    The overall is then the mean of the categories that were scored, not
+    the reviewer's: the prompt asks it to leave the unheard ones out, but a
+    reviewer that averaged in the 0 it entered (or an old frozen number)
+    would otherwise still move the bar and keep-or-revert with a score
+    nobody heard. The number it filed is kept as `overall_filed`."""
     card = dict(card)
     card["scores"] = dict(card.get("scores") or {})
     noted = list(card.get("not_evidenced") or [])
@@ -1010,6 +1016,9 @@ def score_unheard(card: dict, unheard: dict[str, dict]) -> dict:
                         else "nothing in the pipeline produces one yet"))
     card["not_evidenced"] = noted
     card["audio_not_evidenced"] = dict(unheard)
+    if unheard:
+        card["overall_filed"] = card.get("overall")
+        card["overall"] = _mean(card["scores"])
     return card
 
 
@@ -1722,8 +1731,9 @@ def run(args) -> int:
               "`why` says what is missing", listening),
         (f"No current listening review covers {', '.join(unheard)}: do not score "
          f"{'it' if len(unheard) == 1 else 'them'} (enter 0; the number is discarded "
-         "and each is recorded not evidenced), leave them out of `overall`, and file no "
-         "finding on how they sound, since nothing heard them."
+         "and each is recorded not evidenced), leave them out of `overall` (it is "
+         "recomputed as the mean of the categories you score), and file no finding on "
+         "how they sound, since nothing heard them."
          if unheard else
          f"Every one of {', '.join(k for k in AUDIO if k not in SILENT or not silent(build))} "
          "has a current listening review: score it from what that review heard, "

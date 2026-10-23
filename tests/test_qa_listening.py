@@ -161,6 +161,26 @@ class Unscored(unittest.TestCase):
         self.assertEqual(verdict, qa.NOT_READY)
         self.assertIn("voiceover 8.0 is under 8.5", reasons)
 
+    def test_the_overall_is_the_mean_of_what_was_scored_not_the_reviewers_number(self):
+        # told to leave them out, the reviewer averaged its zeros (or its old
+        # frozen numbers) in anyway; neither is a measurement of anything
+        unheard = qa.audio_unheard(qa.listening_evidence(None, None))
+        for audio, filed in ((0.0, 6.44), (6.5, 8.39), (9.9, 9.41)):
+            card = dict(self.card(), overall=filed,
+                        scores=dict(_scores(), voiceover=audio, sound_design=audio,
+                                    music_score=audio))
+            card = qa.score_unheard(card, unheard)
+            self.assertEqual(card["overall"], 9.2, (audio, filed))
+            self.assertEqual(card["overall_filed"], filed)
+            verdict, reasons = qa.verdict_of(card["scores"], card["overall"], blocking=[])
+            self.assertFalse(any(r.startswith("overall") for r in reasons), reasons)
+
+    def test_with_everything_heard_the_reviewers_overall_stands(self):
+        card = dict(self.card(), overall=9.05)
+        card = qa.score_unheard(card, {})
+        self.assertEqual(card["overall"], 9.05)
+        self.assertNotIn("overall_filed", card)
+
     def test_a_silent_films_rule_stands_beside_it(self):
         card = qa.score_silence(self.card(), motion._build(audio_tracks=0))
         unheard = qa.audio_unheard(qa.listening_evidence(None, None), silent=True)
