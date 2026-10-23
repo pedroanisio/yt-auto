@@ -7,7 +7,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from ytstudio import voice
+from tests import test_wordless
+from ytstudio import harness, qa, voice
 from ytstudio.core import Idea
 from ytstudio.script import Section, Shot
 
@@ -126,6 +127,66 @@ class RetakesAreDirected(unittest.TestCase):
         for call in kit.calls:
             if call is not directed[0]:
                 self.assertNotIn("speed", call["settings"] or {})
+
+
+class TheTakeReviewSaysWhatItHeard(unittest.TestCase):
+    """voice.json's take review carries the mark of the takes it was asked
+    about (AUTO-105), so `yt qa` uses it only while the film carries them."""
+
+    TAKES = [{"label": "1.1", "text": "Line one.", "file": "voice/1.1.wav", "seconds": 2.5,
+              "engine": "kokoro", "voice": "af"},
+             {"label": "1.2", "text": "Line two.", "file": "voice/1.2.wav", "seconds": 2,
+              "engine": "kokoro", "voice": "af"}]
+
+    def test_the_review_is_kept_with_the_mark_of_its_takes(self):
+        review = voice.reviewed({"verdict": "ok", "retakes": [], "notes": "n"}, self.TAKES)
+        self.assertEqual(review["verdict"], "ok")
+        self.assertEqual(review["heard"], voice.heard(self.TAKES))
+        self.assertEqual(review["heard"]["takes"], 2)
+
+    def test_a_retake_changes_the_mark_and_a_number_written_as_float_does_not(self):
+        mark = voice.heard(self.TAKES)
+        same = [dict(t, seconds=float(t["seconds"])) for t in self.TAKES]
+        self.assertEqual(voice.heard(same), mark)
+        retaken = [dict(self.TAKES[0], file="voice/1.1-b.wav", seconds=2.9), self.TAKES[1]]
+        self.assertNotEqual(voice.heard(retaken)["sha256"], mark["sha256"])
+
+
+class TheStageKeepsTheMark(unittest.TestCase):
+    """`yt voice` itself writes the take review with the mark of the takes
+    it recorded, not only the helper: without it every voice.json would
+    reach QA as a review "written before AUTO-105" and voiceover would stay
+    unscored for good. The stub engine records silence, the fake director
+    casts and reviews; nothing is called."""
+
+    def setUp(self):
+        saved = harness.ENGINE
+        self.addCleanup(setattr, harness, "ENGINE", saved)
+        harness.ENGINE = test_wordless.FakeEngine
+        test_wordless.FakeEngine.prompts = []
+        test_wordless.FakeEngine.answers = [
+            {"voice": "", "speed": 1.0, "why": "the stub has one voice"},
+            {"verdict": "ok", "retakes": [], "notes": "n"}]
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        script = {"sections": [{"heading": "One", "shots": [
+            {"n": i, "label": f"1.{i}", "visual": "v", "narration": f"Line number {i}.",
+             "seconds": 3} for i in (1, 2)]}]}
+        (self.root / "script.json").write_text(json.dumps(script), encoding="utf-8")
+        (self.root / "idea.json").write_text(json.dumps(
+            {"title": "T", "genre": "g", "description": "d"}), encoding="utf-8")
+
+    def test_voice_json_carries_the_review_with_the_mark_qa_reads_as_current(self):
+        args = test_wordless.WordlessRun.args(self)        # the same flags, this root
+        args.engine = "stub"
+        self.assertEqual(voice.run(args), 0)
+        data = json.loads((self.root / "voice.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(data["takes"]), 2)
+        self.assertEqual(data["review"]["verdict"], "ok")
+        self.assertEqual(data["review"]["heard"], voice.heard(data["takes"]))
+        row = {r["source"]: r for r in qa.listening_evidence(None, data)}["voice"]
+        self.assertTrue(row["current"], row["why"])
 
 
 if __name__ == "__main__":

@@ -1634,5 +1634,88 @@ class RetentionFindings(ImproveCase):
         self.assertIn("not re-measured", line)
 
 
+class UnheardAudio(unittest.TestCase):
+    """A category QA records not evidenced (no current listening review,
+    AUTO-105) has no score: keep or revert does not read it as a drop, and
+    improve.md names the evidence missing and the command that produces it."""
+
+    def card(self, **scores):
+        return {"pass": "pass-01", "overall": 9.2,
+                "scores": {k: 9.2 for k in qa.CATEGORIES} | scores}
+
+    def test_an_unscored_category_is_neither_a_drop_nor_a_gain(self):
+        best = self.card()
+        new = self.card(voiceover=None, visual_quality=9.5) | {"pass": "pass-02",
+                                                               "overall": 9.23}
+        verdict = improve.judge(best, new)
+        self.assertTrue(verdict["keep"], verdict["reasons"])
+        self.assertIsNone(verdict["deltas"]["voiceover"])
+
+    def test_losing_the_low_audio_scores_is_no_gain(self):
+        # The frozen pass-05 numbers, then the same film with its listening
+        # evidence gone: the filed overall rises by +0.5 only because the low
+        # scores left the mean. Over the categories both passes scored,
+        # nothing moved, so the pass is not kept.
+        best = {"pass": "pass-01", "overall": 7.5,
+                "scores": {k: 8.0 for k in qa.CATEGORIES}
+                | {"voiceover": 6.5, "sound_design": 6.0, "music_score": 6.5}}
+        new = {"pass": "pass-02", "overall": 8.0,
+               "scores": dict(best["scores"], voiceover=None, sound_design=None,
+                              music_score=None)}
+        verdict = improve.judge(best, new)
+        self.assertFalse(verdict["keep"])
+        self.assertEqual(verdict["overall_delta"], 0.0)
+        said = " ".join(verdict["reasons"])
+        self.assertIn("did not improve", said)
+        for key in ("voiceover", "sound_design", "music_score"):
+            self.assertIn(key, said)
+
+    def test_improve_md_names_the_missing_evidence_and_the_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            unheard = qa.audio_unheard(qa.listening_evidence(
+                {"cues": [], "review": {}}, None, where=f"--project {root}"))
+            card = qa.score_unheard(self.card(), {"voiceover": unheard["voiceover"]})
+            card |= {"verdict": qa.NOT_READY, "findings": [], "blocking": [],
+                     "mechanical": [], "bar": qa.verdict_of(card["scores"], 9.2,
+                                                            blocking=[])[1]}
+            (root / "qa" / "pass-01").mkdir(parents=True)
+            write_json(root / "qa" / "pass-01" / "scorecard.json", card)
+            summary = {"pass": "pass-01", "overall": 9.2, "scores": card["scores"],
+                       "verdict": qa.NOT_READY}
+            record = {"idea": {"title": "A test film"}, "passes": [],
+                      "stop": {"reason": "nothing", "detail": "-"},
+                      "start": summary, "best": summary}
+            md = improve.report_md(record, root)
+        section = md.split("### Not evidenced")[1].split("###")[0]
+        self.assertIn("READY cannot be judged", md.split("### Not evidenced")[1][:60])
+        self.assertIn("voiceover", section)
+        self.assertIn("no voice.json", section)
+        self.assertIn(f"yt voice --project {root}", section)
+        self.assertNotIn("sound_design", section)
+        self.assertIn("| voiceover | not evidenced | not evidenced |", md)
+        self.assertIn("voiceover is not evidenced", md)        # the bar, in §6
+
+    def test_improve_md_says_when_no_stage_can_close_the_gap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            unheard = qa.audio_unheard(qa.listening_evidence(
+                None, {"wordless": True, "takes": []}))
+            card = qa.score_unheard(self.card(), {"voiceover": unheard["voiceover"]})
+            card |= {"verdict": qa.NOT_READY, "findings": [], "blocking": [],
+                     "mechanical": [], "bar": []}
+            (root / "qa" / "pass-01").mkdir(parents=True)
+            write_json(root / "qa" / "pass-01" / "scorecard.json", card)
+            summary = {"pass": "pass-01", "overall": 9.2, "scores": card["scores"],
+                       "verdict": qa.NOT_READY}
+            md = improve.report_md({"idea": {"title": "A wordless film"}, "passes": [],
+                                    "stop": {"reason": "nothing", "detail": "-"},
+                                    "start": summary, "best": summary}, root)
+        section = md.split("### Not evidenced")[1].split("###")[0]
+        self.assertIn("wordless", section)
+        self.assertIn("nothing in the pipeline produces one yet", section)
+        self.assertIn("READY is out of reach", section)
+
+
 if __name__ == "__main__":
     unittest.main()

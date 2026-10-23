@@ -387,5 +387,59 @@ class RuleFindings(unittest.TestCase):
         self.assertTrue(p.parse_args(["sound", "--report-only"]).report_only)
 
 
+class HeardMark(unittest.TestCase):
+    """The listen-back records the cue sheet it heard (AUTO-105), so `yt qa`
+    can tell a review of the sheet the film carries from a stale one."""
+
+    def test_the_listen_back_records_the_cue_sheet_it_heard(self):
+        d = designer()
+        d.plan = lambda: {}
+        d.spot_whole = cues
+        reviews = [{"flags": [flag("M1")], "verdict": "no"}, {"flags": [], "verdict": "ok"}]
+
+        def ask(name, prompt, schema):
+            if is_review(schema):
+                return reviews.pop(0)
+            return {"action": "fix", "seconds": 10, "why": "shorter"}
+        d._ask = ask
+        data = d.run(do_review=True)
+        # the sheet as revised, which is the one written and mixed
+        self.assertEqual(data["review"]["heard"],
+                         sound.heard(data["cues"], mix=data["palette"].get("mix"),
+                                     normalize=data.get("normalize")))
+        self.assertEqual(data["review"]["heard"]["cues"], len(data["cues"]))
+        self.assertNotEqual(data["review"]["heard"], sound.heard(cues()))
+
+    def test_a_run_without_a_listen_back_marks_nothing(self):
+        d = designer()
+        d.plan = lambda: {}
+        d.spot_whole = cues
+        self.assertEqual(d.run(do_review=False)["review"], {})
+
+    def test_the_mark_moves_with_the_design_not_with_the_fetched_file(self):
+        rows = [dict(vars(c)) for c in cues()]
+        before = sound.heard(cues())
+        self.assertEqual(sound.heard(rows), before)          # a dict reads as its Cue
+        rows[0].update(file="sound/other.mp3", licence="CC-BY", duration=11.2)
+        self.assertEqual(sound.heard(rows), before)
+        rows[0]["level"] = "-30 dBFS"                          # a mix ride
+        self.assertNotEqual(sound.heard(rows)["sha256"], before["sha256"])
+
+    def test_the_mark_moves_with_the_mix_targets_and_the_normalise_mode(self):
+        # the listen-back read the palette's mix targets beside the sheet,
+        # and the master is normalised the way sound.json's `normalize` says
+        mix = {"narration": "-16 LUFS", "narration_lufs": -16, "bed_below_narration_db": 12,
+               "normalize": {"mode": "loudnorm", "reason": "r"}}
+        norm = {"mode": "loudnorm", "reason": "r"}
+        before = sound.heard(cues(), mix=mix, normalize=norm)
+        self.assertEqual(sound.heard(cues(), mix=dict(mix), normalize=dict(norm)), before)
+        self.assertNotEqual(sound.heard(cues(), mix=dict(mix, bed_below_narration_db=6),
+                                        normalize=norm), before)
+        self.assertNotEqual(sound.heard(cues(), mix=mix,
+                                        normalize={"mode": "none", "reason": "r"}), before)
+        self.assertEqual(sound.heard(cues(), mix=mix, normalize=dict(norm, reason="other")),
+                         before)                               # the mode is what is heard
+
+
 if __name__ == "__main__":
     unittest.main()
