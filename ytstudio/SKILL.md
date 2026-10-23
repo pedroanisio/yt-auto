@@ -492,7 +492,14 @@ instead, and `YT_GATEWAY_URL` replaces the host); it is never on by itself, a
 set switch with no key stops the call before it starts, as do `bare` and a
 `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` or `CLAUDE_CODE_USE_FOUNDRY`
 left on, and with it unset (or `YT_GATEWAY=off`, `0`, `false`, `no`, `none`)
-each call, its argv and the decision cache are as they were. Every stage that asks the
+each call, its argv and the decision cache are as they were. Under
+`YT_ENGINE=codex` the switch makes the gateway Codex's model provider with
+`-c` pairs instead (base URL `https://ai-gateway.vercel.sh/codex/v1`, the key
+read from `AI_GATEWAY_API_KEY`, nothing written to `$CODEX_HOME/config.toml`,
+your own `codex_config` pairs winning), sends a bare model as `openai/<name>`,
+Codex's own default included, and never a Claude id; an effort above `high`
+that `models_cache.json` lists for neither spelling goes as `high`, with a
+warning. Every stage that asks the
 model takes `--model`, `--effort` and `--fallback-model` (default sonnet);
 `yt doctor`, `yt ls` and `yt assets` call no model.
 

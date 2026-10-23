@@ -55,7 +55,14 @@ research and screenplay work; it is not an unattended model service.
   A key alone turns nothing on, a set switch with no key fails before any
   call, and with `YT_GATEWAY` unset (or `YT_GATEWAY=off`, `0`, `false`, `no`,
   `none`) every call goes to Anthropic exactly as before. Nothing writes
-  `~/.claude/settings.json`.
+  `~/.claude/settings.json`. Under `YT_ENGINE=codex` the same switch makes
+  the gateway Codex's model provider with `-c` pairs on the command line
+  (`model_provider="vercel"`, base URL `https://ai-gateway.vercel.sh/codex/v1`,
+  `env_key="AI_GATEWAY_API_KEY"`, `wire_api="responses"`), so codex reads the
+  key from the environment and nothing is written to `$CODEX_HOME/config.toml`.
+  A `codex_config` pair of your own wins over the gateway's, a bare model
+  name goes to `-m` with `openai/` in front (Codex's own default too), and a
+  Claude id is never passed to codex.
 - Python 3.10+
 
 ---

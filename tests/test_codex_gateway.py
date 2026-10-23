@@ -329,5 +329,20 @@ class Refused(GatewayCodexCase):
                              .ask("hi").text, "ok")
 
 
+class Documented(unittest.TestCase):
+    def test_the_readme_and_the_skill_name_the_codex_route(self):
+        for path in (ROOT / "README.md", ROOT / "ytstudio" / "SKILL.md"):
+            flat = " ".join(path.read_text(encoding="utf-8").split())
+            with self.subTest(path=path.name):
+                self.assertIn("/codex/v1", flat)
+                self.assertIn("`openai/`", flat)
+                self.assertIn("config.toml", flat)
+
+    def test_the_engines_feature_map_names_the_gateway(self):
+        doc = codex_engine.__doc__ or ""
+        self.assertIn("YT_GATEWAY=vercel", doc)
+        self.assertIn("model_provider", doc)
+
+
 if __name__ == "__main__":
     unittest.main()
