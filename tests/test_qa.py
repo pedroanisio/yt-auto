@@ -511,6 +511,20 @@ class StoryStage(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             return qa.run(self.args(**kw))
 
+    def test_the_prompt_names_the_shots_no_still_was_taken_of(self):
+        # AUTO-103: under a tight --frames the reviewer is told which shots it
+        # has no picture of before it scores, not only the scorecard after.
+        self.run_qa(frame_limit=2)
+        prompt = self.seen["prompt"]
+        samples = json.loads((self.root / "qa" / "pass-01" / "samples.json").read_text())
+        missing = sorted({"1.1", "1.2", "1.3", "1.4"} - {r["label"] for r in samples})
+        self.assertEqual(len(missing), 2)
+        line = next(l for l in prompt.splitlines() if "no still" in l)
+        for label in missing:
+            self.assertIn(label, line)
+        self.run_qa(frame_limit=None)
+        self.assertNotIn("no still", self.seen["prompt"])
+
     def test_the_prompt_carries_the_story_and_the_narration_is_evidence(self):
         self.run_qa()
         prompt = self.seen["prompt"]

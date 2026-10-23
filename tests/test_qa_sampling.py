@@ -64,6 +64,55 @@ class EveryShot(unittest.TestCase):
                            {"label": "1.3", "at": 0.8, "seconds": 3.0}]}
         self.assertEqual([r["label"] for r in qa.sample(build)], ["1.1", "1.2", "1.3"])
 
+    def test_two_shots_with_the_same_midpoint_are_both_sampled(self):
+        # p (0-2 s) and q (0.5-1.5 s) share the midpoint 1.0: one row per
+        # shot, not per midpoint, so q is moved a frame inside itself.
+        build = {"scene": {"fps": 30},
+                 "shots": [{"label": "p", "at": 0.0, "seconds": 2.0},
+                           {"label": "q", "at": 0.5, "seconds": 1.0},
+                           {"label": "r", "at": 2.0, "seconds": 3.0}]}
+        rows = qa.sample(build)
+        self.assertEqual(sorted(r["label"] for r in rows), ["p", "q", "r"])
+        self.assertEqual(qa.unsampled(build, rows), [])
+        q = next(r for r in rows if r["label"] == "q")
+        p = next(r for r in rows if r["label"] == "p")
+        self.assertNotEqual(q["frame"], p["frame"])
+        self.assertTrue(0.5 < q["t"] < 1.5, q)
+        self.assertAlmostEqual(abs(q["t"] - 1.0), 1 / 30, places=3)
+
+
+class Ceiling(unittest.TestCase):
+    """Every shot by default, up to EVERY_SHOT_UP_TO stills: past it one
+    inspection cannot read every still, so the default samples like that
+    --frames and the scorecard names the shots it left out."""
+
+    def test_a_film_within_the_ceiling_has_every_shot(self):
+        build = _even(qa.EVERY_SHOT_UP_TO, seconds=2.0, sections=("One", "Two", "Three"))
+        rows = qa.sample(build)
+        self.assertEqual(len(rows), qa.EVERY_SHOT_UP_TO)
+        self.assertEqual(qa.unsampled(build, rows), [])
+
+    def test_a_film_past_the_ceiling_keeps_the_priority_and_names_the_rest(self):
+        build = _even(150, seconds=4.0, sections=("A", "B", "C", "D", "E"))
+        rows = qa.sample(build)
+        self.assertEqual(len(rows), qa.EVERY_SHOT_UP_TO)
+        labels = {r["label"] for r in rows}
+        for label in ("1.1", "5.30", "2.1", "3.1", "4.1", "5.1"):   # hook, ending, starts
+            self.assertIn(label, labels)
+        missing = qa.unsampled(build, rows)
+        self.assertEqual(len(missing), 150 - qa.EVERY_SHOT_UP_TO)
+        # --frames still raises it
+        self.assertEqual(len(qa.sample(build, limit=150)), 150)
+
+    def test_the_note_says_the_default_ceiling_left_them_out(self):
+        card = qa.note_unsampled({}, ["1.2"], total=qa.EVERY_SHOT_UP_TO + 1, limit=None)
+        line = card["not_evidenced"][-1]
+        self.assertIn(f"default of {qa.EVERY_SHOT_UP_TO}", line)
+        self.assertIn("--frames", line)
+        self.assertNotIn("reused", line)
+        reused = qa.note_unsampled({}, ["1.2"], total=4, limit=None, reused=True)
+        self.assertIn("reused pass", reused["not_evidenced"][-1])
+
 
 class MoreFrames(unittest.TestCase):
     def test_frames_above_the_shot_count_add_evenly_spaced_stills(self):
@@ -125,6 +174,57 @@ class MoreFrames(unittest.TestCase):
             self.assertIn(row["burst"]["still_frame"], row["burst"]["frames"])
             self.assertEqual(row["burst"]["still_frame"], round(row["t"] * fps))
 
+    def test_a_burst_planned_from_the_shots_start_stays_after_it(self):
+        # An extra still near its shot's start: the window is placed from the
+        # shot's own start, not from a start guessed as t - seconds / 2.
+        at, fps = 10.0, 30
+        inside = qa.burst_plan(at + 0.1, fps=fps, seconds=4.0, start=at)
+        self.assertGreaterEqual(inside["frames"][0], round(at * fps))
+        self.assertIn(round((at + 0.1) * fps), inside["frames"])
+        guessed = qa.burst_plan(at + 0.1, fps=fps, seconds=4.0)
+        self.assertNotEqual(inside["frames"], guessed["frames"])
+
+    def test_more_frames_never_give_fewer_rows(self):
+        long_film = _even(150, seconds=4.0, sections=("A", "B", "C"))
+        counts = [len(qa.sample(long_film, limit=n))
+                  for n in (150, 400, 800, 1000, 1199, 1200, 1500, 3000)]
+        self.assertEqual(counts, sorted(counts), counts)
+        self.assertEqual(counts[3], 1000)
+        # seven fit in a 4 s shot: its midpoint and three either side, half a
+        # second apart and half a burst from its edges; 1199 asks for more
+        self.assertEqual(counts[4:], [150 * 7] * 4)
+        # six 2 s shots, 3 s apart: three stills fit in each, the midpoint and
+        # one half a second either side of it, as far as the window allows
+        gappy = {"shots": [{"label": f"1.{n + 1}", "at": n * 5.0, "seconds": 2.0}
+                           for n in range(6)]}
+        counts = [len(qa.sample(gappy, limit=n)) for n in range(6, 41)]
+        self.assertEqual(counts, sorted(counts), counts)
+        self.assertEqual(counts[-1], 18)
+        self.assertEqual(len(qa.sample(gappy, limit=30)), 18)
+
+    def test_extras_are_evenly_spaced_on_a_film_of_mixed_shots_and_gaps(self):
+        lengths = (1.5, 6.0, 2.0, 9.0, 1.0, 3.0, 12.0, 2.5, 4.0, 1.2, 0.8, 5.0)
+        gaps = (0.3, 0.0, 1.0, 0.35, 0.0, 2.0, 0.0, 0.5, 0.35, 0.0, 1.5)
+        shots, t = [], 0.0
+        for n, seconds in enumerate(lengths):
+            shots.append({"label": f"1.{n + 1}", "at": t, "seconds": seconds})
+            t += seconds + (gaps[n] if n < len(gaps) else 0.0)
+        build = {"shots": shots}
+        runtime = shots[-1]["at"] + shots[-1]["seconds"]
+        for limit in (20, 30, 40):
+            rows = qa.sample(build, limit=limit)
+            self.assertEqual(len(rows), limit)
+            extra = sorted(r["t"] for r in rows if r["why"] == qa.SPREAD_WHY)
+            step = runtime / len(extra)
+            # an extra cannot land in a gap between takes or within half a
+            # second of another sample, so it may be pushed that far, on either
+            # side, from where an even step put it; no further
+            bound = step + max(gaps) + 2 * qa.SPREAD_GAP
+            self.assertLessEqual(extra[0], bound, extra)
+            self.assertGreaterEqual(extra[-1], runtime - bound, extra)
+            for a, b in zip(extra, extra[1:]):
+                self.assertLessEqual(b - a, bound, (limit, extra))
+
 
 class FewerFrames(unittest.TestCase):
     def test_a_tight_limit_keeps_hook_ending_and_section_starts_and_names_the_rest(self):
@@ -168,6 +268,26 @@ class PerShotFindings(unittest.TestCase):
         self.assertGreater(sum(r["label"] == "1.1" for r in rows), 1)
         found = qa.mechanical_findings(rows, diagnostics={"1.1": {"off_camera": ["a"]}})
         self.assertEqual([f["shot"] for f in found if f["kind"] == "off_camera"], ["1.1"])
+
+    def test_it_is_filed_on_the_shots_midpoint_still(self):
+        # A spread still before the midpoint comes first in time; the finding
+        # still carries the shot's own moment.
+        build = _even(2, seconds=8.0, sections=("One",))
+        rows = qa.sample(build, limit=6)
+        first = [r for r in rows if r["label"] == "1.1"]
+        self.assertEqual(first[0]["why"], qa.SPREAD_WHY)
+        found = [f for f in qa.mechanical_findings(rows, diagnostics={"1.1": {"off_camera": ["a"]}})
+                 if f["kind"] == "off_camera"]
+        self.assertEqual([f["timestamp"] for f in found], [4.0])
+        self.assertEqual(found[0]["frame"], qa.frame_name(4.0))
+
+    def test_unlabelled_shots_are_each_their_own_shot(self):
+        build = {"shots": [{"label": "", "at": 0.0, "seconds": 4.0},
+                           {"label": "", "at": 4.0, "seconds": 4.0}]}
+        rows = qa.sample(build)
+        found = [f for f in qa.mechanical_findings(rows, diagnostics={"": {"off_camera": ["a"]}})
+                 if f["kind"] == "off_camera"]
+        self.assertEqual([f["timestamp"] for f in found], [2.0, 6.0])
 
 
 class Flag(unittest.TestCase):
