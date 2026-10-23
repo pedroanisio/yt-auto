@@ -8,7 +8,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test test/engine.test.mjs"
   },
   "dependencies": {
     "ai": "7.0.150",

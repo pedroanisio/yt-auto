@@ -47,6 +47,13 @@ class Package(unittest.TestCase):
         self.assertTrue((GATEWAY / gateway_engine.PROGRAM).is_file())
         self.assertEqual(gateway_engine.PROGRAM_DIR, GATEWAY)
 
+    def test_the_test_script_names_its_file(self):
+        # Since Node 21 `node --test` takes glob patterns, and a bare
+        # directory is not searched, so the script names the file itself.
+        script = self.package["scripts"]["test"]
+        self.assertEqual(script, "node --test test/engine.test.mjs")
+        self.assertTrue((GATEWAY / script.split()[-1]).is_file())
+
     def test_node_modules_is_ignored(self):
         ignored = (ROOT / ".gitignore").read_text().splitlines()
         self.assertIn("gateway/node_modules/", ignored)
