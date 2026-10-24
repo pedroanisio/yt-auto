@@ -213,6 +213,8 @@ REVIEW_SCHEMA = {
                     "problem": {"type": "string"},
                     "fix": {"type": "string"},
                     "severity": {"type": "string", "enum": ["blocking", "major", "minor"]},
+                    # Where in the still (AUTO-110): the grid copy's cells.
+                    "cells": vfx.GRID_CELLS_SCHEMA,
                 },
                 "required": ["category", "problem", "fix", "severity"],
             },
@@ -846,6 +848,11 @@ class KeyframeStage:
 
     def _review(self, reviewer: harness.Harness, ws: Workspace, chosen: dict,
                 checks: list[str], round_no: int) -> dict | None:
+        # The grid copy (AUTO-110) is made for this review from this round's
+        # still; the one an earlier round left goes first, so a still that
+        # cannot be read leaves no copy of another picture behind.
+        (ws.dir / vfx.GRID_DIR / FRAME_NAME).unlink(missing_ok=True)
+        copy = vfx.grid_copy(ws.dir / FRAME_NAME)
         prompt = "\n\n".join([
             f"Review round {round_no} of the keyframe of \"{self.idea.title}\". Read "
             f"`{FRAME_NAME}` in this directory: the film's style frame, one still at "
@@ -854,6 +861,8 @@ class KeyframeStage:
             "there, in its environment, under its key light, with materials that read; do the "
             "swatches, the type sample and the labels sit in a quiet band; is it the treatment "
             "named. Score each category 0-10 and give one score for the frame.",
+            *([f"The still's grid copy is `{vfx.GRID_DIR}/{copy.name}`. " + vfx.GRID_NOTE]
+              if copy else []),
             harness.brief("What the frame must present (the elements, by rank)",
                           {"treatment": chosen.get("treatment"), "hero": chosen.get("hero"),
                            "camera": chosen.get("camera"),
@@ -873,7 +882,9 @@ class KeyframeStage:
             return None
 
     @staticmethod
-    def _review_listing(review: dict | None) -> str:
+    def _review_listing(review: dict | None, *, frame: tuple[int, int] = FRAME) -> str:
+        """The review's findings for the next round, verbatim; a finding that
+        names grid cells gives them and their pixels (`vfx.located`)."""
         if not review:
             return ""
         lines = [f"The reviewer scored the frame {review.get('score', '?')}/10 "
@@ -885,7 +896,8 @@ class KeyframeStage:
         lines += ["", "Requirements for this round (verbatim from the review; each must be "
                   "answered in the document and the answer visible in the frame):"]
         for f in review.get("findings", []):
-            lines.append(f"- [{f.get('severity', '')}] ({f.get('category', '')}): "
+            lines.append(f"- [{f.get('severity', '')}] ({f.get('category', '')})"
+                         f"{vfx.located(f, frame)}: "
                          f"{f.get('problem', '')}\n  REQUIRED FIX: {f.get('fix', '')}")
         return "\n".join(lines)
 
