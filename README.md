@@ -958,6 +958,25 @@ the next run applies them to those takes alone, each in its own call, and
 they are part of that take's cache key. A rate limit is waited out, not
 fatal: finished takes come from cache, so nothing is paid twice.
 
+The screenplay's delivery marks reach the engine that can take them
+(AUTO-139, direction 27 and 28). Each shot may carry `emphasis` (the word
+to stress in each sentence), `pauses` (the words a beat lands before) and
+`pronounce` (`{term, say}`, `say` one hyphenated token with the stressed
+syllable in capitals, `SHROH-ding-er`). `voice.MARK_SUPPORT` says what
+each engine takes: espeak the pronouncer, the pause (`<break
+time="300ms"/>`) and emphasis as SSML read with `-m`, and speed; ElevenLabs
+the pronouncer, speed and settings (its break tag is not used until it is
+checked); kokoro the pronouncer and speed; chatterbox the pronouncer; the
+stub nothing. A pronouncer is sent lowercased with its hyphens
+(`shroh-ding-er`), so it is never read as an initialism, and one word of
+the line is always one word sent. What an engine cannot take is kept on the
+take as `recorded_only`. The take's `spoken` is what was sent and is part
+of its cache key; an unmarked take keeps today's key and argv. Captions,
+cps and caption timing stay on the line as written: ElevenLabs' alignment
+of the sent text is mapped back word for word, and where the counts differ
+the caption words are estimated from the line (`caption_mismatch` on the
+take), never the respelling.
+
 Writes `voice/` (one file per shot), `voice.json`, `narration.vtt` and
 `narration.srt`, plus `voice.wav` with `--stitch`. `--layout sequential` (the
 default) places takes back to back with real gaps and gives the honest runtime;

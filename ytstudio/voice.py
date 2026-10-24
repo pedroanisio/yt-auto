@@ -49,7 +49,7 @@ from pathlib import Path
 from . import design, house, spend, workspace
 from .harness import Harness, HarnessError, brief
 from .core import Idea, read_json, timecode, write_json
-from .script import Section, load_script
+from .script import Section, load_script, mark_at, mark_tokens, shot_marks
 
 #: Caption rule the delivery gate enforces: 17 characters per second.
 CPS_LIMIT = 17.0
@@ -184,6 +184,140 @@ DESCRIBE_SCHEMA = {
 GATE_LINE_CHARS = design.CAPTION_LINE_CHARS
 GATE_LINES = design.CAPTION_LINES
 GATE_CPS = design.CAPTION_CPS
+
+
+#: The delivery controls each engine takes (AUTO-139): the screenplay's
+#: marks (pronounce, pause, emphasis) and the director's per-section speed
+#: and settings. A control an engine is not listed for is kept on the take as
+#: `recorded_only`, never silently dropped. ElevenLabs' break tag is not
+#: listed until it is checked against the kit's model (TO VERIFY).
+MARK_SUPPORT = {
+    "espeak": frozenset({"pronounce", "pause", "emphasis", "speed"}),
+    "elevenlabs": frozenset({"pronounce", "speed", "settings"}),
+    "kokoro": frozenset({"pronounce", "speed"}),
+    "chatterbox": frozenset({"pronounce"}),
+    "stub": frozenset(),
+}
+
+#: The silence a pause mark puts before its word, per engine that takes
+#: one: direction 27's 300 ms, as espeak-ng's SSML says it.
+BREAKS = {"espeak": '<break time="300ms"/>'}
+
+#: Engines read SSML: the line is escaped and wrapped in <speak>.
+SSML_ENGINES = ("espeak",)
+
+#: What is stripped from a token's ends to find the word a mark names.
+_EDGE = ".,;:!?\"'()[]{}“”‘’…—–"
+
+
+def _xml(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def respell(say: str, engine: str) -> str:
+    """The engine's form of a human pronouncer: lowercased with its hyphens
+    kept, so "SHROH-ding-er" is never read as an initialism or shouted. For
+    an SSML engine the stressed (capitalised) syllables are wrapped in
+    <emphasis>. Always one token."""
+    parts = str(say or "").split("-")
+    if engine in SSML_ENGINES:
+        return "-".join(f"<emphasis>{_xml(p.lower())}</emphasis>"
+                        if p and p.upper() == p and p.lower() != p else _xml(p.lower())
+                        for p in parts)
+    return "-".join(p.lower() for p in parts)
+
+
+def _split_token(token: str) -> tuple[str, str, str, str]:
+    """A token as (leading punctuation, word, possessive, trailing
+    punctuation): "(Schrödinger's," is ("(", "Schrödinger", "'s", ",")."""
+    word = token.strip(_EDGE)
+    if not word:
+        return token, "", "", ""
+    lead = token[:token.index(word)]
+    tail = token[len(lead) + len(word):]
+    poss = ""
+    for mark in ("'s", "’s"):
+        if word.endswith(mark) and len(word) > len(mark):
+            word, poss = word[:-len(mark)], mark
+            break
+    return lead, word, poss, tail
+
+
+def render_marks(text: str, marks: dict, engine: str) -> tuple[str, list[dict], list[dict]]:
+    """The line as `engine` is to say it, from the shot's marks: (spoken,
+    applied, recorded_only). `spoken` is "" when it would equal `text`.
+
+    A pronouncer replaces each occurrence of its one-word term with the
+    respelling, so one source token is always one spoken token; a pause puts
+    the engine's break before its word; emphasis wraps its word, each in the
+    first place at or after the previous one's. For espeak the line is
+    XML-escaped and wrapped in <speak>. A mark the engine cannot take, or one
+    on a word the line does not say, comes back in `recorded_only` with why.
+    """
+    support = MARK_SUPPORT.get(engine, frozenset())
+    tokens = str(text or "").split()
+    keys = mark_tokens(text)
+    applied: list[dict] = []
+    recorded: list[dict] = []
+    said: dict[int, str] = {}
+    stressed: set[int] = set()
+    before: set[int] = set()
+
+    def record(row: dict, why: str) -> None:
+        recorded.append(row | {"why": why})
+
+    for row in (marks or {}).get("pronounce") or []:
+        term, say = str(row.get("term") or ""), str(row.get("say") or "")
+        entry = {"kind": "pronounce", "term": term, "say": say}
+        where = [i for i in range(len(keys)) if mark_at(term, keys, i) == i]
+        if "pronounce" not in support:
+            record(entry, f"{engine} takes no pronouncer")
+        elif not where:
+            record(entry, "not a word of the line")
+        elif not say.strip():
+            record(entry, "no say")
+        elif len(term.split()) != 1:
+            record(entry, "a term of more than one word would change the word count")
+        else:
+            said.update({i: say for i in where})
+            applied.append(entry)
+    for key, kind, into in (("emphasis", "emphasis", stressed), ("pauses", "pause", before)):
+        cursor = 0
+        for word in (marks or {}).get(key) or []:
+            entry = {"kind": kind, "word": str(word)}
+            at = mark_at(word, keys, cursor)
+            at = at if at >= 0 else mark_at(word, keys, 0)
+            if kind not in support:
+                record(entry, f"{engine} takes no {kind}")
+            elif at < 0:
+                record(entry, "not a word of the line")
+            else:
+                into.add(at)
+                applied.append(entry)
+                cursor = at + 1
+    if not applied:
+        return "", [], recorded
+
+    ssml = engine in SSML_ENGINES
+    esc = _xml if ssml else (lambda s: s)
+    out = []
+    for i, token in enumerate(tokens):
+        lead, word, poss, tail = _split_token(token)
+        if i in said:
+            word = respell(said[i], "" if i in stressed else engine)
+        else:
+            word = esc(word)
+        word += esc(poss)
+        if i in stressed and ssml:
+            word = f"<emphasis>{word}</emphasis>"
+        piece = esc(lead) + word + esc(tail)
+        if i in before and engine in BREAKS:
+            piece = BREAKS[engine] + piece
+        out.append(piece)
+    spoken = " ".join(out)
+    if ssml:
+        spoken = f"<speak>{spoken}</speak>"
+    return ("" if spoken == text else spoken), applied, recorded
 
 
 def directions_from(retakes) -> dict[str, dict]:
@@ -455,19 +589,41 @@ class Word:
 
 def words_from_alignment(path: Path) -> list[Word]:
     """Character timings from ElevenLabs, folded into words."""
+    return _fold(_read_alignment(path))
+
+
+def _read_alignment(path: Path) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return []
-    block = data.get("alignment") or data.get("normalized_alignment") or {}
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _fold(data: dict, *, strip_tags: bool = False) -> list[Word]:
+    """An alignment's character timings folded into words. `strip_tags`
+    drops every <...> tag's characters first, so a break or SSML tag in the
+    text that was sent counts as no word."""
+    block = (data or {}).get("alignment") or (data or {}).get("normalized_alignment") or {}
     chars = block.get("characters") or []
     starts = block.get("character_start_times_seconds") or []
     ends = block.get("character_end_times_seconds") or []
     if not (chars and len(chars) == len(starts) == len(ends)):
         return []
+    rows = list(zip(chars, starts, ends))
+    if strip_tags:
+        kept, inside = [], False
+        for row in rows:
+            if row[0] == "<":
+                inside = True
+            if not inside:
+                kept.append(row)
+            if row[0] == ">":
+                inside = False
+        rows = kept
     out: list[Word] = []
     buf, first, last = "", None, None
-    for ch, a, b in zip(chars, starts, ends):
+    for ch, a, b in rows:
         if ch.isspace():
             if buf:
                 out.append(Word(buf, first, last))
@@ -496,6 +652,28 @@ def words_estimated(text: str, seconds: float) -> list[Word]:
     return out
 
 
+def caption_words(take: Take, aligned: dict) -> tuple[list[Word], str]:
+    """The caption words of a take from the engine's alignment, and their
+    timing. An unmarked take is folded as it always was. A take sent as
+    `spoken` has its tags stripped from the alignment and its aligned words
+    mapped by position onto the line as written, one spoken token per source
+    token, each keeping its timing; when the counts still differ the words
+    are estimated over the take from `text`, timing "estimated", and the
+    take's delivery records `caption_mismatch`. A spoken token never reaches
+    a caption."""
+    if not take.spoken:
+        words = _fold(aligned)
+        return words, ("exact" if words else "none")
+    folded = _fold(aligned, strip_tags=True)
+    source = take.text.split()
+    if folded and len(folded) == len(source):
+        return [Word(src, w.start, w.end) for src, w in zip(source, folded)], "exact"
+    take.delivery = dict(take.delivery or {},
+                         caption_mismatch={"spoken": len(folded), "text": len(source)})
+    seconds = take.seconds or (folded[-1].end if folded else 0.0)
+    return words_estimated(take.text, seconds), "estimated"
+
+
 # --------------------------------------------------------------------------- #
 # the take
 # --------------------------------------------------------------------------- #
@@ -518,6 +696,13 @@ class Take:
     chars: int = 0
     cached: bool = False
     words: list[Word] = field(default_factory=list)
+    # What the engine was sent when the marks changed it ("" when it is
+    # `text`), its length, and the delivery: the section's note, the shot's
+    # performance note, the marks, what the engine `applied` and what it
+    # could only record (`recorded_only`). Captions and cps stay on `text`.
+    spoken: str = ""
+    spoken_chars: int = 0
+    delivery: dict = field(default_factory=dict)
 
     @property
     def cps(self) -> float:
@@ -613,7 +798,10 @@ def _synth_espeak(text: str, out: Path, *, voice: str, rate: int,
     # read as an option and the take fails.
     script_file = out.with_suffix(".txt")
     script_file.write_text(text, encoding="utf-8")
+    # -m reads SSML, which only a marked take is (AUTO-139): an unmarked
+    # take's argv is as it was.
     cmd = ["espeak-ng", "-v", voice or "en-us", "-s", str(opts.get("wpm", 165)),
+           *(["-m"] if text.startswith("<speak>") else []),
            "-w", str(out), "-f", str(script_file)]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     script_file.unlink(missing_ok=True)
@@ -733,11 +921,18 @@ class VoiceOver:
                 text = " ".join(shot.narration.split())
                 if not text:
                     continue
+                marks = shot_marks(shot)
+                spoken, applied, recorded = render_marks(text, marks, self.engine)
                 out.append(Take(n=shot.n, label=shot.label,
                                 section=section.heading, text=text,
                                 planned_at=shot.at,
                                 planned_seconds=shot.seconds,
-                                chars=len(text)))
+                                chars=len(text), spoken=spoken,
+                                spoken_chars=len(spoken or text),
+                                delivery={"section_note": "",
+                                          "performance": shot.note or "", **marks,
+                                          "applied": applied,
+                                          "recorded_only": recorded}))
         return out
 
     def _named(self, take: Take) -> bool:
@@ -760,7 +955,9 @@ class VoiceOver:
     def _fingerprint(self, take: Take) -> str:
         parts = [self.engine, self.voice, self.lang, str(self.rate),
                  json.dumps(self._opts_for(take), sort_keys=True, default=str),
-                 take.text]
+                 # What the engine hears: an unmarked take keeps today's key,
+                 # so its cached WAV still serves.
+                 take.spoken or take.text]
         return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
 
     # -- recording ---------------------------------------------------------
@@ -774,7 +971,7 @@ class VoiceOver:
                 take.cached = True
             else:
                 self._say(f"  {take.label} {len(take.text):>4} chars")
-                synth(take.text, cached, voice=self.voice, rate=self.rate,
+                synth(take.spoken or take.text, cached, voice=self.voice, rate=self.rate,
                       opts=self._opts_for(take) | {"lang": self.engine_lang})
             frames, rate, channels = read_wav(cached)
             if self.trim:
@@ -885,7 +1082,8 @@ class VoiceOver:
             raise RuntimeError("no narration in the screenplay to record")
         self._say(f"[voice] {self.engine}"
                   + (f" · {self.voice}" if self.voice else "")
-                  + f" · {len(takes)} takes · {sum(t.chars for t in takes)} chars")
+                  + f" · {len(takes)} takes · {sum(t.chars for t in takes)} chars"
+                  + spoken_note(takes))
         self.dir.mkdir(parents=True, exist_ok=True)
         self.cache.mkdir(parents=True, exist_ok=True)
         if self.engine == "elevenlabs":
@@ -909,6 +1107,15 @@ class VoiceOver:
                 "engine_lang": self.engine_lang, "layout": self.layout,
                 "takes": [asdict(t) for t in takes],
                 **summarise(takes, layout=self.layout)}
+
+
+def spoken_note(takes: list[Take]) -> str:
+    """" (N sent to the engine)" when the marks made what the engine is
+    sent longer or shorter than the lines; "" otherwise, so an unmarked
+    film prints as it did."""
+    chars = sum(t.chars for t in takes)
+    sent = sum(t.spoken_chars or t.chars for t in takes)
+    return f" ({sent} sent to the engine)" if sent != chars else ""
 
 
 def summarise(takes: list[Take], *, layout: str) -> dict:
@@ -1183,7 +1390,9 @@ def print_voice(data: dict, takes: list[Take]) -> None:
     print(f"\n{data['idea']['title']} — NARRATION")
     print(f"{data['engine']}"
           + (f" · {data['voice']}" if data.get("voice") else "")
-          + f" · {len(takes)} takes · timing: {', '.join(data['timing'])}")
+          + f" · {len(takes)} takes · timing: {', '.join(data['timing'])}"
+          + (f" · {sum(t.chars for t in takes)} chars{spoken_note(takes)}"
+             if spoken_note(takes) else ""))
     print(f"spoken {timecode(data['spoken_seconds'])} · "
           f"planned {timecode(data['planned_seconds'])} · "
           f"drift {data['drift_seconds']:+.1f}s · "
@@ -1359,7 +1568,7 @@ def run(args) -> int:
                          voice=args.voice, lang=args.lang, opts=opts,
                          verbose=False).takes()
         chars = sum(t.chars for t in rows)
-        print(f"{len(rows)} takes · {chars} characters · engine {engine}")
+        print(f"{len(rows)} takes · {chars} characters{spoken_note(rows)} · engine {engine}")
         print(f"estimated speech at 14 chars/s: "
               f"{timecode(round(chars / 14))} against "
               f"{timecode(sum(t.planned_seconds for t in rows))} planned")
