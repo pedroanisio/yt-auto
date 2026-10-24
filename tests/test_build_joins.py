@@ -167,6 +167,49 @@ class JoinsOf(_Project):
         # a still holds: nothing bounds its handle
         self.assertEqual(set(joins[3].alignments), set(build.JOIN_ALIGN))
 
+    def test_an_include_stretched_past_its_length_still_allows_end(self):
+        # The editor extends fx-1-1 (authored 4 s) over a 0.4 s shot nothing
+        # draws, so the include runs 4.4 s: its slack is 4 - 4.4 + 0.25, below
+        # zero. No window may run it further, but one that ends at the cut
+        # runs it not at all, so `end` is still offered and still holds.
+        by_label = {"1.1": BY_LABEL["1.1"], "1.3": BY_LABEL["1.2"]}
+        sections = [Section(heading="Open", shots=[
+            Shot(label="1.1", n=1, visual="v", narration="w", seconds=4),
+            Shot(label="1.2", n=2, visual="v", narration="w", seconds=0.4),
+            Shot(label="1.3", n=3, visual="v", narration="w", seconds=3)])]
+        edit = dict(EDIT, coverage=[{"label": "1.2", "action": "extend_previous",
+                                     "reason": "the cell carries the pause"}])
+        joins = self.joins(sections=sections, by_label=by_label, edit=edit)
+        self.assertEqual([(j.kind, j.from_id, j.to_id) for j in joins],
+                         [("world", "shot-1.1", "shot-1.3")])
+        self.assertLess(joins[0].slack, 0)
+        self.assertEqual(joins[0].alignments, ("end",))
+        answer = {"joins": [{"at_join": 1, "type": "crossfade", "duration": 0.4,
+                             "alignment": "end", "why": "the halves become the next world"}],
+                  "notes": ""}
+        self.assertEqual(build.validate_joins(answer, joins), [])
+        answer["joins"][0]["alignment"] = "center"
+        self.assertTrue(build.validate_joins(answer, joins))
+
+    def test_a_clip_run_past_its_length_still_allows_end(self):
+        j = build.Join(n=1, at=4.0, kind="shot", from_id="shot-1.1", to_id="shot-1.2",
+                       from_label="1.1", max_seconds=1.0, slack=-0.2,
+                       alignments=build.JOIN_ALIGN)
+        answer = {"joins": [{"at_join": 1, "type": "crossfade", "duration": 0.5,
+                             "alignment": "end", "why": "w"}], "notes": ""}
+        self.assertEqual(build.validate_joins(answer, [j]), [])
+
+    def test_an_include_next_to_a_placeholder_is_a_cut_not_asked(self):
+        sections = [Section(heading="Open", shots=[
+            Shot(label="1.1", n=1, visual="a cell divides", narration="It splits.",
+                 seconds=4),
+            Shot(label="1.2", n=2, visual="nothing drew this", narration="And then.",
+                 seconds=3)])]
+        joins = self.joins(sections=sections, by_label={"1.1": BY_LABEL["1.1"]})
+        self.assertEqual([(j.from_id, j.to_id, j.asked) for j in joins],
+                         [("shot-1.1", "shot-1.2", False)])
+        self.assertIn("placeholder", joins[0].note)
+
     def test_a_merged_run_has_no_join_inside_it(self):
         by_label = {"1.1": {"file": "vfx/open.scene.xml", "symbol": "fx-1-1"},
                     "1.2": {"file": "vfx/open.scene.xml", "symbol": "fx-1-1"}}
@@ -241,6 +284,14 @@ class Validate(_Project):
         # the placeholder join is not one of the joins asked
         said = build.validate_joins(self.answer(*rows, dict(rows[0], at_join=4)), self.joins)
         self.assertTrue(any("join 4" in s for s in said), said)
+
+    def test_a_missing_join_is_named_beside_another_joins_violation(self):
+        # "join 13 is not one of the joins asked" holds the text "join 1":
+        # the omission of join 1 is still named, so the second asking can fix it
+        rows = self.ok()[1:] + [dict(self.ok()[0], at_join=13)]
+        said = build.validate_joins(self.answer(*rows), self.joins)
+        self.assertTrue(any("join 13" in s for s in said), said)
+        self.assertIn("join 1 has no entry", said)
 
     def test_a_centred_window_past_the_includes_slack_is_refused(self):
         rows = self.ok()
@@ -436,6 +487,49 @@ class Flow(_Run):
         self.assertIn("2.1", warned[0])
         self.assertFalse(manifest["joins_review"]["accept"])
         self.assertEqual(len(manifest["joins_review"]["problems"]), 2)
+
+    def test_a_reject_naming_no_join_warns_of_the_joins_it_leaves_unresolved(self):
+        Scripted.answers = {"joins-review": {"accept": False, "problems": []}}
+        self.assertEqual(self.run_build(), 0, self.err)
+        manifest = self.manifest()
+        self.assertEqual([r["review"] for r in manifest["joins"][:3]], ["unresolved"] * 3)
+        warned = [f for f in manifest["findings"] if "named none" in f]
+        self.assertEqual(len(warned), 1, manifest["findings"])
+        self.assertIn("joins 1, 2, 3", warned[0])
+
+    def test_a_revision_of_a_join_the_reviewer_passed_keeps_the_one_it_read(self):
+        def revised(prompt):
+            answer = _chosen(prompt)
+            # join 3 is acted on; join 1, which the reviewer passed, is changed too
+            answer["joins"][2] = {"at_join": 3, "type": "crossfade", "duration": 0.5,
+                                  "alignment": "center", "why": "softer"}
+            answer["joins"][0] = {"at_join": 1, "type": "cut", "duration": 0.5,
+                                  "alignment": "end", "why": "changed unasked"}
+            return answer
+        Scripted.answers = {"joins-review": {"accept": False, "problems": [
+            {"at_join": 3, "problem": "the push fights the camera", "fix": "crossfade"}]},
+            "joins-revise": revised}
+        self.assertEqual(self.run_build(), 0, self.err)
+        rows = self.manifest()["joins"]
+        self.assertEqual([r["review"] for r in rows[:3]], ["accepted", "accepted", "revised"])
+        self.assertEqual([r["type"] for r in rows[:3]], ["crossfade", "dip-to-color",
+                                                         "crossfade"])
+        self.assertEqual(rows[0]["why"], "the cell's halves become the next world")
+
+    def test_a_reviewer_that_cannot_be_made_leaves_the_editors_joins_unresolved(self):
+        class NoReviewer(Scripted):
+            def __init__(self, root, stage, **kw):
+                if kw.get("role") == build.JOIN_REVIEW_ROLE:
+                    raise HarnessError("[build] the reviewer's engine is not installed")
+                super().__init__(root, stage, **kw)
+        self.assertEqual(self.run_build(fake=NoReviewer), 0, self.err)
+        manifest = self.manifest()
+        self.assertEqual([r["type"] for r in manifest["joins"]][:3],
+                         ["crossfade", "dip-to-color", "push"])
+        self.assertEqual({r["review"] for r in manifest["joins"][:3]}, {"unresolved"})
+        self.assertTrue(any(f.startswith("warning:") and "not installed" in f
+                            for f in manifest["findings"]), manifest["findings"])
+        self.assertNotIn("joins-review", self.names())
 
     def test_a_failed_review_applies_the_editors_joins_unresolved(self):
         Scripted.answers = {"joins-review": HarnessError("[build] joins-review: over budget")}

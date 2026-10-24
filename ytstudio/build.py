@@ -1342,8 +1342,12 @@ def joins_of(layout: Layout, fps: float) -> list[Join]:
         elif a["kind"] == "footage" and a.get("seconds") is not None:
             # a clip runs out as a world does: past its length it holds or vanishes
             slack = round(float(a["seconds"]) - spans[0] + TIMING_SLACK, 3)
+        # `end` runs the outgoing node not at all, so it fits even an
+        # include the editor already stretched past its authored length
+        # (a slack below zero): only the alignments that extend it are bounded.
         alignments = tuple(al for al in JOIN_ALIGN
-                           if slack is None or JOIN_OUTGOING[al] * window <= slack + 1e-9)
+                           if slack is None or JOIN_OUTGOING[al] == 0
+                           or JOIN_OUTGOING[al] * window <= slack + 1e-9)
         note = ""
         if not meets:
             note = (f"the nodes do not meet: {apart:.2f} s of background shows between them"
@@ -1438,7 +1442,7 @@ def validate_joins(answer, joins: list[Join]) -> list[str]:
         if alignment not in j.alignments:
             out.append(f"join {n}: alignment {alignment!r} is not one this join allows "
                        f"({', '.join(j.alignments)})")
-        elif (j.slack is not None and alignment in JOIN_OUTGOING
+        elif (j.slack is not None and JOIN_OUTGOING.get(alignment, 0) > 0
               and JOIN_OUTGOING[alignment] * seconds > j.slack + 1e-9):
             out.append(f"join {n}: a {alignment} window of {seconds:g} s runs {j.from_label} "
                        f"{JOIN_OUTGOING[alignment] * seconds:g} s past its end, beyond its "
@@ -1450,8 +1454,11 @@ def validate_joins(answer, joins: list[Join]) -> list[str]:
             elif direction not in JOIN_DIRECTIONS:
                 out.append(f"join {n}: direction {direction!r} is not one of "
                            f"{', '.join(JOIN_DIRECTIONS)}")
+    # Every entry for an asked join is in `seen`, whatever else is wrong with
+    # it, so the omission is told by index, never by searching the messages
+    # ("join 13 is not one of the joins asked" holds "join 1").
     for n in asked:
-        if n not in seen and not any(f"join {n}" in s for s in out):
+        if n not in seen:
             out.append(f"join {n} has no entry")
     return out
 
@@ -1543,8 +1550,9 @@ def decide_joins(author, reviewer, data: dict, joins: list[Join]) -> dict:
     whose call fails, leaves every join a hard cut (`fallback`) with a
     warning. A review whose call fails leaves the editor's joins
     `unresolved`; a reject gets one revision (`joins-revise`), validated and
-    not reviewed again, and each problem the revision did not act on stays
-    a warning naming its join."""
+    not reviewed again, which changes only the joins the reviewer named
+    (all of them when it named none), and each problem the revision did
+    not act on stays a warning naming its join."""
     asked = {j.n: j for j in joins if j.asked}
     review = {"model": str(getattr(reviewer, "model", "") or ""), "accept": None,
               "problems": [], "status": "nothing asked"}
@@ -1609,6 +1617,10 @@ def decide_joins(author, reviewer, data: dict, joins: list[Join]) -> dict:
             return None
     # A reject that names no join rejects them all.
     flagged = {index(p) for p in named} if named else set(asked)
+    # The revision answers every join again, but only a flagged one was sent
+    # back: a join the reviewer passed keeps the version it read, so build.json
+    # never says `accepted` of a transition no reviewer saw.
+    final = {n: (final[n] if n in flagged else first[n]) for n in asked}
     status = {n: ("accepted" if n not in flagged else
                   "revised" if not _same_join(final[n], first[n]) else "unresolved")
               for n in asked}
@@ -1621,9 +1633,14 @@ def decide_joins(author, reviewer, data: dict, joins: list[Join]) -> dict:
             out["warnings"].append(
                 f"warning: join {j.n} ({j.from_label} -> {j.to_label}, {j.kind}): the "
                 f"reviewer's problem stands: {p.get('problem', '')} (fix: {p.get('fix', '')})")
-    if not named and failed:
-        out["warnings"].append("warning: the joins review rejected the joins and named no "
-                               "join; they stand as first chosen")
+    left = [n for n in asked if status[n] == "unresolved"]
+    if not named and left:
+        # No problem to name each one by, so one warning names them all.
+        out["warnings"].append(
+            "warning: the joins review rejected the joins and named none; "
+            + (f"joins {', '.join(map(str, left))} stand" if len(left) > 1
+               else f"join {left[0]} stands")
+            + " as first chosen")
     out["chosen"] = [dict(final[n], review=status[n]) for n in asked]
     review["status"] = "revised" if any(s == "revised" for s in status.values()) else "unresolved"
     return out
