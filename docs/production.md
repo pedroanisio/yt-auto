@@ -320,6 +320,44 @@ step far above the others is a jump inside the shot, and either is a
 finding before anyone looks. Tile the stills with their timestamps into a
 contact sheet so the whole runtime is judged at once.
 
+Neither a midpoint nor its burst can tell a diagram built in steps from a
+finished one under a slow push-in (AUTO-145). The first shot of each
+2d-diagram or data-animation effect that vfx.json keeps, when it opens its
+own include and lasts 3 s or more, also gets a single frame a quarter
+second after its cut (`build: first`) and one a quarter second before its
+end (`build: last`): no burst, never the shot's home, beyond `--frames`, at
+most 12, the longest shots first, merged into a burst of the same shot
+that has the frame. The later shots of the effect continue its take and
+open on what it built, so they are not judged. Each still's **ink** is the
+share of a 320 px luma thumbnail whose edge magnitude exceeds 32; read at
+the first still, each line still between and the last, a series that never
+rises by 15 % of its last reading is `no-build`, the diagram on screen whole
+from the cut and talked over. Growth within the shot is judged, not a ratio
+of the first and last, so a busy ground does not hide a build; a noise-like
+ground saturates the measure, and a shot drawn on one cannot be told. A shot
+left out, or whose readings have no ink, is named under `not_evidenced`.
+
+The words on screen are counted from the document QA renders (the scene and
+the includes it names), never read off a frame: at each still, the text and
+formula nodes inside their include's window and their own, visible under
+every opacity key above them (from a key above 0 until the next key at 0,
+so a fade out and a second fade in are both read), less the ids the engine
+says the camera never sees and build's placeholder card. One node over the
+screenplay's wall-of-text bound (6 words), or 12 at once, a formula counted
+as 4, is `text-dense`, its node ids named; a node whose id starts `quote-`,
+`headline-` or `credit-` is not counted and is held instead to the time it
+takes to read (`script.READING_CPS`). samples.json rows carry `ink` and
+`text`.
+
+Both are advisory until measured: always minor, never capping a score. The
+calibration that sets INK_EDGE, BUILD_STEP, SCREEN_WORDS and FORMULA_WORDS,
+from the qa passes of at least two existing films, goes here; until it is
+filled in, the numbers above are house numbers.
+
+| Film | Shot | Effect (type) | Built? (by eye) | Ink series (t s: ink) | Concurrent words (max) | Verdict |
+|---|---|---|---|---|---|---|
+| not yet measured | | | | | | |
+
 For audio, inspect the time range itself. Do not infer audio quality from the
 script, the cue sheet, or the fact that a track exists.
 
@@ -467,7 +505,11 @@ film at a world's proof-frame time differs from the author's proof frame by
 more than `qa.PROOF_DIFF` in the stage band, both frames rendered ungraded
 so an applied look is no mismatch, which is what a world split into
 includes that restart at t=0 looks like; the other mechanical findings on
-that world's shots are re-owned to `build`), has the model read the frames and the contact sheet as images
+that world's shots are re-owned to `build`; and, advisory, always minor and
+capping nothing until calibrated (§7, AUTO-145), `no-build` and
+`text-dense`, both owned by vfx, the first re-owned to `build` with the
+others and the second never, since it is counted from the document vfx
+wrote), has the model read the frames and the contact sheet as images
 and file the scorecard three times on the same evidence (`qa.QA_SAMPLES`,
 the categories in a different order each; one reading's noise, about ±0.5 a
 category, is the size of the steps read as progress), takes each category's
