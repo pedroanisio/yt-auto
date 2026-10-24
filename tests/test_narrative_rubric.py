@@ -553,6 +553,24 @@ class Form(unittest.TestCase):
             with self.subTest(problem=fault["problem"]):
                 self.assertFalse(narrative.form_only_revise(
                     self.clean(problems=[about_form, fault]), form="mystery"))
+        # The problem text says what is wrong; a fix that reshapes toward the
+        # form, or "form" as an ordinary word, does not make a rehook or a
+        # payoff fault a form fault.
+        fixed_toward = {"section": 3, "problem": "section 3 rehook is weak and does not "
+                        "inform", "fix": "reshape the reveal to fit the form"}
+        verb = {"section": 3, "problem": "section 3 does not form a question",
+                "fix": "ask what the photographs could not show"}
+        shape = {"section": 0, "problem": "the payoff line is in list form",
+                 "fix": "say the tail in one sentence"}
+        for fault in (fixed_toward, verb, shape):
+            with self.subTest(problem=fault["problem"]):
+                self.assertFalse(narrative.form_only_revise(
+                    self.clean(problems=[about_form, fault]), form="mystery"))
+        for said in ("its form is a label", "the declared form fits no subject",
+                     "the film's form is habit", "this form is not this subject's"):
+            with self.subTest(problem=said):
+                self.assertTrue(narrative.form_only_revise(
+                    self.clean(problems=[{"section": 0, "problem": said, "fix": "f"}])))
 
     def test_the_plan_role_names_the_form_a_ground_to_revise_only(self):
         for channel in (False, True):

@@ -926,16 +926,24 @@ def _text(value: Any) -> str:
     return " ".join(str(value or "").split())
 
 
-#: A problem that speaks of the form by that word (AUTO-157).
-_FORM_WORD = re.compile(r"(?<![\w-])forms?(?![\w-])", re.I)
+#: A problem that speaks of the film's form (AUTO-157): "the form", "its
+#: form", "the declared form", form_fits. The bare word is not enough, since
+#: "does not form a question" or "in list form" name a rehook or a payoff
+#: fault, and "in the form of" is a manner, not the film's shape.
+_FORM_WORD = re.compile(
+    r"(?<![\w-])(?:the|its|this|that|declared|chosen|film['\u2019]s|plan['\u2019]s)\s+"
+    r"form(?:['\u2019]s)?(?![\w-])(?!\s+of\b)|(?<![\w-])form_fits(?![\w-])", re.I)
 
 
 def _about_form(problem: Any, form: str, said: str) -> bool:
-    """Whether one entry of a review's problems is about the form: it says
-    "form", names the plan's form, or repeats the review's form_problem."""
+    """Whether one entry of a review's problems is about the form: its
+    problem text speaks of the film's form (_FORM_WORD), names the plan's
+    form, or repeats the review's form_problem. Only the problem text
+    counts: the fix says what to change, and a rehook whose fix reshapes it
+    "to fit the form" is still a rehook fault."""
     if not isinstance(problem, dict):
         return False
-    text = f"{_text(problem.get('problem'))} {_text(problem.get('fix'))}"
+    text = _text(problem.get("problem"))
     return bool(_FORM_WORD.search(text) or (form and _names(text, form))
                 or (said and said.lower() in text.lower()))
 
