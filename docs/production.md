@@ -83,6 +83,10 @@ they find is filed as `hold`, `metronomic`, `slow-opening` and `wpm`
 mechanical findings (§10). The scan runs on a render host only; with
 `--watch` it reads the cut the watch already sent there, so the cut goes up
 once, and rhythm.json's scan block records the upload's seconds and bytes.
+A hold counts the narration as running across a pause of up to 1.5 s
+(`narration_gap_s`, a house choice); a scan that exits non-zero or stops
+short of the film's end leaves the hold and the opening not evidenced,
+never passed.
 
 **READY TO PUBLISH requires all of:**
 

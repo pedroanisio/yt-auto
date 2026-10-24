@@ -88,7 +88,12 @@ RHYTHM: dict[str, dict] = {
         "value": 0.004, "unit": "ffmpeg scene score at or over which a frame changed",
         "corpus": ("direction 12",), "strength": "TO VERIFY",
         "note": "a guess until two existing renders are scanned on the render host and a "
-                "slow camera drift is seen to count as change while a held still does not"},
+                "slow camera drift is seen to count as change while a held still does not. "
+                "ffmpeg's scene score is min(mafd, |mafd - previous mafd|) / 100, so a "
+                "steady drift whose frame difference does not change can score as low as "
+                "a still; if the calibration run shows that, no CHANGE_SCORE separates them "
+                "and the scan must read the frame difference itself (tblend difference and "
+                "signalstats YAVG, or the per-frame mafd) instead of the scene score"},
     "cut_score": {
         "value": 0.3, "unit": "ffmpeg scene score at or over which a frame is a hard cut",
         "corpus": ("direction 12",), "strength": "TO VERIFY",
@@ -100,8 +105,10 @@ RHYTHM: dict[str, dict] = {
         "note": "False until the calibration run (two existing renders scanned on the "
                 "render host: a slow camera drift must count as change, a held still must "
                 "not) is recorded in the change_score and cut_score notes, in the commit "
-                "that turns this True. Until then a hold, a slow opening and an "
-                "events-basis metronomic finding are filed minor"},
+                "that turns this True. The run must also check a steady drift, which "
+                "the scene score can read as a still (change_score's note); until a "
+                "threshold separates them it stays False. Until then a hold, a slow "
+                "opening and an events-basis metronomic finding are filed minor"},
 }
 
 #: The kinds this module files, in qa's mechanical shape.

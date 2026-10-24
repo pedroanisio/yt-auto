@@ -177,6 +177,19 @@ class Holds(unittest.TestCase):
         self.assertEqual(kinds(silent, "hold"), [])
         self.assertEqual(kinds(short, "hold"), [])
 
+    def test_a_hold_split_by_a_pause_over_the_narration_gap_files_nothing(self):
+        # A pause of up to narration_gap_s (1.5 s) is the voice between
+        # words, so a 12 s still across a 1.4 s pause is one hold under the
+        # narration. A pause over it is the voice stopping: the two voiced
+        # parts (5 s each) are held under 8 s apiece, so nothing is filed.
+        # A house choice, not the corpus's: rule 12 names no such gap.
+        self.assertEqual(rhythm.value("narration_gap_s"), 1.5)
+        still = [(40.0, 52.0)]
+        joined = rhythm.holds_under_narration(still, [(40.0, 45.3), (46.7, 52.0)])
+        split = rhythm.holds_under_narration(still, [(40.0, 45.0), (47.0, 52.0)])
+        self.assertEqual(joined, [(40.0, 52.0)])
+        self.assertEqual(split, [])
+
     def test_a_shot_drawn_by_the_build_owns_its_hold(self):
         build = film(LENGTHS, asset="image")
         with calibrated(True):
@@ -253,6 +266,10 @@ class Calibration(unittest.TestCase):
         self.assertIs(rhythm.calibrated(), False)
         self.assertIn("TO VERIFY", rhythm.RHYTHM["change_score"]["strength"])
         self.assertIn("calibration", rhythm.RHYTHM["calibrated"]["note"])
+        # ffmpeg's scene score is min(mafd, |mafd - previous mafd|): a steady
+        # drift can score as low as a still, which the calibration run checks
+        for key in ("change_score", "calibrated"):
+            self.assertIn("steady", rhythm.RHYTHM[key]["note"])
 
     def test_before_calibration_a_scan_finding_is_minor_and_says_to_verify(self):
         build = film(LENGTHS, functions={1: "hook"})

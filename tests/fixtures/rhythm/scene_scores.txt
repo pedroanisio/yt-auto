@@ -1,3 +1,6 @@
+# SYNTHETIC: written by hand in ffmpeg 6's metadata=print layout, not captured
+# (no render host was reachable when AUTO-141 was written). Replace it with a
+# real capture from the calibration run (rhythm.RHYTHM["calibrated"]).
 ffmpeg version 6.1.1-3ubuntu5 Copyright (c) 2000-2023 the FFmpeg developers
   built with gcc 13 (Ubuntu 13.2.0-23ubuntu3)
 Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'cut.mp4':
