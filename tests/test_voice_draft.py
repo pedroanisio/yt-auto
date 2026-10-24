@@ -82,6 +82,13 @@ class ScriptSha(unittest.TestCase):
         self.assertNotEqual(base, voice.script_sha(
             film(pronounce=[{"term": "Line", "say": "LYNE"}])))
 
+    def test_the_film_order_counts(self):
+        first = Shot(narration="One line.", n=1, label="1.1", seconds=2)
+        second = Shot(narration="Another line.", n=2, label="1.2", seconds=2)
+        self.assertNotEqual(
+            voice.script_sha([Section(heading="One", shots=[first, second])]),
+            voice.script_sha([Section(heading="One", shots=[second, first])]))
+
     def test_a_shot_with_no_words_is_not_read_and_does_not_count(self):
         secs = film()
         secs[0].shots[1].visual = "something else entirely"

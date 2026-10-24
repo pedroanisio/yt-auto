@@ -1631,7 +1631,8 @@ def script_sha(sections: list[Section]) -> str:
             rows.append([shot.label, text, marks["emphasis"], marks["pauses"],
                          [{"term": r.get("term", ""), "say": r.get("say", "")}
                           for r in marks["pronounce"]]])
-    rows.sort(key=lambda r: json.dumps(r, ensure_ascii=False, sort_keys=True))
+    # In film order: a moved shot is another read, and the draft's drift
+    # per section no longer describes it.
     blob = json.dumps(rows, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
