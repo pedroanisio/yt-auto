@@ -853,8 +853,51 @@ def fallback_palette(project: workspace.Project, build: dict | None
     if design.get("source") != "fallback":
         return None
     why = design.get("fallback") or "source fallback"
-    return (f"the film is in design.py's house fallback palette ({why}), not its own",
-            _cmd("styles", project, "--rich") + ", then " + _cmd("build", project))
+    problem = f"the film is in design.py's house fallback palette ({why}), not its own"
+    # The fix follows the cause (AUTO-146): with no styles.json the stage has
+    # not run; with one, its palette named no hex code, and a rerun on the
+    # same inputs would serve that cached choice again, so it asks afresh.
+    # A build.json from before build said why is told apart by the file.
+    absent = (why == "no styles.json" if design.get("fallback")
+              else not project.has("styles"))
+    if absent:
+        return problem, _cmd("styles", project, "--rich") + ", then " + _cmd("build", project)
+    return (f"{problem}; add hex codes to the palette",
+            _cmd("styles", project, "--rich", "--fresh") + ", then " + _cmd("build", project))
+
+
+#: A styles row with any of these was written under --rich (styles.py).
+RICH_STYLE_FIELDS = ("palette", "typography", "motion", "sound")
+
+
+def identity_problem(styles: dict | None) -> str:
+    """Why styles.json's identity (AUTO-146) is not shown to be the film's own,
+    or "": a rich styles.json with no identity, or one whose swap test was
+    weak, not evidenced or never run. A warning, not a fail: the look is
+    still the operator's call at the keyframe's approval, and QA scores the
+    film's identity on its frames. A styles.json written without --rich has
+    no identity to ask about; its palette is the fallback check's."""
+    if not isinstance(styles, dict):
+        return ""
+    ident = styles.get("identity")
+    if not isinstance(ident, dict):
+        rich = styles.get("thumbnail") or any(
+            isinstance(row, dict) and any(row.get(k) for k in RICH_STYLE_FIELDS)
+            for row in styles.get("styles") or [])
+        return ("styles.json has the rich fields but no identity (atmosphere, personality, "
+                "motif, signature), so nothing says what makes this film's look its own"
+                if rich else "")
+    review = ident.get("review") if isinstance(ident.get("review"), dict) else {}
+    verdict = review.get("verdict")
+    if verdict == "pass":
+        return ""
+    if verdict == "weak":
+        return ("the identity's swap test was weak: "
+                + str(review.get("objection") or "no objection recorded"))
+    if verdict == "not_evidenced":
+        return ("the identity's swap test is not_evidenced: "
+                + str(review.get("error") or "the reviewer did not answer"))
+    return "the identity was never swap-tested by a reviewer of another family"
 
 
 def delivery_evidence(project: workspace.Project, build: dict | None
@@ -1198,6 +1241,9 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
                            _cmd("styles", project, "--rich", "--deliberate", "full"))
         except (TypeError, ValueError):
             pass
+        if problem := identity_problem(styles):
+            report.add("warn", "styles", problem,
+                       _cmd("styles", project, "--rich", "--deliberate", "critique"))
 
     # -- script ------------------------------------------------------------
     script = read_json(project.source("script"), warn=False) if "script" in done else None
