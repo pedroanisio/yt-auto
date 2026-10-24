@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from ytstudio import harness, research  # noqa: E402
+from ytstudio import doctor, harness, research, workspace  # noqa: E402
 from ytstudio.core import Idea  # noqa: E402
 from tests.test_research_levels import _Researched  # noqa: E402
 
@@ -287,6 +287,19 @@ class InTheDossier(_Researched):
                           if w.startswith(research.PARALLEL_DROPPED)],
                          ["historical parallel dropped: A bridge a blog remembers: "
                           "source never opened (https://example.org/blog)"])
+
+    def test_doctor_shows_the_written_dossier_s_dropped_rows_as_warns(self):
+        # end to end: the dossier run() wrote, read back by `yt doctor`
+        data = self.run_with([parallel(), BLOG, QUEBEC, DEE])
+        research.write_dossier(research.Dossier(self.root, self.idea, at=self.root),
+                               data, [])
+        if not (self.root / "idea.json").exists():
+            (self.root / "idea.json").write_text(json.dumps({"title": self.idea.title}))
+        rep = doctor.check_project(workspace.Project(self.root))
+        dropped = [f for f in rep.findings if f.area == "research"
+                   and f.message.startswith(research.PARALLEL_DROPPED)]
+        self.assertEqual([f.level for f in dropped], ["warn", "warn"])
+        self.assertEqual([f.fix for f in dropped], ["", ""])
 
     def test_a_row_without_a_year_prints_no_empty_brackets(self):
         data = self.run_with([parallel(year="")])
