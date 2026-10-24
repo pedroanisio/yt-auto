@@ -47,7 +47,8 @@ from claude_engine import ClaudeError
 from .core import Idea, read_json, timecode, wrap, write_json
 from .ideas import CHANNEL_STYLES, style_brief
 from . import channel, flags, harness, house, narrative, reviewers, spend, workspace
-from .research import STANDINGS, claim_key, paper_url, same_paper
+from .research import (STANDINGS, claim_key, crosscheck_host, crosscheck_url_key,
+                       independent_line, paper_url, same_paper)
 from .assets import press_items
 
 #: Narration pace. 150 wpm is an unhurried documentary read; 180 is brisk.
@@ -768,6 +769,41 @@ CHECK_SCHEMA = {
     },
     "required": ["flags", "verdict"],
 }
+
+#: CHECK_SCHEMA for a fact-check that accounts for the independent check's
+#: disagreements (AUTO-134): a flag may name the X id it answers
+#: (`crosscheck`), and `crosscheck_clear` lists the ids no line needs a flag
+#: for, each with why. Both optional, so every flag in CHECK_SCHEMA's shape
+#: (the rules', the picture-check's, the status check's) fits it as well.
+#: A check with nothing to account for is still asked with CHECK_SCHEMA
+#: itself: the schema is part of a decision's digest, so its cached answer
+#: replays.
+ACCOUNT_SCHEMA = {
+    **CHECK_SCHEMA,
+    "properties": {
+        "flags": {
+            **CHECK_SCHEMA["properties"]["flags"],
+            "items": {
+                **CHECK_SCHEMA["properties"]["flags"]["items"],
+                "properties": {**CHECK_SCHEMA["properties"]["flags"]["items"]["properties"],
+                               "crosscheck": {"type": "string"}},
+            },
+        },
+        "verdict": CHECK_SCHEMA["properties"]["verdict"],
+        "crosscheck_clear": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"id": {"type": "string"}, "why": {"type": "string"}},
+                "required": ["id", "why"],
+            },
+        },
+    },
+}
+
+#: The verdict of a fact-check that failed with disagreements to account
+#: for: each stands as a flag (crosscheck_flags), never dropped.
+CROSSCHECK_UNCHECKED = "fact-check failed; independent disagreements stand unchecked"
 
 
 # --------------------------------------------------------------------------- #
@@ -1619,10 +1655,19 @@ def research_block(data: dict, *, limit: int = 60, ids: bool = True) -> str:
               f"the {len(on_outline)} the outline uses and the {limit} best "
               "sourced of the rest", file=sys.stderr)
     place = {id(c): k for k, c in enumerate(everything, 1)}
+    # AUTO-134: each claim the independent check took carries its verdict;
+    # a dossier with no `crosscheck` lists every claim as before.
+    checked: dict[str, dict] = {}
+    for row in data.get("crosscheck") if isinstance(data.get("crosscheck"), list) else ():
+        if isinstance(row, dict):
+            checked.setdefault(key(row.get("claim", "")), row)
     claims = []
     for claim in on_outline + ranked[:limit]:
         number = f" [{claim['number']}]" if claim.get("number") else ""
         caveat = f" CAVEAT: {claim['caveat']}" if claim.get("caveat") else ""
+        row = checked.get(key(claim.get("claim", "")))
+        if row is not None:
+            caveat += f" INDEPENDENT CHECK: {independent_line(row)}"
         cid = f"c{place[id(claim)]}: " if ids else ""
         standing = _standing(claim) if ids else ""
         claims.append(
@@ -1687,6 +1732,133 @@ def research_block(data: dict, *, limit: int = 60, ids: bool = True) -> str:
         parts.append("Known weaknesses -- do not write a line that depends on "
                      "these being resolved:\n" + "\n".join(gaps))
     return "\n\n".join(parts)
+
+
+# --------------------------------------------------------------------------- #
+# the independent check's disagreements, accounted for (AUTO-134)
+# --------------------------------------------------------------------------- #
+
+#: The statuses the fact-check must account for: the independent sources
+#: say otherwise, or are split.
+DISAGREEING = ("contradicted", "disputed")
+
+
+def disagreements_of(dossier: dict | None) -> list[dict]:
+    """The dossier's cross-check entries the independent sources disagree
+    with (contradicted or disputed), numbered X1..Xk in the dossier's order:
+    each with its `claim`, its `status`, the `source_url` the research cited
+    (the entry's, else the claim's), the `correction`, and the `urls` of the
+    sources counted (none on the cited host), `url` the first that says
+    otherwise. [] for a dossier with no `crosscheck`."""
+    rows = dossier.get("crosscheck") if isinstance(dossier, dict) else None
+    if not isinstance(rows, list):
+        return []
+    cited_by = {claim_key(c.get("claim", "")): str(c.get("source_url") or "")
+                for c in dossier.get("claims") or [] if isinstance(c, dict)}
+    out: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("status") not in DISAGREEING:
+            continue
+        claim = str(row.get("claim") or "")
+        source_url = str(row.get("source_url") or cited_by.get(claim_key(claim), ""))
+        cited = crosscheck_host(source_url)
+        counted = [s for s in row.get("sources") or [] if isinstance(s, dict)
+                   and str(s.get("url") or "").strip()
+                   and not (cited and crosscheck_host(s.get("url")) == cited)]
+        urls = list(dict.fromkeys(str(s["url"]).strip() for s in counted))
+        against = [str(s["url"]).strip() for s in counted if s.get("agrees") == "no"]
+        out.append({"id": f"X{len(out) + 1}", "status": row["status"], "claim": claim,
+                    "source_url": source_url,
+                    "correction": " ".join(str(row.get("correction") or "").split()),
+                    "urls": urls, "url": (against or urls or [""])[0]})
+    return out
+
+
+def disagreement_line(d: dict) -> str:
+    """One disagreement as the fact-check is told it."""
+    said = (f"; the independent sources state: {d['correction']}" if d.get("correction")
+            else "")
+    read = f"; read at {', '.join(d['urls'])}" if d.get("urls") else ""
+    return (f"- {d['id']} ({d['status']}): \"{d['claim']}\" (the research cites "
+            f"{d.get('source_url') or 'no url'}){said}{read}")
+
+
+def _accounted(check: dict, d: dict) -> bool:
+    """Whether a check accounts for one disagreement: a flag names it (for a
+    contradicted claim, one above minor), or crosscheck_clear lists it with
+    a reason."""
+    tied = [f for f in check.get("flags") or [] if isinstance(f, dict)
+            and str(f.get("crosscheck") or "") == d["id"]]
+    if d["status"] == "contradicted":
+        tied = [f for f in tied if f.get("severity") != "minor"]
+    cleared = any(isinstance(c, dict) and str(c.get("id") or "") == d["id"]
+                  and str(c.get("why") or "").strip()
+                  for c in check.get("crosscheck_clear") or [])
+    return bool(tied) or cleared
+
+
+def crosscheck_unaccounted(check: dict, disagreements: list[dict]) -> list[str]:
+    """What a fact-check left unaccounted, one line each: an X id no flag
+    names and crosscheck_clear does not list with a reason, an id that is
+    not one of the disagreements, and a flag that calls a contradicted claim
+    minor. [] when every disagreement is accounted for."""
+    by_id = {d["id"]: d for d in disagreements}
+    known = ", ".join(by_id) or "none"
+    problems: list[str] = []
+    for f in check.get("flags") or []:
+        x = str((f or {}).get("crosscheck") or "") if isinstance(f, dict) else ""
+        if not x:
+            continue
+        where = f"the flag on shot {f.get('n', 0)}"
+        if x not in by_id:
+            problems.append(f"{where} names {x}, which is not one of the disagreements "
+                            f"listed ({known})")
+        elif by_id[x]["status"] == "contradicted" and f.get("severity") == "minor":
+            problems.append(f"{where} calls {x} minor, but a contradicted claim stated as "
+                            "fact is a blocker")
+    for c in check.get("crosscheck_clear") or []:
+        x = str((c or {}).get("id") or "") if isinstance(c, dict) else ""
+        if x and x not in by_id:
+            problems.append(f"crosscheck_clear lists {x}, which is not one of the "
+                            f"disagreements listed ({known})")
+    for d in disagreements:
+        if not _accounted(check, d):
+            problems.append(f"{d['id']} (\"{d['claim']}\") is neither named by a flag's "
+                            "crosscheck nor listed in crosscheck_clear with why")
+    return problems
+
+
+_URL_IN_TEXT = re.compile(r"https?://[^\s)\]>\"'<,;]+")
+
+
+def _cites(source: str, url: str) -> bool:
+    """Whether a shot's `source` names `url`: some URL in it is the same page
+    under the cross-check's normalisation (crosscheck_url_key), nothing
+    looser. An empty or hostless url is cited by no shot."""
+    if not crosscheck_host(url):
+        return False
+    key = crosscheck_url_key(url)
+    return any(crosscheck_url_key(found.rstrip(".:")) == key
+               for found in _URL_IN_TEXT.findall(str(source or "")))
+
+
+def crosscheck_flags(unaccounted: list[dict], shots: list[Shot]) -> list[dict]:
+    """The disagreements a fact-check did not account for, as its flags: a
+    blocker for a contradicted claim, important for a disputed one, on each
+    shot whose source cites the claim's source_url, or script-wide (n 0)
+    when none does. Mechanical: it says only that nobody said."""
+    out: list[dict] = []
+    for d in unaccounted:
+        verb = "contradicts" if d["status"] == "contradicted" else "disputes"
+        url = d.get("url") or ", ".join(d.get("urls") or []) or "the independent sources"
+        row = {"severity": "blocker" if d["status"] == "contradicted" else "important",
+               "problem": f"the independent check {verb} '{d['claim']}' ({url}) and the "
+                          "fact-check did not say whether the script states it",
+               "fix": f"check every line stating it against {url}",
+               "crosscheck": d["id"]}
+        numbers = [s.n for s in shots if _cites(s.source, d.get("source_url", ""))] or [0]
+        out += [{"n": n, **row} for n in numbers]
+    return out
 
 
 def _standing(claim: dict) -> str:
@@ -2997,9 +3169,11 @@ STATUS_UNREAD = "status check needs a reviewer of another family (--review)"
 
 #: The fact-check's decisions (AUTO-133): `verify` and its re-checks
 #: `verify-<round>`, and `verify-labels`, `verify-labels-<round>` under
-#: `yt script --revise`. Never `verify-status` (its own reader, above) and
-#: never a `revise*` decision: the fact revision stays the author's.
-_FACT_NAME = re.compile(r"^verify(-labels)?(-\d+)?$")
+#: `yt script --revise`; and the accounting for the independent check
+#: (AUTO-134): `verify-again`, `verify-account`, `verify-account-again`.
+#: Never `verify-status` (its own reader, above) and never a `revise*`
+#: decision: the fact revision stays the author's.
+_FACT_NAME = re.compile(r"^verify(-labels)?(-\d+)?(-account)?(-again)?$")
 
 #: The fact-check's reader (AUTO-133): another family than the writer's, so
 #: the check that keeps a film off READY is not the author reading its own
@@ -3385,9 +3559,14 @@ class Screenwriter:
                  review_log: Path | str | None = None,
                  paper: dict | None = None, claims: list[dict] | None = None,
                  claim_table: dict | None = None, press: list[dict] | None = None,
-                 earlier: Sequence[dict] = (),
+                 earlier: Sequence[dict] = (), disagreements: Sequence[dict] = (),
                  verbose: bool = True, root: Path | str | None = None) -> None:
         self.idea = idea
+        #: The independent check's disagreements (AUTO-134,
+        #: `disagreements_of`), X1..Xk: the stage's first full fact-check
+        #: must flag or clear each. () with no cross-checked dossier, which
+        #: is checked exactly as it always was.
+        self.disagreements = [dict(d) for d in disagreements or () if isinstance(d, dict)]
         #: The dossier's press coverage (AUTO-149, `assets.press_items`), the
         #: N ids the research block lists: a shot staging "headline [Nk]" is
         #: measured by headline_findings and its card strings are left out
@@ -4121,7 +4300,20 @@ class Screenwriter:
 
     # -- stage four: hold it to the research -------------------------------
 
-    def verify(self, shots: list[Shot], *, name: str = "verify") -> dict:
+    def verify(self, shots: list[Shot], *, name: str = "verify", account: bool = False,
+               only: set[str] | None = None) -> dict:
+        """The fact-check: each line read against the research.
+
+        With `account` and disagreements from the independent check
+        (AUTO-134; `only` names which X ids, None all), the check is told
+        each and must flag the lines stating it (`crosscheck` on the flag)
+        or clear it with why (`crosscheck_clear`). What it leaves
+        unaccounted is asked once more (`<name>-again`), and what is still
+        unaccounted, or everything when the call fails, stands as a
+        mechanical flag (crosscheck_flags): a disagreement is never dropped.
+        Without them the check is asked exactly what it always was."""
+        active = ([d for d in self.disagreements if only is None or d["id"] in only]
+                  if account else [])
         if not self.research:
             self._say("[verify] no research supplied; nothing to check against")
             return {}
@@ -4141,11 +4333,48 @@ class Screenwriter:
                  "states no fact, and use shot number 0 for a problem with the "
                  "script as a whole. Then give a one-sentence verdict on whether "
                  "this script can be published as it stands."]
+        if not active:
+            try:
+                return self._ask(name, "\n\n".join(parts), CHECK_SCHEMA)
+            except ClaudeError as exc:
+                self._say(f"[verify] failed ({exc})")
+                return {}
+        parts.append(
+            "The independent check disagrees with the research on these claims: a "
+            "separate search opened sources the research did not cite, and they say "
+            "otherwise or are split.\n" + "\n".join(disagreement_line(d) for d in active)
+            + "\n\nAccount for every X id above. Where a line states the claim, flag "
+            "that line and put the id in the flag's `crosscheck`: a contradicted claim "
+            "stated as fact is a blocker, a disputed claim stated as settled is "
+            "important. Where no line needs a flag (the script does not state the "
+            "claim, or the line already frames it as disputed), list the id in "
+            "`crosscheck_clear` with why.")
+        prompt = "\n\n".join(parts)
         try:
-            return self._ask(name, "\n\n".join(parts), CHECK_SCHEMA)
+            check = self._ask(name, prompt, ACCOUNT_SCHEMA)
         except ClaudeError as exc:
-            self._say(f"[verify] failed ({exc})")
-            return {}
+            self._say(f"[verify] failed ({exc}); {len(active)} independent "
+                      "disagreement(s) stand as flags")
+            return {"flags": crosscheck_flags(active, shots), "verdict": CROSSCHECK_UNCHECKED}
+        check = check if isinstance(check, dict) else {"flags": [], "verdict": ""}
+        problems = crosscheck_unaccounted(check, active)
+        if problems:
+            self._say(f"[verify] {len(problems)} accounting problem(s); asking again")
+            try:
+                again = self._ask(
+                    f"{name}-again",
+                    prompt + "\n\nYour answer did not account for the independent check:\n"
+                    + "\n".join(f"- {p}" for p in problems)
+                    + "\nAnswer again in full, accounting for every X id.", ACCOUNT_SCHEMA)
+                if isinstance(again, dict):
+                    check = again
+            except ClaudeError as exc:
+                self._say(f"[verify] the second ask failed ({exc}); keeping the first")
+        missing = [d for d in active if not _accounted(check, d)]
+        if missing:
+            check = dict(check, flags=list(check.get("flags") or [])
+                         + crosscheck_flags(missing, shots))
+        return check
 
     def _statused(self, shots: list[Shot]) -> bool:
         """Whether the status machinery applies (AUTO-132): a dossier's claim
@@ -4477,12 +4706,24 @@ class Screenwriter:
         lines) reads each line's status by a reviewer of another family; its
         flags, tagged `"check": "status"`, join the fact-check's, and the
         reading is the check's `status` (its verdict, or `not_evidenced`).
+
+        With the independent check's disagreements (AUTO-134), the first
+        full check (untagged) accounts for each (`verify(account=True)`);
+        the rounds' re-checks and a tagged check do not. A flag tied to an
+        X id whose line a round changed waits, unrevised again, and after
+        the rounds `verify-account` re-reads the shots the binding X flags
+        name (every shot for a script-wide one) for those ids alone: its
+        flags replace theirs, and an id it clears drops out. The check
+        keeps `disagreements` and every `crosscheck_clear`.
         """
         names = ((f"verify-{tag}", f"revise-{tag}-facts-{{}}", f"verify-{tag}-{{}}")
                  if tag else ("verify", "revise-{}", "verify-{}"))
         status_names = ((f"verify-status-{tag}", f"verify-status-{tag}-{{}}") if tag
                         else ("verify-status", "verify-status-{}"))
-        check = self.verify(shots, name=names[0])
+        accounting = bool(self.disagreements) and not tag
+        check = self.verify(shots, name=names[0], account=accounting)
+        if check and accounting:
+            check["disagreements"] = [dict(d) for d in self.disagreements]
         if check and self.fact_reviewer is not None:
             # Who read it (AUTO-133); absent when it was the author's own check.
             check["model"] = self.fact_reviewer.model
@@ -4497,6 +4738,9 @@ class Screenwriter:
             return check
         revisions: list[dict] = []
         kept: dict[int, str] = {}
+        #: X flags on lines a round changed: the round re-check does not
+        #: account for them, so they wait for verify-account (AUTO-134).
+        waiting: list[dict] = []
         for round_no in range(1, max(0, rounds) + 1):
             todo = [f for f in check.get("flags", [])
                     if int(f.get("n", 0) or 0) not in kept]
@@ -4520,11 +4764,19 @@ class Screenwriter:
             if reread:
                 fresh += [f for f in restatus["flags"] if int(f.get("n", 0) or 0) in changed]
                 check["status"]["recheck"] = restatus.get("verdict", "")
-            check["flags"] = (
-                [f for f in check.get("flags", []) if int(f.get("n", 0) or 0) not in changed
-                 or (f.get("check") == "status" and not reread)]
-                + fresh)
+            standing = []
+            for f in check.get("flags", []):
+                if (int(f.get("n", 0) or 0) not in changed
+                        or (f.get("check") == "status" and not reread)):
+                    standing.append(f)
+                elif f.get("crosscheck"):
+                    waiting.append(f)
+            check["flags"] = standing + fresh
             check["recheck"] = again.get("verdict", "")
+        if waiting:
+            check["flags"] = check.get("flags", []) + waiting
+        if accounting:
+            self._account(shots, check, kept, name=f"{names[0]}-account")
         for f in check.get("flags", []):
             if int(f.get("n", 0) or 0) in kept:
                 f["kept"] = kept[int(f["n"])]
@@ -4533,6 +4785,35 @@ class Screenwriter:
         check["unresolved"] = [f for f in check.get("flags", [])
                                if f.get("severity") in REVISABLE and not f.get("kept")]
         return check
+
+    def _account(self, shots: list[Shot], check: dict, kept: dict[int, str], *,
+                 name: str) -> None:
+        """The accounting re-check after the rounds (AUTO-134): the binding
+        flags tied to an X id (blocker or important, on a line not kept) are
+        read again, over the shots they name or every shot for a script-wide
+        one, for those ids alone. The re-check's flags for them replace
+        theirs, so an id it clears drops out; its crosscheck_clear joins the
+        check's. Nothing binding, nothing asked."""
+        binding = [f for f in check.get("flags", []) if f.get("crosscheck")
+                   and f.get("severity") in REVISABLE and int(f.get("n", 0) or 0) not in kept]
+        if not binding:
+            return
+        ids = {str(f["crosscheck"]) for f in binding}
+        numbers = {int(f.get("n", 0) or 0) for f in binding}
+        over = (shots if not numbers <= {s.n for s in shots}
+                else [s for s in shots if s.n in numbers])
+        result = self.verify(over, name=name, account=True, only=ids)
+        if not result:
+            return
+        check["flags"] = (
+            [f for f in check.get("flags", []) if str(f.get("crosscheck") or "") not in ids]
+            + [f for f in result.get("flags") or [] if isinstance(f, dict)
+               and str(f.get("crosscheck") or "") in ids])
+        cleared = [c for c in result.get("crosscheck_clear") or []
+                   if isinstance(c, dict) and str(c.get("id") or "") in ids]
+        if cleared:
+            check["crosscheck_clear"] = list(check.get("crosscheck_clear") or []) + cleared
+        check["account"] = result.get("verdict", "")
 
     # -- the story review: read before voice is paid for (AUTO-93) ---------
 
@@ -7097,7 +7378,7 @@ def write_md(path: str, idea: Idea, data: dict, sections: list[Section]) -> None
     md += picture_lines(data.get("picture"))
 
     check = data.get("check") or {}
-    if check.get("flags") or check.get("verdict"):
+    if check.get("flags") or check.get("verdict") or check.get("crosscheck_clear"):
         md += ["## Fact-check", ""]
         if check.get("verdict"):
             md += [f"**Verdict.** {check['verdict']}", ""]
@@ -7108,19 +7389,32 @@ def write_md(path: str, idea: Idea, data: dict, sections: list[Section]) -> None
         elif status.get("not_evidenced"):
             md += [f"**Status check.** not evidenced: {status['not_evidenced']}", ""]
         numbers = {s.n for s in shots}
+        # Which independent check a flag answers (AUTO-134), by its X id.
+        against = {str(d.get("id")): d for d in check.get("disagreements") or []
+                   if isinstance(d, dict)}
         for flag in check.get("flags", []):
             where = (f"shot {flag['n']}" if flag.get("n") in numbers
                      else "script-wide") + (" (status)" if flag.get("check") == "status"
                                             else "")
+            x = str(flag.get("crosscheck") or "")
+            url = (against.get(x) or {}).get("url") if x else ""
+            origin = (f" (independent check {x}{': ' + url if url else ''})" if x else "")
             if flag.get("resolved"):
                 # The flag stays as provenance; what changed is recorded with it.
                 md += [f"- ~~{flag.get('severity', '?')}~~ · {where} — "
-                       f"{flag.get('problem', '')}",
+                       f"{flag.get('problem', '')}{origin}",
                        f"  - **resolved:** {flag['resolved']}"]
                 continue
             md += [f"- **{flag.get('severity', '?')}** · {where} — "
-                   f"{flag.get('problem', '')}",
+                   f"{flag.get('problem', '')}{origin}",
                    f"  - fix: {flag.get('fix', '')}"]
+        cleared = [c for c in check.get("crosscheck_clear") or [] if isinstance(c, dict)]
+        if cleared:
+            md += ["", "**Cleared against the independent check.**"]
+            for c in cleared:
+                d = against.get(str(c.get("id") or "")) or {}
+                claim = f" (\"{d['claim']}\", {d['status']})" if d.get("claim") else ""
+                md.append(f"- {c.get('id', '?')}{claim}: {c.get('why', '')}")
         md.append("")
 
     if data.get("findings"):
@@ -7354,6 +7648,9 @@ def run(args) -> int:
         review_budget_usd=args.review_budget_usd, rounds=args.rounds,
         fresh=getattr(args, "fresh", False),
         review_log=review_log_path(args, project) if args.review else None,
+        # What the independent check disagrees with (AUTO-134): the
+        # fact-check flags or clears each. None without a cross-check.
+        disagreements=disagreements_of(dossier),
         earlier=earlier, verbose=not args.quiet)
 
     stopped = Path(project.out("script", args.json_out)).with_name(PLAN_REVIEW_FILE)

@@ -1462,5 +1462,295 @@ class StatusLine(unittest.TestCase):
                          "hypothesis (c7, hypothesis)")
 
 
+# --------------------------------------------------------------------------- #
+# AUTO-134: the fact-check accounts for every independent disagreement
+# --------------------------------------------------------------------------- #
+
+X1 = {"id": "X1", "status": "contradicted", "claim": "It weighs 9 tons",
+      "source_url": "https://b.example/y", "correction": "it weighs 7 tons",
+      "urls": ["https://c.example/z"], "url": "https://c.example/z"}
+X2 = {"id": "X2", "status": "disputed", "claim": "The crew saw it",
+      "source_url": "https://nobody.example/q", "correction": "",
+      "urls": ["https://d.example/1", "https://e.example/2"], "url": "https://e.example/2"}
+ACCOUNTING = "The independent check disagrees with the research on these claims"
+
+
+def tied(n, x="X1", severity="blocker"):
+    return dict(flag(n, severity, "states the contradicted weight"), crosscheck=x)
+
+
+def conforms(row: dict, schema: dict) -> bool:
+    """Enough of JSON Schema for a flag: the required keys, and each listed
+    key's type and enum where the row has it."""
+    types = {"integer": int, "string": str, "array": list, "object": dict}
+    if any(k not in row for k in schema.get("required", [])):
+        return False
+    for key, spec in schema.get("properties", {}).items():
+        if key in row and not isinstance(row[key], types[spec["type"]]):
+            return False
+        if key in row and "enum" in spec and row[key] not in spec["enum"]:
+            return False
+    return True
+
+
+class Accounting(unittest.TestCase):
+    def make(self, answers, disagreements=(X1,)):
+        w = writer(disagreements=list(disagreements))
+        calls: list[tuple[str, str, dict]] = []
+        answers = list(answers)
+
+        def ask(name, prompt, schema):
+            calls.append((name, prompt, schema))
+            answer = answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return copy.deepcopy(answer)
+        w._ask = ask
+        return w, calls
+
+    def shots(self):
+        return [shot(1, "Fine line.", source="https://a.example/x"),
+                shot(2, "It weighs 9 tons.", source="Report, https://WWW.b.example/y/ (c1)"),
+                shot(3, "Also fine.")]
+
+    # -- verify(account=True) ------------------------------------------------
+
+    def test_the_check_is_told_each_disagreement_and_asked_to_account(self):
+        w, calls = self.make([{"flags": [tied(2)], "verdict": "no"}])
+        check = w.verify(self.shots(), account=True)
+        self.assertEqual([c[0] for c in calls], ["verify"])
+        name, prompt, schema = calls[0]
+        self.assertIn(ACCOUNTING, prompt)
+        for words in ("X1", "contradicted", "It weighs 9 tons", "it weighs 7 tons",
+                      "https://c.example/z", "crosscheck_clear", "blocker"):
+            self.assertIn(words, prompt)
+        item = schema["properties"]["flags"]["items"]
+        self.assertIn("crosscheck", item["properties"])
+        self.assertNotIn("crosscheck", item["required"])
+        self.assertIn("crosscheck_clear", schema["properties"])
+        self.assertNotIn("crosscheck_clear", schema["required"])
+        self.assertEqual(check["flags"], [tied(2)])
+
+    def test_a_disagreement_accounted_nowhere_is_asked_again(self):
+        w, calls = self.make([{"flags": [], "verdict": "ok"},
+                              {"flags": [tied(2)], "verdict": "no"}])
+        check = w.verify(self.shots(), account=True)
+        self.assertEqual([c[0] for c in calls], ["verify", "verify-again"])
+        self.assertIn("X1", calls[1][1].split(calls[0][1], 1)[-1])
+        self.assertEqual(check["flags"], [tied(2)])
+
+    def test_still_unaccounted_is_a_blocker_on_the_shot_citing_the_claim(self):
+        w, calls = self.make([{"flags": [], "verdict": "ok"}] * 2)
+        check = w.verify(self.shots(), account=True)
+        self.assertEqual(len(calls), 2)
+        [row] = check["flags"]
+        self.assertEqual((row["n"], row["severity"], row["crosscheck"]), (2, "blocker", "X1"))
+        self.assertEqual(row["problem"],
+                         "the independent check contradicts 'It weighs 9 tons' "
+                         "(https://c.example/z) and the fact-check did not say whether "
+                         "the script states it")
+        self.assertEqual(row["fix"], "check every line stating it against https://c.example/z")
+
+    def test_one_flag_for_each_shot_that_cites_it(self):
+        shots = self.shots() + [shot(4, "Again 9 tons.", source="https://b.example/y#p2")]
+        self.assertEqual([f["n"] for f in script.crosscheck_flags([X1], shots)], [2, 4])
+        # containment is exact: another path on the host is another page
+        other = [shot(5, "x", source="https://b.example/yz")]
+        self.assertEqual([f["n"] for f in script.crosscheck_flags([X1], other)], [0])
+
+    def test_a_disputed_claim_no_shot_cites_is_important_and_script_wide(self):
+        w, calls = self.make([{"flags": [], "verdict": "ok"}] * 2, disagreements=(X2,))
+        [row] = w.verify(self.shots(), account=True)["flags"]
+        self.assertEqual((row["n"], row["severity"], row["crosscheck"]), (0, "important", "X2"))
+        self.assertIn("disputes 'The crew saw it' (https://e.example/2)", row["problem"])
+
+    def test_a_minor_flag_on_a_contradicted_claim_is_asked_again(self):
+        w, calls = self.make([{"flags": [tied(2, severity="minor")], "verdict": "ok"},
+                              {"flags": [tied(2)], "verdict": "no"}])
+        check = w.verify(self.shots(), account=True)
+        self.assertEqual([c[0] for c in calls], ["verify", "verify-again"])
+        self.assertIn("minor", calls[1][1].split(calls[0][1], 1)[-1])
+        self.assertEqual(check["flags"], [tied(2)])
+
+    def test_an_id_that_does_not_exist_is_asked_again(self):
+        w, calls = self.make([{"flags": [tied(2, x="X9")], "verdict": "ok",
+                               "crosscheck_clear": [{"id": "X1", "why": "not stated"}]},
+                              {"flags": [], "verdict": "ok",
+                               "crosscheck_clear": [{"id": "X1", "why": "not stated"}]}])
+        w.verify(self.shots(), account=True)
+        self.assertEqual([c[0] for c in calls], ["verify", "verify-again"])
+        self.assertIn("X9", calls[1][1].split(calls[0][1], 1)[-1])
+
+    def test_a_clear_with_a_reason_is_accepted(self):
+        clear = [{"id": "X1", "why": "the script never gives the weight"}]
+        w, calls = self.make([{"flags": [], "verdict": "ok", "crosscheck_clear": clear}])
+        check = w.verify(self.shots(), account=True)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(check["flags"], [])
+        self.assertEqual(check["crosscheck_clear"], clear)
+        # a clear with no reason is no account
+        w, calls = self.make([{"flags": [], "verdict": "ok",
+                               "crosscheck_clear": [{"id": "X1", "why": " "}]}] * 2)
+        self.assertEqual([f["crosscheck"] for f in w.verify(self.shots(), account=True)["flags"]],
+                         ["X1"])
+
+    def test_unaccounted_names_every_problem(self):
+        said = script.crosscheck_unaccounted(
+            {"flags": [tied(2, x="X7"), tied(1, severity="minor")]}, [X1, X2])
+        text = " ".join(said)
+        for words in ("X7", "minor", "X2"):
+            self.assertIn(words, text)
+        self.assertEqual(script.crosscheck_unaccounted(
+            {"flags": [tied(2)], "crosscheck_clear": [{"id": "X2", "why": "framed as disputed"}]},
+            [X1, X2]), [])
+
+    def test_a_failed_check_leaves_every_disagreement_standing(self):
+        w, calls = self.make([script.ClaudeError("boom")])
+        check = w.verify(self.shots(), account=True)
+        self.assertEqual(check["verdict"],
+                         "fact-check failed; independent disagreements stand unchecked")
+        self.assertEqual([(f["n"], f["crosscheck"]) for f in check["flags"]], [(2, "X1")])
+        # with none to account for, a failed check is {} as it always was
+        w, _ = self.make([script.ClaudeError("boom")], disagreements=())
+        self.assertEqual(w.verify(self.shots(), account=True), {})
+        w, _ = self.make([script.ClaudeError("boom")])
+        self.assertEqual(w.verify(self.shots()), {})
+
+    def test_only_names_the_ids_accounted_for(self):
+        w, calls = self.make([{"flags": [], "verdict": "ok",
+                               "crosscheck_clear": [{"id": "X2", "why": "framed"}]}],
+                             disagreements=(X1, X2))
+        w.verify(self.shots(), account=True, only={"X2"})
+        self.assertIn("The crew saw it", calls[0][1])
+        self.assertNotIn("It weighs 9 tons\"", calls[0][1])
+        self.assertNotIn("X1", calls[0][1].split(ACCOUNTING, 1)[1])
+
+    # -- verify_and_revise ---------------------------------------------------
+
+    def test_a_revised_line_retires_its_flag_through_verify_account(self):
+        shots = self.shots()
+        clear = [{"id": "X1", "why": "the line now gives 7 tons"}]
+        w, calls = self.make([
+            {"flags": [tied(2)], "verdict": "no"},
+            {"fixes": [{"n": 2, "action": "fix", "narration": "It weighs 7 tons.",
+                        "why": "the independent sources"}]},
+            {"flags": [], "verdict": "ok"},
+            {"flags": [], "verdict": "ok", "crosscheck_clear": clear}])
+        check = w.verify_and_revise(shots)
+        self.assertEqual([c[0] for c in calls], ["verify", "revise-1", "verify-1",
+                                                 "verify-account"])
+        self.assertNotIn(ACCOUNTING, calls[2][1])          # the round re-check
+        account = calls[3][1]
+        self.assertIn(ACCOUNTING, account)
+        self.assertIn("It weighs 7 tons.", account)
+        self.assertNotIn("Fine line.", account)              # only the flag's shot
+        self.assertEqual(check["flags"], [])
+        self.assertEqual(check["unresolved"], [])
+        self.assertEqual(check["crosscheck_clear"], clear)
+
+    def test_the_account_replaces_only_the_flags_tied_to_its_ids(self):
+        shots = self.shots()
+        w, calls = self.make([
+            {"flags": [tied(2), flag(1)], "verdict": "no"},
+            {"fixes": [{"n": 2, "action": "fix", "narration": "It weighs 8 tons.", "why": "w"},
+                       {"n": 1, "action": "keep", "narration": "", "why": "fine"}]},
+            {"flags": [], "verdict": "ok"},
+            {"flags": [tied(2)], "verdict": "still wrong"}])
+        check = w.verify_and_revise(shots, rounds=1)
+        self.assertEqual(calls[-1][0], "verify-account")
+        self.assertEqual(sorted((f["n"], f.get("crosscheck", "")) for f in check["flags"]),
+                         [(1, ""), (2, "X1")])
+        self.assertEqual([f["n"] for f in check["unresolved"]], [2])
+
+    def test_a_script_wide_flag_is_accounted_over_every_shot(self):
+        w, calls = self.make([
+            {"flags": [], "verdict": "ok"}, {"flags": [], "verdict": "ok"},
+            {"flags": [], "verdict": "ok",
+             "crosscheck_clear": [{"id": "X2", "why": "the line frames it as disputed"}]}],
+            disagreements=(X2,))
+        check = w.verify_and_revise(self.shots())
+        self.assertEqual([c[0] for c in calls], ["verify", "verify-again", "verify-account"])
+        for line in ("Fine line.", "It weighs 9 tons.", "Also fine."):
+            self.assertIn(line, calls[2][1])
+        self.assertEqual(check["flags"], [])
+        self.assertEqual(check["unresolved"], [])
+
+    def test_the_labels_check_makes_no_demand(self):
+        w, calls = self.make([{"flags": [], "verdict": "ok"}])
+        check = w.verify_and_revise(self.shots(), tag="labels")
+        self.assertEqual([c[0] for c in calls], ["verify-labels"])
+        self.assertNotIn(ACCOUNTING, calls[0][1])
+        self.assertIs(calls[0][2], script.CHECK_SCHEMA)
+        self.assertEqual(check["flags"], [])
+
+    def test_the_accounting_decisions_go_to_the_fact_reader(self):
+        for name in ("verify", "verify-again", "verify-account", "verify-account-again",
+                     "verify-1", "verify-labels", "verify-labels-2"):
+            self.assertTrue(script._FACT_NAME.match(name), name)
+        for name in ("verify-status", "verify-status-1", "revise-1"):
+            self.assertFalse(script._FACT_NAME.match(name), name)
+
+    # -- nothing changes without a disagreement -------------------------------
+
+    def test_without_disagreements_the_prompts_are_todays(self):
+        # sha256 of [name, prompt, schema] for verify, revise-1, verify-1 as
+        # asked before AUTO-134: the cached decisions still replay
+        import hashlib
+        import json
+        for kw in ({}, {"disagreements": ()}):
+            w = script.Screenwriter(idea(), research="R", verbose=False, **kw)
+            seen = []
+            answers = [{"flags": [flag(2, problem="p") | {"fix": "f"}], "verdict": "no"},
+                       {"fixes": [{"n": 2, "action": "fix", "narration": "About 9 tons.",
+                                   "why": "w"}]},
+                       {"flags": [], "verdict": "ok"}]
+            w._ask = lambda name, prompt, schema: seen.append([name, prompt, schema]) \
+                or answers.pop(0)
+            shots = [script.Shot(narration="Fine.", n=1, label="1.1", seconds=5,
+                                 source="https://a.example/x"),
+                     script.Shot(narration="It is exactly 9 tons.", n=2, label="1.2",
+                                 seconds=5, source="https://b.example/y")]
+            check = w.verify_and_revise(shots)
+            self.assertEqual([s[0] for s in seen], ["verify", "revise-1", "verify-1"])
+            self.assertEqual(
+                hashlib.sha256(json.dumps(seen, sort_keys=True).encode()).hexdigest(),
+                "5207db7881746024cd3806cfa843f2eb4e6e24b848d3e3e47b5f5ef7d44dc047")
+            self.assertNotIn("crosscheck_clear", check)
+            self.assertIs(seen[0][2], script.CHECK_SCHEMA)
+
+    def test_the_other_flag_producers_still_fit_both_schemas(self):
+        rule = {"n": 1, "severity": "important", "problem": "rule:x: shot 1.1: y",
+                "fix": "f", "rule": "rule:x", "tier": "important"}
+        picture = {"n": 2, "severity": "minor", "problem": "picture: bare number",
+                   "fix": "f", "kind": "picture:bare-number", "section": 1}
+        status = {"n": 3, "severity": "important", "problem": "p", "fix": "f",
+                  "check": "status"}
+        for schema in (script.CHECK_SCHEMA, script.ACCOUNT_SCHEMA):
+            item = schema["properties"]["flags"]["items"]
+            for row in (rule, picture, status, tied(2)):
+                self.assertTrue(conforms(row, item), (row, schema is script.CHECK_SCHEMA))
+        self.assertEqual(script.ACCOUNT_SCHEMA["required"], script.CHECK_SCHEMA["required"])
+        self.assertEqual(script.ACCOUNT_SCHEMA["properties"]["flags"]["items"]["required"],
+                         script.CHECK_SCHEMA["properties"]["flags"]["items"]["required"])
+
+
+class AccountingOnThePage(unittest.TestCase):
+    def test_the_fact_check_names_the_independent_check_and_the_clears(self):
+        import tempfile
+        shots = [shot(2, "It weighs 9 tons.")]
+        sec = script.Section(heading="h", shots=shots)
+        data = {"check": {"verdict": "no", "flags": [tied(2), flag(0)],
+                          "disagreements": [X1, X2],
+                          "crosscheck_clear": [{"id": "X2", "why": "framed as disputed"}]}}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "script.md"
+            script.write_md(str(path), idea(), dict(data, target_seconds=5, wpm=150), [sec])
+            md = path.read_text()
+        self.assertIn("(independent check X1: https://c.example/z)", md)
+        self.assertEqual(md.count("independent check X"), 1)
+        self.assertIn("X2", md)
+        self.assertIn("framed as disputed", md)
+
+
 if __name__ == "__main__":
     unittest.main()
