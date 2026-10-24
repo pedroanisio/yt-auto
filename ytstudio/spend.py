@@ -264,6 +264,15 @@ REVIEW_OUTPUT_TOKENS = 2500
 COLD_READ_TOKENS = (1000, 1.5, 1500)          # overhead, per word, output
 ANSWERS_TOKENS = (1200, 1.5, 300)             # overhead, per word, output
 MATCH_TOKENS = (1200, 200)                    # input, output
+#: The viewer quiz (AUTO-115), in tokens and assumed until records measure
+#: it: the author reads the plan and the research (a dossier's worth of
+#: input, its size unknown before the script runs) and writes up to eight
+#: items, once; the before reads the items alone, once; the after reads the
+#: narration and the items as the cold read's answers do, beside each cold
+#: read.
+QUIZ_TOKENS = {"author": (6000, 1500),                    # input, output
+               "before": (900, 150),                      # input, output
+               "after": (1500, 1.5, 150)}                 # overhead, per word, output
 
 
 def _argv_value(argv: Iterable[str], flag: str, default: Any) -> Any:
@@ -290,11 +299,13 @@ def story_review_usd(root: Path | None, argv: Iterable[str] = ()) -> float:
     the reading and one re-reading on average), each a reading of the whole
     script, plus the cold read, its answers and its match, once on the
     first draft and, with a second round, once on the draft that stands,
-    priced at the reviewer's model (`--reviewer-model`, default opus). The
-    script's words are the project's own narration when script.json has
-    it, else what `--minutes` at `--wpm` would say (script.words_for, at
-    the script stage's own defaults). The writer's revisions are left to
-    the base: `revise-story-N`, `redraft-NN` and the question ledger's
+    and the viewer quiz (AUTO-115): its items and its before once, its
+    after beside each cold read; priced at the reviewer's model
+    (`--reviewer-model`, default opus). The script's words are the
+    project's own narration when script.json has it, else what `--minutes`
+    at `--wpm` would say (script.words_for, at the script stage's own
+    defaults). The writer's revisions are left to the base:
+    `revise-story-N`, `redraft-NN` and the question ledger's
     `revise-ledger-2` (AUTO-96) are the author's decisions, a few hundred
     words each against the reviewer's whole-script readings priced here."""
     # script imports this module, so its constants are read here, when the
@@ -320,7 +331,12 @@ def story_review_usd(root: Path | None, argv: Iterable[str] = ()) -> float:
     sample = reading(REVIEW_OVERHEAD_TOKENS, REVIEW_TOKENS_PER_WORD, REVIEW_OUTPUT_TOKENS)
     cold = (reading(*COLD_READ_TOKENS) + reading(*ANSWERS_TOKENS)
             + MATCH_TOKENS[0] * per_in + MATCH_TOKENS[1] * per_out)
-    return round(STORY_SAMPLES * rounds * sample + min(rounds, 2) * cold, 2)
+    # the viewer quiz (AUTO-115): written and taken before once, taken
+    # after beside each cold read
+    author, before, after = (QUIZ_TOKENS[k] for k in ("author", "before", "after"))
+    quiz = (author[0] + before[0]) * per_in + (author[1] + before[1]) * per_out
+    return round(STORY_SAMPLES * rounds * sample
+                 + min(rounds, 2) * (cold + reading(*after)) + quiz, 2)
 
 
 def listen_usd(root: Path | None, argv: Iterable[str] = ()) -> float:

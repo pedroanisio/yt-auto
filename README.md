@@ -687,7 +687,16 @@ opens), and a flag on the plan itself stays unresolved with `yt script
 (`review-r2-s1`.., `previous` required) and stands only when the samples call
 it better, for at most `--rounds`; when it stands, the cold reader reads the
 draft that stands (`cold-read-r2`..), and what is unresolved is that draft's.
-It is priced from the script's words: about $0.74 for 10 minutes at opus. Every verdict is appended to
+Beside the cold read sits a viewer quiz (AUTO-115), a measure that gates
+nothing: an author shown the plan and the research, never the narration,
+writes 4 to 8 keyed multiple-choice items (`quiz`), and the cold reader takes
+them before hearing anything (`quiz-before`) and after hearing the narration
+(`quiz-after`, again as `quiz-after-r2` when a revision stands), never shown
+the key. The right answers before and after, the gain and the items missed
+are in `review.cold_read.quiz` and on a `Viewer quiz` line in script.md; a
+model's "before" is a prior, not a lay viewer's, so the gain is reported and
+never judged.
+It is priced from the script's words: about $0.84 for 10 minutes at opus. Every verdict is appended to
 `work/review-log.jsonl` with `label: null`, the raw material of the
 calibration set; copy it out, since `work/` is disposable.
 

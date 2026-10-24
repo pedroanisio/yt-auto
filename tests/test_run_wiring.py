@@ -193,6 +193,30 @@ class ReviewIncrement(unittest.TestCase):
         with mock.patch.object(script, "DEFAULT_WPM", script.DEFAULT_WPM * 2):
             self.assertGreater(spend.story_review_usd(None, ["--review"]), base)
 
+    def test_the_story_review_estimate_holds_the_viewer_quiz(self):
+        # AUTO-115: the quiz is written once, taken before once, and taken
+        # after on the first draft and on a draft that stands, each at the
+        # reviewer's price
+        from ytstudio import script
+        author, before, after = (spend.QUIZ_TOKENS[k] for k in ("author", "before", "after"))
+        words = script.words_for(600, script.DEFAULT_WPM)
+        zero = {"author": (0, 0), "before": (0, 0), "after": (0, 0.0, 0)}
+        for reviewer in ("opus", "haiku"):
+            row = spend.price_for(reviewer)
+            per_in, per_out = row["input"] / 1e6, row["output"] / 1e6
+            for rounds in (1, 3):
+                argv = ["--review", "--minutes", "10", "--reviewer-model", reviewer,
+                        "--rounds", str(rounds)]
+                with mock.patch.object(spend, "QUIZ_TOKENS", zero):
+                    without = spend.story_review_usd(None, argv)
+                quizzes = min(rounds, 2)
+                want = ((author[0] + before[0]
+                         + quizzes * (after[0] + words * after[1])) * per_in
+                        + (author[1] + before[1] + quizzes * after[2]) * per_out)
+                self.assertGreater(want, 0)
+                self.assertAlmostEqual(spend.story_review_usd(None, argv) - without, want,
+                                       delta=0.011, msg=(reviewer, rounds))
+
     def test_like_projects_are_priced_by_whether_their_record_holds_it(self):
         self.write(self.work / "reviewed", 2.4, ["plan", "plan-review-2", "review-r1-s3",
                                                   "picture-check-again"])

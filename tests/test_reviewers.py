@@ -470,7 +470,9 @@ def answer(schema, prompt=""):
     return {}
 
 
-REVIEWER_ROWS = ("plan-review", "review-r", "cold-read", "picture-check")
+#: The rows the reviewer reads. The viewer quiz (AUTO-115) is the
+#: reviewer's too: its author and the cold reader who takes it.
+REVIEWER_ROWS = ("plan-review", "review-r", "cold-read", "picture-check", "quiz")
 
 
 class Engines(Offline):
@@ -508,7 +510,7 @@ class ScriptRoles(Engines):
                      "review-r2-s1", "review-r2-s2", "review-r2-s3", "cold-read",
                      "cold-read-answers", "cold-read-match", "cold-read-r2",
                      "cold-read-answers-r2", "cold-read-match-r2", "picture-check",
-                     "picture-check-again"):
+                     "picture-check-again", "quiz"):
             self.assertEqual(asked.get(name), "zai/glm-5.3", (name, asked))
         for name in ("plan", "write-01", "revise-story-1", "revise-ledger-2", "revise-rules"):
             self.assertEqual(asked.get(name), "sonnet", (name, asked))
