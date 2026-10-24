@@ -728,8 +728,13 @@ them before hearing anything (`quiz-before`) and after hearing the narration
 (`quiz-after`, again as `quiz-after-r2` when a revision stands), never shown
 the key. The right answers before and after, the gain and the items missed
 are in `review.cold_read.quiz` and on a `Viewer quiz` line in script.md; a
-model's "before" is a prior, not a lay viewer's, so the gain is reported and
-never judged.
+model's "before" is a prior, not a lay viewer's. A gain under
+`QUIZ_GAIN_FLOOR` (1 question, house, no standard) with items still missed
+after hearing is one `warning: story review: viewer quiz gain ...` finding
+(AUTO-162), naming each missed question and the fact its key gives, so
+`yt doctor` warns before voice is paid for; a ceiling score (nothing missed)
+or a failed quiz says nothing. It is no flag, unresolved item or `--gate`
+input, and no revise sees it: the quiz still gates nothing.
 It is priced from the script's words: about $0.84 for 10 minutes at opus. Every verdict is appended to
 `work/review-log.jsonl` with `label: null`, the raw material of the
 calibration set; copy it out, since `work/` is disposable.
