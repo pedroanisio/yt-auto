@@ -33,7 +33,13 @@ TODAY = {"title": "T", "premise": "d", "genre": "g", "treatment": ""}
 
 #: sha256 of the casting prompt for CastingRun's screenplay with no persona,
 #: taken on develop 29d523a before AUTO-158: the casting decision is asked
-#: exactly what it was.
+#: exactly what it was. It was taken by running CastingRun.casting_prompt
+#: against develop's voice.py, whose Film block was the inline dict that
+#: TODAY spells out, joined with the same Candidates and Sections. The hash
+#: covers the whole prompt, so it also moves with any edit to cast_instruction
+#: or to the house `## voice` section; the Film block is asserted on its own
+#: first, so a mismatch there points at the Film brief, and a mismatch here
+#: alone means one of those changed. Re-take it then, on purpose.
 CASTING_BEFORE_AUTO_158 = "2bdc1187ab316e7613b90ea205275bbdd7a57427961647fd082d3050cbb71da9"
 
 
@@ -117,6 +123,8 @@ class CastingRun(unittest.TestCase):
     def test_without_persona_the_casting_prompt_is_todays(self):
         prompt = self.casting_prompt()
         self.assertNotIn("persona", prompt)
+        self.assertEqual(self.film_block(prompt),
+                         json.dumps(TODAY, ensure_ascii=False, indent=1))
         self.assertEqual(hashlib.sha256(prompt.encode()).hexdigest(),
                          CASTING_BEFORE_AUTO_158)
         self.assertEqual(self.casting_prompt(persona={"temperament": "", "why": ""}), prompt)
