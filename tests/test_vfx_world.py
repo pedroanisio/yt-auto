@@ -368,6 +368,10 @@ class Brief(unittest.TestCase):
         self.assertIn("a world that departs from it is wrong", text)
         self.assertIn("oak desk", text)                      # the elements, by name
         self.assertIn("inherit these materials, lights, hero model and camera language", text)
+        # AUTO-143: the keyframe's environment is the lead section's first
+        # world; a world cut to another setting may stand in another set
+        self.assertIn("Its environment is the lead section's first world", text)
+        self.assertIn("may stand in another set", text)
 
     def test_a_pending_or_stale_keyframe_is_not_the_approved_look(self):
         approve_keyframe(self.root, state="pending")

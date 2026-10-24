@@ -298,6 +298,16 @@ class DoctorReadsContinuity(unittest.TestCase):
         self.assertFalse([f for f in report.findings if f.level == "fail"
                           and f.area == "vfx"])
 
+    def test_at_most_three_monotony_runs_are_reported(self):
+        runs = [dict(MONOTONY[0], owner_section=f"S{n}", problem=f"run {n}")
+                for n in range(4)]
+        report = self.report({"one_film": True, "score": 8, "breaks": [],
+                              "summary": "one film", "monotony": runs})
+        warns = [f for f in report.findings
+                 if f.area == "vfx" and f.level == "warn" and "one setting" in f.message]
+        self.assertEqual([w.message.endswith(f"run {n}") for n, w in enumerate(warns)],
+                         [True, True, True])
+
     def test_a_continuity_from_before_monotony_gives_no_warning(self):
         old = {"one_film": True, "score": 8, "breaks": [], "summary": "one film"}
         report = self.report(old)
