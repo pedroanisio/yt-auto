@@ -40,12 +40,13 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
+from typing import Sequence
 
 import claude_engine
 from claude_engine import ClaudeError
 from .core import Idea, read_json, timecode, wrap, write_json
 from .ideas import CHANNEL_STYLES, style_brief
-from . import flags, harness, house, narrative, reviewers, spend, workspace
+from . import channel, flags, harness, house, narrative, reviewers, spend, workspace
 from .research import STANDINGS, claim_key, paper_url, same_paper
 from .assets import press_items
 
@@ -77,6 +78,13 @@ CONNECTIVES = ("open", "and", "but", "therefore", "because")
 
 #: Who the film is pitched at; it decides what a writer defines.
 AUDIENCES = ("lay", "enthusiast", "expert")
+
+#: How a film closes, as a device (AUTO-137): it calls back to the opening,
+#: turns over what the film seemed to say, leaves one question open on
+#: purpose, pulls out to the scale of the whole, or ends on one picture.
+#: The channel record (channel.CLOSING_KEY) compares it across films, as it
+#: compares the opening's hook trigger; nothing in one film grades it.
+CLOSINGS = ("callback", "reversal", "open_question", "scale", "image", "other")
 
 #: What a shot does in the story. `qa` samples every rehook and payoff shot,
 #: `pilot` keeps the hook and the payoff, and `build` hands the editor the
@@ -210,8 +218,13 @@ STORY_PROPERTIES = {
                          "description": "how the ending mirrors the opening"},
             "next_film": {"type": "string", "description": (
                 "one named film that continues the question")},
+            "device": {"type": "string", "enum": list(CLOSINGS), "description": (
+                "how the ending closes: callback (it returns to the opening), reversal "
+                "(it turns over what the film seemed to say), open_question (one "
+                "question left open on purpose), scale (it pulls out to the size of the "
+                "whole), image (it ends on one picture), or other. " + _ENUM_DRIFT)},
         },
-        "required": ["payoff_line", "callback", "next_film"],
+        "required": ["payoff_line", "callback", "next_film", "device"],
     },
 }
 STORY_REQUIRED = ["promise", "payoff", "train", "stakes", "viewer_stake", "audience",
@@ -2168,12 +2181,77 @@ PAPER_STAKES_NOTE = (
     "In this plan the consequence is read from framing's significance, implications "
     "and consequences items and the sections they are placed in.")
 
+#: The sixth objection (AUTO-137, after AUTO-161's stakes), asked only when
+#: the channel has counted earlier films, and the sentence that makes a
+#: noticeable repeat a ground to revise and never to reject.
+SAMENESS_OBJECTION = (
+    " and its sameness (could a returning viewer predict how it opens, unfolds or "
+    "closes from one of the earlier films listed?)")
+#: It goes inside the sentence naming the grounds to revise, so the attack
+#: never lists the grounds and then names another after them.
+SAMENESS_GROUND = (
+    ", and a repeat of an earlier film that a returning viewer would notice is a "
+    "ground to revise, never to reject. List each such repeat under repeats, with a "
+    "section 0 problem naming the film and its fix.")
+
+
+def plan_attack(channel: bool) -> str:
+    """The attack the plan reviewer is asked: PLAN_ATTACK itself, or with
+    counted earlier films (AUTO-137) the same text with a sixth objection,
+    its sameness, and a repeat named as a ground to revise only. Each
+    replacement must find its text: an attack reworded under it would
+    otherwise drop the objection without a word, so a miss raises."""
+    if not channel:
+        return PLAN_ATTACK
+    out = PLAN_ATTACK
+    for old, new in (("?) and its stakes (", "?), its stakes ("),
+                     ("withheld as its twist?)", "withheld as its twist?)" + SAMENESS_OBJECTION),
+                     ("Those four, and stakes, are grounds to revise.",
+                      "Those four, and stakes, are grounds to revise" + SAMENESS_GROUND)):
+        if old not in out:
+            raise ValueError(f"plan_attack: PLAN_ATTACK no longer says {old!r}")
+        out = out.replace(old, new, 1)
+    return out
+
+
 #: Said to the reviewer above the pre-checks: they are measured, not judged.
 PRECHECK_NOTE = (
     "Pre-checks measured from the plan's own fields, before you read it. Confirm "
     "each in problems or say why it does not matter; none is a verdict on its own. "
     "A `house:` line is the house's own prior, never on its own a reason to revise "
     "or reject.")
+
+#: Added to PRECHECK_NOTE when the channel has counted earlier films.
+CHANNEL_PRECHECK_NOTE = (
+    " A `channel:` line is measured against the earlier films listed, for you to "
+    "confirm or dismiss: list it under repeats when a returning viewer would notice, "
+    "or under dismissed with why they would not.")
+
+#: The channel's earlier films as the writer of a plan reads them (AUTO-137).
+#: The "avoid" lives here and never in the house: the house is read by a
+#: writer with no earlier films too.
+CHANNEL_WRITER = (
+    "How the channel's earlier films opened, unfolded and closed. Choose this film's "
+    "devices for its own subject, and avoid the devices of these films unless the house "
+    "names one as recurring.")
+CHANNEL_REVIEWER = (
+    "How the channel's earlier films opened, unfolded and closed, newest first, each by "
+    "its slug. A repeat names one of these films by that slug.")
+
+
+def channel_block(earlier, *, reviewer: bool = False) -> str:
+    """One line per earlier film (its slug, opening, closing and section
+    shape) under the writer's or the reviewer's heading; empty with none."""
+    rows = [e for e in earlier or () if isinstance(e, dict) and e.get("slug")]
+    if not rows:
+        return ""
+    lines = []
+    for e in rows:
+        shape = e.get("shape") if isinstance(e.get("shape"), dict) else {}
+        tokens = ", ".join(shape.get("tokens") or []) or "not recorded"
+        lines.append(f"- {e['slug']}: opened on {e.get('opening') or 'not recorded'}; "
+                     f"closed on {e.get('closing') or 'not recorded'}; sections: {tokens}")
+    return (CHANNEL_REVIEWER if reviewer else CHANNEL_WRITER) + "\n" + "\n".join(lines)
 
 
 def planned_trigger(plan) -> str | None:
@@ -2304,7 +2382,8 @@ def plan_view(plan: dict) -> dict:
     return out
 
 
-def plan_prechecks(plan: dict, seconds: int, title: str = "") -> list[str]:
+def plan_prechecks(plan: dict, seconds: int, title: str = "",
+                   earlier: Sequence[dict] = ()) -> list[str]:
     """What a plan's own fields show before anyone reads it, one line each:
     `rule:` for a corpus rule the fields break (an empty story field or
     hook gap, an empty payoff line or one that names nothing the plan names,
@@ -2315,7 +2394,9 @@ def plan_prechecks(plan: dict, seconds: int, title: str = "") -> list[str]:
     its constraint) and `house:` for the house's priors (a long film with no
     re-hook, section 2 with none, a stretch longer than REHOOK_EVERY_SECONDS
     without one, a prediction no reveal scores, a train with no question, a
-    persona with no temperament or no reason).
+    persona with no temperament or no reason). With the channel's counted
+    `earlier` films (AUTO-137), `channel:` lines last: an opening, a section
+    shape or a closing the same as one of theirs (channel.repeats).
     They go to the reviewer to confirm, never decide.
 
     The plan fields are crew-facing English (STORY_BRIEF), so the English
@@ -2410,6 +2491,8 @@ def plan_prechecks(plan: dict, seconds: int, title: str = "") -> list[str]:
     if "persona" in plan and not all(persona_of(plan)):
         out.append("house: the persona names no temperament or no reason: the "
                    "narrator's temperament is chosen from the subject and said why")
+    if earlier:
+        out += channel.repeats(channel.story(plan), earlier, channel.PLAN_DIMENSIONS)
     return out
 
 
@@ -2461,6 +2544,15 @@ def paper_prechecks(plan: dict, claims: list[dict], paper: str) -> list[str]:
     return out
 
 
+def _channel_reading(review) -> dict:
+    """The plan review's `repeats` and `dismissed` (AUTO-137), for the
+    record, only when the reading carries them."""
+    if not isinstance(review, dict):
+        return {}
+    return {k: [r for r in review[k] if isinstance(r, dict)]
+            for k in ("repeats", "dismissed") if isinstance(review.get(k), list)}
+
+
 def review_field_lines(review) -> list[str]:
     """What a plan review's own fields found against the plan, one line
     each, so a second plan is told them even when the problems list is
@@ -2488,6 +2580,12 @@ def review_field_lines(review) -> list[str]:
     if unanswered:
         out.append(f"the whole plan: question {', '.join(unanswered)} is opened and never "
                    "closed nor left open on purpose")
+    # AUTO-137: each repeat of an earlier channel film the reviewer listed
+    for r in review.get("repeats") or []:
+        if isinstance(r, dict):
+            out.append(f"the whole plan: its {r.get('dimension') or 'shape'} repeats "
+                       f"{r.get('film') or 'an earlier film'}: "
+                       f"{str(r.get('problem') or '').strip()}")
     return out
 
 
@@ -3080,6 +3178,7 @@ class Screenwriter:
                  review_log: Path | str | None = None,
                  paper: dict | None = None, claims: list[dict] | None = None,
                  claim_table: dict | None = None, press: list[dict] | None = None,
+                 earlier: Sequence[dict] = (),
                  verbose: bool = True, root: Path | str | None = None) -> None:
         self.idea = idea
         #: The dossier's press coverage (AUTO-149, `assets.press_items`), the
@@ -3088,6 +3187,12 @@ class Screenwriter:
         #: of the wall-of-text and legibility rules. None with no dossier,
         #: which is measured and asked exactly what it always was.
         self.press = press
+        #: The channel's counted earlier films, newest first (AUTO-137,
+        #: channel.earlier): the plan is told how they opened, unfolded and
+        #: closed, and the plan review measures this plan against them. ()
+        #: for a channel's first film and a standalone run, which are asked
+        #: exactly what they always were.
+        self.earlier = [dict(e) for e in earlier or () if isinstance(e, dict)]
         #: The dossier's claims by id (AUTO-132, `claim_table`): every
         #: drafted or loaded shot's ceiling is set from it (`cap`). None with
         #: no dossier, or for a screenplay written before the ids, which is
@@ -3158,7 +3263,8 @@ class Screenwriter:
         #: reviewer role and the house in its system; on the same books, so
         #: the stage's record bills it and each of its rows names its model.
         self.reviewer = harness.Harness(
-            root or ".", "script", model=reviewer_model, role=narrative.reviewer_role(plan=True),
+            root or ".", "script", model=reviewer_model,
+            role=narrative.reviewer_role(plan=True, channel=bool(self.earlier)),
             house=house, house_digest=self.house_digest, budget_usd=review_budget_usd,
             fresh=fresh, verbose=verbose, usage=self.usage, decisions=self.harness.decisions,
             lock=self.harness.lock, **self._reviewer_kw) if reviewer_model else None
@@ -3217,7 +3323,7 @@ class Screenwriter:
         return self._readers[which]
 
     def _ask(self, name: str, prompt: str, schema: dict) -> dict:
-        if schema is narrative.PLAN_REVIEW_SCHEMA:
+        if schema is narrative.PLAN_REVIEW_SCHEMA or schema is narrative.plan_review_schema(True):
             return self.reviewer.decide(name, prompt, schema)
         if schema is narrative.PICTURE_SCHEMA:
             return self.picture_reviewer.decide(name, prompt, schema)
@@ -3293,6 +3399,12 @@ class Screenwriter:
         nothing otherwise, so a plan from an older idea is asked as before."""
         return [FROZEN_PROMISE] if self.idea.promise else []
 
+    def _channel(self) -> list[str]:
+        """The channel's earlier films for the plan's writer (AUTO-137);
+        nothing for a first film, so its plan is asked as before."""
+        block = channel_block(self.earlier)
+        return [block] if block else []
+
     def _paper_brief(self) -> list[str]:
         """A paper film's digest and PAPER_BRIEF; nothing for another film."""
         if self.paper is None:
@@ -3344,7 +3456,7 @@ class Screenwriter:
                  "research is supplied, name the claims each section rests on "
                  "and the assets it shows. Put the weakest material last or "
                  "cut it. Also give the logline.",
-                 STORY_BRIEF, *self._paper_brief(), *self._frozen(), *again]
+                 STORY_BRIEF, *self._paper_brief(), *self._frozen(), *self._channel(), *again]
         data = self._ask("plan-2" if again else "plan", "\n\n".join(parts),
                          plan_schema(self.paper is not None))
 
@@ -3377,7 +3489,8 @@ class Screenwriter:
                  "Write the story fields for this outline. Answer one entry "
                  f"under sections for each of its {len(sections)} sections, in "
                  "its order.",
-                 STORY_BRIEF, *self._paper_brief(), *self._frozen(), *(again or [])]
+                 STORY_BRIEF, *self._paper_brief(), *self._frozen(), *self._channel(),
+                 *(again or [])]
         prompt = "\n\n".join(parts)
         name = "plan-fields-2" if again else "plan-fields"
         schema = plan_fields_schema(self.paper is not None)
@@ -3427,6 +3540,11 @@ class Screenwriter:
         if trigger is not None and trigger not in narrative.HOOK_TRIGGERS:
             self.findings.append(f"note: hook trigger {trigger!r} not in the schema; it "
                                  "is not compared with the heard opening")
+        ending = plan.get("ending") if isinstance(plan.get("ending"), dict) else {}
+        closing = ending.get("device")
+        if closing is not None and closing not in CLOSINGS:
+            self.findings.append(f"note: ending device {closing!r} not in the schema; it "
+                                 "is not compared with the channel's earlier films")
         for n, section in enumerate(plan.get("sections") or [], 1):
             connective = section.get("connective")
             if connective is not None and connective not in CONNECTIVES:
@@ -3451,20 +3569,28 @@ class Screenwriter:
         Returns the review, the pre-checks and what the again ask found
         (`again`, and the `unsettled` lines still standing). A failed call
         raises: the gate is never skipped in silence."""
-        checks = plan_prechecks(plan, self.seconds, self.idea.title) + self.paper_checks(plan)
+        checks = (plan_prechecks(plan, self.seconds, self.idea.title, earlier=self.earlier)
+                  + self.paper_checks(plan))
+        # AUTO-137: with counted earlier films the reviewer is shown them, a
+        # sixth objection (after AUTO-161's stakes) and the repeats to list; with none, today's prompt.
+        listed = bool(self.earlier)
+        schema = narrative.plan_review_schema(listed)
+        slugs = [e["slug"] for e in self.earlier if e.get("slug")]
+        note = PRECHECK_NOTE + (CHANNEL_PRECHECK_NOTE if listed else "")
         self._say(f"[plan] {name}: {self.reviewer.model} reads the plan"
                   + (f" ({len(checks)} pre-check(s))" if checks else ""))
         parts = [self._brief(), harness.brief("The plan", plan_view(plan)),
                  "The criteria a plan can be judged on before a line is written:\n"
                  + narrative.rubric_text("reviewer", keys=PLAN_CRITERIA),
-                 PLAN_ATTACK,
+                 *([channel_block(self.earlier, reviewer=True)] if listed else []),
+                 plan_attack(listed),
                  # a paper film's consequence is in its framing (AUTO-131)
                  *([PAPER_STAKES_NOTE] if isinstance(plan.get("framing"), dict) else []),
-                 (PRECHECK_NOTE + "\n" + "\n".join(f"- {c}" for c in checks)) if checks
+                 (note + "\n" + "\n".join(f"- {c}" for c in checks)) if checks
                  else "The pre-checks measured from the plan's fields found nothing."]
         prompt = "\n\n".join(parts)
-        review = self._ask(name, prompt, narrative.PLAN_REVIEW_SCHEMA)
-        contradictions = (narrative.check_plan_review(review)
+        review = self._ask(name, prompt, schema)
+        contradictions = (narrative.check_plan_review(review, earlier_slugs=slugs)
                           if review.get("verdict") in narrative.PLAN_VERDICTS else [])
         if not contradictions:
             return review, checks, {"again": False, "unsettled": []}
@@ -3473,8 +3599,8 @@ class Screenwriter:
             f"{name}-again", prompt + "\n\nYour previous answer contradicted itself:\n"
             + "\n".join(f"- {line}" for line in contradictions)
             + "\nAnswer again. Keep the verdict and correct the fields, or change the "
-            "verdict; the verdict is yours.", narrative.PLAN_REVIEW_SCHEMA)
-        unsettled = (narrative.check_plan_review(review)
+            "verdict; the verdict is yours.", schema)
+        unsettled = (narrative.check_plan_review(review, earlier_slugs=slugs)
                      if review.get("verdict") in narrative.PLAN_VERDICTS else [])
         return review, checks, {"again": True, "unsettled": unsettled}
 
@@ -3502,7 +3628,8 @@ class Screenwriter:
             # went back or stopped even when the problems list is thin.
             rounds.append({"name": name, "verdict": verdict,
                            "problems": list(review.get("problems") or []),
-                           "field_lines": review_field_lines(review), **asked})
+                           "field_lines": review_field_lines(review),
+                           **_channel_reading(review), **asked})
             if verdict not in narrative.PLAN_VERDICTS:
                 # Asked again once by the harness and still off the list: no
                 # verdict was given, so the stage fails rather than guess one.
@@ -3523,7 +3650,7 @@ class Screenwriter:
                   "field_lines": rounds[-1]["field_lines"],
                   "retried": previous is not None, "model": self.reviewer.model,
                   "prechecks": checks, "unsettled": rounds[-1]["unsettled"],
-                  "rounds": rounds}
+                  **_channel_reading(review), "rounds": rounds}
         if self.pool_reviewer is not None:
             # On the record a stop writes to plan_review.json too: which pool
             # reviewer read it, served by whom, priced from where.
@@ -5109,6 +5236,12 @@ class Screenwriter:
             specs = plan.get("sections") or []
             if not specs:
                 raise ClaudeError("the plan came back with no sections")
+        # Without the plan review nobody reads the channel's repeats; they
+        # are measured once the plan is fixed and recorded as notes
+        # (AUTO-137). With it they are the review's pre-checks.
+        if not review and self.earlier:
+            self.findings += [f"note: {line}" for line in channel.repeats(
+                channel.story(plan), self.earlier, channel.PLAN_DIMENSIONS)]
         # A paper film's misplaced framing is recorded whether or not the
         # plan was reviewed (AUTO-131): doctor warns on it.
         self.findings += [f"warning: paper framing: {line[len('rule: '):]}"
@@ -6601,6 +6734,15 @@ def plan_review_lines(record) -> list[str]:
            + list(record.get("field_lines") or [])]
     md += [f"- pre-check: `{c.split(':', 1)[0]}` {c.split(':', 1)[-1].strip()}"
            for c in record.get("prechecks") or []]
+    # AUTO-137: which channel repeats the reviewer confirmed, and which it
+    # dismissed with its reason
+    md += [f"- repeat of {r.get('film', '?')} ({r.get('dimension', '?')}): "
+           f"{str(r.get('problem') or '').strip()}"
+           for r in record.get("repeats") or [] if isinstance(r, dict)]
+    md += [f"- dismissed: {r.get('film', '?')}"
+           + (f" ({r['dimension']})" if r.get("dimension") else "")
+           + f": {str(r.get('why') or '').strip()}"
+           for r in record.get("dismissed") or [] if isinstance(r, dict)]
     # what the reading still contradicted after it was asked again
     md += [f"- unsettled: {line}" for line in record.get("unsettled") or []]
     return md + [""]
@@ -6882,6 +7024,10 @@ def run(args) -> int:
     if rules and not args.quiet:
         print(f"standards: {', '.join(digest['sources'])}", file=sys.stderr)
     paper_film = (dossier or {}).get("scope") == "paper" and bool((dossier or {}).get("paper"))
+    # The channel's counted earlier films (AUTO-137); none for a standalone
+    # run or a channel's first READY film, which is planned as before.
+    work = workspace.work_dir(args)
+    earlier = channel.for_project(work, project)
     writer = Screenwriter(
         idea, house=rules, house_digest=digest, root=project.root,
         model=args.model, minutes=args.minutes, wpm=args.wpm,
@@ -6901,7 +7047,7 @@ def run(args) -> int:
         review_budget_usd=args.review_budget_usd, rounds=args.rounds,
         fresh=getattr(args, "fresh", False),
         review_log=review_log_path(args, project) if args.review else None,
-        verbose=not args.quiet)
+        earlier=earlier, verbose=not args.quiet)
 
     stopped = Path(project.out("script", args.json_out)).with_name(PLAN_REVIEW_FILE)
     try:
@@ -6945,6 +7091,8 @@ def run(args) -> int:
         data["gate"] = True
     print_script(idea, data, sections)
     errors, blocked = write_outputs(args, project, idea, data, sections, wpm=args.wpm)
+    # script.json is written whatever blocked: the channel record follows it.
+    channel.record(work, project)
 
     words = sum(s.words for s in shots)
     runtime = sum(s.seconds for s in shots)
@@ -7173,6 +7321,7 @@ def run_revise(args, idea: Idea, project) -> int:
         research=research_block(dossier, ids=statused) if dossier else "",
         claim_table=claim_table(dossier) if statused else None,
         press=press_items(dossier.get("assets") or []) if dossier else None,
+        earlier=channel.for_project(workspace.work_dir(args), project),
         verbose=not args.quiet)
     if statused:
         cap(shots, writer.claims)
@@ -7335,6 +7484,7 @@ def run_revise(args, idea: Idea, project) -> int:
     backup = Path(path).with_suffix(".json.bak")
     shutil.copy2(path, backup)
     errors, blocked = write_outputs(args, project, idea, data, sections, wpm=wpm)
+    channel.record(workspace.work_dir(args), project)
     print(f"the screenplay before this revision is kept at {backup}", file=sys.stderr)
 
     print(f"\n{idea.title.upper()}: REVISED FROM {source.upper()}")

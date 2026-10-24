@@ -35,7 +35,8 @@
   "ending": {
     "payoff_line": "That comet is not flying backwards. It is showing you the wind.",
     "callback": "the opening comet, leaving the Sun tail first, seen again",
-    "next_film": "How the solar wind shaped the planets' atmospheres"
+    "next_film": "How the solar wind shaped the planets' atmospheres",
+    "device": "callback"
   },
   "sections": [
     {

@@ -139,7 +139,7 @@ def _beat_sections(functions=("hook", "payoff", "handoff")):
 
 SCRIPT = {"promise": "You will see why it turns.",
           "ending": {"payoff_line": "It turns because it must.", "callback": "c",
-                     "next_film": "n"}}
+                     "next_film": "n", "device": "callback"}}
 
 
 class Story(_Project):

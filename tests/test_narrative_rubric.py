@@ -1192,6 +1192,86 @@ class Fixtures(unittest.TestCase):
         self.assertEqual(plan["verdict"], "accept")
 
 
+def _sha(text: str) -> str:
+    import hashlib
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+#: reviewer_role(plan=True) and PLAN_REVIEW_SCHEMA as develop wrote them
+#: before AUTO-137 (with AUTO-161's stakes ground, merged first), by digest:
+#: a film with no counted earlier film is asked exactly what it was.
+ROLE_BEFORE_AUTO_137 = "6b12d27d0178c51578cf5ae3d45921bd3afaaea5ec0498d054ba9ad7b99c6c37"
+SCHEMA_BEFORE_AUTO_137 = "d78a2db03a07add01992161c942750505a3d2b296c5bce3738b5ea707d6b03d0"
+
+
+def accept_review(**kw):
+    return {"verdict": "accept", "train_ok": True, "reorder_survives": False,
+            "sections_advancing_none": [], "payoff_concrete": True,
+            "questions_unanswered": [], "problems": [], "stakes_concrete": True, **kw}
+
+
+class Channel(unittest.TestCase):
+    """AUTO-137: a repeat of an earlier channel film is a ground to revise,
+    never to reject, and only when there are counted earlier films."""
+
+    def test_without_earlier_films_the_role_and_schema_are_todays(self):
+        self.assertEqual(_sha(narrative.reviewer_role(plan=True)), ROLE_BEFORE_AUTO_137)
+        self.assertEqual(narrative.reviewer_role(plan=True, channel=False),
+                         narrative.reviewer_role(plan=True))
+        self.assertIs(narrative.plan_review_schema(False), narrative.PLAN_REVIEW_SCHEMA)
+        self.assertEqual(_sha(json.dumps(narrative.PLAN_REVIEW_SCHEMA, sort_keys=True)),
+                         SCHEMA_BEFORE_AUTO_137)
+
+    def test_with_earlier_films_the_role_names_the_sameness_ground_as_revise_only(self):
+        role = " ".join(narrative.reviewer_role(plan=True, channel=True).split())
+        self.assertIn("Those four, and stakes, are grounds to revise, and so is a repeat of "
+                      "an earlier channel film that a returning viewer would notice, which "
+                      "is never a ground to reject.", role)
+        self.assertNotEqual(role, " ".join(narrative.reviewer_role(plan=True).split()))
+
+    def test_with_earlier_films_the_schema_requires_repeats(self):
+        schema = narrative.plan_review_schema(True)
+        self.assertIsNot(schema, narrative.PLAN_REVIEW_SCHEMA)
+        self.assertIn("repeats", schema["required"])
+        item = schema["properties"]["repeats"]["items"]
+        self.assertEqual(set(item["required"]), {"film", "dimension", "problem"})
+        self.assertEqual(item["properties"]["dimension"]["enum"],
+                         ["opening", "structure", "closing"])
+        self.assertNotIn("repeats", narrative.PLAN_REVIEW_SCHEMA["properties"])
+        self.assertIs(narrative.plan_review_schema(True), schema)
+        self.assertEqual(problems(accept_review(repeats=[]), schema), [])
+
+    def test_an_accept_with_repeats_contradicts_itself(self):
+        review = accept_review(repeats=[{"film": "bridge", "dimension": "closing",
+                                         "problem": "ends on the same callback"}],
+                               problems=[{"section": 0, "problem": "repeats bridge",
+                                          "fix": "end on an image"}])
+        found = narrative.check_plan_review(review, earlier_slugs=["bridge"])
+        self.assertTrue(any("accept" in line and "repeats" in line for line in found))
+
+    def test_a_repeat_naming_an_unknown_film_contradicts_itself(self):
+        review = accept_review(verdict="revise", repeats=[
+            {"film": "nowhere", "dimension": "opening", "problem": "same paradox"}],
+            problems=[{"section": 0, "problem": "it opens like nowhere", "fix": "a question"}])
+        found = narrative.check_plan_review(review, earlier_slugs=["bridge"])
+        self.assertTrue(any("nowhere" in line for line in found))
+
+    def test_a_repeat_with_no_matching_problem_contradicts_itself(self):
+        repeat = {"film": "bridge", "dimension": "structure", "problem": "same shape"}
+        review = accept_review(verdict="revise", repeats=[repeat], problems=[
+            {"section": 2, "problem": "section 2 moves nothing", "fix": "cut it"}])
+        found = narrative.check_plan_review(review, earlier_slugs=["bridge"])
+        self.assertTrue(any("bridge" in line and "problems" in line for line in found))
+        mirrored = accept_review(verdict="revise", repeats=[repeat], problems=[
+            {"section": 0, "problem": "it unfolds as bridge did", "fix": "reveal earlier"}])
+        self.assertEqual(narrative.check_plan_review(mirrored, earlier_slugs=["bridge"]), [])
+
+    def test_without_repeats_the_checks_are_todays(self):
+        review = accept_review()
+        self.assertEqual(narrative.check_plan_review(review), [])
+        self.assertEqual(narrative.check_plan_review(review, earlier_slugs=["bridge"]), [])
+
+
 class Docs(unittest.TestCase):
     def test_the_corpus_readme_and_skill_name_the_module(self):
         readme = (CORPUS / "README.md").read_text(encoding="utf-8")

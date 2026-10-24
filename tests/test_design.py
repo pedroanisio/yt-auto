@@ -206,3 +206,20 @@ class TokensForTheDocument(unittest.TestCase):
           <group id="g" layout="row"><shape id="child" shape="rect" y="900" height="50"/></group>
         </composition></scene>'''
         self.assertEqual(design.band_findings(doc, height=1080), [])
+
+
+class ParsedRoles(unittest.TestCase):
+    """AUTO-137: the roles a film's own palette fills, never the fallback's,
+    so the channel record compares colours a film chose."""
+
+    def test_only_swatch_backed_roles_are_returned_with_bare_names(self):
+        d = design.Design.from_styles({"styles": [{"name": "t",
+                                                   "palette": "#111111, #EEEEEE"}]})
+        self.assertEqual(d.parsed_roles(), {"background": "#111111", "object": "#EEEEEE",
+                                            "ink": "#EEEEEE"})
+        self.assertIn("--accent", d.tokens())          # the tokens still fill every role
+
+    def test_a_fallback_design_has_no_parsed_roles(self):
+        self.assertEqual(design.Design.from_styles(None).parsed_roles(), {})
+        self.assertEqual(design.Design.from_styles(
+            {"styles": [{"name": "t", "palette": "warm greys"}]}).parsed_roles(), {})

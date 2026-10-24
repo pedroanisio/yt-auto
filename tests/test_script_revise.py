@@ -756,7 +756,7 @@ class LedgerDrafting(unittest.TestCase):
 RULE_PLAN = {"logline": "l", "promise": "You will see the bolt that brought the bridge down.",
              "payoff": "the bolt",
              "ending": {"payoff_line": "One bolt held up four lanes.", "callback": "",
-                        "next_film": ""},
+                        "next_film": "", "device": "image"},
              "sections": [{"heading": "One", "seconds": 10, "beats": []}]}
 
 

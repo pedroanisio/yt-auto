@@ -36,6 +36,13 @@ nothing argues back. `--deliberate` buys that back, as comma-separated stages:
 
 `independent` is one call per candidate -- 29 on the default pool -- so pair it
 with `--only` or `--jobs`.
+
+In a channel's work root the final primary row is measured against the
+counted earlier films in work/channel.json (AUTO-137): a reused treatment, or
+a background and accent within channel.PALETTE_DISTANCE of one film's, is
+printed as a warning and saved under styles.json `channel`. It is measured,
+never judged: the pick, the order and every prompt are what they would be
+without it.
 """
 
 from __future__ import annotations
@@ -47,11 +54,12 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
+from typing import Sequence
 
 from claude_engine import ClaudeError
 from .core import Idea, _key, compact, wrap
 from .core import write_json as dump_json
-from . import fonts, harness, house, spend, workspace
+from . import channel, fonts, harness, house, spend, workspace
 from .assess import stack_brief
 
 #: Deliberation stages, as accepted by --deliberate. See the module docstring.
@@ -478,9 +486,14 @@ class Director:
                  context: str = "", modes: set[str] | None = None,
                  keep: int = 0, jobs: int = 3, house: str = "",
                  house_digest: dict | None = None, stack: str = "",
+                 earlier: Sequence[dict] = (),
                  verbose: bool = True, root: Path | str | None = None) -> None:
         self.idea = idea
         self.root = root            # the project, for its open revision notes
+        #: The channel's counted earlier films (AUTO-137, channel.earlier).
+        #: Read only after the pick is final, never by a prompt: the critique
+        #: is the author's own family, which is not asked about sameness.
+        self.earlier = [dict(e) for e in earlier or () if isinstance(e, dict)]
         self.model = model
         self.count = count
         self.rich = rich
@@ -681,6 +694,13 @@ class Director:
         # it here -- after any critique has had its say on the order.
         styles.sort(key=lambda s: -s.fit)
         styles = styles[:min(self.count, len(pool))]
+        # Measured on the row that is primary now, after the critique's
+        # reorder (AUTO-137): a warning only, which moves nothing.
+        if self.earlier and styles:
+            data["channel"] = {
+                "repeats": channel.repeats(channel.look({"styles": [asdict(styles[0])]}),
+                                           self.earlier, channel.STYLE_DIMENSIONS),
+                "films": len(self.earlier)}
         if self.modes:
             data["deliberation"] = {"stages": sorted(self.modes),
                                     "pool_scores": scores,
@@ -744,6 +764,9 @@ def print_styles(idea: Idea, data: dict, styles: list[Style]) -> None:
         for row in overlooked:
             print(wrap(f"· {row.get('name', '')}: {row.get('why', '')}", "    "))
 
+    for line in (data.get("channel") or {}).get("repeats") or []:
+        print(f"warning: {line}", file=sys.stderr)
+
 
 def write_json(path: str, idea: Idea, data: dict, styles: list[Style],
                usage: dict | None = None) -> None:
@@ -757,6 +780,8 @@ def write_json(path: str, idea: Idea, data: dict, styles: list[Style],
         doc["thumbnail"] = data["thumbnail"]
     if data.get("deliberation"):
         doc["deliberation"] = data["deliberation"]
+    if data.get("channel"):
+        doc["channel"] = data["channel"]
     if data.get("engine"):
         doc["engine"] = data["engine"]
     doc["usage"] = usage or spend.record()
@@ -932,8 +957,10 @@ def run(args) -> int:
         print("stack: " + ("judged against this video's `yt assess` verdict" if stack
                            else "no `yt assess` verdict for this video; judged against "
                                 "the stack alone"), file=sys.stderr)
+    work = workspace.work_dir(args)
     director = Director(
         idea, house=rules, house_digest=digest, stack=stack, root=project.root,
+        earlier=channel.for_project(work, project),
         model=args.model, count=args.count, rich=args.rich,
         constraints=constraint_lines(args), modes=modes, keep=args.shortlist,
         jobs=args.jobs, verbose=not args.quiet,
@@ -954,6 +981,7 @@ def run(args) -> int:
     write_json(json_out, idea, data, styles,
                usage=spend.from_usage(director.usage, director.model))
     write_md(md_out, idea, data, styles)
+    channel.record(work, project)
     print(f"\nwrote {json_out}\nwrote {md_out}", file=sys.stderr)
     if args.csv_out:
         write_csv(args.csv_out, styles)

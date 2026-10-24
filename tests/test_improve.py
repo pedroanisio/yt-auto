@@ -1170,7 +1170,8 @@ class StoryFindings(ImproveCase):
         write_json(self.root / "script.json", {
             "target_seconds": 15, "train": "what pushes the tail?",
             "stakes": "a grid goes out", "promise": "why the tail leads",
-            "ending": {"payoff_line": self.PAYOFF, "callback": "", "next_film": ""},
+            "ending": {"payoff_line": self.PAYOFF, "callback": "", "next_film": "",
+                       "device": "image"},
             "sections": [{"heading": "Open", "rehook": "Q1", "shots": []}]})
 
     def story_card(self, problem="the ending is a recap: the promise is never paid in "
