@@ -2303,7 +2303,9 @@ PRECHECK_NOTE = (
 CHANNEL_PRECHECK_NOTE = (
     " A `channel:` line is measured against the earlier films listed, for you to "
     "confirm or dismiss: list it under repeats when a returning viewer would notice, "
-    "or under dismissed with why they would not.")
+    "or under dismissed with why they would not. A form shared with them is a `house:` "
+    "line: a form may recur when it fits the subject, so never list it under repeats; "
+    "judge the form on its own row.")
 
 #: The channel's earlier films as the writer of a plan reads them (AUTO-137).
 #: The "avoid" lives here and never in the house: the house is read by a
@@ -2530,8 +2532,9 @@ def plan_prechecks(plan: dict, seconds: int, title: str = "",
     persona with no temperament or no reason; and AUTO-157's form lines,
     _form_checks, with `house_form` the form the channel's house fixes, or
     ""). With the channel's counted `earlier` films (AUTO-137), `channel:`
-    lines last: an opening, a section shape, a closing or a form the same as
-    one of theirs (channel.repeats; a shared form is advisory).
+    lines last: an opening, a section shape or a closing the same as one of
+    theirs (channel.repeats). A form one of theirs shares is a `house:`
+    line before them (channel.shared_form): advisory, never a repeat.
     They go to the reviewer to confirm, never decide.
 
     The plan fields are crew-facing English (STORY_BRIEF), so the English
@@ -2628,7 +2631,9 @@ def plan_prechecks(plan: dict, seconds: int, title: str = "",
                    "narrator's temperament is chosen from the subject and said why")
     out += _form_checks(plan, title, house_form)
     if earlier:
-        out += channel.repeats(channel.story(plan), earlier, channel.PLAN_DIMENSIONS)
+        story = channel.story(plan)
+        out += channel.shared_form(story, earlier)
+        out += channel.repeats(story, earlier, channel.PLAN_DIMENSIONS)
     return out
 
 
@@ -5399,8 +5404,10 @@ class Screenwriter:
         # are measured once the plan is fixed and recorded as notes
         # (AUTO-137). With it they are the review's pre-checks.
         if not review and self.earlier:
-            self.findings += [f"note: {line}" for line in channel.repeats(
-                channel.story(plan), self.earlier, channel.PLAN_DIMENSIONS)]
+            story = channel.story(plan)
+            self.findings += [f"note: {line}" for line in (
+                channel.shared_form(story, self.earlier)
+                + channel.repeats(story, self.earlier, channel.PLAN_DIMENSIONS))]
         # A paper film's misplaced framing is recorded whether or not the
         # plan was reviewed (AUTO-131): doctor warns on it.
         self.findings += [f"warning: paper framing: {line[len('rule: '):]}"

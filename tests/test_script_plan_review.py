@@ -1694,6 +1694,34 @@ class Channel(unittest.TestCase):
         self.assertEqual(len(found), 1, found)
         self.assertIn("a repeat is a ground to revise, never to reject", found[0])
 
+    def test_a_shared_form_is_a_house_line_kept_out_of_the_repeats(self):
+        # The reviewer lists each `channel:` line under repeats or dismissed;
+        # a shared form is a `house:` line instead, and the note says it is
+        # never a repeat, so a form alone never becomes a revise ground that
+        # stops the stage.
+        earlier = [dict(EARLIER[0], form="investigation")]
+        checks = script.plan_prechecks(PLAN, 60, "t", earlier=earlier)
+        shared = [c for c in checks if "is shared by" in c]
+        self.assertEqual(shared, ["house: this film's form, investigation, is shared by 1 "
+                                  "of the last 1 counted films (old-bridge): advisory, since "
+                                  "a form may recur when it fits the subject; never a repeat"])
+        self.assertEqual([c.split(":")[1].strip() for c in checks if c.startswith("channel:")],
+                         ["opening", "structure", "closing"])
+        self.assertIn("never list it under repeats", script.CHANNEL_PRECHECK_NOTE)
+        # two readings that object only to the shared form, as the note asks
+        # (no repeat listed, the form line dismissed), draft on
+        form_bound = dict(form_only(), repeats=[],
+                          dismissed=[{"film": "old-bridge", "dimension": "form",
+                                      "why": "the form is advisory"}])
+        w = writer(earlier=earlier)
+        calls = channel_faked(w, [form_bound, form_bound])
+        data = w.run(review=True)
+        review = next(c["prompt"] for c in calls if c["name"] == "plan-review")
+        self.assertIn("- " + shared[0], review)
+        self.assertIn("never list it under repeats", review)
+        self.assertIn("write-01", names(calls))
+        self.assertEqual(data["plan_review"]["advisory"], ["form"])
+
     def test_without_review_the_channel_lines_are_notes(self):
         w = writer(earlier=EARLIER, reviewer_model=None)
         calls = faked(w, [])
@@ -1739,11 +1767,12 @@ class ChannelCommand(unittest.TestCase):
         self.assertEqual(code, 0, said)
         record = json.loads((self.film / "script.json").read_text())
         notes = [f for f in record["findings"] if f.startswith("note: channel:")]
-        self.assertEqual(len(notes), 4, record["findings"])
-        # the shared form is one advisory line (AUTO-157)
-        self.assertIn("note: channel: form: 'investigation' is shared by 1 of the last 1 "
-                      "counted films (old-bridge) (advisory: a form may recur when it fits "
-                      "the subject)", notes)
+        self.assertEqual(len(notes), 3, record["findings"])
+        # the shared form is one advisory house line (AUTO-157), never a
+        # channel repeat
+        self.assertIn("note: house: this film's form, investigation, is shared by 1 of the "
+                      "last 1 counted films (old-bridge): advisory, since a form may recur "
+                      "when it fits the subject; never a repeat", record["findings"])
         rows = json.loads((self.root / "work" / "channel.json").read_text())["films"]
         self.assertEqual({r["slug"]: r["counted"] for r in rows},
                          {"old-bridge": True, "a-film": False})

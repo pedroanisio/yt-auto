@@ -741,9 +741,11 @@ reading, the stage's engine report and its spend go to `plan_review.json`
 instead, removed by the next run that gets past the plan.
 With counted earlier films in the channel record the plan's writer and its
 reviewer are shown how they opened, unfolded and closed (newest first, each
-by its slug), the pre-checks gain `channel:` lines (an opening or closing device, or an exact section shape, an earlier film had,
-and one advisory line for a form earlier films share, since a form may recur
-when it fits the subject), and the attack gains
+by its slug), the pre-checks gain `channel:` lines (an opening or closing device, or an exact section shape, an earlier film had)
+and one `house:` line for a form earlier films share (`channel.shared_form`),
+advisory and never a repeat, since a form may recur when it fits the
+subject; the reviewer is told never to list it under `repeats`, so a shared
+form alone never stops the stage, and the attack gains
 a sixth objection, after the stakes (AUTO-161): could a returning viewer predict this film from one of
 them? A noticeable repeat is listed under `repeats` with a section 0 problem
 naming the film, and is a ground to revise, never to reject (a reject whose

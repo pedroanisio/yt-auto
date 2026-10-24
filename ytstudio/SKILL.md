@@ -742,8 +742,9 @@ AUTO-157). What
 repeats anyway is measured, in `ytstudio/channel.py`: `work/channel.json`
 holds a row per film (its opening, the plan's `hook.trigger`; its closing,
 `ending.device`, one of `script.CLOSINGS`; its form, `form.name`, or
-`other:<name>` for one the list lacks, a line the plan review reads as
-advisory, since a form may recur when it fits the subject; its section shape; its primary
+`other:<name>` for one the list lacks; a form earlier films share is one
+`house:` pre-check, `channel.shared_form`, advisory and never a repeat, since a
+form may recur when it fits the subject; its section shape; its primary
 treatment; `design.Design.parsed_roles()`, the palette roles its own swatches
 fill; the type families it names, recorded and never compared), refreshed
 whenever `yt script`, `yt styles` or `yt qa` writes. A row counts only once the

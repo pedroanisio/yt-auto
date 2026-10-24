@@ -64,13 +64,15 @@ EARLIER_LIMIT = 12
 #: a returning viewer compares from memory, so the bar is looser.
 PALETTE_DISTANCE = 12.0
 
-#: The dimensions `repeats` measures. Typography is not one of them.
-DIMENSIONS = ("opening", "closing", "structure", "form", "treatment", "palette")
+#: The dimensions `repeats` measures. Typography is not one of them, nor
+#: is the form (AUTO-157): the plan reviewer lists each `channel:` line
+#: under repeats, a ground to revise, or dismisses it, and a form may
+#: recur when it fits the subject, so a shared form is `shared_form`'s
+#: advisory `house:` line instead.
+DIMENSIONS = ("opening", "closing", "structure", "treatment", "palette")
 
-#: What the plan review is shown, and what `yt styles` warns on. A shared
-#: form is shown as advisory: a form may recur when it fits the subject,
-#: and no rotation of forms is ever asked for.
-PLAN_DIMENSIONS = ("opening", "structure", "closing", "form")
+#: What the plan review is shown, and what `yt styles` warns on.
+PLAN_DIMENSIONS = ("opening", "structure", "closing")
 STYLE_DIMENSIONS = ("treatment", "palette")
 
 #: qa.READY, spelled here so the record does not import the QA stage;
@@ -355,14 +357,30 @@ def _same_shape(a: dict, b: dict) -> bool:
     return fa is None or fb is None or fa == fb
 
 
+def shared_form(new: dict, earlier: Sequence[dict]) -> list[str]:
+    """The counted earlier films whose form (AUTO-157) is `new`'s, as one
+    `house:` line naming them all, or none. It is a `house:` line and not
+    a `channel:` one on purpose: the plan reviewer lists each `channel:`
+    line under repeats, a ground to revise, or dismisses it as one film's,
+    and a form may recur when it fits the subject, so a shared form is an
+    advisory that never sends a plan back on its own. A form either side
+    lacks is not evidenced and gives no line."""
+    films = [e for e in earlier if isinstance(e, dict)]
+    mine = str(new.get("form") or "")
+    sharing = [e for e in films if mine and str(e.get("form") or "") == mine]
+    if not sharing:
+        return []
+    return [f"house: this film's form, {mine}, is shared by {len(sharing)} of the last "
+            f"{len(films)} counted films ({', '.join(str(e['slug']) for e in sharing)}): "
+            "advisory, since a form may recur when it fits the subject; never a repeat"]
+
+
 def repeats(new: dict, earlier: Sequence[dict], dimensions: Iterable[str]) -> list[str]:
     """Measured lines, `channel: ...`, one per earlier film and dimension
     where `new` is the same: the same non-empty opening or closing device,
     the exact section shape, the same treatment name (case and spacing
     aside), or a background and an accent each within PALETTE_DISTANCE.
-    The form (AUTO-157) is one line for all the films sharing it, marked
-    advisory. A dimension either side lacks is not evidenced and gives no
-    line."""
+    A dimension either side lacks is not evidenced and gives no line."""
     films = [e for e in earlier if isinstance(e, dict)]
     total = len(films)
     out: list[str] = []
@@ -377,16 +395,6 @@ def repeats(new: dict, earlier: Sequence[dict], dimensions: Iterable[str]) -> li
                 out.append(f"channel: {dim}: this film {verb} on {mine}, as {e['slug']} "
                            f"did ({len(sharing)} of the last {total} counted films "
                            f"{verb[:-1]} on it)")
-        elif dim == "form":
-            mine = str(new.get("form") or "")
-            if not mine:
-                continue
-            sharing = [e for e in films if str(e.get("form") or "") == mine]
-            if sharing:
-                out.append(f"channel: form: '{mine}' is shared by {len(sharing)} of the "
-                           f"last {total} counted films "
-                           f"({', '.join(str(e['slug']) for e in sharing)}) (advisory: a "
-                           "form may recur when it fits the subject)")
         elif dim == "structure":
             mine = new.get("shape")
             if not isinstance(mine, dict):
