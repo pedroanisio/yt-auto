@@ -1858,7 +1858,12 @@ voice.json's engine or any take's is one, QA adds a mechanical blocker
 naming the engine and how many takes it read: "voice: narration is an
 espeak scratch take (12 of 40 takes); run `yt voice --engine auto`" (with
 the film's `--project`). The film is then NOT READY whatever it scores. A
-wordless film has no narration to block on.
+wordless film has no narration to block on. The blocker counts in the
+verdict and the scorecard's `blocking` but is not briefed to the reviewer:
+briefed, it would change a stub or espeak film's scorecard prompt and ask
+its cached pass again. `yt doctor` warns on the same takes by the same rule
+(`doctor.scratch_reads`), so a kokoro voice.json that kept stub takes is a
+doctor warning too, and `yt improve` has it to route.
 
 `--listen` (AUTO-126, `ytstudio/listen.py`) is the review that hears the
 film itself. It is off by default, and `YT_GATEWAY` never turns it on.
@@ -1915,8 +1920,10 @@ the next pass's estimate leaves a past listen out of a plain `yt qa`
 (`qa.pass_usd`) and adds the listen's own estimate each time `--listen` is
 asked, whether the last one was paid, served from the cache or failed.
 
-A listen that answered on a narrated film also checks the words (AUTO-152).
-The transcript check is one more decision on the same harness, model and
+A listen that answered on a narrated film also checks the words (AUTO-152),
+unless a render landed during the listen: then nothing more is asked, and a
+render that lands during the transcript leaves both not current. The
+transcript check is one more decision on the same harness, model and
 track, `transcript-<audio sha256[:16]>` (`listen.TRANSCRIPT_SCHEMA`: per shot
 its `label`, `start`, `end` and `words`). It is cached, budgeted and billed
 like the listen. Its prompt gives each voiced shot's label, `at` and
@@ -1928,18 +1935,29 @@ end` and `end` at most the track's length plus `TRANSCRIPT_TIME_SLACK_S`
 fail are asked once more, alone (`-again`). Those that still fail are named
 under `not_evidenced`, and a call that fails leaves them all there. Each
 kept shot's words are held to its narration as placed, never to the voice's
-`spoken` text or `narration.txt`. Both sides are normalised first
-(`listen.normalise_words`: lower case, punctuation gone but for an
-apostrophe or hyphen inside a word, numbers spelled out, so "1.5%" is "one
-point five percent"). The screenplay's pronouncer terms are dropped from
-both sides and counted. `listen.wer` is the word error rate: replaced (the
-longer run), deleted and inserted words over the words expected.
+`spoken` text or `narration.txt`. build.json keeps 300 characters of a
+shot's narration, so the text compared is the whole take text from
+voice.json (the caption text), else the screenplay shot's, whenever it
+begins with what build.json placed; otherwise the placed text stands. Both
+sides are normalised first (`listen.normalise_words`: lower case,
+punctuation gone but for an apostrophe or hyphen inside a word, numbers
+spelled out, so "1.5%" is "one point five percent", "$5" "five dollars" and
+"the 1990s" a plural). `listen.compare_words` then splits each hyphenated
+word into its parts on both sides, so "twenty-one" and "twenty one" are the
+same words, and holds each year written (four digits from 1100 to 2099, no
+comma or decimals) to whichever reading is nearer what was heard: "one
+thousand eight hundred fifty-nine" or "eighteen fifty-nine" ("nineteen oh
+five", "nineteen hundred", "twenty twenty-six"). Units ("5km") are compared
+as written. The screenplay's pronouncer terms are dropped from both sides
+and counted. `listen.wer` is the word error rate: replaced (the longer
+run), deleted and inserted words over the words expected.
 
 A shot over `INTELLIGIBILITY_WER` (0.15, provisional, with no standard
 behind it) is a minor `voiceover` finding owned by voice at the shot's
 time, joining the scorecard with the listen's: "shot 1.2: heard 'And its
 sail is in front.' for 'And its tail is in front.' (WER 0.17)". The record
-is `transcript` in `listening.json` (`status`, `reason`, `model`, `shots`
+is `transcript` in `listening.json` (`status`, `reason`, `model`,
+`served_model` and `provider` for the transcript call itself, `shots`
 with `label`, `at`, `expected`, `heard`, `wer` and `pronounced`, `flagged`,
 `not_evidenced`), and the scorecard's `listen.transcript` is its tally. A
 wordless film, or one with no voiced shot, is recorded `not_evidenced` with
