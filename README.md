@@ -681,9 +681,15 @@ a middle section with no escalation or the same one as another, a rehook of
 a question not in the ledger or already closed; `house:` a long film with no
 rehook, section 2 with none, more than 180 s without one, a one-section plan
 over 180 s asked to split) and decides on its
-own. A reading whose fields
-contradict its verdict (an accept that finds the order a list, a revise that
-names no problem: `narrative.check_plan_review`) is asked once more as
+own. Its grounds to reject are the train, the order, a section that moves
+nothing and the payoff; a plan with no concrete consequence the viewer can
+picture before its mechanism, and no declared twist, is grounds to revise,
+never on its own to reject (AUTO-161: the reading says so in
+`stakes_concrete`, and a second plan is told it even when the problems list
+is thin). A reading whose fields
+contradict its verdict (an accept that finds the order a list or
+`stakes_concrete` false, a revise that names no problem, a reject on stakes
+alone: `narrative.check_plan_review`) is asked once more as
 `plan-review-again`; what still contradicts is recorded under `unsettled`,
 and the verdict stands. `accept` drafts; `revise`
 sends the plan back once with the problems (`plan-2`, read again as
@@ -774,7 +780,9 @@ holds at least 20 rows a person has labelled reject, consider or recommend
 real models with the plan review where the case names a plan verdict, the
 three samples on every case, and the cold read where there is narration;
 the premise and jargon cases are judged on the cold read alone, since the
-rubric has no criterion for them. It costs about $1 a case at opus, revises
+rubric has no criterion for them, and the plan that explains before it gives
+a reason to care (`no-stakes`) also fails a plan review that says its
+`stakes_concrete` is true. It costs about $1 a case at opus, revises
 nothing and logs nothing, and prints a pass/fail table and how often the
 reviewer agreed with the labels; `yt doctor` warns `gate on with N labelled
 verdicts (20 needed)` for a gated script.json below that count. `yt run` never

@@ -55,11 +55,20 @@ def kind(schema):
     return ""
 
 
-def verdict(word, problems=()):
+def verdict(word, problems=(), stakes=True):
     return {"verdict": word, "train_ok": word != "reject", "reorder_survives": word == "reject",
             "sections_advancing_none": [], "payoff_concrete": word != "reject",
-            "questions_unanswered": [],
+            "stakes_concrete": stakes, "questions_unanswered": [],
             "problems": [{"section": s, "problem": p, "fix": f} for s, p, f in problems]}
+
+
+#: A plan that explains before it gives a reason to care (AUTO-161).
+NO_STAKES = (1, "section 1 explains the bolts before the viewer has any reason to care",
+             "open on the 1989 Quebec blackout")
+
+#: What review_field_lines says of a plan with no stakes.
+STAKES_LINE = ("the whole plan: no concrete consequence the viewer can picture comes "
+               "before the mechanism (or a declared twist)")
 
 
 SWAPPABLE = (2, "sections 2 and 3 could swap without loss", "make 3 follow from 2's paint")
@@ -208,6 +217,155 @@ class Gate(unittest.TestCase):
         data = w.run(review=True)
         self.assertEqual(names(calls)[:2], ["plan", "plan-review"])
         self.assertFalse([f for f in data["findings"] if "audience" in f], data["findings"])
+
+
+class Stakes(unittest.TestCase):
+    """AUTO-161: no reason to care before the mechanism is a revise ground.
+    It takes gate_plan's existing path (plan-2, plan-review-2, a stop), and
+    the verdict stays the reviewer's."""
+
+    def test_an_accept_without_stakes_is_asked_again(self):
+        w = writer()
+        calls = faked(w, [verdict("accept", stakes=False),
+                          verdict("revise", [NO_STAKES], stakes=False), verdict("accept")])
+        data = w.run(review=True)
+        order = names(calls)
+        self.assertEqual(order[:4], ["plan", "plan-review", "plan-review-again", "plan-2"])
+        again = calls[2]["prompt"]
+        self.assertIn("an accept gives a reason to care before the mechanism", again)
+        self.assertIn("stakes_concrete is false", again)
+        # the second answer stands: it sent the plan back
+        first = data["plan_review"]["rounds"][0]
+        self.assertEqual((first["verdict"], first["again"], first["unsettled"]),
+                         ("revise", True, []))
+
+    def test_an_accept_still_without_stakes_is_kept_unsettled(self):
+        w = writer()
+        faked(w, [verdict("accept", stakes=False), verdict("accept", stakes=False)])
+        data = w.run(review=True)
+        record = data["plan_review"]
+        self.assertEqual(record["verdict"], "accept")
+        self.assertEqual(len(record["unsettled"]), 1, record["unsettled"])
+        self.assertIn("stakes_concrete", record["unsettled"][0])
+
+    def test_a_reject_on_stakes_alone_is_asked_again_and_kept_unsettled(self):
+        alone = dict(verdict("reject", [NO_STAKES], stakes=False), train_ok=True,
+                     reorder_survives=False, payoff_concrete=True)
+        w = writer()
+        calls = faked(w, [alone, alone])
+        with self.assertRaises(ClaudeError):
+            w.run(review=True)
+        self.assertEqual(names(calls), ["plan", "plan-review", "plan-review-again"])
+        self.assertIn("stakes alone is grounds to revise", calls[2]["prompt"])
+        stop = w.plan_review_stop
+        self.assertEqual(stop["verdict"], "reject")
+        self.assertTrue([u for u in stop["unsettled"] if "stakes alone" in u], stop)
+
+    def test_a_revise_on_stakes_replans_with_the_fix(self):
+        w = writer()
+        calls = faked(w, [verdict("revise", [NO_STAKES], stakes=False), verdict("accept")])
+        data = w.run(review=True)
+        order = names(calls)
+        self.assertEqual(order[:4], ["plan", "plan-review", "plan-2", "plan-review-2"])
+        again = calls[2]["prompt"]
+        self.assertIn("open on the 1989 Quebec blackout", again)
+        self.assertIn(STAKES_LINE, again)
+        self.assertTrue(any(n.startswith("write-") for n in order))
+        record = data["plan_review"]
+        self.assertEqual([r["verdict"] for r in record["rounds"]], ["revise", "accept"])
+        self.assertTrue(record["retried"])
+
+    def test_the_stakes_line_reaches_the_second_plan_with_a_thin_problem_list(self):
+        w = writer()
+        calls = faked(w, [verdict("revise", [(0, "thin", "fix it")], stakes=False),
+                          verdict("accept")])
+        w.run(review=True)
+        self.assertIn(STAKES_LINE, calls[2]["prompt"])
+        self.assertEqual(script.review_field_lines(verdict("accept")), [])
+        old = verdict("accept")
+        del old["stakes_concrete"]
+        self.assertEqual(script.review_field_lines(old), [])
+
+    def test_a_second_revise_on_stakes_stops_with_the_record(self):
+        w = writer()
+        calls = faked(w, [verdict("revise", [NO_STAKES], stakes=False),
+                          verdict("revise", [NO_STAKES], stakes=False)])
+        with self.assertRaises(ClaudeError) as caught:
+            w.run(review=True)
+        self.assertEqual(names(calls), ["plan", "plan-review", "plan-2", "plan-review-2"])
+        self.assertFalse([n for n in names(calls) if n.startswith("write-")])
+        self.assertIn(STAKES_LINE, str(caught.exception))
+        self.assertIn("after planning once more", str(caught.exception))
+        stop = w.plan_review_stop
+        self.assertEqual([r["verdict"] for r in stop["rounds"]], ["revise", "revise"])
+        self.assertEqual(stop["verdict"], "revise")
+
+    def test_report_only_drafts_on_after_a_stakes_revise(self):
+        w = writer()
+        calls = faked(w, [verdict("revise", [NO_STAKES], stakes=False)])
+        data = w.run(review=True, fix=False)
+        self.assertNotIn("plan-2", names(calls))
+        self.assertEqual(names(calls).count("plan-review"), 1)
+        self.assertNotIn("plan-review-again", names(calls))
+        self.assertEqual(data["plan_review"]["verdict"], "revise")
+        self.assertTrue(any(n.startswith("write-") for n in names(calls)))
+
+    def test_without_review_nothing_reads_the_stakes(self):
+        w = writer(reviewer_model=None)
+        calls = faked(w, [])
+        data = w.run()
+        self.assertFalse([n for n in names(calls) if n.startswith("plan-review")])
+        self.assertNotIn("plan_review", data)
+
+    def test_a_paper_plan_names_framing_as_where_stakes_are_read(self):
+        def prompt_for(plan):
+            w = writer()
+            calls = faked(w, [verdict("accept")], plan=plan)
+            w.run(review=True)
+            return next(c["prompt"] for c in calls if c["name"] == "plan-review")
+        framed_prompt = prompt_for(FRAMED)
+        self.assertIn(script.PAPER_STAKES_NOTE, framed_prompt)
+        self.assertIn("framing's significance, implications and consequences",
+                      script.PAPER_STAKES_NOTE)
+        # the note follows the attack
+        self.assertLess(framed_prompt.index(script.PLAN_ATTACK),
+                        framed_prompt.index(script.PAPER_STAKES_NOTE))
+        plain = prompt_for(PLAN)
+        self.assertNotIn(script.PAPER_STAKES_NOTE, plain)
+        self.assertNotIn("framing", plain)
+
+    def test_the_docs_name_stakes_as_a_revise_ground_only(self):
+        root = Path(__file__).resolve().parent.parent
+        said = ("no concrete consequence the viewer can picture before its mechanism, "
+                "and no declared twist, is grounds to revise, never on its own to reject")
+        for doc in (root / "README.md", root / "ytstudio" / "SKILL.md"):
+            with self.subTest(doc=doc.name):
+                flat = " ".join(doc.read_text(encoding="utf-8").split())
+                self.assertIn(said, flat)
+                self.assertIn("`stakes_concrete`", flat)
+
+    def test_the_plan_and_the_story_review_are_untouched(self):
+        # AUTO-161 changes the plan review's reading only: the plan's schema,
+        # STORY_BRIEF, the plan prompt and the story review's role and schema
+        # hash as they did on develop before it, so their decisions stay cached
+        import hashlib
+
+        def digest(text):
+            return hashlib.sha256(text.encode()).hexdigest()
+        self.assertEqual(digest(json.dumps(script.PLAN_SCHEMA, sort_keys=True)),
+                         "236f0d4b71ec8b56f7594abca16d6a59af4e5297d734ee3efc085515194215e6")
+        self.assertEqual(digest(script.STORY_BRIEF),
+                         "34a8cdb485d2f53f258c06c153fc6cb883661e13d745ffa46ec583ba3afc79ee")
+        self.assertEqual(digest(json.dumps(narrative.REVIEW_SCHEMA, sort_keys=True)),
+                         "7814e025c70fc932451f27deb712c9d7f6296dcb3d09004f69403bd96f7a5649")
+        self.assertEqual(digest("".join(narrative.reviewer_role(seed=s) for s in range(4))),
+                         "ece140eaea46c14e8984a8ef8b71d032db39b968065e0338881d55049a0ad58f")
+        w = writer()
+        calls = faked(w, [verdict("revise", [(2, "p", "f")]), verdict("accept")])
+        w.run(review=True)
+        plan_prompt = next(c["prompt"] for c in calls if c["name"] == "plan")
+        self.assertEqual(digest(plan_prompt),
+                         "a82bf4df71e355bba5ddd20aad808d258a956842e88020b86e9c3468e7ff7cf7")
 
 
 class SelfContradiction(unittest.TestCase):
@@ -771,7 +929,8 @@ class PlanRole(unittest.TestCase):
             self.assertIn(word, role)
         for word in ("recommend", "consider", "synopsis", "first minute"):
             self.assertNotIn(word, role)
-        # stakes is a problem to name, never on its own grounds to send it back
+        # stakes is grounds to revise, never to reject (AUTO-161; see
+        # test_narrative_rubric.StakesGround)
         self.assertIn("stakes", role)
         self.assertNotEqual(role, narrative.reviewer_role())
 
@@ -900,6 +1059,29 @@ class Command(unittest.TestCase):
             # (the `_ask` fake books nothing; Reviewer pins the rows)
             self.assertIn("decisions", stopped["engine"])
             self.assertIn("cost_usd", stopped["usage"])
+
+    def test_a_second_stakes_revise_exits_1_with_plan_review_json(self):
+        code, asked, said = self.run_stage(
+            "--review", "--model", "sonnet",
+            verdicts=[verdict("revise", [NO_STAKES], stakes=False),
+                      verdict("revise", [NO_STAKES], stakes=False)])
+        self.assertEqual(code, 1)
+        self.assertFalse([n for n in asked if n.startswith("write-")])
+        self.assertIn(STAKES_LINE, said)
+        self.assertFalse((self.film / "script.json").exists())
+        stopped = json.loads((self.film / script.PLAN_REVIEW_FILE).read_text())
+        record = stopped["plan_review"]
+        self.assertEqual([r["verdict"] for r in record["rounds"]], ["revise", "revise"])
+        self.assertIn("1989 Quebec blackout", json.dumps(record["problems"]))
+
+    def test_a_stakes_revise_then_accept_records_both_rounds(self):
+        code, asked, said = self.run_stage(
+            "--review", "--model", "sonnet",
+            verdicts=[verdict("revise", [NO_STAKES], stakes=False), verdict("accept")])
+        self.assertEqual(code, 0, said)
+        record = json.loads((self.film / "script.json").read_text())["plan_review"]
+        self.assertEqual([r["verdict"] for r in record["rounds"]], ["revise", "accept"])
+        self.assertIn("plan-2", asked)
 
     def test_a_passed_review_clears_the_record_of_an_earlier_stop(self):
         self.run_stage("--review", "--model", "sonnet",

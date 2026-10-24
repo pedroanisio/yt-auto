@@ -31,6 +31,7 @@
     "reorder_survives": false,
     "sections_advancing_none": [],
     "payoff_concrete": true,
+    "stakes_concrete": true,
     "questions_unanswered": [],
     "problems": []
   },

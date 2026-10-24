@@ -149,7 +149,7 @@ AFTER = {"answers": [{"id": "K1", "choice": "B"}, {"id": "K2", "choice": "B"},
 
 ACCEPT = {"verdict": "accept", "train_ok": True, "reorder_survives": False,
           "sections_advancing_none": [], "payoff_concrete": True,
-          "questions_unanswered": [], "problems": []}
+          "stakes_concrete": True, "questions_unanswered": [], "problems": []}
 
 
 def writer(**kw):

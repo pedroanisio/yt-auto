@@ -53,7 +53,7 @@ SEEDED = {"list-plan": "train", "topic-train": "train", "empty-payoff": "ending"
           "and-chain": "train", "reveal-first": "reveal_setup",
           "recap-ending": "ending", "hook-enumerates": "hook",
           "flat-tension": "tension", "no-trigger": "hook", "lecture-voice": "voice",
-          "bad-metaphor": "devices", "aside-joke": "voice"}
+          "bad-metaphor": "devices", "aside-joke": "voice", "no-stakes": "stakes"}
 
 #: The cases that expect recommend: the good pair, and the good script whose
 #: one joke makes the point (AUTO-159).
@@ -461,6 +461,21 @@ class JudgeCase(unittest.TestCase):
                                                     cold_read={"match": "match"}))
         self.assertTrue(any("plan review" in line for line in failed), failed)
 
+    def test_a_plan_review_that_finds_stakes_where_there_are_none_fails(self):
+        # AUTO-161: sending the plan back is not enough when the reading says
+        # the reason to care is there; the case seeds that it is not
+        expected = load(FIXTURES / "no-stakes" / "expected.json")
+        own = got_for("no-stakes", plan_review="revise")
+        self.assertEqual(narrative.judge_case(expected, own), [])
+        self.assertEqual(narrative.judge_case(
+            expected, dict(own, plan_stakes_concrete=False)), [])
+        failed = narrative.judge_case(expected, dict(own, plan_stakes_concrete=True))
+        self.assertEqual(failed, ["the plan review found stakes in a plan that has none"])
+        # a case whose plan has stakes holds the field to nothing
+        good = load(FIXTURES / "good" / "expected.json")
+        self.assertEqual(narrative.judge_case(good, read_of(
+            "good", plan_stakes_concrete=False)), [])
+
     def test_the_cold_read_must_find_what_the_case_hides(self):
         expected = load(FIXTURES / "no-premise" / "expected.json")
         failed = narrative.judge_case(expected, got_for("no-premise",
@@ -710,6 +725,32 @@ class Calibrate(Hermetic):
         every = [n for _, n in asked]
         self.assertFalse([n for n in every if n.startswith(("revise", "redraft", "plan-2",
                                                             "write-"))], every)
+
+    def test_the_no_stakes_case_is_read_by_the_plan_review_and_passes(self):
+        report, asked = self.calibrate()
+        row = next(r for r in report["cases"] if r["name"] == "no-stakes")
+        self.assertTrue(row["passed"], row)
+        self.assertEqual(row["plan_review"], "revise")
+        self.assertIn(("no-stakes", "plan-review"), asked)
+
+    def test_a_plan_review_that_finds_stakes_in_the_no_stakes_plan_fails_its_row(self):
+        def finds_stakes(case, kind):
+            if kind == "plan-review" and case == "no-stakes":
+                said = copy.deepcopy(load(FIXTURES / case / "expected.json")["plan_review"])
+                said["stakes_concrete"] = True
+                return said
+            return None
+        report, _ = self.calibrate(finds_stakes)
+        rows = {r["name"]: r for r in report["cases"]}
+        self.assertFalse(rows["no-stakes"]["passed"])
+        self.assertIn("the plan review found stakes in a plan that has none",
+                      rows["no-stakes"]["failures"])
+        self.assertTrue(rows["good"]["passed"], rows["good"])
+        self.assertFalse(report["passed"])
+        code, out, _ = self.main(override=finds_stakes)
+        self.assertEqual(code, 1)
+        self.assertIn("no-stakes", out)
+        self.assertIn("the plan review found stakes in a plan that has none", out)
 
     def test_a_lenient_reviewer_fails_every_seeded_row_and_the_report(self):
         def lenient(case, kind):

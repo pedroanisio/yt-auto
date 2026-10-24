@@ -34,7 +34,9 @@ its strength), so a round is never spent finding out what will be looked at.
 be judged on (`qa.STORY_RUBRIC`), and `yt improve`'s router reads them to
 name the key a story finding bears on (AUTO-99).
 `yt script --review` wires the plan's role (`reviewer_role(plan=True)`),
-PLAN_REVIEW_SCHEMA and `check_plan_review` into the plan review (AUTO-92),
+PLAN_REVIEW_SCHEMA and `check_plan_review` into the plan review (AUTO-92;
+its grounds to reject are the train, the order, an idle section and the
+payoff, and AUTO-161 adds stakes as a ground to revise, never to reject),
 and `picture_role()` and PICTURE_SCHEMA into the picture-check that reads
 the drafted screenplay's pictures with the narration taken away (AUTO-98),
 and the script's role (`reviewer_role(seed=k)`), `review_schema` and
@@ -436,9 +438,13 @@ def reviewer_role(*, window: str = OPENING_WINDOW, seed: int = 0, plan: bool = F
     strength, and what each verdict requires.
 
     `plan` is the role for the plan review (PLAN_REVIEW_SCHEMA), read before
-    any line is written: its verdicts are accept, revise and reject and its
-    only grounds are the train, the order, a section that moves nothing and
-    the payoff. The script review's rules (a synopsis first, recommend or
+    any line is written: its verdicts are accept, revise and reject, its
+    only grounds to reject are the train, the order, a section that moves
+    nothing and the payoff, and stakes (no concrete consequence before the
+    mechanism, and no declared twist) is a ground to revise too (AUTO-161:
+    AUTO-92 had made stakes only a problem to name, so a plan with no reason
+    to care reached the screenplay and was caught after it was paid for).
+    The script review's rules (a synopsis first, recommend or
     consider, a Poor stakes rejects, the first minute read twice) would
     contradict that prompt in the same call, so they are left out of it;
     the rubric rows a plan shows are in the plan review's prompt."""
@@ -455,13 +461,16 @@ def reviewer_role(*, window: str = OPENING_WINDOW, seed: int = 0, plan: bool = F
             "with its section and a fix. reject: it is not a story: the train names "
             "only a topic, the sections are a list that survives any order, or the "
             "payoff is empty. Only the train, the order, a section that moves nothing "
-            "and the payoff are grounds to revise or reject. A weak stakes line, an "
-            "open loop, a thin reveal setup or a device that maps onto the wrong thing "
-            "is a problem to name with its fix, never on its own a reason to send the "
-            "plan back.",
+            "and the payoff are grounds to reject. Those four, and stakes, are grounds "
+            "to revise. A plan has no stakes when it explains its mechanism before it "
+            "gives a concrete consequence the viewer can picture, unless the plan says "
+            "the danger is withheld as its twist. An open loop, a thin reveal setup or "
+            "a device that maps onto the wrong thing is a problem to name with its fix, "
+            "never on its own a reason to send the plan back.",
             "Your fields say the same as your verdict: an accept has a train that holds, "
             "an order that does not survive reordering, a concrete payoff and no section "
-            "that moves nothing; a revise or a reject names at least one problem.",
+            "that moves nothing, and an accept has stakes_concrete true; a revise or a "
+            "reject names at least one problem.",
             LONGER,
         ])
     return "\n\n".join([
@@ -640,7 +649,10 @@ def review_schema(*, delta: bool, seed: int = 0, window: str = OPENING_WINDOW) -
 
 #: The plan's review, before any line is written: whether the train is a
 #: question with an obstacle, whether the sections are a chain or a list,
-#: whether the payoff is concrete and every question is answered.
+#: whether the payoff is concrete, whether the viewer is given a reason to
+#: care before the mechanism (AUTO-161) and every question is answered.
+#: `stakes_concrete` is one named field, not a grade, so the plan role's
+#: "give no grade" still holds.
 PLAN_REVIEW_SCHEMA = {
     "type": "object",
     "properties": {
@@ -653,6 +665,10 @@ PLAN_REVIEW_SCHEMA = {
                                     "description": "section numbers that move the train not at all"},
         "payoff_concrete": {"type": "boolean", "description": (
             "the payoff answers the promise with something the viewer can picture")},
+        "stakes_concrete": {"type": "boolean", "description": (
+            "a concrete consequence the viewer can picture comes before the first section "
+            "that explains a mechanism, or the plan says the danger is withheld as its "
+            "twist")},
         "questions_unanswered": {"type": "array", "items": {"type": "string"},
                                  "description": "ledger ids opened and never closed nor left on purpose"},
         "problems": {
@@ -669,7 +685,7 @@ PLAN_REVIEW_SCHEMA = {
         },
     },
     "required": ["verdict", "train_ok", "reorder_survives", "sections_advancing_none",
-                 "payoff_concrete", "questions_unanswered", "problems"],
+                 "payoff_concrete", "stakes_concrete", "questions_unanswered", "problems"],
 }
 
 
@@ -677,8 +693,12 @@ def check_plan_review(review: Any) -> list[str]:
     """What a plan review says that contradicts its own verdict, one line
     per problem: a revise or a reject that names no problem (a second plan
     would be told to fix nothing), and an accept whose own fields find the
-    train failing, the order a list, the payoff not concrete or a section
-    that moves nothing. The schema cannot refuse these. As with
+    train failing, the order a list, the payoff not concrete, no stakes or a
+    section that moves nothing. Stakes are grounds to revise and never to
+    reject (AUTO-161), so a reject that finds no stakes and none of the four
+    reject grounds in its own fields contradicts itself too. The schema
+    cannot refuse these. A field the review leaves out is no contradiction
+    (old stubs and cached answers carry no `stakes_concrete`). As with
     `check_review`, the caller asks once more (`<name>-again`) with these
     lines and records what still stands; the verdict stays the model's."""
     if not isinstance(review, dict):
@@ -699,11 +719,22 @@ def check_plan_review(review: Any) -> list[str]:
         if review.get("payoff_concrete") is False:
             found.append("an accept holds the payoff, and this one says payoff_concrete is "
                          "false: change the verdict or the field")
+        if review.get("stakes_concrete") is False:
+            found.append("an accept gives a reason to care before the mechanism, and this "
+                         "one says stakes_concrete is false: change the verdict or the field")
         idle = [str(n) for n in review.get("sections_advancing_none") or []]
         if idle:
             found.append(f"an accept has every section move the train, and this one names "
                          f"section {', '.join(idle)} under sections_advancing_none: change "
                          "the verdict or the list")
+    if verdict == "reject" and review.get("stakes_concrete") is False:
+        grounds = (review.get("train_ok") is False, review.get("reorder_survives") is True,
+                   review.get("payoff_concrete") is False,
+                   bool(review.get("sections_advancing_none")))
+        if not any(grounds):
+            found.append("a reject needs the train, the order, an idle section or the "
+                         "payoff; stakes alone is grounds to revise: revise, or name the "
+                         "reject ground")
     return found
 
 
@@ -1029,7 +1060,8 @@ def judge_case(expected: Mapping, got: Mapping) -> list[str]:
 
     `expected` is the case's expected.json; `got` holds the story review's
     median `verdict`, `grades` and merged `flags`, the round's heard
-    `trigger`, the plan review's verdict (`plan_review`) and the cold read
+    `trigger`, the plan review's verdict (`plan_review`) and its
+    `stakes_concrete` (`plan_stakes_concrete`), and the cold read
     (`cold_read`). A seeded case fails the
     reviewer when the verdict is better than the case allows, the named
     criterion is graded above Fair, or no flag names it (judging 10 and the
@@ -1045,7 +1077,9 @@ def judge_case(expected: Mapping, got: Mapping) -> list[str]:
     never prints it. The floor is read only when the story review gave a
     verdict: a reading without one already fails on that alone. A case
     without `at_least` is judged as before. A plan
-    case's plan review must send a bad plan back and accept the good one; a
+    case's plan review must send a bad plan back and accept the good one,
+    and a plan review that finds stakes in a plan whose case says it has
+    none (`stakes_concrete` false, AUTO-161) fails it; a
     cold-read case's reader must find the mismatch or the terms it hides. A
     case naming a `trigger` (AUTO-136) fails a round that heard another, or
     none it could agree on. A reading that gave no verdict (`not_evidenced`,
@@ -1104,6 +1138,11 @@ def judge_case(expected: Mapping, got: Mapping) -> list[str]:
             failed.append(f"the plan review said {plan_got}; this plan is to be "
                           + ("accepted" if plan_want == "accept"
                              else "sent back (revise or reject)"))
+        # AUTO-161: sending a plan with no stakes back on other grounds is not
+        # finding its fault; only a reading that says it has none is missing
+        if ((expected.get("plan_review") or {}).get("stakes_concrete") is False
+                and got.get("plan_stakes_concrete") is True):
+            failed.append("the plan review found stakes in a plan that has none")
     cold_want = expected.get("cold_read") or {}
     if cold_want:
         cold = got.get("cold_read") or {}
@@ -1254,6 +1293,7 @@ def calibrate(directory: Any, *, work: Any, model: str = "sonnet",
             try:
                 review, _, _ = w.review_plan(plan)
                 got["plan_review"] = row["plan_review"] = review.get("verdict")
+                got["plan_stakes_concrete"] = review.get("stakes_concrete")
             except script.ClaudeError as exc:
                 row["failures"].append(f"the plan review failed ({exc})")
         sections = script.sections_of(case["script"]) if case["script"] else []

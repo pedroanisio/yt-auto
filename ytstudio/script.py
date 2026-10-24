@@ -2065,21 +2065,35 @@ _ASKS = ("why", "how", "whether")
 #: How the reviewer reads a plan, in the shape of styles.Director.critique:
 #: the strongest objection first, then whether the plan still holds. Only
 #: the train, the order, the sections that move nothing and the payoff are
-#: grounds to send it back (judging 13; structure 3, 4).
+#: grounds to reject it (judging 13; structure 3, 4); those four and stakes
+#: are grounds to revise it (AUTO-161: a plan that explains before it gives
+#: a reason to care is planned again, attention 8). The sentence matches
+#: narrative.reviewer_role(plan=True), the same call's system prompt.
 PLAN_ATTACK = (
     "Attack this plan before any line of it is written. Name the single strongest "
     "objection to each of: its train (one sentence with a pursuer, a question and a "
     "named obstacle, or only a topic?), its order (could the sections be reordered "
     "without loss, a list rather than a chain?), each section's move (which sections "
-    "advance the train not at all?) and its payoff (does it pay the promise with "
-    "something the viewer can picture, or is it empty or generic?). Then say whether "
+    "advance the train not at all?), its payoff (does it pay the promise with "
+    "something the viewer can picture, or is it empty or generic?) and its stakes "
+    "(before the first section that explains a mechanism, does the viewer hear a "
+    "concrete consequence they can picture, or does the plan say the danger is "
+    "withheld as its twist?). Then say whether "
     "the plan still holds. accept: it does. revise: it is a story with concrete "
     "problems that planning again can fix; give each problem with its section (0 for "
     "the whole plan) and the fix. reject: it is not a story: the train names a "
     "topic, the sections are a list, or the payoff is empty. Only the train, the "
-    "order, a section that moves nothing and the payoff are grounds to revise or "
-    "reject. Leave the plan alone where an objection is weak, and do not send "
+    "order, a section that moves nothing and the payoff are grounds to reject. Those "
+    "four, and stakes, are grounds to revise. "
+    "Leave the plan alone where an objection is weak, and do not send "
     "everything back to look rigorous.")
+
+#: Said after PLAN_ATTACK for a paper film's plan only (AUTO-161), where the
+#: consequence sits in the framing AUTO-131 asks the plan to place. A plan
+#: without `framing` never hears it, so a non-paper prompt names no framing.
+PAPER_STAKES_NOTE = (
+    "In this plan the consequence is read from framing's significance, implications "
+    "and consequences items and the sections they are placed in.")
 
 #: Said to the reviewer above the pre-checks: they are measured, not judged.
 PRECHECK_NOTE = (
@@ -2377,8 +2391,9 @@ def paper_prechecks(plan: dict, claims: list[dict], paper: str) -> list[str]:
 def review_field_lines(review) -> list[str]:
     """What a plan review's own fields found against the plan, one line
     each, so a second plan is told them even when the problems list is
-    thin: the train, the order, the sections that move nothing, the payoff
-    and the questions left unanswered."""
+    thin: the train, the order, the sections that move nothing, the payoff,
+    the stakes (AUTO-161) and the questions left unanswered. A field the
+    review leaves out says nothing."""
     if not isinstance(review, dict):
         return []
     out = []
@@ -2393,6 +2408,9 @@ def review_field_lines(review) -> list[str]:
     if review.get("payoff_concrete") is False:
         out.append("the whole plan: the payoff does not pay the promise with something the "
                    "viewer can picture")
+    if review.get("stakes_concrete") is False:
+        out.append("the whole plan: no concrete consequence the viewer can picture comes "
+                   "before the mechanism (or a declared twist)")
     unanswered = [str(q) for q in review.get("questions_unanswered") or []]
     if unanswered:
         out.append(f"the whole plan: question {', '.join(unanswered)} is opened and never "
@@ -3361,6 +3379,8 @@ class Screenwriter:
                  "The criteria a plan can be judged on before a line is written:\n"
                  + narrative.rubric_text("reviewer", keys=PLAN_CRITERIA),
                  PLAN_ATTACK,
+                 # a paper film's consequence is in its framing (AUTO-131)
+                 *([PAPER_STAKES_NOTE] if isinstance(plan.get("framing"), dict) else []),
                  (PRECHECK_NOTE + "\n" + "\n".join(f"- {c}" for c in checks)) if checks
                  else "The pre-checks measured from the plan's fields found nothing."]
         prompt = "\n\n".join(parts)
