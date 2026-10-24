@@ -1212,6 +1212,21 @@ class DimensionsInTheStage(unittest.TestCase):
         self.assertNotIn("gap", row)
         self.assertIn("2d", row)
 
+    def test_vfx_md_escapes_a_pipe_in_a_heading(self):
+        from tests.test_vfx_picture_constraints import plain_data
+        data = plain_data()
+        data["sections"][0]["section"] = "Open | Close"
+        data["sections"][0]["effects"][0]["section"] = "Open | Close"
+        usage = reach.usage_of({"vfx/v01/01-open.scene.xml": world_doc(("world-open", FLAT))})
+        data["reach"] = {"usage": usage, "report": {"families": {}, "caveats": []},
+                         "audit": Audit.AUDIT, "reason": ""}
+        md = self.render_md(data, {"sections": [{"heading": "Open | Close", "shots": [
+            {"label": "1.2", "style": "3d animation"}]}]})
+        block = md.split("## Dimensions", 1)[1].split("\n## ", 1)[0]
+        row = next(line for line in block.splitlines() if line.startswith("| Open"))
+        self.assertIn("Open \\| Close", row)
+        self.assertEqual(row.replace("\\|", "").count("|"), 5)     # four cells
+
     def test_vfx_md_of_a_record_without_usage_has_no_table(self):
         from tests.test_vfx_picture_constraints import plain_data
         self.assertNotIn("## Dimensions", self.render_md(plain_data()))

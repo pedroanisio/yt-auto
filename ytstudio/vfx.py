@@ -5211,7 +5211,9 @@ def dimension_lines(data: dict, root: Path) -> list[str]:
     declare (script.json `style` beside it, through styles.dimension_of),
     which of 2D, 2.5D and 3D its world realises, and the keys that decided
     it; a section flatter than its shots declare is marked as a gap, as
-    `yt doctor` warns of it. Nothing without a reach usage to measure."""
+    `yt doctor` warns of it. Nothing without a reach usage to measure.
+    Rows are by heading, as reach.dimensions keys them, so two sections
+    with the same heading share one row."""
     realised = reach.realised_dimensions(data)
     if not realised:
         return []
@@ -5228,16 +5230,19 @@ def dimension_lines(data: dict, root: Path) -> list[str]:
            "its XML; declared is what its shots' treatments are (script.json `style`). "
            "Flat is allowed: a gap is a world flatter than its own shots declare.*", "",
            "| section | declared | realised | evidence |", "|---|---|---|---|"]
+    # A heading, shot label or evidence key holding "|" would split its row.
+    cell = lambda v: " ".join(str(v).split()).replace("|", "\\|")  # noqa: E731
     for heading, row in realised.items():
         if not isinstance(row, dict):
             continue
         said = declared.get(_key(heading))
         found = gaps.get(_key(heading))
-        out.append(f"| {heading} | {', '.join(said) if said else '—'} | "
+        shots = ", ".join(found["shots"]) if found else ""
+        out.append(f"| {cell(heading)} | {', '.join(said) if said else '—'} | "
                    f"{', '.join(row.get('dims') or []) or 'none measured'}"
-                   + (f" · **gap**: shots {', '.join(found['shots'])} are {found['declared']}"
+                   + (f" · **gap**: shots {cell(shots)} are {found['declared']}"
                       if found else "")
-                   + f" | {', '.join(row.get('evidence') or []) or '—'} |")
+                   + f" | {cell(', '.join(row.get('evidence') or [])) or '—'} |")
     for film in (gap or {}).get("film") or []:
         out += ["", f"*The primary treatment {film['style']} is {film['dimension']} and no "
                     "section realises it.*"]
