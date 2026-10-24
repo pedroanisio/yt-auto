@@ -753,8 +753,8 @@ on; `narration.txt` is still written and the stage exits 0, because the
 reviewer is not calibrated yet. `--gate` makes a reject or `not_evidenced`
 leave `narration.txt` unwritten and exit 1, and script.json then records
 `gate: true`. Turn it on only when `python -m ytstudio.narrative calibrate
-tests/fixtures/narrative` shows the seeded-bad fixtures all fail, the good one
-passes and the length audit passes (the padded copies of the good script and
+tests/fixtures/narrative` shows the seeded-bad fixtures all fail, the good ones
+pass and the length audit passes (the padded copies of the good script and
 of the recap ending may not win more than 60% of their pairs, and an audit
 whose every pair was read at the ceiling fails), and work/review-log.jsonl
 holds at least 20 rows a person has labelled reject, consider or recommend
