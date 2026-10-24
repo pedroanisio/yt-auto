@@ -173,5 +173,44 @@ class RuntimePackages(unittest.TestCase):
             self.assertIn(module, rows[0].message)
 
 
+class RealEngines(unittest.TestCase):
+    """doctor.real_engines: the narration engines usable here that may be
+    published, which `yt improve` reads to tell a scratch take it can redo
+    from one only an install can fix (AUTO-152)."""
+
+    def engines(self, usable):
+        from ytstudio import voice
+
+        class Fake:
+            def __init__(self, name):
+                self.name = name
+
+            def available(self):
+                return (self.name in usable, "")
+        return mock.patch.dict(voice.ENGINES, {n: Fake(n) for n in voice.ENGINES})
+
+    def environment(self):
+        with mock.patch.object(render, "hosts", return_value=[]):
+            return doctor.check_environment(Path(tempfile.gettempdir()))
+
+    def test_real_engines_excludes_scratch_engines(self):
+        with self.engines({"stub", "espeak", "kokoro"}):
+            self.assertEqual(doctor.real_engines(), ["kokoro"])
+        with self.engines({"stub", "espeak"}):
+            self.assertEqual(doctor.real_engines(), [])
+        with self.engines({"stub", "elevenlabs", "kokoro"}):
+            self.assertEqual(doctor.real_engines(), ["elevenlabs", "kokoro"])
+
+    def test_the_voice_row_reads_the_same_probe(self):
+        with self.engines({"stub", "espeak"}):
+            row = next(f for f in self.environment().findings if f.area == "voice")
+        self.assertEqual(row.level, "warn")
+        self.assertIn("pip install kokoro, or set ELEVENLABS_API_KEY", row.fix)
+        with self.engines({"stub", "kokoro"}):
+            row = next(f for f in self.environment().findings if f.area == "voice")
+        self.assertEqual(row.level, "ok")
+        self.assertIn("engines usable: kokoro, stub", row.message)
+
+
 if __name__ == "__main__":
     unittest.main()

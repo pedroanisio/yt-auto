@@ -695,7 +695,9 @@ def evidence_row(record: dict, where: str = "") -> dict:
                      "(`yt qa --listen`): the whole mix as the viewer hears it",
            "covers": list(qa.AUDIO), "heard": sha, "now": sha,
            "current": bool(record.get("current")), "why": "",
-           "command": qa._yt("qa --listen", where)}
+           "command": qa._yt("qa --listen", where),
+           # the one review that hears the rendered track (AUTO-152)
+           "basis": "heard"}
     if row["current"]:
         row["said"] = {"heard": (record.get("result") or {}).get("heard"),
                        "categories": {k: ((record.get("result") or {}).get("categories")

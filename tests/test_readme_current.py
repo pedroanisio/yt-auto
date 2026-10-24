@@ -72,6 +72,14 @@ class Missing(unittest.TestCase):
         self.assertIn("--report-only", text)
         self.assertIn("revise", text)
 
+    def test_qa_records_the_basis_and_blocks_a_scratch_take(self):
+        # AUTO-152: how each audio score is known, and the scratch blocker
+        text = flat(section("qa"))
+        for needle in ("`audio_basis`", "`basis`", "not from the rendered track",
+                       "scratch take", "`yt voice --engine auto`"):
+            self.assertIn(needle, text)
+        self.assertIn("`doctor.real_engines`", flat(section("improve")))
+
     def test_voice_retakes_and_redo(self):
         text = flat(section("voice"))
         self.assertIn("speed", text)

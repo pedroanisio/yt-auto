@@ -47,6 +47,16 @@ MARK = {"fail": "x", "warn": "!", "note": "·", "ok": "+"}
 #: Narration engines that prove the timeline but must not be published.
 SCRATCH_ENGINES = ("stub", "espeak")
 
+
+def real_engines() -> list[str]:
+    """The narration engines usable on this machine that may be published:
+    every voice.ENGINES entry whose probe says it is available, less the
+    scratch ones. Empty means `yt voice --engine auto` can only read the
+    film into a scratch take again, which only an install fixes (AUTO-152:
+    `yt improve` routes that to a human)."""
+    from .voice import ENGINES
+    return [n for n, e in ENGINES.items() if n not in SCRATCH_ENGINES and e.available()[0]]
+
 #: Below this many GB free where a host keeps its mirrors and jobs, an encode
 #: is at risk: a 13-minute master is 1.7 GB, the mirror persists by design, and
 #: the slices of one encode sit beside it (SKILL.md "Rendering").
@@ -194,7 +204,7 @@ def check_environment(work: Path, *, ping: bool = False) -> Report:
         from .voice import ENGINES, pick_engine
         usable = [n for n, e in ENGINES.items() if e.available()[0]]
         chosen = pick_engine("auto")
-        real = [n for n in usable if n not in SCRATCH_ENGINES]
+        real = real_engines()
         level = "ok" if real else "warn"
         report.add(level, "voice", f"engines usable: {', '.join(usable) or 'none'}; "
                    f"auto picks {chosen}",

@@ -104,6 +104,16 @@ class Missing(unittest.TestCase):
     def test_keyframe_approve_refuses_a_mixed_record(self):
         self.assertIn("refuses a record whose digests", FLAT)
 
+    def test_qa_records_the_basis_and_blocks_a_scratch_take(self):
+        # AUTO-152: the qa row says how each audio score is known and that a
+        # scratch narration blocks READY; improve says where it routes one
+        qa_row = " ".join(row("| `yt qa`").split())
+        for needle in ("`audio_basis`", "`basis`", "heard", "read",
+                       "`doctor.SCRATCH_ENGINES`", "scratch take"):
+            self.assertIn(needle, qa_row)
+        for needle in ("`doctor.real_engines`", "Needs a human decision"):
+            self.assertIn(needle, FLAT)
+
 
 if __name__ == "__main__":
     unittest.main()

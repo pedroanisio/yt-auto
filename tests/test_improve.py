@@ -1301,6 +1301,72 @@ class StoryFindings(ImproveCase):
         self.assertIsNone(improve.plan_declared({"problem": "no payoff"}, None))
 
 
+class ScratchTake(ImproveCase):
+    """A scratch narration (AUTO-152): QA blocks READY on it, and `yt voice`
+    can only redo it with a real engine. With none installed it is a human's
+    install, not a loop that reads the film into espeak again."""
+
+    ROW = ("warn", "voice", "narration is a espeak scratch take, not publishable",
+           "yt voice --project /films/one --engine auto")
+
+    def real(self, engines):
+        from ytstudio import doctor
+        return patch.object(doctor, "real_engines", return_value=list(engines))
+
+    def test_keep_or_revert_is_unchanged_for_a_card_that_only_gained_basis_lines(self):
+        best = dict(card(5.0), **{"pass": "pass-01"})
+        new = dict(card(6.0, scores={"voiceover": 4.4}), **{"pass": "pass-02"})
+        read = dict(new, audio_basis={k: "read" for k in qa.AUDIO},
+                    not_evidenced=list(new.get("not_evidenced") or []) + qa.basis_lines(
+                        {k: "read" for k in qa.AUDIO}))
+        for later in (new, dict(card(6.0), **{"pass": "pass-02"})):
+            gained = dict(later, audio_basis=read["audio_basis"],
+                          not_evidenced=read["not_evidenced"])
+            self.assertEqual(improve.judge(best, gained), improve.judge(best, later))
+
+    def test_scratch_take_with_no_real_engine_routes_external_and_stops(self):
+        with self.real([]):
+            found = improve.collect(card(5.0), doctor=[self.ROW])
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["owner"], improve.EXTERNAL)
+        self.assertIn("pip install kokoro, or set ELEVENLABS_API_KEY", found[0]["fix"])
+        # routed by lookup, whatever the model would say
+        FakeEngine.route = route_all_to("voice")
+        h = harness.Harness(self.root, "improve", verbose=False)
+        routing = improve.route(h, found, name="route-pass-01")
+        self.assertEqual(routing["stages"], {})
+        self.assertEqual([r["route"] for r in routing["human"]], [improve.EXTERNAL])
+        # and the loop stops on it, running nothing
+        self.start_pass(card(5.0))
+        runner = FakeRunner(self.root, [])
+        with self.real([]):
+            record = self.improver(runner, doctor=lambda p: [self.ROW]).run()
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(record["stop"]["reason"], "human")
+        md = (self.root / "improve.md").read_text()
+        human = md.split("### Needs a human decision (not looped)", 1)[1]
+        self.assertIn("scratch take", human.split("###", 1)[0])
+
+    def test_scratch_take_with_a_real_engine_routes_to_voice_as_blocking(self):
+        with self.real(["kokoro"]):
+            found = improve.collect(card(5.0), doctor=[self.ROW])
+        self.assertEqual(found[0]["owner"], "voice")
+        self.assertEqual(found[0]["severity"], "blocking")
+        self.assertEqual(found[0]["fix"], self.ROW[3])
+        FakeEngine.route = route_all_to("vfx")      # the lookup wins
+        h = harness.Harness(self.root, "improve", verbose=False)
+        routing = improve.route(h, found, name="route-pass-01")
+        self.assertEqual(list(routing["stages"]), ["voice"])
+        self.assertEqual(routing["human"], [])
+
+    def test_other_voice_rows_are_routed_as_before(self):
+        rows = [("warn", "voice", "the read drifts +20s (15%) from the screenplay", "yt retime")]
+        with self.real([]):
+            found = improve.collect(card(5.0), doctor=rows)
+        self.assertEqual((found[0]["owner"], found[0]["severity"]), ("voice", "minor"))
+        self.assertIsNone(found[0]["kind"])
+
+
 class Cli(unittest.TestCase):
     def test_improve_is_a_command_with_its_flags(self):
         args = cli.build_parser().parse_args(

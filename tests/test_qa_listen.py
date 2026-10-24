@@ -68,17 +68,19 @@ def _listen():
 #: `rhythm` block labelled as measured, not judged; those are the only
 #: differences from the digest before it (diffed against develop). The card
 #: gains `rhythm`.
+#: AUTO-152 added `audio_basis` to the card and to qa.json; the prompt and
+#: the role are as before (the listening rows are briefed without `basis`).
 OFF = {
     "prompt_sha": "42318a6de61bf11da1572d9ac814d38cfa57473ad832110ed337cf11c3d1632f",
     "role_sha": "689d58b15f4913baff9447748a32cf97acc8df4373fc2c61422df8ed4e03f951",
-    "card_keys": ["audio_not_evidenced", "bar", "blocking", "capped", "comparison",
+    "card_keys": ["audio_basis", "audio_not_evidenced", "bar", "blocking", "capped", "comparison",
                   "contact_sheet", "cut", "engine", "findings", "frames", "lines_unsampled",
                   "listening", "low_confidence", "mechanical", "not_evidenced", "overall",
                   "pass", "proof_note", "rationale", "rhythm", "samples", "scene_sha256",
                   "scores",
                   "scoring", "side_by_side", "spread", "story", "unsampled", "usage",
                   "verdict"],
-    "qa_keys": ["audio_not_evidenced", "blocking", "capped", "findings", "house", "idea",
+    "qa_keys": ["audio_basis", "audio_not_evidenced", "blocking", "capped", "findings", "house", "idea",
                 "judge_calibration", "low_confidence", "mechanical", "overall", "pass", "reasons", "regressions",
                 "scene_sha256", "scorecard", "scores", "scoring", "side_by_side", "spread",
                 "usage", "verdict"],
@@ -697,6 +699,26 @@ class Checked(Listen):
         self.assertEqual(card["audio_not_evidenced"], {})
         for key in qa.AUDIO:
             self.assertIsNotNone(card["scores"][key])
+
+    def test_a_current_listen_makes_every_basis_heard_and_files_no_basis_line(self):
+        # AUTO-152: the take review and the listen-back only read; with a
+        # current listen beside them, every audio score rests on hearing
+        self.run_qa()
+        card = self.card()
+        self.assertEqual(card["audio_basis"], {k: "heard" for k in qa.AUDIO})
+        self.assertFalse(any("not from the rendered track" in n
+                             for n in card["not_evidenced"]), card["not_evidenced"])
+        record = json.loads((self.root / "qa.json").read_text())
+        self.assertEqual(record["audio_basis"], {k: "heard" for k in qa.AUDIO})
+        # a listen that did not answer leaves them read, each named
+        self.make_project(film=b"film-2")
+        self.node.replies(err("gateway", 3, usage=USAGE, status=402, retryable=False,
+                              message="Insufficient funds: quota_for_entity_exceeded"))
+        self.run_qa()
+        card = self.card()
+        self.assertEqual(card["audio_basis"], {k: "read" for k in qa.AUDIO})
+        lines = [n for n in card["not_evidenced"] if "not from the rendered track" in n]
+        self.assertEqual(len(lines), 3, lines)
 
 
 # --------------------------------------------------------------------------- #

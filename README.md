@@ -1838,6 +1838,28 @@ revert. A wordless film has no take review, so in the default pipeline its
 and `improve.md` say so. Only the opt-in `--listen` below hears the
 rendered track.
 
+Every listening row carries its `basis`: `read` for the listen-back and the
+take review, which read the cue sheet and the takes, and `heard` for the
+`--listen` row. `heard` is still the sha256 digest of what the review
+covered, never a flag. The scorecard and `qa.json` record `audio_basis`, the
+basis of each scored audio category: `heard` when a current row covering it
+heard the rendered track, else `read`. An unscored category has none, and
+neither do a silent film's sound and music. Each `read` category adds one
+line under `not_evidenced`, for example "voiceover: scored from the take
+review (voice.json: words, lengths, pace), not from the rendered track; run
+yt qa --listen". The scores, the bar, the overall and
+`audio_not_evidenced` are left as they were, and nothing caps a read
+voiceover. The rows go to the reviewer without `basis`, so the scorecard
+prompt is unchanged and a cached pass is not asked again.
+
+A narration read by a scratch engine (stub or espeak,
+`doctor.SCRATCH_ENGINES`) proves the timeline and is never published. When
+voice.json's engine or any take's is one, QA adds a mechanical blocker
+naming the engine and how many takes it read: "voice: narration is an
+espeak scratch take (12 of 40 takes); run `yt voice --engine auto`" (with
+the film's `--project`). The film is then NOT READY whatever it scores. A
+wordless film has no narration to block on.
+
 `--listen` (AUTO-126, `ytstudio/listen.py`) is the review that hears the
 film itself. It is off by default, and `YT_GATEWAY` never turns it on.
 Before a frame renders or a pass directory is made, it checks every piece
@@ -2188,7 +2210,12 @@ lists it as not re-measured, never as fixed, until the new cut is published
 and `yt retention` reads it. A voice, sound or music category the best pass
 left not evidenced (no current listening review) is listed under "Not
 evidenced (READY cannot be judged)" with what is missing and the command
-that produces it.
+that produces it. Doctor's warning that the narration is a stub or espeak
+scratch take, which QA blocks READY on, is routed by lookup and blocking:
+to `voice` when `doctor.real_engines` finds an engine that may be published
+on this machine, else to `external` with the fix "pip install kokoro, or
+set ELEVENLABS_API_KEY". It is then listed under "Needs a human decision",
+and the loop stops there rather than reading the film into espeak again.
 
 ### `yt retention`
 
