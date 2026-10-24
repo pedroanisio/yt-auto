@@ -3083,7 +3083,7 @@ class Screenwriter:
             # Never the author's family (AUTO-132): verify_status asks only
             # where the command resolved a reviewer of another one.
             return self._reader("status").decide(name, prompt, schema)
-        drafting =("shots" in schema.get("properties", {}) and self.draft_effort
+        drafting = ("shots" in schema.get("properties", {}) and self.draft_effort
                     and not claude_engine.default_for("effort"))
         return (self._drafter if drafting else self.harness).decide(name, prompt, schema)
 
