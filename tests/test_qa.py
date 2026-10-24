@@ -633,7 +633,9 @@ class StoryStage(unittest.TestCase):
     def calibrated(self, **report):
         path = self.work / qa.CALIBRATION_QA / "report.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"passed": True, "model": "sonnet", "cases": []} | report))
+        path.write_text(json.dumps({"passed": True, "model": "sonnet", "cases": [],
+                                    "fixture_set": qa.fixture_set_digest(qa.QA_FIXTURES)}
+                                   | report))
 
     def test_qa_json_records_judge_calibration_false_without_report(self):
         lines = self.printed()

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import importlib.util
 import io
 import json
 import shutil
@@ -49,6 +50,35 @@ SEED = ROOT / "scripts" / "seed_qa_fixtures.py"
 CASES = ("good", "good-b", "slide-drift", "wall-of-text", "band-violation",
          "illegible-type", "placeholder-moving", "tells-not-shows")
 SIDE = qa.SIDE_CATEGORIES
+
+
+def seed_module():
+    """scripts/seed_qa_fixtures.py as a module: its stand-in's geometry and
+    words, so a test can say where each seeded change may and may not be."""
+    spec = importlib.util.spec_from_file_location("seed_qa_fixtures", SEED)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def rgb(path: Path) -> Image.Image:
+    with Image.open(path) as im:
+        return im.convert("RGB")
+
+
+def changed_outside(a: Image.Image, b: Image.Image, boxes, tolerance: int) -> tuple | None:
+    """The bounding box of the pixels that differ by more than `tolerance`
+    in any channel between `a` and `b`, the `boxes` (padded by 2 px) left
+    out; None when nothing outside them changed."""
+    from PIL import ImageChops, ImageDraw
+    r, g, b_ = ImageChops.difference(a, b).split()
+    diff = ImageChops.lighter(ImageChops.lighter(r, g), b_).point(
+        lambda v: 255 if v > tolerance else 0)
+    px = ImageDraw.Draw(diff)
+    for box in boxes:
+        x0, y0, x1, y1 = box
+        px.rectangle([x0 - 2, y0 - 2, x1 + 2, y1 + 2], fill=0)
+    return diff.getbbox()
 
 
 def expected_of(case: str) -> dict:
@@ -215,6 +245,20 @@ class Fixtures(unittest.TestCase):
             qa.load_case(broken)
         self.assertIn(str(broken / "samples.json"), str(caught.exception))
 
+    def test_a_frame_samples_json_does_not_name_fails_the_case(self):
+        # the judge is told to read every PNG under frames/: one no sample
+        # names (a stand-in's still left behind by a capture) would be judged
+        # as part of the film
+        tmp = Path(tempfile.mkdtemp(prefix="qa-fixture-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        for stale in ("t_09m00s000.png", "burst/t_09m00s000_0001.png"):
+            case = tmp / stale.replace("/", "-")
+            shutil.copytree(FIXTURES / "good", case)
+            Image.new("RGB", (480, 270), (40, 60, 90)).save(case / "frames" / stale)
+            with self.assertRaises(ValueError) as caught:
+                qa.load_case(case)
+            self.assertIn(str(case / "frames" / stale), str(caught.exception))
+
     def test_fixture_tree_is_under_budget(self):
         total = 0
         for case in CASES:
@@ -298,6 +342,142 @@ class Fixtures(unittest.TestCase):
             self.assertEqual(trees[0][name], data, name)
 
 
+class Seeded(unittest.TestCase):
+    """Each seeded case changes the one thing its expected.json names, and
+    nothing a judge could mark down for another reason."""
+
+    #: How far a stand-in pixel outside the changed boxes may move: the
+    #: frames are stored quantized, and a seeded frame's palette is its own.
+    TOLERANCE = 12
+
+    def setUp(self):
+        self.seed = seed_module()
+        self.good = read_json(FIXTURES / "good" / "samples.json", warn=False, shape=list)
+        build = read_json(FIXTURES / "good" / "build.json", warn=False)
+        self.starts = self.seed.section_starts(build)
+        self.headings = {str(s["label"]): s["section"] for s in build["shots"]}
+        self.terms = self.seed.terms()
+
+    def frames(self):
+        for row in self.good:
+            label = str(row["label"])
+            heading = self.headings[label] if label in self.starts else None
+            for name, _ in self.seed.frames_of(row):
+                yield name, label, heading, self.terms[label]
+
+    def test_tells_not_shows_lines_claim_what_the_frames_do_not_show(self):
+        # the card's fault: a line describing a process the picture never
+        # shows, so the judge must hold the picture against the line; a line
+        # that claims nothing ("too hard to show you") is caught from the text
+        told = json.loads((FIXTURES / "tells-not-shows" / "script.json").read_text())
+        good = json.loads((FIXTURES / "good" / "script.json").read_text())
+        shot = lambda script, label: next(  # noqa: E731
+            sh for sec in script["sections"] for sh in sec["shots"] if sh["label"] == label)
+        self.assertEqual(sorted(self.seed.TOLD), ["2.1", "2.2", "2.3"])
+        for label, claim in self.seed.TOLD_CLAIMS.items():
+            line = shot(told, label)["narration"]
+            self.assertEqual(line, self.seed.TOLD[label])
+            self.assertNotEqual(line, shot(good, label)["narration"])
+            self.assertIn(claim, line.lower(), label)
+            drawn = shot(good, label)
+            for text in (drawn["shows"], drawn["visual"], drawn["narration"],
+                         self.terms[label]):
+                self.assertNotIn(claim, text.lower(), (label, text))
+            for vague in ("complicated", "invisible", "important", "word for it", "too hard"):
+                self.assertNotIn(vague, line.lower(), label)
+        # nothing else of the script changed
+        for sec_t, sec_g in zip(told["sections"], good["sections"]):
+            for a, b in zip(sec_t["shots"], sec_g["shots"]):
+                if a["label"] not in self.seed.TOLD:
+                    self.assertEqual(a, b)
+
+    def test_with_a_captured_base_the_sample_lines_say_the_rewritten_narration(self):
+        # a real pass's samples carry each line's text: rewritten with it
+        tmp = Path(tempfile.mkdtemp(prefix="qa-seed-base-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        base = tmp / "captured"
+        shutil.copytree(FIXTURES / "good", base)
+        expected = json.loads((base / "expected.json").read_text())
+        (base / "expected.json").write_text(json.dumps(expected | {"label": "owner"}))
+        script = json.loads((base / "script.json").read_text())
+        said = {sh["label"]: sh["narration"] for sec in script["sections"] for sh in sec["shots"]}
+        samples = json.loads((base / "samples.json").read_text())
+        for row in samples:
+            line = said[row["label"]]
+            row["lines"] = [{"at": row["at"], "text": line, "frame": row["frame"]}]
+            row["why"] = f"{row['why']}; {qa._line_why(line)}"
+        (base / "samples.json").write_text(json.dumps(samples))
+        out = tmp / "out"
+        done = subprocess.run([sys.executable, str(SEED), "--out", str(out), "--base", str(base)],
+                              capture_output=True, text=True, cwd=tmp)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        rows = json.loads((out / "tells-not-shows" / "samples.json").read_text())
+        rewritten = [r for r in rows if r["label"] in self.seed.TOLD]
+        self.assertTrue(rewritten)
+        for row in rows:
+            want = self.seed.TOLD.get(row["label"], said[row["label"]])
+            self.assertEqual([ln["text"] for ln in row["lines"]], [want], row["label"])
+            self.assertIn(qa._line_why(want), row["why"])
+            if row["label"] in self.seed.TOLD:
+                self.assertNotIn(qa._line_why(said[row["label"]]), row["why"])
+        for case in ("good", "good-b", *self.seed.SEEDED):
+            qa.load_case(out / case)
+
+    def test_band_violation_moves_the_overlays_and_leaves_the_picture_whole(self):
+        # supers in the middle band, captions in the top one: the picture
+        # itself is the good film's, with no seam where bands were swapped
+        moved_super = 0
+        for name, label, heading, term in self.frames():
+            good = rgb(FIXTURES / "good" / "frames" / name)
+            bad = rgb(FIXTURES / "band-violation" / "frames" / name)
+            was = self.seed.overlay_boxes(heading, term, "good")
+            now = self.seed.overlay_boxes(heading, term, "violation")
+            self.assertIsNone(changed_outside(good, bad, [*was.values(), *now.values()],
+                                              self.TOLERANCE), name)
+            self.assertLess(now["caption"][3], self.seed.TOP)
+            self.assertIsNotNone(changed_outside(good, bad, [], self.TOLERANCE), name)
+            if heading:
+                x0, y0, x1, y1 = now["super"]
+                self.assertGreater(y0, self.seed.TOP)
+                self.assertLess(y1, self.seed.BOTTOM)
+                moved_super += 1
+        self.assertGreater(moved_super, 0)
+
+    def test_illegible_type_changes_only_the_overlay_boxes(self):
+        for name, label, heading, term in self.frames():
+            good = rgb(FIXTURES / "good" / "frames" / name)
+            bad = rgb(FIXTURES / "illegible-type" / "frames" / name)
+            boxes = self.seed.overlay_boxes(heading, term, "good")
+            self.assertIsNone(changed_outside(good, bad, boxes.values(), self.TOLERANCE), name)
+            # the caption box itself is redrawn
+            self.assertIsNotNone(changed_outside(good, bad, [], self.TOLERANCE), name)
+
+    def test_slide_drift_is_a_slide_of_the_shots_own_words(self):
+        said = {sh["label"]: sh["narration"] for sec in
+                json.loads((FIXTURES / "good" / "script.json").read_text())["sections"]
+                for sh in sec["shots"]}
+        for label, line in said.items():
+            bullets = self.seed.slide_bullets(line)
+            self.assertTrue(1 <= len(bullets) <= 3, (label, bullets))
+            words = [w.strip(".,:;?!").lower() for w in line.split()]
+            for bullet in bullets:
+                for word in bullet.split():
+                    self.assertIn(word.strip(".,:;?!").lower(), words, (label, bullet))
+        from PIL import ImageChops, ImageStat
+        for name, label, heading, term in self.frames():
+            good = rgb(FIXTURES / "good" / "frames" / name)
+            slide = rgb(FIXTURES / "slide-drift" / "frames" / name)
+            caption = self.seed.overlay_boxes(None, term, "good")["caption"]
+            # the caption is the base's, where it was
+            self.assertIsNone(changed_outside(good.crop(caption), slide.crop(caption), [],
+                                              self.TOLERANCE), name)
+            # and the film under it is gone: the bottom band is the slide's
+            strip = (caption[2] + 4, self.seed.BOTTOM, self.seed.W, self.seed.H)
+            diff = ImageStat.Stat(ImageChops.difference(good.crop(strip),
+                                                        slide.crop(strip))).mean
+            self.assertGreater(max(diff), 8.0, name)
+
+
 def good_card(**scores) -> dict:
     """A combined card a READY judge files: 9.2 on every side category,
     the audio unheard (None), nothing blocking."""
@@ -364,6 +544,28 @@ class JudgeCase(unittest.TestCase):
         loose["must_find"][0].pop("owners")
         card["findings"] = [finding(4.0, owner="script", samples=[1, 3])]
         self.assertEqual(qa.judge_case(loose, card), [])
+
+    def test_a_one_reading_finding_left_unmerged_does_not_count(self):
+        # combine_samples keeps every finding unmerged, each with samples=[k],
+        # when the merge decision fails: one reading's finding is then under
+        # `findings`, and it is not one two samples agree on
+        expected = {"verdict": "NOT_READY", "under_bar": [], "over_bar": [],
+                    "judge_only": True, "label": "seeded",
+                    "must_find": [{"t_range": [4.0, 9.0], "owners": ["vfx"]}]}
+        card = good_card()
+        card["blocking"] = ["a placeholder at 5s"]
+        for alone in (finding(5.0, samples=[2]), finding(5.0)):
+            card["findings"] = [alone]
+            self.assertTrue(any("must_find" in f for f in qa.judge_case(expected, card)), alone)
+        # nor does one reading's blocking finding block the judge's verdict
+        self.assertEqual(qa.judge_verdict(good_card() | {"findings": [
+            finding(3.0, severity="blocking", samples=[1])]})[0], qa.READY)
+        # a card whose merge failed is a failure of its own: its blocking
+        # claims are every reading's, unmerged, so nothing tells what two agree on
+        failed = good_card() | {"scoring": {"asked": 3, "valid": 3, "samples": [],
+                                            "merge": {"failed": "no answer"}}}
+        self.assertTrue(any(f.startswith("merge:") for f in qa.judge_case(
+            {"verdict": "READY", "under_bar": [], "over_bar": []}, failed)))
 
     def test_drop_against_the_base_case(self):
         expected = {"verdict": "NOT_READY", "under_bar": ["graphics_overlays"],
@@ -506,6 +708,56 @@ class Calibrate(Calibrating):
         prompt = next(c[2] for c in Judge.calls if c[0] == "inspect")
         self.assertIn("nearly flat frame", prompt)
 
+    def test_a_failed_merge_fails_the_cases_that_needed_one(self):
+        def no_merge(self, prompt, schema, system=None):
+            raise harness.HarnessError("the merge was not answered")
+        saved = Judge.ask_json
+        Judge.ask_json = no_merge
+        self.addCleanup(setattr, Judge, "ask_json", saved)
+        report = self.calibrate(self.owner_copy())
+        self.assertFalse(report["passed"])
+        for name, row in self.rows(report).items():
+            if expected_of(name).get("must_find"):
+                self.assertFalse(row["passed"], name)
+                self.assertTrue(any(f.startswith("must_find") for f in row["failures"]),
+                                (name, row["failures"]))
+                self.assertTrue(any(f.startswith("merge") for f in row["failures"]),
+                                (name, row["failures"]))
+            else:
+                # nothing to merge: no finding was filed
+                self.assertTrue(row["passed"], (name, row["failures"]))
+
+    def test_no_report_is_there_while_the_judge_reads(self):
+        # the judge's cwd is under <work>/calibration-qa/, beside report.json,
+        # which maps every case folder to its labels: it is not there while
+        # any case is scored, so a judge that reads past its cwd finds none
+        self.calibrate()
+        report = self.work / qa.CALIBRATION_QA / qa.CALIBRATION_REPORT
+        self.assertTrue(report.is_file())
+        seen = []
+        stream = Judge.stream
+
+        def watching(judge, prompt, system=None):
+            seen.append(report.exists())
+            yield from stream(judge, prompt, system)
+        Judge.stream = watching
+        self.addCleanup(setattr, Judge, "stream", stream)
+        self.calibrate(fresh=True)
+        self.assertTrue(seen)
+        self.assertFalse(any(seen))
+        self.assertTrue(report.is_file())
+
+    def test_the_report_names_the_fixture_set_it_ran(self):
+        report = self.calibrate()
+        self.assertEqual(report["fixture_set"], qa.fixture_set_digest(FIXTURES))
+        self.assertEqual(qa.fixture_set_digest(FIXTURES), qa.fixture_set_digest(qa.QA_FIXTURES))
+        owned = self.calibrate(self.owner_copy())
+        self.assertNotEqual(owned["fixture_set"], report["fixture_set"])
+        # one easy case is not the set
+        single = self.tmp / "single"
+        shutil.copytree(FIXTURES / "good", single / "good")
+        self.assertNotEqual(qa.fixture_set_digest(single), report["fixture_set"])
+
     def test_second_run_makes_no_engine_call(self):
         first = self.calibrate()
         asked = len(Judge.calls)
@@ -557,19 +809,11 @@ class Calibrate(Calibrating):
             self.assertEqual(qa.main(["calibrate", str(self.tmp / "nowhere")]), 2)
 
 
-class Digest(unittest.TestCase):
+class Digest(Calibrating):
     def test_judge_digest_ignores_narration_and_changes_with_role(self):
         house = {"block_sha256": "abc"}
         first = qa.judge_digest("sonnet", house)
         self.assertEqual(first, qa.judge_digest("sonnet", house))
-        # a fixture's narration is not part of it
-        tmp = Path(tempfile.mkdtemp(prefix="qa-digest-"))
-        self.addCleanup(shutil.rmtree, tmp, True)
-        shutil.copytree(FIXTURES / "good", tmp / "good")
-        script = json.loads((tmp / "good" / "script.json").read_text())
-        script["sections"][0]["shots"][0]["narration"] = "Something else entirely."
-        (tmp / "good" / "script.json").write_text(json.dumps(script))
-        self.assertEqual(qa.judge_digest("sonnet", house), first)
         self.assertNotEqual(qa.judge_digest("opus", house), first)
         self.assertNotEqual(qa.judge_digest("sonnet", {"block_sha256": "def"}), first)
         for name, value in (("ROLE", qa.ROLE + " Be kind."), ("CATEGORY_BAR", 8.0),
@@ -582,6 +826,79 @@ class Digest(unittest.TestCase):
                 setattr(qa, name, saved)
         self.assertEqual(qa.judge_digest("sonnet", house), first)
 
+    def test_two_sets_that_differ_in_narration_calibrate_the_same_judge(self):
+        # the narration reaches the judge (it is in the pass's narration.txt
+        # and the story brief) and not the digest: the PROBE prompt carries
+        # no film's words
+        said = "Something else entirely, about a kettle."
+        trees = []
+        for name, line in (("a", None), ("b", said)):
+            tree = self.tmp / name
+            shutil.copytree(FIXTURES, tree)
+            if line:
+                path = tree / "good" / "script.json"
+                script = json.loads(path.read_text())
+                script["sections"][0]["shots"][0]["narration"] = line
+                path.write_text(json.dumps(script))
+                path = tree / "good" / "voice.json"
+                voice = json.loads(path.read_text())
+                voice["takes"][0]["text"] = line
+                path.write_text(json.dumps(voice))
+            trees.append(tree)
+        reports = []
+        for name, tree in zip("ab", trees):
+            Judge.fixtures = tree
+            reports.append(qa.calibrate(tree, work=self.tmp / f"work-{name}", verbose=False))
+        self.assertEqual(reports[0]["digest"], reports[1]["digest"])
+        heard = (qa.case_dir(self.tmp / "work-b", "good") / "qa" / "pass-01"
+                 / qa.NARRATION).read_text()
+        self.assertIn(said, heard)
+        good = json.loads((FIXTURES / "good" / "script.json").read_text())
+        probe = qa.review_prompt(**qa.PROBE)
+        for sec in good["sections"]:
+            for shot in sec["shots"]:
+                self.assertNotIn(shot["narration"], probe)
+        self.assertNotIn(said, probe)
+
+
+class JudgeCalibration(unittest.TestCase):
+    """qa.json's judge_calibration against a report on disk."""
+
+    house = {"block_sha256": "abc"}
+
+    def setUp(self):
+        self.work = Path(tempfile.mkdtemp(prefix="qa-judge-calibration-"))
+        self.addCleanup(shutil.rmtree, self.work, True)
+
+    def report(self, **fields):
+        path = self.work / qa.CALIBRATION_QA / qa.CALIBRATION_REPORT
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "passed": True, "model": "sonnet", "digest": qa.judge_digest("sonnet", self.house),
+            "fixture_set": qa.fixture_set_digest(qa.QA_FIXTURES), "cases": []} | fields))
+
+    def test_a_matching_report_is_calibration(self):
+        self.report()
+        got = qa.judge_calibration(self.work, "sonnet", self.house)
+        self.assertIs(got["fixtures"], True, got["why"])
+
+    def test_a_listened_or_watched_pass_is_not_the_judge_calibrated(self):
+        # calibrate runs the unheard judge (ROLE, no listener's or watcher's
+        # brief): a pass that listened or watched asked another judge
+        self.report()
+        for flag, word in (("listened", "listened"), ("watched", "watched")):
+            got = qa.judge_calibration(self.work, "sonnet", self.house, **{flag: True})
+            self.assertIs(got["fixtures"], False, flag)
+            self.assertIn(word, got["why"])
+            self.assertIn("unheard", got["why"])
+
+    def test_a_report_on_another_fixture_set_is_not_calibration(self):
+        for fields in ({"fixture_set": "a single easy case"}, {"fixture_set": None}):
+            self.report(**fields)
+            got = qa.judge_calibration(self.work, "sonnet", self.house)
+            self.assertIs(got["fixtures"], False, fields)
+            self.assertIn("fixture set", got["why"])
+
 
 class Docs(unittest.TestCase):
     def test_the_manual_readme_and_spec_name_the_calibration(self):
@@ -592,6 +909,11 @@ class Docs(unittest.TestCase):
             self.assertIn("capture-fixture", text, path)
             self.assertIn("judge_calibration", text, path)
             self.assertIn("gates nothing", text, path)
+        # the per-case folder is a key, not the case's name, and the docs say so
+        for path in (ROOT / "ytstudio" / "SKILL.md", ROOT / "README.md"):
+            text = " ".join(path.read_text(encoding="utf-8").split())
+            self.assertIn("case_key", text, path)
+            self.assertIn("fixture_set", text, path)
         skill = (ROOT / "ytstudio" / "SKILL.md").read_text(encoding="utf-8")
         for case in CASES:
             self.assertIn(f"`{case}`", skill)
@@ -652,6 +974,46 @@ class Capture(unittest.TestCase):
         self.assertFalse((case / "expected.json").exists())   # the owner writes the label
         self.assertEqual(summary["samples"], qa.FIXTURE_SAMPLES)
         self.assertGreater(summary["bytes"], 0)
+
+    def test_capture_into_a_used_case_leaves_nothing_of_the_old_one(self):
+        # README's workflow captures into tests/fixtures/qa/good, which holds
+        # the drawn stand-in: none of its frames, samples or manifests may
+        # stay beside the real film's
+        tmp = Path(tempfile.mkdtemp(prefix="qa-capture-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        pass_dir = self.project(tmp)
+        case = tmp / "good"
+        shutil.copytree(FIXTURES / "good", case)
+        label = (case / "expected.json").read_bytes()
+        qa.capture_fixture(pass_dir, case)
+        kept = json.loads((case / "samples.json").read_text())
+        named = {name for row in kept for name in [row["frame"], *row["burst"]["files"]]}
+        have = {p.relative_to(case / "frames").as_posix()
+                for p in (case / "frames").rglob("*") if p.is_file()}
+        self.assertEqual(have, named)
+        self.assertFalse((case / "voice.json").exists())       # the stand-in's; the film has none
+        self.assertEqual((case / "expected.json").read_bytes(), label)   # the owner relabels it
+        loaded = qa.load_case(case)
+        self.assertEqual(len(loaded["samples"]), qa.FIXTURE_SAMPLES)
+
+    def project(self, tmp: Path) -> Path:
+        project = tmp / "film"
+        pass_dir = project / "qa" / "pass-03"
+        build = {"scene": {"duration": 60.0, "fps": 30, "width": 1920, "height": 1080},
+                 "shots": [{"label": f"1.{n}", "at": 5.0 * (n - 1), "seconds": 5.0,
+                            "asset": "effect", "section": "One"} for n in range(1, 13)],
+                 "placeholders": [], "findings": [], "audio_tracks": 2}
+        samples = qa.sample(build)
+        for row in samples:
+            for name in [row["frame"], *row["burst"]["files"]]:
+                path = pass_dir / "frames" / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (1920, 1080), (40, 60, 90)).save(path)
+        (pass_dir / "samples.json").write_text(json.dumps(samples))
+        (project / "build.json").write_text(json.dumps(build))
+        (project / "script.json").write_text(json.dumps({"sections": [{"heading": "One",
+            "shots": [{"label": s["label"], "narration": "A line."} for s in build["shots"]]}]}))
+        return pass_dir
 
 
 if __name__ == "__main__":

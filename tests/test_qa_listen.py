@@ -665,6 +665,10 @@ class Checked(Listen):
         self.assertTrue(row["current"])
         self.assertEqual(sorted(row["covers"]), sorted(qa.AUDIO))
         self.assertEqual(card["audio_not_evidenced"], {})
+        # AUTO-156: the QA fixtures calibrate the unheard judge, not this one
+        calibration = json.loads((self.root / "qa.json").read_text())["judge_calibration"]
+        self.assertIs(calibration["fixtures"], False)
+        self.assertIn("listened", calibration["why"])
 
     def test_with_no_other_review_the_listen_alone_evidences_the_audio(self):
         snd, vo = listening._sound(), listening._voice()
