@@ -1663,17 +1663,63 @@ class Accounting(unittest.TestCase):
         self.assertEqual([f["n"] for f in check["unresolved"]], [2])
 
     def test_a_script_wide_flag_is_accounted_over_every_shot(self):
+        # verify, verify-again: X2 stands script-wide; a round rewrites shot
+        # 1, so the script changed and the account re-reads every shot
         w, calls = self.make([
-            {"flags": [], "verdict": "ok"}, {"flags": [], "verdict": "ok"},
+            {"flags": [flag(1)], "verdict": "ok"}, {"flags": [flag(1)], "verdict": "ok"},
+            {"fixes": [{"n": 1, "action": "fix", "narration": "A finer line.", "why": "w"}]},
+            {"flags": [], "verdict": "ok"},
             {"flags": [], "verdict": "ok",
              "crosscheck_clear": [{"id": "X2", "why": "the line frames it as disputed"}]}],
             disagreements=(X2,))
         check = w.verify_and_revise(self.shots())
-        self.assertEqual([c[0] for c in calls], ["verify", "verify-again", "verify-account"])
-        for line in ("Fine line.", "It weighs 9 tons.", "Also fine."):
-            self.assertIn(line, calls[2][1])
+        self.assertEqual([c[0] for c in calls], ["verify", "verify-again", "revise-1",
+                                                 "verify-1", "verify-account"])
+        for line in ("A finer line.", "It weighs 9 tons.", "Also fine."):
+            self.assertIn(line, calls[4][1])
         self.assertEqual(check["flags"], [])
         self.assertEqual(check["unresolved"], [])
+
+    def test_a_kept_line_keeps_its_blocker_when_the_fixed_one_is_cleared(self):
+        # X1 is stated on shots 2 and 4; revise fixes 2 and keeps 4. The
+        # account re-reads shot 2 alone, so its clear cannot retire shot 4's.
+        shots = self.shots() + [shot(4, "Again 9 tons.", source="https://b.example/y")]
+        w, calls = self.make([
+            {"flags": [tied(2), tied(4)], "verdict": "no"},
+            {"fixes": [{"n": 2, "action": "fix", "narration": "It weighs 7 tons.", "why": "w"},
+                       {"n": 4, "action": "keep", "narration": "", "why": "the author's call"}]},
+            {"flags": [], "verdict": "ok"},
+            {"flags": [], "verdict": "ok",
+             "crosscheck_clear": [{"id": "X1", "why": "shot 2 now gives 7 tons"}]}])
+        check = w.verify_and_revise(shots)
+        self.assertEqual([c[0] for c in calls], ["verify", "revise-1", "verify-1",
+                                                 "verify-account"])
+        self.assertNotIn("Again 9 tons.", calls[3][1])
+        [left] = check["flags"]
+        self.assertEqual((left["n"], left["crosscheck"], left["severity"]), (4, "X1", "blocker"))
+        self.assertEqual(left["kept"], "the author's call")
+        rows = script.fact_blockers(check, [{"n": s.n, "label": s.label} for s in shots])
+        self.assertEqual([(r["n"], r["kept"]) for r in rows], [(4, True)])
+
+    def test_no_changed_line_asks_no_account(self):
+        # rounds=0, or a round that keeps the line: nothing changed, so the
+        # first check's answer stands and nothing is asked again
+        w, calls = self.make([{"flags": [tied(2)], "verdict": "no"}])
+        check = w.verify_and_revise(self.shots(), rounds=0)
+        self.assertEqual([c[0] for c in calls], ["verify"])
+        self.assertEqual([f["crosscheck"] for f in check["flags"]], ["X1"])
+        w, calls = self.make([
+            {"flags": [tied(2)], "verdict": "no"},
+            {"fixes": [{"n": 2, "action": "keep", "narration": "", "why": "sourced"}]}])
+        check = w.verify_and_revise(self.shots())
+        self.assertEqual([c[0] for c in calls], ["verify", "revise-1"])
+        self.assertEqual([(f["n"], f["kept"]) for f in check["flags"]], [(2, "sourced")])
+        # a script-wide one with no line changed is not asked again either
+        w, calls = self.make([{"flags": [], "verdict": "ok"}] * 2, disagreements=(X2,))
+        check = w.verify_and_revise(self.shots())
+        self.assertEqual([c[0] for c in calls], ["verify", "verify-again"])
+        self.assertEqual([(f["n"], f["crosscheck"]) for f in check["flags"]], [(0, "X2")])
+        self.assertEqual([f["n"] for f in check["unresolved"]], [0])
 
     def test_the_labels_check_makes_no_demand(self):
         w, calls = self.make([{"flags": [], "verdict": "ok"}])

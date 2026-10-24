@@ -820,7 +820,8 @@ class CrosscheckInTheStage(unittest.TestCase):
         code, said = self.run_stage("--model", "sonnet")
         names = self.names()
         self.assertIn("verify-again", names, said)
-        self.assertIn("verify-account", names, said)
+        # no round changed a line, so the account re-asks nothing
+        self.assertNotIn("verify-account", names, said)
         record = json.loads((self.film / "script.json").read_text())
         tied = [f for f in record["check"]["flags"] if f.get("crosscheck") == "X1"]
         self.assertTrue(tied, record["check"])
@@ -830,7 +831,7 @@ class CrosscheckInTheStage(unittest.TestCase):
         self.assertIn("(independent check X1: https://other.example/p)", md)
         # the checks of another family read it, as every verify* does
         by_name = {name: who for name, who, _ in self.asked}
-        for name in ("verify", "verify-again", "verify-account", "verify-account-again"):
+        for name in ("verify", "verify-again"):
             self.assertEqual(by_name.get(name), "fact", name)
 
     def test_a_cleared_disagreement_is_listed_with_its_reason(self):

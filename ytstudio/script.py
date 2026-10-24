@@ -4711,10 +4711,13 @@ class Screenwriter:
         full check (untagged) accounts for each (`verify(account=True)`);
         the rounds' re-checks and a tagged check do not. A flag tied to an
         X id whose line a round changed waits, unrevised again, and after
-        the rounds `verify-account` re-reads the shots the binding X flags
-        name (every shot for a script-wide one) for those ids alone: its
-        flags replace theirs, and an id it clears drops out. The check
-        keeps `disagreements` and every `crosscheck_clear`.
+        the rounds `verify-account` re-reads those lines (every shot for a
+        script-wide X flag, once a round changed any line) for those ids
+        alone: its flags replace the ones it re-read, and an id it clears
+        drops out of them. A flag on a line no round changed, a kept one
+        included, stands as the first check gave it; with no line changed
+        nothing is asked again. The check keeps `disagreements` and every
+        `crosscheck_clear`.
         """
         names = ((f"verify-{tag}", f"revise-{tag}-facts-{{}}", f"verify-{tag}-{{}}")
                  if tag else ("verify", "revise-{}", "verify-{}"))
@@ -4775,8 +4778,8 @@ class Screenwriter:
             check["recheck"] = again.get("verdict", "")
         if waiting:
             check["flags"] = check.get("flags", []) + waiting
-        if accounting:
-            self._account(shots, check, kept, name=f"{names[0]}-account")
+        if accounting and revisions:
+            self._account(shots, check, kept, waiting, name=f"{names[0]}-account")
         for f in check.get("flags", []):
             if int(f.get("n", 0) or 0) in kept:
                 f["kept"] = kept[int(f["n"])]
@@ -4786,29 +4789,46 @@ class Screenwriter:
                                if f.get("severity") in REVISABLE and not f.get("kept")]
         return check
 
-    def _account(self, shots: list[Shot], check: dict, kept: dict[int, str], *,
-                 name: str) -> None:
-        """The accounting re-check after the rounds (AUTO-134): the binding
-        flags tied to an X id (blocker or important, on a line not kept) are
-        read again, over the shots they name or every shot for a script-wide
-        one, for those ids alone. The re-check's flags for them replace
-        theirs, so an id it clears drops out; its crosscheck_clear joins the
-        check's. Nothing binding, nothing asked."""
-        binding = [f for f in check.get("flags", []) if f.get("crosscheck")
-                   and f.get("severity") in REVISABLE and int(f.get("n", 0) or 0) not in kept]
-        if not binding:
+    def _account(self, shots: list[Shot], check: dict, kept: dict[int, str],
+                 waiting: list[dict], *, name: str) -> None:
+        """The accounting re-check after rounds that changed lines (AUTO-134).
+
+        What it re-reads: the binding X flags (blocker or important) whose
+        line a round changed (`waiting`), over those shots, and a
+        script-wide one (n 0) over every shot, since any changed line may
+        be the one stating it; for their ids alone. A flag on a line no
+        round changed, or one the writer kept, is not re-read and stands:
+        the re-check never saw that line, so it cannot clear it. The
+        re-check's flags for those ids replace the re-read ones, so an id
+        it clears drops out of them; its crosscheck_clear joins the
+        check's. Nothing re-read, nothing asked."""
+        def binding(f: dict) -> bool:
+            return (bool(f.get("crosscheck")) and f.get("severity") in REVISABLE
+                    and int(f.get("n", 0) or 0) not in kept)
+        reread = ([f for f in waiting if binding(f)]
+                  + [f for f in check.get("flags", [])
+                     if binding(f) and not int(f.get("n", 0) or 0)])
+        if not reread:
             return
-        ids = {str(f["crosscheck"]) for f in binding}
-        numbers = {int(f.get("n", 0) or 0) for f in binding}
+        ids = {str(f["crosscheck"]) for f in reread}
+        numbers = {int(f.get("n", 0) or 0) for f in reread}
         over = (shots if not numbers <= {s.n for s in shots}
                 else [s for s in shots if s.n in numbers])
+        # What the re-check reads: these shots, and the script as a whole
+        # when it reads every shot. A kept line is never replaced.
+        read = {s.n for s in over} | ({0} if len(over) == len(shots) else set())
         result = self.verify(over, name=name, account=True, only=ids)
         if not result:
             return
+
+        def replaced(f: dict) -> bool:
+            n = int(f.get("n", 0) or 0)
+            return str(f.get("crosscheck") or "") in ids and n in read and n not in kept
         check["flags"] = (
-            [f for f in check.get("flags", []) if str(f.get("crosscheck") or "") not in ids]
+            [f for f in check.get("flags", []) if not replaced(f)]
             + [f for f in result.get("flags") or [] if isinstance(f, dict)
-               and str(f.get("crosscheck") or "") in ids])
+               and str(f.get("crosscheck") or "") in ids
+               and int(f.get("n", 0) or 0) not in kept])
         cleared = [c for c in result.get("crosscheck_clear") or []
                    if isinstance(c, dict) and str(c.get("id") or "") in ids]
         if cleared:

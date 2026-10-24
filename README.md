@@ -784,9 +784,11 @@ that does not exist, or calls a contradicted claim minor is asked once more
 (contradicted) or important (disputed) flag on each shot whose source cites
 the claim's URL, or script-wide when none does, and a failed check records
 them all rather than nothing. The rounds' re-checks make no such demand;
-after them, `verify-account` re-reads the shots the X flags still name
-(every shot for a script-wide one), so a line the revise fixed can retire
-its flag. `script.md`'s Fact-check section names the independent check
+after them, `verify-account` re-reads the revised lines whose X flags
+waited (and every shot for a script-wide one, once a round changed a line),
+so a line the revise fixed can retire its flag. A flag on a line no round
+changed, a kept one included, stands as the first check gave it, and with
+no line changed nothing is asked again. `script.md`'s Fact-check section names the independent check
 behind each flag, `(independent check X2: <url>)`, and lists every
 `crosscheck_clear` with its reason. A dossier with no `crosscheck` is
 checked, cached and priced exactly as before.
