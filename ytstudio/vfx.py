@@ -254,8 +254,10 @@ AUTHOR_SYSTEM = (
     "shots inside it are phases of a single continuous take, never separate builds; "
     "a section is one symbol unless its plan cuts it into worlds of their own. Its proof "
     "frames come from `python3 sr.py frame <file>`, which renders each shot's "
-    "midpoint the way `yt build` includes the world; Read every one. You never write "
-    "prose where the brief asks for a program."
+    "midpoint the way `yt build` includes the world; Read every one. A text node is "
+    "a label of a few words; give an attributed quote an id starting `quote-`, a recreated "
+    "headline `headline-` and a licence credit `credit-`, and hold each long enough to "
+    "be read whole. You never write prose where the brief asks for a program."
 )
 
 REVIEW_ROLE = (
