@@ -686,10 +686,11 @@ nothing and the payoff; a plan with no concrete consequence the viewer can
 picture before its mechanism, and no declared twist, is grounds to revise,
 never on its own to reject (AUTO-161: the reading says so in
 `stakes_concrete`, and a second plan is told it even when the problems list
-is thin). A reading whose fields
+is thin; each round of `plan_review`, in script.json or `plan_review.json`,
+keeps what the reading's fields found under `field_lines`). A reading whose fields
 contradict its verdict (an accept that finds the order a list or
-`stakes_concrete` false, a revise that names no problem, a reject on stakes
-alone: `narrative.check_plan_review`) is asked once more as
+`stakes_concrete` false, a revise that names no problem and whose fields find
+no fault, a reject on stakes alone: `narrative.check_plan_review`) is asked once more as
 `plan-review-again`; what still contradicts is recorded under `unsettled`,
 and the verdict stands. `accept` drafts; `revise`
 sends the plan back once with the problems (`plan-2`, read again as
