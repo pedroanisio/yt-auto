@@ -910,32 +910,34 @@ def plan_prompts() -> dict[str, str]:
 
 #: sha256 of each plan prompt and schema, taken on develop 57fd5a5 before
 #: AUTO-131: a film without a paper is asked exactly what it was. A later
-#: card that changes the plan's prompts on purpose takes new values here.
+#: card that changes the plan's prompts on purpose takes new values here:
+#: AUTO-136 did (the hook's trigger and gap, each section's rehook and
+#: escalation).
 PLAN_PROMPTS = {
     "plan":
-        "c54cd83f289628f35031ca00713bbb2f8da80debfcfac13e8517070417077d0c",
+        "5ab291725b3e4492aba7f8c8b921f33c720322975d9c7bdffc741312369822e8",
     "plan-2":
-        "05abfbf402e7cbc031bef6145cd46bde3604caee2e8fe646bdb5f3f6f371399b",
+        "6a883933c10e4e643db29d32c0dba30b85153b278cbdb3157b3a7d0ba421ea45",
     "plan-2:schema":
-        "aeaa2f07b820be5b2889d2ca39c1599adaebf79e8dce9afb22c5b186cdcaa248",
+        "2975678ab940e77680c63d2e44d3bef7afd45e2ce5ebc27ca9d56b65fc41f229",
     "plan-fields":
-        "3cbd691331a06b4b98733ce66181f894e70fefac02301ee0b758629d332d330f",
+        "fab7f56015645fbae9b4d92fc9c970ce7dcc4fe9594f1c44ec780e963f158b29",
     "plan-fields-2":
-        "74fb527e47996d7b9744a363e350e141f1e1356f5813f4941d62d5d196fca457",
+        "c142fba0da549a5520ad987ad17d09047835bbff41f995d1db4a4c43d923c426",
     "plan-fields-2:schema":
-        "64eb01458f88d0326db38e64a0b8c8fb6ffa6342597c82da2a00379fbd567bca",
+        "7de89790335c88362fa7fdf73b8c764d70b96eb5a8d279f6ef76ffd51dc3cf7e",
     "plan-fields-retry":
-        "a36991291601b561b0c7209b15ef74b5876adef33e2d3eb1a348567cb2547509",
+        "a7be55d88f6d92886c0053e4caf1950f68c3f33d21ff55ed0d1cff05bb0ca2e4",
     "plan-fields-retry:schema":
-        "64eb01458f88d0326db38e64a0b8c8fb6ffa6342597c82da2a00379fbd567bca",
+        "7de89790335c88362fa7fdf73b8c764d70b96eb5a8d279f6ef76ffd51dc3cf7e",
     "plan-fields:schema":
-        "64eb01458f88d0326db38e64a0b8c8fb6ffa6342597c82da2a00379fbd567bca",
+        "7de89790335c88362fa7fdf73b8c764d70b96eb5a8d279f6ef76ffd51dc3cf7e",
     "plan-review":
-        "4dd160ad50459b88c307b74c34b068e20a8f5e7e549211889510c4bae129889a",
+        "e5db955ba2f38d890f187fba2fdbf8644f4c56c33d6abde05b59447b8f5e645d",
     "plan-review:schema":
         "54df6d553271e47a5d258ee979450bc3def63951c4b93833663c964c5a284c5f",
     "plan:schema":
-        "aeaa2f07b820be5b2889d2ca39c1599adaebf79e8dce9afb22c5b186cdcaa248",
+        "2975678ab940e77680c63d2e44d3bef7afd45e2ce5ebc27ca9d56b65fc41f229",
 }
 
 
