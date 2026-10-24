@@ -223,6 +223,30 @@ class Misconceptions(_Researched):
         self.assertNotIn("misconception", research.SCOPES["cinematic"]["plan"].lower())
 
 
+class Standing(unittest.TestCase):
+    """AUTO-132: each claim may say how its source presents it, apart from
+    how reliable the source is, so the screenplay can tell a settled line
+    from a guess."""
+
+    def test_the_claims_schema_offers_standing_and_does_not_require_it(self):
+        item = research.CLAIMS_SCHEMA["properties"]["claims"]["items"]
+        self.assertEqual(item["properties"]["standing"]["enum"],
+                         ["established", "hypothesis", "speculation", "limitation"])
+        self.assertNotIn("standing", item["required"])
+        said = item["properties"]["standing"]["description"]
+        self.assertIn("how the source itself presents the claim", said)
+        self.assertIn("asked again once", said)
+
+    def test_the_explainer_and_paper_claims_prompts_ask_for_it(self):
+        for name in ("explainer", "paper"):
+            text = research.SCOPES[name]["claims"]
+            self.assertIn("standing", text, name)
+            self.assertIn("not from how reliable the source is", text, name)
+            for kind in ("limitation", "open question", "preliminary result",
+                         "future work"):
+                self.assertIn(kind, text, (name, kind))
+
+
 class Writer(unittest.TestCase):
     """Dossier.save lands a whole file or none: a reader never meets a stage
     half written by another thread."""
