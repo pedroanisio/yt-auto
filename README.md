@@ -1167,7 +1167,11 @@ scale and look longer than the story warrants (`monotony` in `vfx.json`'s
 who judged it (`continuity.reviewer`: model, author, `authors` -- the
 `author` of every section, carried ones too -- and engine); a break it marks
 `blocking`, from a reviewer of another family than every author, keeps `yt
-qa` off READY. A section whose best reviewed round ended under its bar
+qa` off READY. When a carried section's author is unrecorded or of the
+reviewer's family, the break cannot block, and `yt doctor` says so on its
+row: re-authoring that section, or `yt vfx --fresh`, makes it block again.
+A section `--recover` or `--take-attempt` rebuilds from its rounds records
+this run's model and `--bar`. A section whose best reviewed round ended under its bar
 (`authored[].bar`, the `--bar` it was reviewed against) is kept, as before,
 and `yt doctor` warns of it with the reason it stopped. No other
 animation tool is in the loop; a plan that cannot be expressed in

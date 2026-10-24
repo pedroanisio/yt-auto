@@ -1341,8 +1341,12 @@ hand-authored world showed the cost.
   keeps `yt qa` off READY (`vfx
   continuity: section N (<heading>): <problem>` among the blocking items); a
   same-family or unrecorded verdict, a major break and `one_film: false`
-  alone never change the verdict. `yt doctor` warns once per section owning
-  a blocking or major break, once when the sections do not read as one film
+  alone never change the verdict. A section `--recover` or `--take-attempt`
+  rebuilds from its rounds records this run's model and `--bar`. `yt doctor`
+  says on a blocking break's row why it does not block QA: no reviewer of
+  another family, or a section whose author is unrecorded or of the
+  reviewer's family (re-author it, or `yt vfx --fresh`). It warns once per
+  section owning a blocking or major break, once when the sections do not read as one film
   with no serious break, and once per monotony run (at most three); a
   skipped or failed review is a note. A section whose best reviewed round
   ended under its bar (`authored[].bar`) is kept, never a hard stop, and is
