@@ -407,18 +407,56 @@ class Ordering(_Case):
         self.assertNotIn("PAPER NOTES", self.harness.prompts["01-questions"])
         self.assertNotIn("00-paper", self.raw())
 
-    def test_a_research_cached_without_the_paper_still_gets_its_entry(self):
+    def test_a_research_cached_without_the_paper_is_made_again_with_the_paper_first(self):
+        # The cached notes answered questions planned without the paper: kept,
+        # the paper's questions (reception, limits) would never be asked.
         r = self.researcher(paper_idea(), paper_answers())
         r.dossier.save("02-research", [{"question": "old q", "notes": "OLD NOTES",
                                         "visited": ["https://example.org/old"],
                                         "searches": 1, "denied": []}])
         data = r.run()
         self.assertTrue(data["notes"][0]["paper"])
-        self.assertEqual(data["notes"][1]["notes"], "OLD NOTES")
+        self.assertEqual(data["notes"][1]["notes"], "QUESTION NOTES")
         self.assertIn("PAPER NOTES", self.harness.prompts["03-claims"])
-        self.assertIn("OLD NOTES", self.harness.prompts["03-claims"])
-        self.assertEqual(research.Dossier(self.root, paper_idea(), at=self.root)
-                         .load("02-research")[0]["notes"], "OLD NOTES")
+        self.assertNotIn("OLD NOTES", self.harness.prompts["03-claims"])
+        self.assertNotIn("old q", [e["question"] for e in data["notes"]])
+
+    def test_the_same_paper_again_replays_every_stage(self):
+        self.researcher(paper_idea(), paper_answers()).run()
+        FakeEngine.calls = []
+        data = self.researcher(paper_idea(), paper_answers()).run()
+        self.assertEqual(self.harness.prompts, {})
+        self.assertEqual(FakeEngine.calls, [])
+        self.assertEqual(data["paper"], DIGEST)
+
+    def test_another_paper_on_the_same_project_is_researched_again(self):
+        other = "https://arxiv.org/abs/2005.14165"
+
+        def swap(obj):
+            return json.loads(json.dumps(obj).replace("1706.03762", "2005.14165")
+                              .replace("Attention Is All You Need", "Few-Shot Learners"))
+        FakeEngine.script = staticmethod(lambda prompt: (
+            [fetch(swap(PDF)), said("PAPER B NOTES"), done()] if "2005.14165" in prompt
+            and ("The paper itself" in prompt or "Read this paper" in prompt)
+            else [fetch(PDF), said("PAPER NOTES"), done()] if "The paper itself" in prompt
+            or "Read this paper" in prompt
+            else [fetch("https://example.org/cost"), said("QUESTION NOTES"), done()]))
+        self.researcher(paper_idea(), paper_answers()).run()
+        data = self.researcher(paper_idea(other), swap(paper_answers())).run()
+        for name in ("01-questions", "03-claims", "06b-paper", "07-outline"):
+            self.assertIn(name, self.harness.prompts)
+        self.assertIn("PAPER B NOTES", self.harness.prompts["03-claims"])
+        self.assertNotIn("PAPER NOTES\n", self.harness.prompts["03-claims"])
+        self.assertEqual(data["paper"]["citation"]["title"], "Few-Shot Learners")
+        self.assertEqual(data["notes"][0]["notes"], "PAPER B NOTES")
+
+    def test_an_explainer_dossier_given_a_paper_is_researched_again(self):
+        self.researcher(Idea("Attention", "explainer", "d"), paper_answers()).run()
+        data = self.researcher(paper_idea(), paper_answers()).run()
+        self.assertIn("the problem the paper addresses", self.harness.prompts["01-questions"])
+        self.assertIn("PAPER NOTES", self.harness.prompts["03-claims"])
+        self.assertIn("06b-paper", self.harness.prompts)
+        self.assertEqual(data["paper"], DIGEST)
 
     def test_the_paper_run_leaves_its_stages_and_returns_the_digest(self):
         data = self.researcher(paper_idea(), paper_answers()).run()

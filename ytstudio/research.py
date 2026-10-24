@@ -861,6 +861,9 @@ class Researcher:
         #: Set once this run searched the catalogues again, so the outline
         #: that quotes the old assets is written again too.
         self.assets_searched = False
+        #: Set when the cached research was made for another paper, or for
+        #: none (read_paper): every stage the read feeds is made again.
+        self.remade = False
 
     # -- plumbing ----------------------------------------------------------
 
@@ -878,14 +881,14 @@ class Researcher:
             print(msg, file=sys.stderr)
 
     def _idea_block(self) -> str:
-        # A local paper is named by its basename: no prompt that can echo
-        # it into a claim or the notes is told where it lives.
-        if self.paper_ref and _local_paper(self.paper_ref) is not None:
-            return replace(self.idea, paper=self.paper_url).block()
+        # A local paper is named by its basename (Idea.block): no prompt
+        # that can echo it into a claim or the notes is told where it lives.
         return self.idea.block()
 
     def _stage(self, name: str, work, *, redo: bool = False) -> object:
-        """Run `work()` unless this stage is already on disk (or `redo`)."""
+        """Run `work()` unless this stage is already on disk (or `redo`, or
+        it was fed by a paper read again: `remade`)."""
+        redo = redo or (self.remade and name in self.PAPER_FED)
         if not (self.fresh or redo):
             cached = self.dossier.load(name)
             if cached is not None:
@@ -961,16 +964,32 @@ class Researcher:
                 "searches": searches,
                 "denied": denied}
 
+    #: The stages the paper's read feeds, every one after `00-paper`: cached
+    #: for another paper, or for none, they would replay research about
+    #: something else under this paper's name.
+    PAPER_FED = ("01-questions", "02-research", "03-claims", "04-sources", "05-shots",
+                 "05-assets", "06-gaps", "06b-paper", "07-outline")
+
     def read_paper(self) -> dict:
         """The paper itself, read in one agentic pass (`00-paper`) before any
         question is planned, outside every pool so a failure stops the run.
-        A notes entry flagged `paper`; a cached read of another reference
-        is read again."""
+        A notes entry flagged `paper`. A cached read of another reference is
+        read again, and so is everything it fed (`remade`); a dossier
+        researched without a paper is researched again with it, since its
+        questions were planned without the paper's (reception, limits)."""
         if why := paper_refusal():
             raise ClaudeError(why)
         asked = f"The paper itself: {paper_label(self.paper_ref)}"
         cached = None if self.fresh else self.dossier.load("00-paper")
         redo = isinstance(cached, dict) and cached.get("question") != asked
+        before = [n for n in self.PAPER_FED if self.dossier.load(n) is not None] \
+            if cached is None and not self.fresh else []
+        if redo or before:
+            was = (str(cached.get("question", "")).removeprefix("The paper itself: ")
+                   if redo else "no paper")
+            self._say(f"[00-paper] the cached research was made for {was}; researching "
+                      f"again for {paper_label(self.paper_ref)}")
+            self.remade = True
         return self._stage("00-paper", lambda: self._read_paper(asked), redo=redo)
 
     def _read_paper(self, asked: str) -> dict:
@@ -1161,7 +1180,7 @@ class Researcher:
         if plan is None:
             plan = self.shots(notes)
         key = self._asset_search_key()
-        cached = None if self.fresh else self.dossier.load("05-assets")
+        cached = None if self.fresh or self.remade else self.dossier.load("05-assets")
         if isinstance(cached, dict) and cached.get("search") == key:
             self._say("[05-assets] cached")
             yt_assets.settle_kinds(cached.get("assets", []))
