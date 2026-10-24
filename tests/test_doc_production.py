@@ -143,6 +143,22 @@ class ProductionDoc(unittest.TestCase):
         self.assertIn("--burn-captions", text)
         self.assertNotIn("Burned-in captions live in the bottom band", text)
 
+    def test_the_bar_lists_qas_eleven_categories_in_order(self):
+        # AUTO-146: row 11 is editorial identity; the doc counts what qa scores
+        from ytstudio import qa
+        bar = _section("## 2. The publication bar")
+        rows = re.findall(r"^\| (\d+) \| ([^|]+) \|", bar, re.M)
+        self.assertEqual([int(n) for n, _ in rows], list(range(1, len(qa.CATEGORIES) + 1)))
+        # "Animation / VFX" is animation_vfx, "Music / score" music_score
+        names = [re.sub(r"\W+", "_", name.strip().lower()).strip("_") for _, name in rows]
+        self.assertEqual(names, list(qa.CATEGORIES))
+        self.assertIn("in eleven categories", bar)
+        row = next(line for line in bar.splitlines() if "Editorial identity" in line)
+        self.assertIn("swap test", row)
+        doc = DOC.read_text()
+        self.assertNotIn("ten categories", doc)
+        self.assertNotIn("all ten categories", doc)
+
 
 if __name__ == "__main__":
     unittest.main()
