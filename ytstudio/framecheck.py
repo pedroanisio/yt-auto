@@ -283,12 +283,16 @@ CHECKLIST = (
                   "occlusion; nothing floats.", "review"),
     ("materials", "Materials: surfaces read as what they are made of (gloss, grain, "
                   "translucency), not as flat colour.", "review"),
+    # Room and light are scoped to one setting (AUTO-143): a film may cut to
+    # another place, scale or time, and these words are read by the frame
+    # review, the keyframe's style frame and the author alike.
     ("light", "Light: a key with a direction, falloff and shadows that agree with it; "
-              "the light rig is the same one in every frame.", "review"),
+              "the light rig stays the same within one setting.", "review"),
     ("data", "Real data: where the brief supplies a model, texture or structure file, the "
              "picture is built from it, not from hand-shaped stand-ins.", "review"),
-    ("continuity", "Continuity: the same hero, room, light and camera language across "
-                   "the frames.", "review"),
+    ("continuity", "Continuity: the same hero, grade and camera language throughout; "
+                   "room and light stay the same within one setting, and a planned "
+                   "change of setting is not a break.", "review"),
 )
 
 
