@@ -1715,8 +1715,9 @@ asks, after the scoring, whether each of the previous pass's findings (at
 most 20, by place and words only) still stands in this pass's stills: one
 `<pass>-recheck` inspection, each answered stands, gone or cannot_tell with
 why, filed under `recheck` in the scorecard, its tally in `qa.json` and a
-section in `findings.md`. Nothing that scores reads it; it is priced once
-(`spend.RECHECK_USD`) when asked.
+section in `findings.md`. Nothing that scores reads it; the estimate adds
+`spend.RECHECK_USD` each time it is asked and leaves a past recheck out of
+the next pass, which does not ask it unless told.
 
 QA reads stills; it never watches the film. `--against FILE --compare-model
 MODEL` (AUTO-128) has a video model watch the previous kept cut FILE and this

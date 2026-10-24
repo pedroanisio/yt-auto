@@ -16,6 +16,7 @@ fake renderer draws (the fixture of tests/test_qa_side_by_side.py).
 
 import json
 import re
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -261,14 +262,46 @@ class Flag(unittest.TestCase):
                          [("--recheck", spend.RECHECK_USD)])
         self.assertEqual(spend.flag_increments(None, "qa", []), [])
 
-    def test_a_past_recheck_is_priced_once_not_per_sample(self):
-        # Two samples asked: they are scaled to QA_SAMPLES, the recheck is not.
+    @staticmethod
+    def scored(recheck_usd=None):
+        """A pass of three $1 samples, with a `-recheck` row when priced."""
+        rows = [{"name": f"pass-02-scorecard-s{k}", "cost_usd": 1.0} for k in (1, 2, 3)]
+        if recheck_usd is not None:
+            rows.append({"name": "pass-02-recheck", "cost_usd": recheck_usd})
+        return {"pass": "pass-02", "verdict": qa.NOT_READY,
+                "usage": {"cost_usd": 3.0 + (recheck_usd or 0)},
+                "scoring": {"asked": 3}, "engine": {"decisions": rows}}
+
+    def test_a_past_recheck_is_left_out_of_the_next_plain_pass(self):
+        # --recheck is opt-in: a plain `yt qa` and `yt improve` never ask it,
+        # so the pass after one is priced as if it had not been asked.
+        self.assertEqual(qa.pass_usd(self.scored(0.5)), qa.pass_usd(self.scored()))
+        # Two samples asked: they are scaled to QA_SAMPLES, the recheck dropped.
         card = {"usage": {"cost_usd": 1.1}, "scoring": {"asked": 2},
                 "engine": {"decisions": [
                     {"name": "pass-02-scorecard-s1", "cost_usd": 0.5},
                     {"name": "pass-02-scorecard-s2", "cost_usd": 0.5},
                     {"name": "pass-02-recheck", "cost_usd": 0.1}]}}
-        self.assertEqual(qa.pass_usd(card), round(1.0 / 2 * qa.QA_SAMPLES + 0.1, 2))
+        self.assertEqual(qa.pass_usd(card), round(1.0 / 2 * qa.QA_SAMPLES, 2))
+
+    def test_a_cached_recheck_is_not_subtracted_twice(self):
+        card = self.scored()
+        card["engine"]["decisions"].append(
+            {"name": "pass-02-recheck", "cost_usd": 0.5, "cached": True})
+        self.assertEqual(qa.pass_usd(card), qa.pass_usd(self.scored()))
+
+    def test_the_flag_adds_the_recheck_even_after_one_was_asked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / qa.QA_DIR / "pass-02").mkdir(parents=True)
+            (root / qa.QA_DIR / "pass-02" / "scorecard.json").write_text(
+                json.dumps(self.scored(0.5)), encoding="utf-8")
+            (root / "qa.json").write_text(json.dumps({"pass": "pass-02"}),
+                                          encoding="utf-8")
+            self.assertEqual(spend._qa_pass_usd(root), qa.pass_usd(self.scored()))
+            self.assertIn(("--recheck", spend.RECHECK_USD),
+                          spend.flag_increments(root, "qa", ["--recheck"]))
+            self.assertNotIn("--recheck", dict(spend.flag_increments(root, "qa", [])))
 
 
 class Docs(unittest.TestCase):

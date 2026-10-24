@@ -618,15 +618,14 @@ def pass_usd(card: dict | None) -> float | None:
     (no `scoring`) asked one. The side-by-side comparison (AUTO-108) is
     asked once a pass, not per sample, so what it cost is added once, not
     scaled; a pass without one is priced without it, and the estimate adds
-    spend.COMPARE_PASS_USD where QA is told the pass to compare with. So is
-    a `--recheck` (AUTO-106, `<pass>-recheck`), and spend.RECHECK_USD where
-    a pass without one is asked it. The
+    spend.COMPARE_PASS_USD where QA is told the pass to compare with. The
     video comparison's decisions (`compare_engine`, AUTO-128) are likewise
-    added once. A `--listen` (AUTO-126) and a `--watch` (AUTO-127,
-    `watch_engine`) are left out: the card's usage holds what they cost,
-    but a plain `yt qa` and `yt improve` neither listen nor watch, and
-    spend.FLAG_USD adds each one's own estimate whenever its flag is asked.
-    None when the card holds no cost."""
+    added once. A `--listen` (AUTO-126), a `--watch` (AUTO-127,
+    `watch_engine`) and a `--recheck` (AUTO-106, `<pass>-recheck`) are left
+    out: the card's usage holds what they cost, but a plain `yt qa` and
+    `yt improve` neither listen, watch nor recheck, and spend.FLAG_USD adds
+    each one's own estimate whenever its flag is asked. None when the card
+    holds no cost."""
     cost = spend.cost_in(card)
     if cost is None:
         return None
@@ -642,10 +641,13 @@ def pass_usd(card: dict | None) -> float | None:
     except (TypeError, ValueError):
         asked = 1
     engine = card.get("engine") if isinstance(card, dict) else None
-    rows = engine.get("decisions") if isinstance(engine, dict) else None
-    once = sum(float(d.get("cost_usd") or 0) for d in rows or []
-               if isinstance(d, dict) and not d.get("cached")
-               and str(d.get("name", "")).endswith(("-compare-pass", RECHECK_SUFFIX)))
+    rows = [d for d in (engine.get("decisions") if isinstance(engine, dict) else None) or []
+            if isinstance(d, dict) and not d.get("cached")]
+    rechecked = sum(float(d.get("cost_usd") or 0) for d in rows
+                    if str(d.get("name", "")).endswith(RECHECK_SUFFIX))
+    cost = max(cost - rechecked, 0.0)
+    once = sum(float(d.get("cost_usd") or 0) for d in rows
+               if str(d.get("name", "")).endswith("-compare-pass"))
     # The video comparison (AUTO-128) is asked once a pass too, on its own
     # harness: every decision there is one.
     video = card.get("compare_engine") if isinstance(card, dict) else None

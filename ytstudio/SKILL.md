@@ -869,9 +869,10 @@ re-measured" until a new publish and `yt retention` measure it.
   decision, which then measures `--previous` too, since the still pairs run
   only when the video comparison fails; without `AI_GATEWAY_API_KEY` it is
   skipped, so `--against` adds nothing and `--previous` is priced as
-  without it, AUTO-128); `yt qa --recheck` is priced once too
-  (`spend.RECHECK_USD`, 0.50 assumed, unless the latest scorecard holds a
-  `<pass>-recheck` decision, AUTO-106);
+  without it, AUTO-128); `yt qa --recheck` adds `spend.RECHECK_USD` (0.50
+  assumed) each time it is asked, and `qa.pass_usd` leaves a past
+  `<pass>-recheck` out of the next pass, which a plain `yt qa` or
+  `yt improve` never asks (AUTO-106);
   `--dry-run` prints the table -- when a
   defect survives three briefed passes (a mechanical one by kind, shot and
   objects; a prose one by a cached model decision), when only human
