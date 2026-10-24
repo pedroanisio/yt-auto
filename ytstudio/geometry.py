@@ -747,6 +747,36 @@ def screen_rect(box: Box, pose: dict, frame: tuple[int, int], *, top_only: bool 
     return x0, y0, x1, y1
 
 
+def screen_boxes(objects: list[dict], cameras: list[dict], eval_frame: dict | None,
+                 frame: tuple[int, int]) -> dict[str, tuple[float, float, float, float]] | None:
+    """Each object3D's screen rectangle at one evaluated time, through the
+    camera that frame renders: the objects as eval drew them (`overlay`),
+    their world boxes, the active camera with eval's props (`overlay_cameras`)
+    and its pose. An object off screen or behind the camera has no entry.
+    None when no camera renders the frame or it is orthographic, whose
+    projection `project` does not model (AUTO-110)."""
+    now = overlay(objects, eval_frame)
+    bounds = world_bounds(now)
+    cams, active = overlay_cameras(list(cameras), eval_frame)
+    cam = next((c for c in cams if c["id"] == active), None)
+    if cam is None or cam.get("projection") == "orthographic":
+        return None
+    pose = camera_pose(cam, bounds)
+    out = {}
+    for oid, box in bounds.items():
+        rect = screen_rect(box, pose, frame)
+        if rect is not None:
+            out[oid] = rect
+    return out
+
+
+def in_cells(boxes: dict[str, tuple], cells: dict[str, tuple]) -> dict[str, list[str]]:
+    """Per cell (name -> pixel rectangle), the ids whose screen rectangle
+    overlaps it, in the order of `boxes`; a cell with none gets []."""
+    return {name: [oid for oid, rect in boxes.items() if _intersect(rect, cell)]
+            for name, cell in cells.items()}
+
+
 def _area(r) -> float:
     return max(0.0, r[2] - r[0]) * max(0.0, r[3] - r[1]) if r else 0.0
 

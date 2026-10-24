@@ -2544,6 +2544,52 @@ class Workspace:
             out += geometry.findings(report, symbol=fact["id"], shots=held)
         return out
 
+    def cell_objects(self, name: str, symbol: str, t: float, cells, frame: tuple[int, int],
+                     runner=None) -> dict[str, list[str]] | None:
+        """Per grid cell a reviewer named, the ids of the object3D nodes whose
+        screen box at time `t` of `symbol` overlaps it (AUTO-110), from one
+        eval of the same proof document `geometry` evaluates, on the host
+        through EVAL_RUNNER. None when it cannot be said: `locate` gives why."""
+        return self.locate(name, symbol, t, cells, frame, runner=runner)[0]
+
+    def locate(self, name: str, symbol: str, t: float, cells, frame: tuple[int, int],
+               runner=None) -> tuple[dict[str, list[str]] | None, str]:
+        """`cell_objects` and, when it is None, the reason in a few words.
+        Only object3D nodes have a box (`geometry.document_objects`), so 2D
+        text and labels are never named; the author is then given the
+        pixels alone. `runner` replaces EVAL_RUNNER's (a test's seam)."""
+        path = self.dir / name
+        if not path.is_file():
+            return None, "the document is gone"
+        text = path.read_text(encoding="utf-8", errors="replace")
+        fact = next((f for f in symbol_facts(text) if f["id"] == symbol), None)
+        if fact is None:
+            return None, f"the document has no symbol `{symbol}`"
+        objects = geometry.document_objects(text, symbol=symbol, prefix="shot/")
+        if not objects:
+            return None, "the symbol has no object3D (2D text and labels have no box)"
+        stem = name[:-len(".scene.xml")] if name.endswith(".scene.xml") else name
+        proof_path = f"{self.rel}/.proof-{stem}.scene.xml"
+        files = dict(referenced_files(text, self.dir, self.root))
+        files[f"{self.rel}/{name}"] = text.encode("utf-8")
+        files[proof_path] = proof_document(name, text, symbol, frame, fact["duration"],
+                                           fact["background"]).encode("utf-8")
+        run = runner if runner is not None else EVAL_RUNNER(proof_path, files=files)
+        if run is None:
+            return None, ("no engine reachable to evaluate the frame "
+                          "(RS_RENDER_HOSTS, or RS_RENDER_BIN)")
+        got = run([float(t)]) or []
+        evaluated = got[0] if got else None
+        if not isinstance(evaluated, dict) or evaluated.get("ok") is False:
+            return None, f"the engine's eval at {float(t):g}s failed"
+        boxes = geometry.screen_boxes(
+            objects, geometry.document_cameras(text, symbol=symbol, prefix="shot/"),
+            evaluated, frame)
+        if boxes is None:
+            return None, "no perspective camera renders the frame"
+        rects = framecheck.grid_cells(frame)
+        return geometry.in_cells(boxes, {c: rects[c] for c in cells if c in rects}), ""
+
 
 # --------------------------------------------------------------------------- #
 # the planner
