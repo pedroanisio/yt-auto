@@ -56,9 +56,11 @@ def _listen():
 #: What today's reviewer was sent and filed, captured from the code before
 #: --listen existed (the AUTO-105 stage test's project, the temporary paths
 #: replaced by <root> and <work>). A deliberate change to QA's prompt or
-#: records rewrites these; --listen left off never may.
+#: records rewrites these; --listen left off never may. AUTO-106 rewrote the
+#: prompt's: the "Previous pass, for comparison" brief (null on a first
+#: pass) is gone, and that is the only difference from the digest before it.
 OFF = {
-    "prompt_sha": "c656e245522eb3bd9c42b4700ddc00256857fc9423d47f32f843c750e79e34d6",
+    "prompt_sha": "57bab3709bba64b6ead210e9a504a5cbb9e4990608e590d0a9194ea7bfc9714b",
     "role_sha": "fb112df18eac174eff86df8020f3ab2bd3d51f9bea23f0577196bf2efba22954",
     "card_keys": ["audio_not_evidenced", "bar", "blocking", "capped", "comparison",
                   "contact_sheet", "cut", "engine", "findings", "frames", "lines_unsampled",

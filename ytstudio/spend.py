@@ -218,6 +218,13 @@ DEFAULT_USD = {"research": 5.0, "styles": 2.0, "script": 3.0, "props": 0.0,
 #: costs. It is asked once a pass, never per sample.
 COMPARE_PASS_USD = 0.5
 
+#: What `yt qa --recheck` adds (AUTO-106), assumed until a scorecard
+#: measures it: one inspection reading the stills against the previous
+#: pass's findings, about what the side-by-side comparison costs. Asked
+#: once a pass, never per sample. (TO VERIFY: a scorecard with a measured
+#: `<pass>-recheck` replaces it.)
+RECHECK_USD = 0.5
+
 #: What the video comparison adds to a QA pass (`--against`, AUTO-128),
 #: assumed until a scorecard measures it: two gateway requests, each
 #: carrying both cuts. A guess until a live run prices one (TO VERIFY).
@@ -338,7 +345,8 @@ def watch_usd(root: Path | None, argv: Iterable[str] = ()) -> float:
 #: the stage's argv when it scales with the work. The stage's DEFAULT_USD is
 #: the base. A record holding a part's decision (or a numbered one,
 #: `plan-review-2`, `review-r1-s1`) already counts it; one without it, or no
-#: record at all, gains the increment when the flag is asked. `--review` is
+#: record at all, gains the increment when the flag is asked. A part whose
+#: decision is None is one the base never counts: it is added every time. `--review` is
 #: the plan review (AUTO-92), the story review (AUTO-93) and the
 #: picture-check (AUTO-98), so a record written before one of them gains
 #: only what it lacks.
@@ -361,7 +369,14 @@ FLAG_USD = {"script": {"--review": ((PLAN_REVIEW_USD, "plan-review"),
                    # and `-ba`, on the scorecard's compare_engine (AUTO-128)
                    "--against": ((_compare_usd, "cutcompare"),),
                    "--listen": ((listen_usd, "listen"),),
-                   "--watch": ((watch_usd, "watch"),)}}
+                   "--watch": ((watch_usd, "watch"),),
+                   # the previous findings rechecked after the blind
+                   # scoring (AUTO-106). Its `<pass>-recheck` is on the
+                   # reviewer's own record, but --recheck is opt-in like
+                   # --listen and --watch: qa.pass_usd leaves a past recheck
+                   # out of the base, so this part names no decision and is
+                   # added each time the flag is asked.
+                   "--recheck": ((RECHECK_USD, None),)}}
 
 
 def qa_compares(root: Path | None) -> bool:
@@ -408,7 +423,8 @@ def flag_increments(root: Path | None, stage: str, argv: Iterable[str]) -> list[
             continue
         usd = sum((cost(root, argv) if callable(cost) else cost)
                   for cost, decision in parts
-                  if not any(n == decision or n.startswith(decision + "-") for n in names))
+                  if decision is None
+                  or not any(n == decision or n.startswith(decision + "-") for n in names))
         if usd:
             out.append((flag, round(usd, 2)))
     return out

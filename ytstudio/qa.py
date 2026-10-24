@@ -121,6 +121,22 @@ problem -> root cause -> owner stage -> fix), so "measurably improved" is a
 comparison with the pass before and a regression is a category that dropped.
 `qa.json` at the project root carries the latest verdict for `yt doctor`.
 
+The scoring is blind to that pass (AUTO-106). Shown the previous scores and
+findings, the reviewer anchored to them: three passes in a row matched on
+every category. So the samples' prompt names no previous pass, score,
+overall or finding; `compare` takes the deltas from the two scorecards once
+the new one exists, and `yt improve` matches a previous finding to a new
+one only after both exist (its own "same problem" decision). `--recheck`
+puts the previous pass's findings (at most RECHECK_MAX, 20, by place and
+words alone) to a decision of their own after the scoring,
+`<pass>-recheck`: stands, gone or cannot_tell in this pass's stills, with
+why. The answers are filed under `recheck` (scorecard, qa.json's tally and
+a findings.md section) and nothing that scores reads them. Off, nothing is
+asked and nothing is filed. The blindness is the prompt's, not the file
+system's: the reviewer still runs in `qa/<pass>` able to read files, so it
+could open a sibling pass's scorecard.json or findings.md. Nothing in its
+prompt names or points to one, but no tool rule forbids it either.
+
 Two scores inside the samples' spread cannot say whether a revision helped,
 so each pass is also judged against the previous kept cut side by side
 (AUTO-108). The previous pass is `--previous PASS` (`yt improve` names its
@@ -607,11 +623,12 @@ def pass_usd(card: dict | None) -> float | None:
     scaled; a pass without one is priced without it, and the estimate adds
     spend.COMPARE_PASS_USD where QA is told the pass to compare with. The
     video comparison's decisions (`compare_engine`, AUTO-128) are likewise
-    added once. A `--listen` (AUTO-126) and a `--watch` (AUTO-127,
-    `watch_engine`) are left out: the card's usage holds what they cost,
-    but a plain `yt qa` and `yt improve` neither listen nor watch, and
-    spend.FLAG_USD adds each one's own estimate whenever its flag is asked.
-    None when the card holds no cost."""
+    added once. A `--listen` (AUTO-126), a `--watch` (AUTO-127,
+    `watch_engine`) and a `--recheck` (AUTO-106, `<pass>-recheck`) are left
+    out: the card's usage holds what they cost, but a plain `yt qa` and
+    `yt improve` neither listen, watch nor recheck, and spend.FLAG_USD adds
+    each one's own estimate whenever its flag is asked. None when the card
+    holds no cost."""
     cost = spend.cost_in(card)
     if cost is None:
         return None
@@ -627,10 +644,13 @@ def pass_usd(card: dict | None) -> float | None:
     except (TypeError, ValueError):
         asked = 1
     engine = card.get("engine") if isinstance(card, dict) else None
-    rows = engine.get("decisions") if isinstance(engine, dict) else None
-    once = sum(float(d.get("cost_usd") or 0) for d in rows or []
-               if isinstance(d, dict) and not d.get("cached")
-               and str(d.get("name", "")).endswith("-compare-pass"))
+    rows = [d for d in (engine.get("decisions") if isinstance(engine, dict) else None) or []
+            if isinstance(d, dict) and not d.get("cached")]
+    rechecked = sum(float(d.get("cost_usd") or 0) for d in rows
+                    if str(d.get("name", "")).endswith(RECHECK_SUFFIX))
+    cost = max(cost - rechecked, 0.0)
+    once = sum(float(d.get("cost_usd") or 0) for d in rows
+               if str(d.get("name", "")).endswith("-compare-pass"))
     # The video comparison (AUTO-128) is asked once a pass too, on its own
     # harness: every decision there is one.
     video = card.get("compare_engine") if isinstance(card, dict) else None
@@ -2453,6 +2473,145 @@ def video_lines(side: dict, total: dict) -> list[str]:
     return lines + [""]
 
 
+# --------------------------------------------------------------------------- #
+# the previous findings, rechecked after the blind scoring (AUTO-106)
+# --------------------------------------------------------------------------- #
+
+#: The recheck's decision is `<pass>` + this, asked after the scoring samples.
+RECHECK_SUFFIX = "-recheck"
+#: At most this many of the previous pass's findings are put to the recheck,
+#: in the order that pass filed them (the cap the scoring brief once used);
+#: the rest are counted under `unchecked`.
+RECHECK_MAX = 20
+#: A previous finding in this pass's stills: still visibly wrong, visibly
+#: fixed, or not shown by any still (or not a thing a still can show).
+RECHECK_STATUSES = ("stands", "gone", "cannot_tell")
+
+RECHECK_SCHEMA = {
+    "type": "object",
+    "properties": {"findings": {"type": "array", "items": {
+        "type": "object",
+        "properties": {
+            "id": {"type": "string", "description": "the finding's id, as listed"},
+            "status": {"type": "string", "enum": list(RECHECK_STATUSES),
+                       "description": "stands when the stills still show it, gone when "
+                                      "they show it fixed, cannot_tell when no still "
+                                      "shows that moment"},
+            "why": {"type": "string", "description": "what the stills show, naming the "
+                                                     "frame read"}},
+        "required": ["id", "status", "why"]}}},
+    "required": ["findings"],
+}
+
+
+def recheck_name(pass_name: str) -> str:
+    """The recheck's decision, `<pass>-recheck`, beside the scoring samples'."""
+    return f"{pass_name}{RECHECK_SUFFIX}"
+
+
+def recheck_rows(previous: dict) -> tuple[list[dict], int]:
+    """The previous pass's findings as the recheck lists them, `P01`.., and
+    how many past RECHECK_MAX are left unchecked. Only what places and
+    states a finding is carried (time, problem, owner): never a score, an
+    overall, a verdict or a severity, so the checklist cannot become the
+    previous scorecard again. The earlier pass's frame name is left out too:
+    it names a still of the earlier cut's frames/, and the recheck reads
+    this pass's, which may have sampled other times."""
+    found = [f for f in previous.get("findings") or [] if isinstance(f, dict)]
+    rows = [{"id": f"P{n:02d}", "timestamp": f.get("timestamp"),
+             "problem": str(f.get("problem", ""))[:400], "owner": f.get("owner")}
+            for n, f in enumerate(found[:RECHECK_MAX], 1)]
+    return rows, max(len(found) - RECHECK_MAX, 0)
+
+
+def _recheck(against: str | None, status: str, why: str = "", **more) -> dict:
+    """The scorecard's `recheck` record: against which pass, whether the
+    decision was asked (`done`), not needed (`skipped`) or failed (`failed`),
+    why, each previous finding with its answer, and the tally."""
+    out = {"against": against, "status": status, "why": why, "decision": None,
+           "findings": [], "unchecked": 0,
+           "tally": dict.fromkeys(RECHECK_STATUSES, 0)}
+    out.update(more)
+    return out
+
+
+def recheck(reviewer: Harness, pass_dir: Path, previous: dict | None, *,
+            quiet: bool = True) -> dict:
+    """The previous pass's findings as a checklist, `--recheck` (AUTO-106).
+
+    Asked as its own inspection, `<pass>-recheck`, in the pass directory
+    after the scoring samples have filed their scorecards, so nothing it
+    says reaches a score: the scoring prompt names no previous pass, and
+    this decision's answers are filed under `recheck`, beside the scores,
+    and read by nothing that scores. Each finding (`recheck_rows`) is
+    answered stands, gone or cannot_tell, with why. An answer it leaves out
+    is recorded `unanswered`; a failed inspection is a failed engine row,
+    billed, and answers nothing. With no earlier scored pass, or one that
+    filed no findings, nothing is asked."""
+    if previous is None:
+        return _recheck(None, "skipped", "no earlier scored pass to recheck")
+    against = str(previous.get("pass"))
+    rows, unchecked = recheck_rows(previous)
+    if not rows:
+        return _recheck(against, "skipped", f"{against} filed no findings to recheck")
+    prompt = "\n\n".join([
+        "Recheck: each finding below was filed on an earlier cut of this film. Find "
+        "this cut's stills for each finding by its timestamp: they are under "
+        "`frames/`, each named for its time, and the contact sheet tiles them in "
+        "time order. Read those at and around it and say whether what the finding "
+        "describes is still visibly wrong in this cut: stands when it is, gone when "
+        "the stills show it fixed, cannot_tell when no still shows that moment or a "
+        "still cannot show it. Say why in what the stills show, naming the frame of "
+        "this cut you read. This is a checklist filed beside a scorecard already "
+        "written: it scores nothing. Answer every finding by its id.",
+        brief("Findings filed on the earlier cut", rows)])
+    name = recheck_name(pass_dir.name)
+    try:
+        answer = reviewer.inspect(name, prompt, RECHECK_SCHEMA, cwd=pass_dir)
+    except HarnessError as exc:
+        if not quiet:
+            print(f"[qa] {name} failed ({exc}); nothing rechecked", file=sys.stderr)
+        return _recheck(against, "failed", str(exc), decision=name,
+                        findings=[dict(r, status=None, why="", unanswered=True)
+                                  for r in rows], unchecked=unchecked)
+    said: dict[str, dict] = {}
+    for a in answer.get("findings") or [] if isinstance(answer, dict) else []:
+        if isinstance(a, dict) and str(a.get("id")) not in said:
+            said[str(a.get("id"))] = a
+    out, counts = [], dict.fromkeys(RECHECK_STATUSES, 0)
+    for r in rows:
+        a = said.get(r["id"]) or {}
+        status = a.get("status") if a.get("status") in RECHECK_STATUSES else None
+        if status:
+            counts[status] += 1
+            out.append(dict(r, status=status, why=str(a.get("why", ""))))
+        else:
+            out.append(dict(r, status=None, why="", unanswered=True))
+    return _recheck(against, "done", decision=name, findings=out, unchecked=unchecked,
+                    tally=counts)
+
+
+def recheck_lines(record: dict | None) -> list[str]:
+    """findings.md's recheck section, present only when --recheck asked."""
+    if not isinstance(record, dict):
+        return []
+    lines = ["## Previous findings, rechecked", ""]
+    if record.get("status") != "done":
+        return lines + [f"{str(record.get('status', 'skipped')).capitalize()}: "
+                        f"{record.get('why', '')}", ""]
+    t = record.get("tally") or {}
+    lines += [f"{record.get('against')}'s findings in this cut's stills, asked after the "
+              f"scoring and scoring nothing: {t.get('stands', 0)} stand, "
+              f"{t.get('gone', 0)} gone, {t.get('cannot_tell', 0)} cannot tell"
+              + (f"; {record['unchecked']} more not asked" if record.get("unchecked")
+                 else "") + ".", ""]
+    for row in record.get("findings") or []:
+        lines.append(f"- {_stamp(row.get('timestamp'))} "
+                     f"{row.get('status') or 'not answered'} -- {row.get('problem', '')}"
+                     + (f" ({row['why']})" if row.get("why") else ""))
+    return lines + [""]
+
+
 def findings_md(name: str, card: dict, samples: list[dict], diff: dict, *,
                 reasons: list[str]) -> str:
     stamp = _stamp
@@ -2480,6 +2639,7 @@ def findings_md(name: str, card: dict, samples: list[dict], diff: dict, *,
     if diff.get("regressions"):
         lines += ["**Regressions:** " + ", ".join(diff["regressions"]), ""]
     lines += side_lines(card.get("side_by_side"))
+    lines += recheck_lines(card.get("recheck"))
 
     def finding_lines(row: dict) -> list[str]:
         seen_in = (f" (samples {', '.join(map(str, row['samples']))})"
@@ -3004,6 +3164,10 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                         "deltas, and its cut side by side at the same timestamps "
                         "(default: the latest scored pass; yt improve names its best "
                         "kept pass)")
+    p.add_argument("--recheck", action="store_true",
+                   help="after the blind scoring, ask once more whether each finding of "
+                        "the pass compared with still stands in this cut's stills; the "
+                        "answers are filed under `recheck` and change no score (AUTO-106)")
     p.add_argument("--against", metavar="FILE",
                    help="the previous kept cut (a video.mp4): a gateway video model "
                         "watches it and this pass's video.mp4 whole, in both orders, and "
@@ -3378,10 +3542,10 @@ def run(args) -> int:
         brief("Blocking, already proven", blockers),
         brief("Each finding's owner is exactly one of these; one you cannot place is "
               "`external`, with the reason in `fix`", {o: DUTIES[o] for o in OWNERS}),
-        brief("Previous pass, for comparison", {
-            "pass": previous.get("pass"), "scores": previous.get("scores"),
-            "overall": previous.get("overall"),
-            "findings": previous.get("findings", [])[:20]} if previous else None),
+        # Nothing of the previous pass (AUTO-106): shown its scores, the
+        # reviewer filed them again. compare() takes the deltas from the
+        # two scorecards once this one exists, and --recheck puts the
+        # previous findings to a decision of their own after the scoring.
     ])
     # QA_SAMPLES readings of the same evidence (AUTO-107): one reading's
     # noise is the size of the steps read as progress. structure 20 is
@@ -3469,6 +3633,12 @@ def run(args) -> int:
             f"side by side: {len(side['unpaired'])} moment(s) not compared with "
             f"{side['against']}: {side['unpaired'][0]['why']}"]
 
+    # -- the previous findings, rechecked (AUTO-106) ------------------------------
+    # The scores are filed above, blind; this decision reads the previous
+    # pass's findings against this pass's stills and is kept beside them.
+    rechecked = (recheck(reviewer, pass_dir, previous, quiet=args.quiet)
+                 if getattr(args, "recheck", False) else None)
+
     # -- the bar, applied; the pass, kept ----------------------------------------
     # What the measurements proved overrides what the reviewer awarded: a
     # silent film scores no sound, and a blocking mechanical finding caps
@@ -3528,6 +3698,8 @@ def run(args) -> int:
                          "cut": cut, "side_by_side": side,
                          "contact_sheet": sheet.name, "engine": reviewer.report(),
                          "usage": spend.from_report(reviewer.report())}
+    if rechecked is not None:
+        card["recheck"] = rechecked
     if compared is not None:
         # The comparison's own account beside the reviewer's; `usage` is
         # both, so what the pass cost counts it once (AUTO-128).
@@ -3569,6 +3741,8 @@ def run(args) -> int:
         "regressions": diff["regressions"], "reasons": reasons,
         "side_by_side": {"against": side["against"], "status": side["status"],
                          "total": side["tally"]["total"]},
+        **({"recheck": {"against": rechecked["against"], "status": rechecked["status"],
+                        **rechecked["tally"]}} if rechecked is not None else {}),
         "scorecard": str(pass_dir / "scorecard.json"), "house": digest,
         "usage": card["usage"]})
 
@@ -3604,6 +3778,12 @@ def run(args) -> int:
         print(f"\n  side by side against {side['against']}: better {total['better']}, "
               f"worse {total['worse']}, same {total['same']} "
               f"({len(side['moments'])} moments)")
+    if rechecked is not None and rechecked["status"] == "done":
+        t = rechecked["tally"]
+        print(f"\n  {rechecked['against']}'s findings rechecked: {t['stands']} stand, "
+              f"{t['gone']} gone, {t['cannot_tell']} cannot tell")
+    elif rechecked is not None:
+        print(f"\n  recheck {rechecked['status']}: {rechecked['why']}")
     owners = {}
     for f in card.get("findings", []):
         owners.setdefault(f.get("owner", "?"), []).append(f)

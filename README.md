@@ -355,7 +355,7 @@ Or all of it at once, for one idea:
 | `yt pilot` | 30/60/180-second cuts of the finished film, nested, with what each proves | no model calls |
 | `yt gate` | the delivery verdict: loudness, scopes, frames, caption limits, run on a render host and naming the requirement that stopped it; plus the geometry check (a hero that penetrates the set, or reads merged into it on screen, blocks whatever the tool and the triage said) | one triage call |
 | `yt review` | the PDF review sheet: frames, captions, markers, sources, credits | no model calls |
-| `yt qa` | the scorecard per pass: every shot sampled at its midpoint and each narrated line where it starts (`line: <first words>`, AUTO-104), up to 60 stills (`--frames N` above the shot count adds the line stills first, then evenly spaced stills; below it, or past 60 shots by default, names the shots left out; the lines left without a still are named in `lines_unsampled`), one frame window per sample (the still is its middle frame), a contact sheet, the mechanical findings (flat, clipped, frozen, jump, off-camera, `penetration`: the hero inside a set solid, and `reads-merged`: the hero over a surface on screen with no shadow, from the engine's evaluated geometry and camera), the model's review, scored as the median of three samples (an audio category no current listening review covers is null in every sample, never a median), and a side-by-side comparison with the previous kept cut at the same timestamps | `qa.QA_SAMPLES` (3) inspection calls per pass, at most one merge decision and one `<pass>-compare-pass` inspection when an earlier scored pass exists; one render job per sample (by default one per shot and per narrated line, at most 60; `--frames N` sets it), one eval job per pass; `yt improve` pays this every pass; `--listen` (gateway, opt-in, AUTO-126) adds one `listen-<audio sha>` decision on the film's audio and at most one `-again`, priced by its preflight and refused over `--listen-budget-usd` (0.50), none when the same mix was heard before; `--watch` (gateway, opt-in, AUTO-127) adds one `watch-sNN` decision per piece of the cut and at most one `-again` each, plus up to 12 render jobs for the moments it reports, none when the same cut was watched before |
+| `yt qa` | the scorecard per pass: every shot sampled at its midpoint and each narrated line where it starts (`line: <first words>`, AUTO-104), up to 60 stills (`--frames N` above the shot count adds the line stills first, then evenly spaced stills; below it, or past 60 shots by default, names the shots left out; the lines left without a still are named in `lines_unsampled`), one frame window per sample (the still is its middle frame), a contact sheet, the mechanical findings (flat, clipped, frozen, jump, off-camera, `penetration`: the hero inside a set solid, and `reads-merged`: the hero over a surface on screen with no shadow, from the engine's evaluated geometry and camera), the model's review, scored as the median of three samples (an audio category no current listening review covers is null in every sample, never a median), and a side-by-side comparison with the previous kept cut at the same timestamps | `qa.QA_SAMPLES` (3) inspection calls per pass, at most one merge decision and one `<pass>-compare-pass` inspection when an earlier scored pass exists (`--recheck` adds one `<pass>-recheck` inspection, AUTO-106); one render job per sample (by default one per shot and per narrated line, at most 60; `--frames N` sets it), one eval job per pass; `yt improve` pays this every pass; `--listen` (gateway, opt-in, AUTO-126) adds one `listen-<audio sha>` decision on the film's audio and at most one `-again`, priced by its preflight and refused over `--listen-budget-usd` (0.50), none when the same mix was heard before; `--watch` (gateway, opt-in, AUTO-127) adds one `watch-sNN` decision per piece of the cut and at most one `-again` each, plus up to 12 render jobs for the moments it reports, none when the same cut was watched before |
 | `yt improve` | routes each QA finding to the stage that owns it, briefs that stage through `feedback/`, re-runs it and everything downstream, keeps the pass only if it measurably improved | one routing decision per pass, plus the stages it runs |
 | `yt doctor` | every video's state and the command that advances it | no model calls |
 | `yt probe` | the realism probe suite: one neutral brief per class of material, light or motion, composed by an agent coding with the SDK, built and framed by the harness, scored by a different model with each defect's cause | **$1.06** for one probe and one round; up to three author sessions and three reviews per probe |
@@ -1712,6 +1712,19 @@ pass exists. Nothing is compared without an earlier scored pass, with the
 same cut, under `--reuse` (whose card keeps the `cut` its frames were drawn
 from), or when the pass is not evidenced.
 
+The scoring itself is blind to the pass before (AUTO-106). Shown the last
+pass's scores and findings, the reviewer filed them again, so the scoring
+prompt names no previous pass, score, overall or finding; the Δ column is
+computed from the two scorecards once the new one exists, and `yt improve`
+matches an old finding to a new one only after both exist. `--recheck`
+asks, after the scoring, whether each of the previous pass's findings (at
+most 20, by place and words only) still stands in this pass's stills: one
+`<pass>-recheck` inspection, each answered stands, gone or cannot_tell with
+why, filed under `recheck` in the scorecard, its tally in `qa.json` and a
+section in `findings.md`. Nothing that scores reads it; the estimate adds
+`spend.RECHECK_USD` each time it is asked and leaves a past recheck out of
+the next pass, which does not ask it unless told.
+
 QA reads stills; it never watches the film. `--against FILE --compare-model
 MODEL` (AUTO-128) has a video model watch the previous kept cut FILE and this
 pass's `video.mp4` whole, picture and sound, through the gateway engine, on a
@@ -1747,6 +1760,8 @@ nothing but proof frames that were rendered graded ·
 `--previous PASS` the earlier pass compared with, its scores and its cut
 side by side (default: the latest scored pass, or improve's best kept one
 when it reverted that) ·
+`--recheck` the previous pass's findings asked again after the blind
+scoring, scoring nothing ·
 `--against FILE` the previous kept cut, watched beside the new one by
 `--compare-model MODEL` (a gateway `provider/model` id) ·
 `--host` / `--local` · `--fresh`
