@@ -1,0 +1,28 @@
+ffmpeg version 6.1.1-3ubuntu5 Copyright (c) 2000-2023 the FFmpeg developers
+  built with gcc 13 (Ubuntu 13.2.0-23ubuntu3)
+Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'cut.mp4':
+  Duration: 00:00:02.00, start: 0.000000, bitrate: 412 kb/s
+  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p, 1920x1080, 30 fps
+Stream mapping:
+  Stream #0:0 -> #0:0 (h264 (native) -> wrapped_avframe (native))
+Output #0, null, to 'pipe:':
+  Stream #0:0(und): Video: wrapped_avframe, yuv420p, 320x180, q=2-31, 200 kb/s, 4 fps, 4 tbn
+[Parsed_metadata_3 @ 0x5581c0a1f2c0] frame:0    pts:0       pts_time:0
+[Parsed_metadata_3 @ 0x5581c0a1f2c0] lavfi.scene_score=0.000000
+[Parsed_metadata_3 @ 0x5581c0a1f2c0] frame:1    pts:1       pts_time:0.25
+[Parsed_metadata_3 @ 0x5581c0a1f2c0] lavfi.scene_score=0.001204
+[Parsed_metadata_3 @ 0x5581c0a1f2c0] frame:2    pts:2       pts_time:0.5
+[Parsed_metadata_3 @ 0x5581c0a1f2c0] lavfi.scene_score=0.012930
+[Parsed_metadata_3 @ 0x5581c0a1f2c0] frame:3    pts:3       pts_time:0.75
+[Parsed_metadata_3 @ 0x5581c0a1f2c0] lavfi.scene_score=0.000000
+[Parsed_metadata_3 @ 0x5581c0a1f2c0] frame:4    pts:4       pts_time:1
+[Parsed_metadata_3 @ 0x5581c0a1f2c0] lavfi.scene_score=0.512877
+frame=    5 fps=0.0 q=-0.0 size=N/A time=00:00:01.25 bitrate=N/A speed=2.51x
+[Parsed_metadata_3 @ 0x5581c0a1f2c0] frame:5    pts:5       pts_time:1.25
+[Parsed_metadata_3 @ 0x5581c0a1f2c0] lavfi.scene_score=0.003311
+[Parsed_metadata_3 @ 0x5581c0a1f2c0] frame:6    pts:6       pts_time:1.5
+[Parsed_metadata_3 @ 0x5581c0a1f2c0] lavfi.scene_score=0.004100
+[Parsed_metadata_3 @ 0x5581c0a1f2c0] frame:7    pts:7       pts_time:1.75
+[Parsed_metadata_3 @ 0x5581c0a1f2c0] lavfi.scene_score=0.000000
+[out#0/null @ 0x5581c0a20a40] video:3KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: unknown
+frame=    8 fps=0.0 q=-0.0 Lsize=N/A time=00:00:02.00 bitrate=N/A speed=3.02x

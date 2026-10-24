@@ -45,7 +45,7 @@ from claude_engine import Event, Usage  # noqa: E402
 from gateway_fakes import MODEL, USAGE, FakeNode, err, ok  # noqa: E402
 from tests import test_qa_listening as listening  # noqa: E402
 from tests import test_qa_motion as motion  # noqa: E402
-from ytstudio import cli, harness, models, qa, spend  # noqa: E402
+from ytstudio import cli, harness, models, qa, rhythm, spend  # noqa: E402
 
 
 def _listen():
@@ -63,13 +63,19 @@ def _listen():
 #: curiosity trigger and a tension row follows reveal setup, and those are
 #: the only differences from the digest before it.
 #: AUTO-156 added qa.json's `judge_calibration`; the prompt and card are as before.
+#: AUTO-141 rewrote the prompt's: the mechanical brief's header names the
+#: rhythm cap beside the frames' cap, and the measurements end with a
+#: `rhythm` block labelled as measured, not judged; those are the only
+#: differences from the digest before it (diffed against develop). The card
+#: gains `rhythm`.
 OFF = {
-    "prompt_sha": "57bab3709bba64b6ead210e9a504a5cbb9e4990608e590d0a9194ea7bfc9714b",
+    "prompt_sha": "42318a6de61bf11da1572d9ac814d38cfa57473ad832110ed337cf11c3d1632f",
     "role_sha": "689d58b15f4913baff9447748a32cf97acc8df4373fc2c61422df8ed4e03f951",
     "card_keys": ["audio_not_evidenced", "bar", "blocking", "capped", "comparison",
                   "contact_sheet", "cut", "engine", "findings", "frames", "lines_unsampled",
                   "listening", "low_confidence", "mechanical", "not_evidenced", "overall",
-                  "pass", "proof_note", "rationale", "samples", "scene_sha256", "scores",
+                  "pass", "proof_note", "rationale", "rhythm", "samples", "scene_sha256",
+                  "scores",
                   "scoring", "side_by_side", "spread", "story", "unsampled", "usage",
                   "verdict"],
     "qa_keys": ["audio_not_evidenced", "blocking", "capped", "findings", "house", "idea",
@@ -149,6 +155,7 @@ class Project(unittest.TestCase):
     reviewer and a fake renderer that counts its jobs."""
 
     def setUp(self):
+        motion.steady_cutting(self)              # AUTO-141: not what this tests
         self.tmp = Path(tempfile.mkdtemp(prefix="qa-listen-"))
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.work = self.tmp / "work"
@@ -162,6 +169,14 @@ class Project(unittest.TestCase):
         motion.FakeEngine.stream_calls, motion.FakeEngine.json_calls = [], []
         qa.GEOMETRY = lambda args, project, scene, shots: {"status": "skipped",
                                                           "why": "a test"}
+        # The rhythm scan (AUTO-141) would upload the cut on its own: refused
+        # the same way with or without YT_NO_REMOTE, so the prompt pinned in
+        # OFF and the watcher's host calls are this film's alone.
+        self.addCleanup(setattr, qa, "RHYTHM_SCAN", qa.RHYTHM_SCAN)
+
+        def unscanned(*a, **k):
+            raise rhythm.RhythmError("not scanned in a stage test")
+        qa.RHYTHM_SCAN = unscanned
         self.jobs = []
 
         def render(args, scene):
