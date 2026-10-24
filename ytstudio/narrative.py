@@ -680,20 +680,24 @@ def _shot_of(flag: Mapping) -> int | None:
         return None
 
 
-def check_review(review: Any) -> list[str]:
+def check_review(review: Any, drafted: bool | None = None) -> list[str]:
     """What a review says that its own rubric forbids, one line per problem.
 
     The harness checks the schema (fields, types, enums) and asks once
     more; these are the shapes a schema cannot refuse: a recommend that
     carries a Poor or a blocker, a consider with nothing to fix, and a flag
     on a criterion the rubric does not have (the harness lets an enum value
-    through after its retry), a voice flag on shot 0 (the role ties voice
-    to a named line), and a first minute that heard no trigger
-    (`none`) under a hook graded Excellent or Good, which the hook's own Fair
+    through after its retry), a voice flag on shot 0 of a drafted script
+    (the role ties voice to a named line), and a first minute that heard
+    no trigger (`none`) under a hook graded Excellent or Good, which the hook's own Fair
     describes; `not_heard` is no contradiction, since a review of the plan
-    alone grades the hook from the plan. The caller asks again once under its own
-    name (`<name>-again`), with these lines in the prompt, and records a
-    second failure; nothing here replaces the verdict."""
+    alone grades the hook from the plan. `drafted` False is a review of the
+    plan before any line exists (a calibration case, AUTO-97), where shot 0
+    is the only place a flag can go; None reads it from the review, as
+    drafted unless its first minute is `not_heard`. The caller asks again
+    once under its own name (`<name>-again`), with these lines in the
+    prompt, and records a second failure; nothing here replaces the
+    verdict."""
     if not isinstance(review, dict):
         return []
     found: list[str] = []
@@ -717,16 +721,20 @@ def check_review(review: Any) -> list[str]:
         found.append(f"flags name {', '.join(unknown)}, which "
                      f"{'is' if len(unknown) == 1 else 'are'} no rubric criterion "
                      f"(the rubric has {', '.join(KEYS)})")
+    first = review.get("first_minute") if isinstance(review.get("first_minute"), dict) else {}
+    if drafted is None:
+        drafted = first.get("trigger") != "not_heard"
     # AUTO-138: a voice flag is a line's. On shot 0 it would leave a whole
     # section or the plan for the writer to guess at, and send a register
-    # fault to a redraft or to planning again (REPLAN_FIX).
+    # fault to a redraft or to planning again (REPLAN_FIX). A plan with no
+    # line yet has nowhere else to put it, so asking again there would only
+    # spend a call and lose the sample.
     unplaced = [f for f in flags if isinstance(f, dict) and f.get("criterion") == "voice"
-                and _shot_of(f) == 0]
+                and _shot_of(f) == 0] if drafted else []
     if unplaced:
         found.append(f"a voice flag names the shot whose line reads as a lecture, and "
                      f"{len(unplaced)} {'is' if len(unplaced) == 1 else 'are'} on shot 0: "
                      "name the shot and quote its words")
-    first = review.get("first_minute") if isinstance(review.get("first_minute"), dict) else {}
     if first.get("trigger") == "none" and grades.get("hook") in ("Excellent", "Good"):
         found.append(f"a first minute whose three opening sentences pull no trigger "
                      f"(trigger none) is a Fair hook at best, and this one grades the hook "

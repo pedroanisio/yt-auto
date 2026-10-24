@@ -3373,7 +3373,8 @@ class Screenwriter:
             # AUTO-97): the review reads the plan, and its flags are the plan's.
             listing = ("No section is drafted yet: review the plan above as the film it "
                        "would make, and tie each flag to shot 0 with the plan section's "
-                       "number, or section 0 for the whole plan.")
+                       "number, or section 0 for the whole plan; with no narration "
+                       "drafted, voice is graded from the plan and never flagged.")
         parts = [self._brief(), harness.brief("The plan", plan_view(plan)),
                  "The script, section by section; each shot is numbered first:\n\n"
                  + listing,
@@ -3409,7 +3410,8 @@ class Screenwriter:
         change a line for words it never said."""
         if not isinstance(review, dict):
             return ["the answer is not a review"]
-        found = narrative.check_review(review)
+        # a review of the plan alone (no shots) may carry voice on shot 0
+        found = narrative.check_review(review, None if shots is None else bool(shots))
         if review.get("verdict") not in narrative.VERDICTS:
             found.append(f"the verdict {review.get('verdict')!r} is not one of "
                          f"{', '.join(narrative.VERDICTS)}")

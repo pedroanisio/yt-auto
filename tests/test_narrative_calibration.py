@@ -775,6 +775,27 @@ class PlanOnly(Hermetic):
         self.assertIn("review the plan above as the film it would make", flat)
         self.assertIn("shot 0", flat[flat.index("No section is drafted yet"):])
         self.assertNotIn("Section 1:", prompt)
+        # no line exists to quote, so voice is graded from the plan, never flagged
+        self.assertIn("with no narration drafted, voice is graded from the plan and "
+                      "never flagged", flat)
+
+    def test_a_voice_flag_on_a_plan_settles_the_sample_without_asking_again(self):
+        said = load(FIXTURES / "list-plan" / "expected.json")["review"]
+        voiced = copy.deepcopy(said)
+        voiced["flags"].append({"n": 0, "section": 0, "criterion": "voice",
+                                "problem": "the plan's beats read as a lecture",
+                                "severity": "minor", "fix": "ask what the viewer asks",
+                                "quote": ""})
+        asked = []
+
+        def ask(self_, name, prompt, schema):
+            asked.append(name)
+            return copy.deepcopy(voiced)
+        with mock.patch.object(script.Screenwriter, "_ask", ask):
+            rnd = self.writer().review_round([], load(FIXTURES / "list-plan" / "plan.json"), 1)
+        self.assertTrue(all(s["valid"] for s in rnd["samples"]), rnd["samples"])
+        self.assertFalse([n for n in asked if n.endswith("-again")], asked)
+        self.assertEqual(rnd["verdict"], said["verdict"])
 
     def test_a_flag_on_a_shot_the_plan_does_not_have_unsettles_the_sample(self):
         said = load(FIXTURES / "list-plan" / "expected.json")["review"]

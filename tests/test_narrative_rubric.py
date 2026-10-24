@@ -21,6 +21,7 @@ No model is called: the schemas are answered by test_harness_decisions'
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import sys
@@ -555,6 +556,25 @@ class Voice(unittest.TestCase):
         # another criterion's flag on shot 0 is still a section's or the plan's
         self.assertEqual(narrative.check_review(review("consider", flags=[flag("ending")])),
                          [])
+
+    def test_a_plan_read_before_any_line_may_carry_voice_on_shot_0(self):
+        # a calibration case with no script has no line to name: a voice
+        # flag can only sit on shot 0, and spending the -again call on it
+        # would make the case not_evidenced for the prompt's own shape
+        plan_only = review("consider", {"voice": "Fair"}, [flag("voice", n=0, section=2)])
+        plan_only["first_minute"]["trigger"] = "not_heard"
+        self.assertEqual(narrative.check_review(plan_only), [])
+        self.assertEqual(script.Screenwriter._sample_problems(
+            plan_only, narrative.REVIEW_SCHEMA, {}, {}), [])
+        # told there is no draft, the shape decides nothing else
+        heard = copy.deepcopy(plan_only)
+        heard["first_minute"]["trigger"] = "question"
+        self.assertEqual(narrative.check_review(heard, drafted=False), [])
+        self.assertEqual(len(narrative.check_review(heard)), 1)
+        # a drafted script that says not_heard is still held to a named shot
+        found = script.Screenwriter._sample_problems(
+            plan_only, narrative.REVIEW_SCHEMA, {1: "Comets fly tail first."}, {1: [1]})
+        self.assertTrue(any("voice" in p and "shot 0" in p for p in found), found)
 
 
 # --------------------------------------------------------------------------- #
