@@ -4299,6 +4299,9 @@ def run(args) -> int:
     write_json(pass_dir / "scorecard.json", card)
     (pass_dir / "findings.md").write_text(
         findings_md(pass_dir.name, card, samples, diff, reasons=reasons), encoding="utf-8")
+    # AUTO-156: whether this judge is the one the QA fixtures last passed.
+    # Recorded and printed; nothing reads it to gate READY, doctor or improve.
+    calibration = judge_calibration(workspace.work_dir(args), args.model, digest)
     write_json(home / "qa.json", {
         "idea": {"title": idea.title}, "pass": pass_dir.name, "verdict": verdict,
         "overall": card.get("overall"), "scores": card.get("scores"),
@@ -4314,10 +4317,11 @@ def run(args) -> int:
         **({"recheck": {"against": rechecked["against"], "status": rechecked["status"],
                         **rechecked["tally"]}} if rechecked is not None else {}),
         "scorecard": str(pass_dir / "scorecard.json"), "house": digest,
-        "usage": card["usage"]})
+        "judge_calibration": calibration, "usage": card["usage"]})
 
     print(f"\n{idea.title} — QA {pass_dir.name}: {verdict}  (overall {card.get('overall')}, "
           f"the median of {card['scoring']['valid']} of {card['scoring']['asked']} samples)")
+    print(judge_line(calibration))
     for key in CATEGORIES if evidenced else ():
         delta = diff["deltas"].get(key)
         if card["scores"].get(key, 0) is None:

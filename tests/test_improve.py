@@ -1719,5 +1719,24 @@ class UnheardAudio(unittest.TestCase):
         self.assertIn("READY is out of reach", section)
 
 
+class JudgeCalibration(unittest.TestCase):
+    """AUTO-156: qa.json's judge_calibration is informational. A READY pass
+    is reached whether or not its judge was fixture-calibrated."""
+
+    def test_reached_is_unchanged_by_the_calibration_label(self):
+        for fixtures in (False, True):
+            label = {"fixtures": fixtures, "labelled": 0, "model": "sonnet",
+                     "digest": "d", "why": "no report"}
+            self.assertTrue(improve.reached(
+                {"verdict": qa.READY, "overall": 9.2, "judge_calibration": label}, 9.0))
+            self.assertFalse(improve.reached(
+                {"verdict": qa.NOT_READY, "overall": 8.0, "blocking": [],
+                 "judge_calibration": label}, 9.0))
+
+    def test_improve_never_reads_it(self):
+        source = (ROOT / "ytstudio" / "improve.py").read_text(encoding="utf-8")
+        self.assertNotIn("judge_calibration", source)
+
+
 if __name__ == "__main__":
     unittest.main()
