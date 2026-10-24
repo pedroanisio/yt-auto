@@ -8,6 +8,10 @@
   "misconception": "[M1] A comet's tail is a wake left behind as it moves.",
   "misconception_why": "",
   "audience": "lay",
+  "hook": {
+    "trigger": "unexpected_observation",
+    "gap": "why a comet leaving the Sun has its tail in front"
+  },
   "reveal": {
     "section": 3,
     "constraint_section": 2
@@ -102,7 +106,7 @@
         "Q2"
       ],
       "connective": "therefore",
-      "rehook": "",
+      "rehook": "Q1",
       "escalation": "the wind is everywhere, all the time",
       "anchor_visual": "the stream from the Sun bending the gas tail"
     },

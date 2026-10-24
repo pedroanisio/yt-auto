@@ -1,0 +1,43 @@
+{
+  "criterion": "hook",
+  "verdict": "consider",
+  "trigger": "none",
+  "why": "The plan is good's, but the script's first three spoken sentences are background with no curiosity trigger, which the hook row grades Fair (attention 1).",
+  "judging_10": "judging 10 asks the calibration run for reject on every seeded case. This case's one fault is a hook graded Fair, and the hook is not one of the four criteria that decide a film, so by judging 11 and 12 it is a consider. The calibration fails a reviewer that says recommend here, grades hook above Fair, leaves it without a flag, or hears a trigger other than none in the opening.",
+  "evidence": {
+    "in": "script.sections.0.shots.0.narration",
+    "says": "Comets are made of ice and dust"
+  },
+  "review": {
+    "logline": "A comet's tail leads it away from the Sun because sunlight and a wind from the Sun push it, not because it trails behind.",
+    "synopsis": "Comets are introduced as ice and dust that shed a tail; sunlight is too weak to explain the gas tail; Biermann proposes a wind from the Sun and Mariner 2 measures it; the opening comet is seen again.",
+    "grades": {
+      "train": "Excellent",
+      "hook": "Fair",
+      "stakes": "Excellent",
+      "open_loops": "Good",
+      "reveal_setup": "Excellent",
+      "tension": "Excellent",
+      "ending": "Excellent",
+      "honesty": "Excellent"
+    },
+    "verdict": "consider",
+    "flags": [
+      {
+        "n": 1,
+        "section": 1,
+        "criterion": "hook",
+        "severity": "important",
+        "problem": "The first three sentences are background on what comets are made of: no question, contrast or unexplained observation opens a gap.",
+        "fix": "Open on the planned trigger: the comet leaving the Sun with its tail in front.",
+        "quote": "Comets are made of ice and dust."
+      }
+    ],
+    "first_minute": {
+      "promise_match": "A comet is on screen and its tail is named, but the narration opens on what comets are made of.",
+      "question_and_stakes": "No question is opened in the first three sentences; the Quebec storm comes as background.",
+      "trigger": "none",
+      "gap": ""
+    }
+  }
+}

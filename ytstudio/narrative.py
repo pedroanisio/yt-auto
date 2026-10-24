@@ -4,7 +4,7 @@ No rubric existed: the script stage wrote against house prose and nothing
 graded the story before voice was paid for. This module is that rubric, in
 the shape docs/narrative/judging-narrative.md sets for a model judge:
 
-- seven criteria (`RUBRIC`), each a question with four labelled levels of
+- eight criteria (`RUBRIC`), each a question with four labelled levels of
   one line, a worked example, the strength of its lead rule from the
   corpus README's table and the corpus rules it is drawn from. Never a
   number: an unbounded or 1-100 score calibrates badly, four labels are read
@@ -22,8 +22,8 @@ doctor, improve and the operator read verdict strings, and "pass" there
 means the opposite.
 
 Four criteria decide a film: train, stakes, open loops and ending; hook,
-reveal setup and honesty are the other three a reader can judge and a lint
-cannot. What a lint can measure (hook timing, sentence length, concrete
+reveal setup, tension and honesty are the other four a reader can judge and
+a lint cannot. What a lint can measure (hook timing, sentence length, concrete
 before abstract by position) belongs to the deterministic checks, not here.
 
 Like `framecheck.CHECKLIST`, one tuple is meant to be rendered twice: into
@@ -44,7 +44,7 @@ here decides a verdict: it is schema and prompt text, `check_review` and
 (invariant 3), and `median` only reads the samples' own labels.
 
 A known gap: a criterion's strength is the README's word for its lead rule,
-and today none comes out `house`: six lead with a practitioner rule and the
+and today none comes out `house`: seven lead with a practitioner rule and the
 hook with structure 10 (platform), although the hook's window is the
 house's choice. So the role's sentence that a Poor on a house-strength
 criterion yields consider governs nothing yet; it stays because the
@@ -77,6 +77,24 @@ SEVERITIES = ("blocker", "important", "minor")
 #: The plan review's verdicts, worst last: the plan is accepted, sent back
 #: with the problems to fix, or rejected as not a story.
 PLAN_VERDICTS = ("accept", "revise", "reject")
+
+#: The curiosity triggers an opening may pull (AUTO-136), from attention 1:
+#: Loewenstein's four triggers of an information gap, a question posed
+#: (`question`), a sequence whose end is withheld (`unresolved_outcome`), an
+#: expectation violated and information someone has that the viewer lacks
+#: (`someone_knows`), with the expectation violation split in two: a
+#: contradiction the viewer can state (`paradox`) and a thing seen that
+#: should not be so (`unexpected_observation`, the rubric's own comet line).
+#: The plan declares one (script.STORY_PROPERTIES["hook"]); script.py reads
+#: this tuple and keeps no copy.
+HOOK_TRIGGERS = ("question", "paradox", "unexpected_observation", "unresolved_outcome",
+                 "someone_knows")
+
+#: What the story reviewer may say it heard in the first three spoken
+#: sentences: one of HOOK_TRIGGERS; `none`, narration exists and pulls no
+#: trigger; `not_heard`, no narration is drafted to hear (a review of the
+#: plan alone, as calibrate's plan-only cases are).
+HEARD_TRIGGERS = HOOK_TRIGGERS + ("none", "not_heard")
 
 #: Who reads the rubric: the writer is told what Excellent looks like, the
 #: reviewer reads every level.
@@ -134,13 +152,17 @@ RUBRIC: tuple[Criterion, ...] = (
     Criterion(
         "hook",
         "Does the opening confirm the subject the title promised inside {window}, and "
-        "open a question the title does not already answer, without listing the "
-        "conclusions?",
+        "open a question the title does not already answer, on a named curiosity "
+        "trigger (a question, a paradox, an unexpected observation, an unresolved "
+        "outcome, or something someone knows that the viewer does not), without "
+        "listing the conclusions?",
         {"Excellent": "The subject is on screen or in words inside {window}; the question "
-                      "it opens is specific, and no answer is given away.",
+                      "it opens is specific, the trigger is concrete within the first "
+                      "three sentences, and no answer is given away.",
          "Good": "The subject is confirmed inside {window}; the question is a fair one but "
                  "close to what the title says.",
-         "Fair": "The subject arrives after {window}, or the question is a generic tease.",
+         "Fair": "The subject arrives after {window}, or the question is a generic tease, "
+                 "or the first three sentences hold no trigger.",
          "Poor": "The opening names a different subject, only restates the title and "
                  "opens no question beyond it, or enumerates the conclusions the film "
                  "will reach."},
@@ -148,7 +170,7 @@ RUBRIC: tuple[Criterion, ...] = (
         "wind.\" Excellent: \"This comet is leaving the Sun, and its tail is in front.\"",
         "platform",
         ("structure 10", "structure 13", "structure 14", "structure 6", "attention 4",
-         "structure 39")),
+         "structure 39", "attention 1")),
     Criterion(
         "stakes",
         "Before the first mechanism, does the viewer hear a concrete consequence, "
@@ -198,6 +220,26 @@ RUBRIC: tuple[Criterion, ...] = (
         "that sunlight alone is too weak. Excellent: the weakness comes first.",
         "practitioner",
         ("structure 22", "structure 20", "attention 2")),
+    # AUTO-136: rising stakes had no row; escalation reached a reviewer only
+    # as the writer's own `escalation` field. Not one of the four criteria
+    # that decide a film, so a Poor here is a consider.
+    Criterion(
+        "tension",
+        "Does each section put more at risk, or make the question harder, than the one "
+        "before, and does the film re-hook the viewer where one section hands over to "
+        "the next, rather than holding one level throughout? The final section "
+        "resolves; it is not asked to raise the stakes.",
+        {"Excellent": "Each middle section raises the cost or the difficulty, with a "
+                      "rehook at the hand-over and at the later drop points.",
+         "Good": "The stakes rise overall, but one section plateaus.",
+         "Fair": "The stakes stay flat after the opening, or the rehooks only summarise.",
+         "Poor": "The stakes fall after the opening, or the middle is a list with nothing "
+                 "new at risk."},
+        "Fair: sections 2 and 3 both say sunlight is too weak, and nothing new is at "
+        "risk. Excellent: section 2 finds the known force too weak, section 3 finds the "
+        "wind that replaces it blowing at Earth too.",
+        "practitioner",
+        ("attention 9", "structure 23", "structure 25", "structure 26")),
     Criterion(
         "ending",
         "Does the last section pay the promise in resolved form, call back the opening, "
@@ -371,7 +413,12 @@ def reviewer_role(*, window: str = OPENING_WINDOW, seed: int = 0, plan: bool = F
         f"but {HOUSE_POOR}, because a house rule is a prior to tune, not a gate. "
         "Longer is not better: never grade a draft up for its length.",
         "Read the first minute twice, once for whether it confirms what the title "
-        "promised and once for its question and stakes, and say what each pass found.",
+        "promised and once for its question and stakes, and say what each pass found. "
+        "The second pass also names the curiosity trigger the first three spoken "
+        "sentences pull (trigger: question, paradox, unexpected_observation, "
+        "unresolved_outcome or someone_knows; none if they pull none; not_heard if no "
+        "narration is drafted) and the gap they open, as heard (gap; empty when "
+        "not_heard).",
         "In a revision round you are also shown the previous review. Grade this draft "
         "as above, then fill `previous`: whether this draft is better, the same or worse "
         "than the one it revises, and for each earlier problem whether it is resolved, "
@@ -452,8 +499,16 @@ REVIEW_SCHEMA = {
                     "first pass: does the opening confirm what the title promised")},
                 "question_and_stakes": {"type": "string", "description": (
                     "second pass: the question it opens and what is at stake")},
+                # AUTO-136: attention 1's trigger, as heard, not as planned
+                "trigger": {"type": "string", "enum": list(HEARD_TRIGGERS),
+                            "description": (
+                                "the curiosity trigger the first three spoken sentences "
+                                "use; none if they use none; not_heard if no narration "
+                                "is drafted")},
+                "gap": {"type": "string", "description": (
+                    "the gap the opening opens, as heard; empty when not_heard")},
             },
-            "required": ["promise_match", "question_and_stakes"],
+            "required": ["promise_match", "question_and_stakes", "trigger", "gap"],
         },
         # For the cold reader (judging 14): where each of the plan's questions
         # was answered, as the reader found it.
@@ -585,7 +640,10 @@ def check_review(review: Any) -> list[str]:
     more; these are the shapes a schema cannot refuse: a recommend that
     carries a Poor or a blocker, a consider with nothing to fix, and a flag
     on a criterion the rubric does not have (the harness lets an enum value
-    through after its retry). The caller asks again once under its own
+    through after its retry), and a first minute that heard no trigger
+    (`none`) under a hook graded Excellent or Good, which the hook's own Fair
+    describes; `not_heard` is no contradiction, since a review of the plan
+    alone grades the hook from the plan. The caller asks again once under its own
     name (`<name>-again`), with these lines in the prompt, and records a
     second failure; nothing here replaces the verdict."""
     if not isinstance(review, dict):
@@ -611,6 +669,11 @@ def check_review(review: Any) -> list[str]:
         found.append(f"flags name {', '.join(unknown)}, which "
                      f"{'is' if len(unknown) == 1 else 'are'} no rubric criterion "
                      f"(the rubric has {', '.join(KEYS)})")
+    first = review.get("first_minute") if isinstance(review.get("first_minute"), dict) else {}
+    if first.get("trigger") == "none" and grades.get("hook") in ("Excellent", "Good"):
+        found.append(f"a first minute whose three opening sentences pull no trigger "
+                     f"(trigger none) is a Fair hook at best, and this one grades the hook "
+                     f"{grades['hook']}: change the grade or the trigger")
     return found
 
 
@@ -840,16 +903,18 @@ def judge_case(expected: Mapping, got: Mapping) -> list[str]:
     empty when it caught what the case seeds.
 
     `expected` is the case's expected.json; `got` holds the story review's
-    median `verdict`, `grades` and merged `flags`, the plan review's verdict
-    (`plan_review`) and the cold read (`cold_read`). A seeded case fails the
+    median `verdict`, `grades` and merged `flags`, the round's heard
+    `trigger`, the plan review's verdict (`plan_review`) and the cold read
+    (`cold_read`). A seeded case fails the
     reviewer when the verdict is better than the case allows, the named
     criterion is graded above Fair, or no flag names it (judging 10 and the
     case's `judging_10`); the good case when it is not recommended; a case
     with `"story": false` holds the story review to nothing. A plan
     case's plan review must send a bad plan back and accept the good one; a
     cold-read case's reader must find the mismatch or the terms it hides. A
-    reading that gave no verdict (`not_evidenced`, a failed call) is a
-    failure, never a pass."""
+    case naming a `trigger` (AUTO-136) fails a round that heard another, or
+    none it could agree on. A reading that gave no verdict (`not_evidenced`,
+    a failed call) is a failure, never a pass."""
     failed: list[str] = []
     rank = {v: i for i, v in enumerate(VERDICTS)}
     want, verdict = expected.get("verdict"), got.get("verdict")
@@ -873,6 +938,10 @@ def judge_case(expected: Mapping, got: Mapping) -> list[str]:
         if not any(isinstance(f, dict) and f.get("criterion") == key
                    for f in got.get("flags") or []):
             failed.append(f"no flag on {key}, where the fault is")
+    trigger = expected.get("trigger")
+    if trigger and got.get("trigger") != trigger:
+        failed.append(f"the story review heard the opening's trigger as "
+                      f"{got.get('trigger') or 'nothing'}; this opening's is {trigger}")
     plan_want = (expected.get("plan_review") or {}).get("verdict")
     if plan_want:
         plan_got = got.get("plan_review")
@@ -1037,8 +1106,9 @@ def calibrate(directory: Any, *, work: Any, model: str = "sonnet",
         sections = script.sections_of(case["script"]) if case["script"] else []
         shots = w._renumber(sections)
         rnd = w.review_round(sections, plan, 1)
-        got.update(verdict=rnd["verdict"], grades=rnd["grades"], flags=rnd["flags"])
-        row.update(got=rnd["verdict"], grades=rnd["grades"],
+        got.update(verdict=rnd["verdict"], grades=rnd["grades"], flags=rnd["flags"],
+                   trigger=rnd.get("trigger"))
+        row.update(got=rnd["verdict"], grades=rnd["grades"], trigger=rnd.get("trigger"),
                    samples=[{k: s.get(k) for k in ("name", "verdict", "valid", "failed")}
                             for s in rnd["samples"]])
         if any(s.narration for s in shots):

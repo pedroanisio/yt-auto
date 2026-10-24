@@ -15,6 +15,7 @@
       "stakes": "Excellent",
       "open_loops": "Excellent",
       "reveal_setup": "Excellent",
+      "tension": "Excellent",
       "ending": "Poor",
       "honesty": "Excellent"
     },
@@ -32,7 +33,9 @@
     ],
     "first_minute": {
       "promise_match": "From the plan (no script yet): section 1 opens on a comet leaving the Sun tail first, the subject the title promised.",
-      "question_and_stakes": "From the plan: why the tail leads, and section 1 says the same wind reaches Earth."
+      "question_and_stakes": "From the plan: why the tail leads, and section 1 says the same wind reaches Earth.",
+      "trigger": "not_heard",
+      "gap": ""
     }
   },
   "plan_review": {

@@ -18,6 +18,7 @@
       "stakes": "Excellent",
       "open_loops": "Fair",
       "reveal_setup": "Excellent",
+      "tension": "Excellent",
       "ending": "Fair",
       "honesty": "Excellent"
     },
@@ -44,7 +45,9 @@
     ],
     "first_minute": {
       "promise_match": "A comet is on screen, but the narration never says its tail leads.",
-      "question_and_stakes": "No question is asked; the Quebec storm stands alone."
+      "question_and_stakes": "No question is asked; the Quebec storm stands alone.",
+      "trigger": "none",
+      "gap": ""
     }
   }
 }
