@@ -583,7 +583,9 @@ class Devices(unittest.TestCase):
         # PLAN's reveal is section 3
         for scored_in, why in ((0, "names no section that scores it"),
                                (1, "is scored in section 1, before it is asked"),
-                               (2, "is scored in section 2, before the reveal in section 3")):
+                               (2, "is scored in section 2, before the reveal in section 3"),
+                               (9, "names section 9, which the plan does not have"),
+                               (2.0, "is scored in section 2, before the reveal in section 3")):
             plan = with_devices(**{"2": [dict(PREDICTION, scored_in=scored_in)]})
             with self.subTest(scored_in=scored_in):
                 found = self.device_lines(plan)
@@ -592,6 +594,9 @@ class Devices(unittest.TestCase):
                                 found[0])
                 self.assertIn("(attention 2)", found[0])
         plan = with_devices(**{"1": [dict(PREDICTION, scored_in=3)]})
+        self.assertEqual(self.device_lines(plan), [])
+        # an integral float is an integer to the harness, so it is one here
+        plan = with_devices(**{"2": [dict(PREDICTION, scored_in=3.0)]})
         self.assertEqual(self.device_lines(plan), [])
         # a plan without a reveal holds the prediction only to its own section
         plan = with_devices(**{"2": [dict(PREDICTION, scored_in=2)]})

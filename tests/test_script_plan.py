@@ -100,6 +100,27 @@ PREDICTION = {"kind": "prediction", "device": "ask which part failed first",
               "framing": "the span itself, not one bolt", "scored_in": 3}
 
 
+#: section_story_lines for PLAN's three sections as develop wrote them
+#: before AUTO-135, one string a section.
+BEFORE_AUTO_135 = [
+    "It opens the film.\nThe picture this section stands on: the span in the river",
+    "It joins the section before with BUT: it turns against what that section "
+    "established.\nRe-open Q1 (What brought the bridge down?) partway through, so the "
+    "viewer stays for its answer.\nWhat gets harder or costlier here: the twin opens "
+    "soon\nThe picture this section stands on: a paint layer under a microscope\nThis "
+    "section shows why the reveal in section 3 is hard; do not give the reveal away.",
+    "It joins the section before with THEREFORE: it follows from what that section "
+    "established, as its consequence.\nThe picture this section stands on: the sheared "
+    "bolt\nThis section holds the film's main reveal; section 2 showed why it is hard."
+    "\nThis is the last section. Its last narrated line pays the promise, in the film's "
+    "language: \"One bolt, painted over, held up four lanes.\". It mirrors the opening: "
+    "Back to the empty river from the first shot.. It hands off to one next film: The "
+    "bolt that saved the Golden Gate.",
+]
+
+NARRATIVE = Path(__file__).resolve().parent / "fixtures" / "narrative"
+
+
 def with_devices(**by_section):
     """PLAN with each section number's devices, e.g. with_devices(**{"2": [..]})."""
     plan = copy.deepcopy(PLAN)
@@ -545,6 +566,32 @@ class SectionPrompt(unittest.TestCase):
         self.assertNotIn("guess", prompts["write-01"])
         self.assertNotIn("say whether that guess was right", prompts["write-02"])
 
+    def test_a_guess_asked_and_scored_in_the_reveal_is_told_to_be_scored(self):
+        # asked in the reveal section and scored by it: the one writer both
+        # asks and must say whether the guess was right
+        lines = "\n".join(script.section_story_lines(
+            dict(PLAN["sections"][2], devices=[PREDICTION]), PLAN, index=3, total=3))
+        self.assertIn("this section's reveal scores it; say whether that guess was right "
+                      "when the reveal lands.", lines)
+
+    def test_a_scored_in_past_the_last_section_names_no_section(self):
+        # section 9 of a 3-section plan: no writer would be told to score it
+        plan = with_devices(**{"2": [dict(PREDICTION, scored_in=9)]})
+        prompts = self.device_prompts(plan)
+        self.assertIn("; the reveal scores it.", prompts["write-02"])
+        self.assertNotIn("section 9", prompts["write-02"])
+
+    def test_an_integral_float_scored_in_is_read_as_its_section(self):
+        # the harness's type check passes 3.0 as an integer, so the stage does
+        plan = with_devices(**{"2": [dict(PREDICTION, scored_in=3.0)]})
+        lines = "\n".join(script.section_story_lines(plan["sections"][2], plan, index=3,
+                                                     total=3))
+        self.assertIn(f"Section 2 asked the viewer to guess {PREDICTION['framing']}; say "
+                      "whether that guess was right when this section's reveal lands.", lines)
+        self.assertEqual(script._scored_in({"scored_in": 3.0}), 3)
+        self.assertEqual(script._scored_in({"scored_in": 2.5}), 0)
+        self.assertEqual(script._scored_in({"scored_in": True}), 0)
+
     def test_a_thought_experiment_and_a_visual_metaphor_are_briefed(self):
         imagined = {"kind": "thought_experiment", "device": "a bridge with no paint at all",
                     "maps": "", "breaks_at": "", "framing": "imagine the same bridge bare",
@@ -559,10 +606,21 @@ class SectionPrompt(unittest.TestCase):
         self.assertIn("the paint drawn as a veil", lines)
 
     def test_a_plan_without_devices_briefs_exactly_as_before(self):
+        # BEFORE_AUTO_135 is what develop told PLAN's writers before devices
+        # existed, so a constant device line would fail here
         plan = copy.deepcopy(PLAN)
         for n, spec in enumerate(plan["sections"], 1):
-            empty = script.section_story_lines(dict(spec, devices=[]), plan, index=n, total=3)
-            self.assertEqual(empty, script.section_story_lines(spec, plan, index=n, total=3))
+            for devices in ({}, {"devices": []}):
+                with self.subTest(section=n, devices=devices):
+                    self.assertEqual(script.section_story_lines(
+                        dict(spec, **devices), plan, index=n, total=3),
+                        [BEFORE_AUTO_135[n - 1]])
+        good = script.read_json(str(NARRATIVE / "good" / "plan.json"))
+        for n, spec in enumerate(good["sections"], 1):
+            text = "\n".join(script.section_story_lines(spec, good, index=n,
+                                                        total=len(good["sections"])))
+            for word in ("guess", "analogy", "metaphor", "thought experiment"):
+                self.assertNotIn(word, text, (n, word))
 
     def test_the_writer_is_asked_for_each_shots_function_and_what_it_shows(self):
         prompt = self.prompts()["write-01"]

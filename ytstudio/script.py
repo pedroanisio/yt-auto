@@ -1592,8 +1592,15 @@ def known_devices(spec) -> list[dict]:
 
 
 def _scored_in(device: dict) -> int:
+    """A prediction's scored_in as a section number, 0 when it names none.
+    An integral float such as 3.0 passes the harness's integer check
+    (harness._JSON_TYPES), so it is read as 3, not as no section."""
     at = device.get("scored_in")
-    return at if isinstance(at, int) and not isinstance(at, bool) else 0
+    if isinstance(at, bool):
+        return 0
+    if isinstance(at, float) and at.is_integer():
+        return int(at)
+    return at if isinstance(at, int) else 0
 
 
 def device_lines(spec: dict, plan: dict, *, index: int) -> list[str]:
@@ -1602,6 +1609,7 @@ def device_lines(spec: dict, plan: dict, *, index: int) -> list[str]:
     guess an earlier section asked that this section's reveal scores, as
     QuestionLedger.brief_for tells the closing section of a question."""
     out = []
+    total = len(plan.get("sections") or [])
     for d in known_devices(spec):
         kind, said = d["kind"], _said(d.get("device"))
         if kind in ("analogy", "visual_metaphor"):
@@ -1621,8 +1629,11 @@ def device_lines(spec: dict, plan: dict, *, index: int) -> list[str]:
         else:
             guess = _said(d.get("framing")) or said
             at = _scored_in(d)
+            if not 0 < at <= total:   # a section the plan does not have: a pre-check's
+                at = 0
             line = f"Ask the viewer to guess {guess}"
-            line += ("; this section's reveal scores it." if at == index else
+            line += ("; this section's reveal scores it; say whether that guess was right "
+                     "when the reveal lands." if at == index else
                      f"; section {at}'s reveal scores it." if at else
                      "; the reveal scores it.")
             if said and said != guess:
@@ -1850,6 +1861,8 @@ def _device_checks(plan: dict, sections: list[dict]) -> list[str]:
             else:
                 scored = _scored_in(d)
                 why = ("names no section that scores it" if scored <= 0 else
+                       f"names section {scored}, which the plan does not have"
+                       if scored > len(sections) else
                        f"is scored in section {scored}, before it is asked" if scored < n else
                        f"is scored in section {scored}, before the reveal in section {at}"
                        if at and scored < at else "")
