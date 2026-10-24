@@ -49,7 +49,7 @@ from tests import test_script_review as review_tests  # noqa: E402
 SEEDED = {"list-plan": "train", "topic-train": "train", "empty-payoff": "ending",
           "and-chain": "train", "reveal-first": "reveal_setup",
           "recap-ending": "ending", "hook-enumerates": "hook",
-          "flat-tension": "tension", "no-trigger": "hook"}
+          "flat-tension": "tension", "no-trigger": "hook", "lecture-voice": "voice"}
 
 #: The seeded faults only the cold read catches (judging 14): the story
 #: review is read on them and not judged.
@@ -414,7 +414,43 @@ class TensionAndTrigger(unittest.TestCase):
                 self.assertIn("none", failed[0])
 
 
+class LectureVoice(unittest.TestCase):
+    """AUTO-138: the good film read as a lecture, graded on voice."""
+
+    def test_judge_case_fails_a_reviewer_that_hears_no_lecture(self):
+        expected = load(FIXTURES / "lecture-voice" / "expected.json")
+        self.assertEqual(narrative.judge_case(expected, got_for("lecture-voice")), [])
+        failed = narrative.judge_case(expected, got_for("lecture-voice", verdict="recommend"))
+        self.assertTrue(any("recommend" in line for line in failed), failed)
+        for grade in ("Excellent", "Good"):
+            with self.subTest(grade=grade):
+                grades = dict(got_for("lecture-voice")["grades"], voice=grade)
+                failed = narrative.judge_case(expected, got_for("lecture-voice",
+                                                                grades=grades))
+                self.assertTrue(any(f"voice graded {grade}" in line for line in failed),
+                                failed)
+        unflagged = [f for f in got_for("lecture-voice")["flags"] if f["criterion"] != "voice"]
+        failed = narrative.judge_case(expected, got_for("lecture-voice", flags=unflagged))
+        self.assertTrue(any("no flag on voice" in line for line in failed), failed)
+
+    def test_its_voice_flags_name_shots_and_quote_them(self):
+        said = load(FIXTURES / "lecture-voice" / "expected.json")["review"]
+        voiced = [f for f in said["flags"] if f["criterion"] == "voice"]
+        self.assertTrue(voiced)
+        for f in voiced:
+            self.assertGreater(f["n"], 0, f)
+            self.assertTrue(f["quote"].strip(), f)
+        self.assertEqual(said["verdict"], "consider")
+
+
 class LengthAudit(unittest.TestCase):
+    def test_the_good_pair_at_the_ceiling_carries_voice_excellent(self):
+        good = load(FIXTURES / "good" / "expected.json")["review"]
+        top = {"verdict": "recommend", "grades": {k: "Excellent" for k in good["grades"]}}
+        self.assertEqual(sorted(top["grades"]), sorted(narrative.KEYS))
+        self.assertTrue(narrative.at_ceiling(top, top))
+        self.assertEqual(good["grades"]["voice"], "Excellent")
+
     def test_who_wins_a_pair(self):
         self.assertEqual(narrative.pair_winner(rated("consider"), rated("recommend")), "longer")
         self.assertEqual(narrative.pair_winner(rated("recommend"), rated("consider")), "shorter")
@@ -443,6 +479,10 @@ class LengthAudit(unittest.TestCase):
     def test_a_pair_at_the_ceiling_is_counted_and_an_audit_all_at_it_sees_nothing(self):
         top = rated("recommend", **{k: "Excellent" for k in narrative.KEYS})
         self.assertTrue(narrative.at_ceiling(top, top))
+        # AUTO-138: the ceiling is every row Excellent, voice too
+        self.assertEqual(len(top["grades"]), 9)
+        self.assertFalse(narrative.at_ceiling(top, dict(top, grades=dict(top["grades"],
+                                                                         voice="Good"))))
         self.assertFalse(narrative.at_ceiling(top, rated("recommend")))
         self.assertFalse(narrative.at_ceiling(rated("consider"), rated("consider")))
         tie = (rated("consider"), rated("consider"))

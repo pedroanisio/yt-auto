@@ -1,0 +1,159 @@
+{
+  "idea": {
+    "title": "Why a comet's tail points away from the Sun",
+    "genre": "explainer",
+    "description": "The tail is not a wake: what pushes it."
+  },
+  "sections": [
+    {
+      "heading": "Tail first",
+      "shots": [
+        {
+          "n": 1,
+          "visual": "a comet moving away from the Sun, tail ahead",
+          "narration": "Comets are observed to move away from the Sun with the tail leading.",
+          "seconds": 10,
+          "asset": "make",
+          "style": "the film's treatment",
+          "source": "",
+          "function": "hook",
+          "shows": "the tail leads the comet outward",
+          "on_screen": "",
+          "on_screen_text": []
+        },
+        {
+          "n": 2,
+          "visual": "the same stream reaching Earth, a city's lights going out",
+          "narration": "The cause of this orientation also reaches Earth. In March 1989 a storm in it put Quebec's power out for nine hours.",
+          "seconds": 10,
+          "asset": "make",
+          "style": "the film's treatment",
+          "source": "",
+          "function": "setup",
+          "shows": "the stream that bends the tail arrives at Earth",
+          "on_screen": "",
+          "on_screen_text": []
+        },
+        {
+          "n": 3,
+          "visual": "the comet again, tail ahead",
+          "narration": "The mechanism responsible is described below.",
+          "seconds": 5,
+          "asset": "make",
+          "style": "the film's treatment",
+          "source": "",
+          "function": "rehook",
+          "shows": "the question, over the comet",
+          "on_screen": "",
+          "on_screen_text": []
+        }
+      ]
+    },
+    {
+      "heading": "Too weak",
+      "shots": [
+        {
+          "n": 4,
+          "visual": "dust grains drifting in sunlight",
+          "narration": "Sunlight exerts a small pressure, sufficient to move grains of dust.",
+          "seconds": 10,
+          "asset": "make",
+          "style": "the film's treatment",
+          "source": "",
+          "function": "context",
+          "shows": "light pressure moving dust",
+          "on_screen": "",
+          "on_screen_text": []
+        },
+        {
+          "n": 5,
+          "visual": "a straight gas tail beside a curved dust tail",
+          "narration": "A comet also has a second tail, of gas, which is straight and fast. Its speed exceeds what sunlight alone can produce.",
+          "seconds": 10,
+          "asset": "make",
+          "style": "the film's treatment",
+          "source": "",
+          "function": "setup",
+          "shows": "the gas tail outruns the dust tail",
+          "on_screen": "",
+          "on_screen_text": []
+        },
+        {
+          "n": 6,
+          "visual": "the two tails, the straight one highlighted",
+          "narration": "In 1951 Ludwig Biermann proposed that a further force was acting.",
+          "seconds": 10,
+          "asset": "make",
+          "style": "the film's treatment",
+          "source": "",
+          "function": "rehook",
+          "shows": "the question the reveal answers",
+          "on_screen": "",
+          "on_screen_text": []
+        }
+      ]
+    },
+    {
+      "heading": "The wind",
+      "shots": [
+        {
+          "n": 7,
+          "visual": "particles streaming out from the Sun past a comet",
+          "narration": "That force is a continuous outflow of particles from the Sun, emitted in every direction, all the time.",
+          "seconds": 10,
+          "asset": "make",
+          "style": "the film's treatment",
+          "source": "",
+          "function": "reveal",
+          "shows": "particles leaving the Sun and bending the gas tail",
+          "on_screen": "",
+          "on_screen_text": []
+        },
+        {
+          "n": 8,
+          "visual": "a probe crossing the stream",
+          "narration": "Eleven years later Mariner 2 flew through it and measured it. It is known as the solar wind.",
+          "seconds": 10,
+          "asset": "make",
+          "style": "the film's treatment",
+          "source": "",
+          "function": "reveal",
+          "shows": "the probe meeting the stream",
+          "on_screen": "",
+          "on_screen_text": []
+        }
+      ]
+    },
+    {
+      "heading": "Showing the wind",
+      "shots": [
+        {
+          "n": 9,
+          "visual": "the opening comet, tail ahead",
+          "narration": "The orientation of the comet is therefore explained.",
+          "seconds": 5,
+          "asset": "make",
+          "style": "the film's treatment",
+          "source": "",
+          "function": "payoff",
+          "shows": "the opening comet",
+          "on_screen": "",
+          "on_screen_text": []
+        },
+        {
+          "n": 10,
+          "visual": "the opening comet, the stream visible",
+          "narration": "The tail is oriented away from the Sun owing to the solar wind.",
+          "seconds": 8,
+          "asset": "make",
+          "style": "the film's treatment",
+          "source": "",
+          "function": "payoff",
+          "shows": "the tail pointing along the stream",
+          "on_screen": "",
+          "on_screen_text": []
+        }
+      ]
+    }
+  ]
+}

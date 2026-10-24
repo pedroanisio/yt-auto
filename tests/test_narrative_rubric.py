@@ -1,7 +1,7 @@
 """AUTO-91: the narrative rubric, one tuple read by the writer and the reviewer.
 
-`ytstudio/narrative.py` holds the eight criteria a story is judged on (train,
-hook, stakes, open loops, reveal setup, tension, ending, honesty), each with four
+`ytstudio/narrative.py` holds the nine criteria a story is judged on (train,
+hook, stakes, open loops, reveal setup, tension, ending, honesty, voice), each with four
 labelled levels, a worked example, the strength of its lead rule from
 docs/narrative/README.md and the corpus rules it is drawn from; the review's
 schema in the shape of script coverage (judging 12); the plan review's schema;
@@ -63,11 +63,12 @@ def every_text() -> list[str]:
 
 
 class Rubric(unittest.TestCase):
-    def test_eight_criteria_with_the_named_keys(self):
-        # AUTO-136: tension, rising stakes across sections, after reveal_setup
+    def test_nine_criteria_with_the_named_keys(self):
+        # AUTO-136: tension, rising stakes across sections, after reveal_setup;
+        # AUTO-138: voice, the narrator's register, last
         self.assertEqual([c.key for c in narrative.RUBRIC],
                          ["train", "hook", "stakes", "open_loops", "reveal_setup",
-                          "tension", "ending", "honesty"])
+                          "tension", "ending", "honesty", "voice"])
         self.assertEqual(narrative.KEYS, tuple(c.key for c in narrative.RUBRIC))
 
     def test_every_criterion_has_four_labelled_one_line_levels_and_an_example(self):
@@ -466,6 +467,96 @@ class Trigger(unittest.TestCase):
         self.assertEqual(heard("paradox", "Excellent"), [])
 
 
+#: Every mention of humour a voice level may make: humour that is there and
+#: lands on the point, a joke that serves no claim, and humour at someone's
+#: expense. None is about humour that is absent.
+HUMOUR = re.compile(r"\b(humou?r\w*|jokes?|funny|asides?|wit|witty)\b", re.I)
+HUMOUR_ALLOWED = ("any humour lands on the point being made",
+                  "a joke or aside that serves no claim",
+                  "humour at the expense of the viewer or of people the subject harmed")
+
+
+class Voice(unittest.TestCase):
+    """AUTO-138: the narrator's register, graded before voice is paid for."""
+
+    def test_voice_is_last_and_leads_with_attention_25_at_its_readme_strength(self):
+        self.assertEqual(narrative.KEYS[-1], "voice")
+        voice = narrative.criterion("voice")
+        self.assertEqual(voice.rules, ("attention 25", "attention 18", "direction 24",
+                                       "attention 21"))
+        self.assertEqual(voice.strength, strengths()["attention 25"])
+        self.assertEqual(voice.strength, "peer-reviewed")
+        for words in ("alongside the viewer", "asking aloud the question they are about "
+                      "to ask", "flagging the step most likely to lose them",
+                      "a discovery land as a discovery", "does any humour serve the point"):
+            self.assertIn(words, voice.question)
+        self.assertIn("Comet tails are oriented anti-sunward", voice.example)
+        self.assertIn("A tail that leads? That looks backwards.", voice.example)
+
+    def test_absent_humour_never_lowers_a_grade(self):
+        # The levels grade humour only when there is some: no level asks for
+        # a joke, and every mention is one of the three allowed phrasings.
+        voice = narrative.criterion("voice")
+        for level, line in voice.levels.items():
+            with self.subTest(level=level):
+                rest = line
+                for allowed in HUMOUR_ALLOWED:
+                    rest = rest.replace(allowed, "")
+                self.assertIsNone(HUMOUR.search(rest), f"{level}: {line}")
+                self.assertNotRegex(line, r"(?i)\b(no|without|lacks?|never|not)\s+"
+                                          r"(any\s+)?(humou?r|jokes?|funny)|humou?rless")
+        self.assertIn("any humour", voice.levels["Excellent"])
+        self.assertNotRegex(voice.levels["Good"], HUMOUR)
+        self.assertIn("a joke or aside that serves no claim", voice.levels["Fair"])
+        for c in narrative.RUBRIC:
+            if c.key != "voice":
+                with self.subTest(criterion=c.key):
+                    self.assertIsNone(HUMOUR.search(" ".join(c.levels.values())))
+
+    def test_a_poor_voice_is_a_consider_and_never_flagged_on_shot_0(self):
+        role = " ".join(narrative.reviewer_role().split())
+        self.assertIn("a Poor voice yields consider, never reject on its own", role)
+        self.assertIn("A voice flag names the shot whose line reads as a lecture and "
+                      "quotes it; never flag voice on shot 0.", role)
+        # the four criteria that decide a film are unchanged
+        self.assertIn("(train, stakes, open_loops, ending)", role)
+        deciding = role[role.index("one of the four"):role.index("is Poor")]
+        self.assertNotIn("voice", deciding)
+        self.assertNotIn("voice", narrative.reviewer_role(plan=True))
+
+    def test_the_writer_reads_the_voice_line_and_the_plan_review_does_not(self):
+        voice = narrative.criterion("voice")
+        writer = narrative.rubric_text("writer")
+        self.assertIn(f"voice: {voice.question} Aim for: {voice.levels['Excellent']}", writer)
+        self.assertIn("humour", writer)
+        self.assertNotIn("voice", script.PLAN_CRITERIA)
+        self.assertNotIn("voice", narrative.rubric_text("reviewer", keys=script.PLAN_CRITERIA))
+
+    def test_check_review_holds_a_voice_flag_to_a_named_shot(self):
+        said = "Comets are observed to move away from the Sun with the tail leading."
+        on_shot = flag("voice", n=3, section=1, quote=said)
+        self.assertEqual(narrative.check_review(review("consider", {"voice": "Fair"},
+                                                       [on_shot])), [])
+        self.assertEqual(script.Screenwriter._sample_problems(
+            review("consider", {"voice": "Fair"}, [on_shot]), narrative.REVIEW_SCHEMA,
+            {1: "a", 2: "b", 3: said}, {1: [1, 2, 3]}), [])
+        # a recommend grading voice Poor breaks the sample like any Poor
+        found = narrative.check_review(review("recommend", {"voice": "Poor"}))
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("voice", found[0])
+        # a voice flag on shot 0, for a section or the whole script, is asked again
+        for section in (1, 0):
+            with self.subTest(section=section):
+                found = narrative.check_review(review(
+                    "consider", {"voice": "Fair"}, [flag("voice", n=0, section=section)]))
+                self.assertEqual(len(found), 1, found)
+                self.assertIn("voice", found[0])
+                self.assertIn("shot 0", found[0])
+        # another criterion's flag on shot 0 is still a section's or the plan's
+        self.assertEqual(narrative.check_review(review("consider", flags=[flag("ending")])),
+                         [])
+
+
 # --------------------------------------------------------------------------- #
 # the seeded calibration set
 # --------------------------------------------------------------------------- #
@@ -491,7 +582,7 @@ def at(doc: dict, dotted: str):
 SEEDED = {"list-plan": "train", "topic-train": "train", "empty-payoff": "ending",
           "and-chain": "train", "reveal-first": "reveal_setup",
           "recap-ending": "ending", "hook-enumerates": "hook",
-          "flat-tension": "tension", "no-trigger": "hook"}
+          "flat-tension": "tension", "no-trigger": "hook", "lecture-voice": "voice"}
 
 #: The faults only the cold read catches: a premise a first-time viewer
 #: could not restate, and terms a lay audience is never given. judging 14
@@ -659,6 +750,8 @@ class Fixtures(unittest.TestCase):
             said = load(path / "expected.json")["review"]
             with self.subTest(case=name):
                 self.assertIn(said["grades"]["tension"], narrative.LEVELS)
+                # AUTO-138: and every one grades the narrator's voice
+                self.assertEqual(sorted(said["grades"]), sorted(narrative.KEYS))
                 first = said["first_minute"]
                 self.assertIn(first["trigger"], narrative.HEARD_TRIGGERS)
                 if name in PLAN_ONLY:
@@ -695,6 +788,33 @@ class Fixtures(unittest.TestCase):
         self.assertNotIn("?", opening)
         self.assertTrue(opening.startswith("Comets are made of ice and dust"))
 
+    def test_the_lecture_voice_case_is_the_good_film_read_as_a_lecture(self):
+        # AUTO-138: the good plan, and the good script's facts and structure in
+        # an impersonal register: no question, no word to the viewer
+        good = {n: load(FIXTURES / "good" / n) for n in ("plan.json", "script.json")}
+        lecture = {n: load(FIXTURES / "lecture-voice" / n) for n in ("plan.json", "script.json")}
+        self.assertEqual(lecture["plan.json"], good["plan.json"])
+        self.assertEqual(lecture["script.json"]["idea"], good["script.json"]["idea"])
+        a = [s for sec in good["script.json"]["sections"] for s in sec["shots"]]
+        b = [s for sec in lecture["script.json"]["sections"] for s in sec["shots"]]
+        self.assertEqual([s["heading"] for s in lecture["script.json"]["sections"]],
+                         [s["heading"] for s in good["script.json"]["sections"]])
+        for x, y in zip(a, b, strict=True):
+            with self.subTest(n=x["n"]):
+                self.assertEqual({k: v for k, v in y.items() if k != "narration"},
+                                 {k: v for k, v in x.items() if k != "narration"})
+                self.assertEqual(script.figures_in(y["narration"]),
+                                 script.figures_in(x["narration"]))
+                self.assertNotEqual(y["narration"], x["narration"])
+        said = " ".join(s["narration"] for s in b)
+        self.assertNotIn("?", said)
+        self.assertIsNone(re.search(r"\b(you|your|we|us|our|let's)\b", said, re.I), said)
+        expected = load(FIXTURES / "lecture-voice" / "expected.json")
+        self.assertEqual((expected["criterion"], expected["verdict"]), ("voice", "consider"))
+        self.assertIn(expected["review"]["grades"]["voice"], ("Fair", "Poor"))
+        self.assertNotIn("Poor", [v for k, v in expected["review"]["grades"].items()
+                                  if k != "voice"])
+
     def test_the_good_pair_can_be_recommended(self):
         expected = load(FIXTURES / "good" / "expected.json")
         self.assertEqual(expected["verdict"], "recommend")
@@ -703,6 +823,8 @@ class Fixtures(unittest.TestCase):
         self.assertEqual(narrative.check_review(said), [])
         self.assertEqual(said["verdict"], "recommend")
         self.assertNotIn("Poor", said["grades"].values())
+        # its narration finds things out with the viewer (AUTO-138)
+        self.assertEqual(said["grades"]["voice"], "Excellent")
         plan = expected["plan_review"]
         self.assertEqual(problems(plan, narrative.PLAN_REVIEW_SCHEMA), [])
         self.assertEqual(plan["verdict"], "accept")
