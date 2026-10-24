@@ -26,6 +26,7 @@ FOREIGN_FLAGS = {
     "--link-dest", "--update",          # rsync
     "--settings", "--max-budget-usd", "--allowed-tools", "--permission-mode",
     "--dangerously-skip-permissions",   # the claude CLI
+    "--max-turns",                      # the claude CLI, from EngineConfig.max_turns
     "--cwd", "--timeout", "--version",
     "--bg", "--quote",                  # govern
     "--crf",                            # the engine
