@@ -1394,20 +1394,21 @@ def _rehook_lines(plan: dict, sections: list[dict]) -> list[str]:
     """A rehook names a question the ledger holds and that is still open
     when its section begins (structure 23, 8). A question closed in the same
     section is re-opened and answered there; one left open (closed_in 0)
-    stays open."""
-    ledger = {str(q.get("id", "")).strip(): q.get("closed_in")
+    stays open. Ids match whatever their case: a writer who says q1 where
+    the ledger holds Q1 names the same question."""
+    ledger = {str(q.get("id", "")).strip().upper(): q.get("closed_in")
               for q in plan.get("questions") or [] if isinstance(q, dict)}
     out = []
     for n, spec in enumerate(sections, 1):
         qid = str(spec.get("rehook") or "").strip()
         if not qid:
             continue
-        if qid not in ledger:
+        if qid.upper() not in ledger:
             out.append(f"rule: section {n}'s rehook names {qid}, which is not in the "
                        "questions ledger: there is nothing to re-open (structure 23, "
                        "structure 8)")
             continue
-        closed = ledger[qid]
+        closed = ledger[qid.upper()]
         if isinstance(closed, int) and not isinstance(closed, bool) and 0 < closed < n:
             out.append(f"rule: section {n}'s rehook names {qid}, which was closed in "
                        f"section {closed}, before it: there is nothing left to re-open "
@@ -1530,9 +1531,17 @@ def plan_prechecks(plan: dict, seconds: int, title: str = "") -> list[str]:
     # The seven-minute line is this one over the whole film after section 1;
     # a film never gets both.
     if gap > REHOOK_EVERY_SECONDS and not long_unhooked:
-        out.append(f"house: {gap} s pass without a rehook, from section {start} to "
-                   + (f"section {end}" if end else "the end of the film")
-                   + f": plan one at least every {REHOOK_EVERY_SECONDS} s (structure 23)")
+        # A section's rehook is read at its start, so a one-section film's
+        # gap is the whole film whatever it says: ask for the section.
+        if len(sections) < 2:
+            out.append(f"house: a one-section plan runs {gap} s with no rehook after its "
+                       "opening: split it so a later section re-opens a question at least "
+                       f"every {REHOOK_EVERY_SECONDS} s (structure 23)")
+        else:
+            out.append(f"house: {gap} s pass without a rehook, from section {start} to "
+                       + (f"section {end}" if end else "the end of the film")
+                       + f": plan one at least every {REHOOK_EVERY_SECONDS} s "
+                       "(structure 23)")
     train = " ".join(str(plan.get("train") or "").split())
     if train and "?" not in train and not _has(train, _ASKS):
         out.append("house: the train asks no question (no question mark, no why, how or "
@@ -1965,12 +1974,28 @@ def heard_trigger(samples: list[dict]) -> str:
 
 def trigger_differs(trigger) -> bool | None:
     """Whether a review's planned and heard triggers differ: None when there
-    is no record of them, False when they agree or either is not
-    evidenced."""
+    is no record of them, False when they agree, when either is not
+    evidenced, or when the opening was heard on none (that is the
+    hook-trigger-match flag, not a difference between two triggers)."""
     if not isinstance(trigger, dict) or "heard" not in trigger:
         return None
     planned, heard = trigger.get("planned"), trigger.get("heard")
-    return bool(planned) and heard not in (None, "not_evidenced") and planned != heard
+    return bool(planned) and heard not in (None, "not_evidenced", "none") and planned != heard
+
+
+def _merged_hook_flag(flag: dict, hooks: list[dict]) -> dict:
+    """The hook-trigger-match flag with the samples' own whole-script hook
+    problems and fixes added, each said once, in the order first given."""
+    def joined(key: str) -> str:
+        parts = []
+        for text in [str(flag.get(key) or "").strip()] + [
+                str(f.get(key) or "").strip() for f in hooks]:
+            if text and text not in parts:
+                parts.append(text)
+        if key == "problem" and len(parts) > 1:
+            return f"{parts[0]}; the reviewers also said: " + "; ".join(parts[1:])
+        return "; ".join(parts)
+    return dict(flag, problem=joined("problem"), fix=joined("fix"))
 
 
 def trigger_line(trigger: dict) -> str:
@@ -3455,7 +3480,8 @@ class Screenwriter:
         planned = planned_trigger(plan)
         record["trigger"] = {"planned": planned,
                              "heard": current.get("trigger") or "not_evidenced"}
-        if record["trigger"]["heard"] == "none":
+        heard_none = record["trigger"]["heard"] == "none"
+        if heard_none:
             plan_flags.append({
                 "n": 0, "section": 0, "criterion": "hook", "severity": "important",
                 "problem": "the first three spoken sentences open no curiosity trigger",
@@ -3472,13 +3498,19 @@ class Screenwriter:
                 "fix": "make the train's question and obstacle heard in the narration",
                 "by": "cold-read-match"})
         if current["verdict"] in ("consider", "reject"):
-            # An opening heard to pull no trigger is the hook's whole-script
-            # fault: the samples' own whole-script hook flags, worded their
-            # own way, name the same opening, so one warning stands for it.
-            heard_none = record["trigger"]["heard"] == "none"
-            plan_flags += [f for f in current["flags"] if f.get("severity") in REVISABLE
-                           and not int(f.get("n", 0) or 0) and not int(f.get("section", 0) or 0)
-                           and not (heard_none and f.get("criterion") == "hook")]
+            whole = [f for f in current["flags"] if f.get("severity") in REVISABLE
+                     and not int(f.get("n", 0) or 0) and not int(f.get("section", 0) or 0)]
+            if heard_none:
+                # An opening heard to pull no trigger is the hook's
+                # whole-script fault, and the samples' own whole-script hook
+                # flags speak of the same opening: one warning stands for
+                # them, carrying each of their problems and fixes so a
+                # different hook fault (an opening that lists its
+                # conclusions) still reaches the writer.
+                plan_flags[0] = _merged_hook_flag(
+                    plan_flags[0], [f for f in whole if f.get("criterion") == "hook"])
+                whole = [f for f in whole if f.get("criterion") != "hook"]
+            plan_flags += whole
         seen = set()
         for f in plan_flags:
             key = (f.get("criterion"), str(f.get("problem")))

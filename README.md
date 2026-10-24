@@ -644,7 +644,8 @@ also reads the pre-checks code can count (`rule:` an AND between sections,
 a question never closed, a reveal before its constraint, an empty hook gap,
 a middle section with no escalation or the same one as another, a rehook of
 a question not in the ledger or already closed; `house:` a long film with no
-rehook, section 2 with none, more than 180 s without one) and decides on its
+rehook, section 2 with none, more than 180 s without one, a one-section plan
+over 180 s asked to split) and decides on its
 own. A reading whose fields
 contradict its verdict (an accept that finds the order a list, a revise that
 names no problem: `narrative.check_plan_review`) is asked once more as
@@ -685,7 +686,8 @@ checks that premise against the train. Each sample also names the curiosity
 trigger the opening's first three spoken sentences pull (`first_minute.trigger`),
 the round keeps the label most samples give, and script.md shows it against
 the plan's `hook.trigger`; only an opening heard to pull none is a flag, a
-whole-script hook flag left unresolved (`hook-trigger-match`). The `tension`
+whole-script hook flag left unresolved (`hook-trigger-match`, carrying the
+samples' own whole-script hook problem and fix). The `tension`
 row grades whether each middle section puts more at risk than the one before.
 A consider sends its binding flags
 back: a shot's to `revise-story-1` (the line may be restructured, never given
