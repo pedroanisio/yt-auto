@@ -219,7 +219,7 @@ from collections import Counter
 from pathlib import Path
 
 from . import geometry as geo
-from . import framecheck, house, narrative, spend, workspace
+from . import channel, framecheck, house, narrative, spend, workspace
 from . import listen as listen_pass
 from .proofframes import (PROOF_DIFF, PROOF_LIMIT, mismatch_text,  # noqa: F401
                           proof_diff, proof_plan, ungraded)
@@ -4641,6 +4641,9 @@ def run(args) -> int:
                         **rechecked["tally"]}} if rechecked is not None else {}),
         "scorecard": str(pass_dir / "scorecard.json"), "house": digest,
         "judge_calibration": calibration, "usage": card["usage"]})
+    # AUTO-137: the channel record's row says counted as soon as qa.json
+    # does, not at the next script or styles run (a standalone run has none).
+    channel.record(workspace.work_dir(args), project)
 
     print(f"\n{idea.title} — QA {pass_dir.name}: {verdict}  (overall {card.get('overall')}, "
           f"the median of {card['scoring']['valid']} of {card['scoring']['asked']} samples)")

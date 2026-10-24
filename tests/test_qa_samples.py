@@ -258,6 +258,18 @@ class Samples(unittest.TestCase):
         self.assertEqual(card["verdict"], qa.READY, card["bar"])
         self.assertEqual(code, 0)
 
+    def test_a_ready_pass_counts_the_film_in_the_channel_record(self):
+        # AUTO-137: work/channel.json is refreshed when qa.json is written,
+        # so the stored row says counted as soon as the film is READY.
+        self.answers[:] = [sample(9.4), sample(7.0), sample(9.3)]
+        self.assertEqual(self.run_qa(), 0)
+        rows = json.loads((self.work / "channel.json").read_text())["films"]
+        self.assertEqual([(r["slug"], r["counted"]) for r in rows], [("one-take", True)])
+        self.answers[:] = [sample(7.0), sample(7.0), sample(7.0)]
+        self.run_qa(fresh=True)
+        rows = json.loads((self.work / "channel.json").read_text())["films"]
+        self.assertEqual([(r["slug"], r["counted"]) for r in rows], [("one-take", False)])
+
     def test_a_finding_in_one_sample_of_three_is_low_confidence(self):
         twice_a = finding("the hook frame is flat", severity="blocking")
         twice_b = finding("the opening still has no depth", severity="blocking")
