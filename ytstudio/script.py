@@ -1501,7 +1501,9 @@ def parallel_line(p: dict) -> str:
     where it breaks, and the page it came from."""
     text = {k: " ".join(str(p.get(k) or "").split())
             for k in ("event", "year", "how_it_maps", "where_it_breaks", "source_url")}
-    return (f"{text['event']} ({text['year']}): maps: {text['how_it_maps']}; "
+    # the year is not required of a kept row: an empty one prints no "()"
+    year = f" ({text['year']})" if text["year"] else ""
+    return (f"{text['event']}{year}: maps: {text['how_it_maps']}; "
             f"breaks: {text['where_it_breaks']} (source: {text['source_url']})")
 
 

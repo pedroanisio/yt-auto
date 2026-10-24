@@ -363,6 +363,12 @@ class Parallels(unittest.TestCase):
         # a screenplay written before the ids is revised against today's block
         self.assertNotIn("PL1", self.block({"parallels": [PARALLEL]}, ids=False))
 
+    def test_a_line_without_a_year_has_no_empty_brackets(self):
+        self.assertEqual(script.parallel_line(dict(PARALLEL, year=" ")),
+                         "Tacoma Narrows bridge collapse: maps: a design trusted on paper "
+                         "failed under an unmodelled load; breaks: Tacoma failed by "
+                         "flutter, not corrosion (source: https://example.org/tacoma)")
+
     def test_the_line(self):
         self.assertEqual(script.parallel_line(dict(PARALLEL, event="  Dee   bridge ")),
                          "Dee bridge (1940): maps: a design trusted on paper failed under "
