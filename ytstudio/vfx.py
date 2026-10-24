@@ -485,6 +485,39 @@ CONTINUITY_SCHEMA = {
     "required": ["one_film", "score", "breaks", "monotony", "summary"],
 }
 
+
+def owner_section_n(owner: str, authored: list) -> int | None:
+    """The number of the authored section a continuity row names, or None.
+    The review names a section by its heading (its frames are labelled with
+    `doc["section"]`), so the row joins to `authored[].section`: exactly
+    first, then with case folded and whitespace collapsed, since a model may
+    retype a heading. Two sections may share a heading; a name that fits
+    more than one section, or none, places nothing, and the caller names the
+    row as written instead of guessing a section to re-author."""
+    owner = str(owner or "")
+    rows = [r for r in authored or [] if isinstance(r, dict)
+            and isinstance(r.get("n"), int) and not isinstance(r.get("n"), bool)]
+    if not owner.strip():
+        return None
+    for key in (str, lambda s: " ".join(s.casefold().split())):
+        hits = {r["n"] for r in rows if key(str(r.get("section") or "")) == key(owner)}
+        if hits:
+            return hits.pop() if len(hits) == 1 else None
+    return None
+
+
+def judged_apart(continuity: dict | None) -> bool:
+    """Whether a continuity verdict records a reviewer of another family than
+    the author, by the rule every reviewing stage applies before it pays
+    (flags.own_reviewer). Only such a verdict may block QA: one by the
+    author's own family, or one that does not say who gave it (every
+    vfx.json written before `continuity.reviewer`), stays a doctor warn."""
+    rec = (continuity or {}).get("reviewer") if isinstance(continuity, dict) else None
+    if not isinstance(rec, dict):
+        return False
+    model, author = str(rec.get("model") or "").strip(), str(rec.get("author") or "").strip()
+    return bool(model and author) and flags.own_reviewer(author, model) == ""
+
 #: Effect families, roughly cheapest to most expensive to refine by hand.
 EFFECT_TYPES = ("text-and-callout", "2d-diagram", "data-animation", "map-move",
                 "photo-composite", "stock-treatment", "2d-character",
@@ -3848,6 +3881,9 @@ class VfxPlanner:
                     "worlds": world_rows(worlds),
                     "revisions": revisions, "rounds": rounds, "best_round": best_round_no,
                     "score": chosen["score"] if chosen else None,
+                    # the bar the score was reviewed against: doctor warns
+                    # under it, and a carry keeps it with the score
+                    "bar": self.author_bar,
                     "review": chosen["review"] if chosen else None,
                     "cost_usd": round(engine.usage.cost_usd + reviewer.usage.cost_usd, 4),
                     "budget": self.spend.row(n), "stopped": self.spend.stopped.get(n),
@@ -4420,7 +4456,13 @@ class VfxPlanner:
         size or a grade that shifts at every boundary passes every section
         review, and so does a film that never leaves one set; this is the
         review that sees both. It runs on the reviewer's model (AUTO-143):
-        the author's model never grades its own film."""
+        the author's model never grades its own film. Every form of the
+        result, skipped and failed too, records who judged it (`reviewer`):
+        QA lets a blocking break stop the film only when that record shows a
+        reviewer of another family than the author (`judged_apart`)."""
+        who = {"model": self.reviewer_model, "author": self.model,
+               "engine": harness.ENGINE_NAME}
+
         def work() -> dict:
             frames: list[dict] = []
             cwd: Path | None = None
@@ -4449,7 +4491,7 @@ class VfxPlanner:
                                    "frame": f"frames/{png.name}"})
             if len({f["section"] for f in frames}) < 2:
                 return {"skipped": "fewer than two sections have proof frames",
-                        "frames": frames, "breaks": []}
+                        "frames": frames, "breaks": [], "reviewer": who}
             # Capped as each section review on this model is: it reads about
             # as many frames as a section review does, and no document.
             reviewer = harness.Harness(self.ws.root, "vfx", model=self.reviewer_model,
@@ -4477,7 +4519,8 @@ class VfxPlanner:
                                           CONTINUITY_SCHEMA, cwd=cwd)
             except harness.HarnessError as exc:
                 self._say(f"  continuity review failed: {exc}")
-                return {"error": str(exc)[:300], "frames": frames, "breaks": []}
+                return {"error": str(exc)[:300], "frames": frames, "breaks": [],
+                        "reviewer": who}
             finally:
                 self._account(reviewer.usage)
             breaks = result.get("breaks") or []
@@ -4485,7 +4528,7 @@ class VfxPlanner:
                       f"{'one film' if result.get('one_film') else 'not one film'}, "
                       f"{len(breaks)} break(s), "
                       f"{len(result.get('monotony') or [])} run(s) in one setting")
-            return dict(result, frames=frames,
+            return dict(result, frames=frames, reviewer=who,
                         cost_usd=round(reviewer.usage.cost_usd, 4))
         return self._stage("12-continuity", work)
 
