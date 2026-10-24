@@ -347,6 +347,146 @@ class Mechanical(unittest.TestCase):
         self.assertEqual(qa.mechanical_findings(rows), [])
 
 
+# --------------------------------------------------------------------------- #
+# AUTO-145: a diagram built in steps, or shown whole and talked over
+# --------------------------------------------------------------------------- #
+
+def _drawing(path: Path, lines: int, *, shift: int = 0, rise: int = 0, ground=None) -> Path:
+    """`lines` bright horizontal strokes on a dark ground (or on `ground`):
+    a diagram with that many parts drawn."""
+    im = ground.copy() if ground is not None else Image.new("L", (W, H), 30)
+    draw = ImageDraw.Draw(im)
+    for i in range(lines):
+        y = 20 + i * 11 + rise
+        draw.line([(40 + shift, y), (600 + shift, y)], fill=230, width=3)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    im.save(path)
+    return path
+
+
+def _texture():
+    """A busy ground: 1,500 small grey squares at seeded random places."""
+    import random
+    rng = random.Random(1)
+    im = Image.new("L", (W, H), 30)
+    draw = ImageDraw.Draw(im)
+    for _ in range(1500):
+        x, y = rng.randrange(W), rng.randrange(H)
+        draw.rectangle([x, y, x + 3, y + 3], fill=rng.choice((60, 90, 120)))
+    return im
+
+
+#: _build's 1.2 (3-7 s) is the first shot of a diagram effect; its take
+#: says one line 1.5 s in, at 4.5 s, between the build stills.
+BUILDS = {"1.2": "fx-steps"}
+VOICE = {"takes": [{"label": "1.2", "text": "Then the second part.", "seconds": 4.0,
+                    "words": [{"text": "Then", "start": 1.5, "end": 1.8},
+                              {"text": "the", "start": 1.8, "end": 1.9},
+                              {"text": "second", "start": 1.9, "end": 2.3},
+                              {"text": "part.", "start": 2.3, "end": 2.8}]}]}
+
+
+def _built(series=None):
+    """The sampled rows of _build with 1.2's build stills, each reading
+    given its ink in time order: first, the line, last."""
+    rows = qa.sample(_build(), voice=VOICE, builds=BUILDS)
+    if series is not None:
+        points = sorted([e for r in rows if r["label"] == "1.2"
+                         for e in (r.get("builds") or []) + (r.get("lines") or [])],
+                        key=lambda e: e.get("t", e.get("at")))
+        for entry, ink in zip(points, series):
+            entry["ink"] = ink
+    return rows
+
+
+class Ink(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="qa-ink-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def test_a_blank_frame_has_no_ink_and_more_lines_have_more(self):
+        self.assertEqual(qa.INK_EDGE, 32)
+        self.assertAlmostEqual(qa.frame_ink(_flat(self.tmp / "blank.png", 30)), 0.0,
+                               places=3)
+        inks = [qa.frame_ink(_drawing(self.tmp / f"d{n}.png", n)) for n in (1, 5, 20)]
+        self.assertGreater(inks[0], 0.0)
+        self.assertEqual(inks, sorted(inks))
+        self.assertLess(inks[0], inks[2])
+        self.assertIsNone(qa.frame_ink(self.tmp / "missing.png"))
+
+    def test_measure_records_ink_on_every_still_and_reading(self):
+        rows = _built()
+        frames = self.tmp / "frames"
+        for row in rows:
+            _drawing(frames / row["frame"], 10)
+            for name in (row.get("burst") or {}).get("files") or []:
+                _drawing(frames / name, 10)
+        qa.measure(rows, frames)
+        self.assertTrue(all(isinstance(r.get("ink"), float) for r in rows), rows)
+        entries = [e for r in rows for e in (r.get("builds") or []) + (r.get("lines") or [])]
+        self.assertTrue(entries)
+        self.assertTrue(all(isinstance(e.get("ink"), float) for e in entries), entries)
+
+
+class NoBuild(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="qa-build-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def found(self, series):
+        return [f for f in qa.mechanical_findings(_built(series)) if f["kind"] == "no-build"]
+
+    def test_a_series_that_never_grows_is_a_minor_no_build_with_its_ink(self):
+        self.assertEqual(qa.BUILD_STEP, 0.15)
+        [f] = self.found([0.20, 0.21, 0.22])
+        self.assertEqual((f["shot"], f["owner"], f["severity"]), ("1.2", "vfx", "minor"))
+        self.assertIn("effect `fx-steps` is on screen whole from the cut", f["problem"])
+        self.assertIn("ink 0.20 at 3.25 s", f["problem"])
+        self.assertIn("0.22 at 6.75 s", f["problem"])
+        self.assertIn("talked over", f["problem"])
+        self.assertEqual(f["ink"], [[3.25, 0.2], [4.5, 0.21], [6.75, 0.22]])
+        for key in ("why", "root_cause", "fix", "timestamp", "frame"):
+            self.assertTrue(f[key], key)
+
+    def test_the_same_drawing_moved_three_pixels_is_no_build(self):
+        drawn = qa.frame_ink(_drawing(self.tmp / "a.png", 18))
+        moved = qa.frame_ink(_drawing(self.tmp / "b.png", 18, shift=3))
+        self.assertEqual(len(self.found([drawn, drawn, moved])), 1)
+
+    def test_a_diagram_that_grows_files_nothing(self):
+        self.assertEqual(self.found([0.05, 0.12, 0.22]), [])
+
+    def test_a_growing_diagram_over_a_busy_ground_files_nothing(self):
+        ground = _texture()
+        series = [qa.frame_ink(_drawing(self.tmp / f"t{n}.png", n, ground=ground))
+                  for n in (3, 15, 30)]
+        self.assertGreater(series[0], 0.1)                  # the ground alone has ink
+        self.assertEqual(self.found(series), [])
+
+    def test_a_build_still_is_never_the_shots_home_and_carries_no_motion(self):
+        rows = _built([0.05, 0.12, 0.22])
+        for row in rows:
+            if row.get("builds") and "burst" not in row:
+                # an empty opening frame is what a build looks like
+                row["still"] = {"mean": 30.0, "spread": 0.5, "dominant_share": 1.0,
+                                "clipped_share": 0.0}
+        diag = {"1.2": {"off_camera": ["shot-1.2/x"], "warnings": 0}}
+        found = qa.mechanical_findings(rows, diagnostics=diag)
+        [off] = [f for f in found if f["kind"] == "off_camera"]
+        self.assertEqual(off["timestamp"], 5.0)              # the midpoint still
+        self.assertEqual([f["kind"] for f in found], ["off_camera"])   # no flat, no frozen
+
+    def test_rows_without_ink_file_nothing_and_are_named(self):
+        rows = _built()
+        self.assertEqual([f for f in qa.mechanical_findings(rows)
+                          if f["kind"] == "no-build"], [])
+        card = qa.note_builds({"not_evidenced": []}, BUILDS, rows)
+        [line] = card["not_evidenced"]
+        self.assertTrue(line.startswith("builds:"), line)
+        self.assertIn("1.2", line)
+        self.assertIn("ink", line)
+
+
 class Cap(unittest.TestCase):
     def scores(self, **over):
         base = {k: 9.0 for k in qa.CATEGORIES}
@@ -616,6 +756,62 @@ class Stage(StageCase):
         self.assertFalse(any(f["kind"] == "frozen" for f in card["mechanical"]))
         self.assertEqual(card["scores"]["visual_quality"], 9.2)   # nothing blocking: no cap
         self.assertEqual(len(self.jobs), rendered)
+
+
+class BuildStage(StageCase):
+    """AUTO-145 end to end: `yt qa` on a film whose first diagram shot is
+    1.2 (3-7 s), the effect running on over 1.3."""
+
+    def setUp(self):
+        super().setUp()
+        (self.root / "render.json").unlink()            # nothing from the engine
+        build = _build()
+        for shot in build["shots"]:
+            shot.update(include=f"shot-{shot['label']}", file="vfx/v01/a.scene.xml#w")
+        build["shots"][2]["include"] = "shot-1.2"
+        (self.root / "build.json").write_text(json.dumps(build))
+        (self.root / "vfx.json").write_text(json.dumps({"sections": [{"effects": [
+            {"id": "fx-steps", "type": "2d-diagram", "shots": ["1.2", "1.3"]}]}],
+            "scene": {"dropped": {}}}))
+
+    def renderer(self, grows: bool):
+        def render(job):
+            self.jobs.append(job)
+            out = job["out"]
+            if "frames" in job:
+                a, b = (int(v) for v in job["frames"].split(".."))
+                times = [(f, f / 30) for f in range(a, b)]
+            else:
+                times = [(None, float(job["still"]))]
+            for f, t in times:
+                # a pixel's sway frame to frame, so no burst reads frozen
+                parts = int(2 + 3 * t) if grows else 30
+                _drawing(Path(out.replace("%04d", f"{f:04d}") if f is not None else out),
+                         parts, rise=(f or 0) % 2)
+            return 0
+        return lambda args, scene: render
+
+    def card(self):
+        return json.loads((self.root / "qa" / "pass-01" / "scorecard.json").read_text())
+
+    def test_a_finished_diagram_from_the_cut_is_a_minor_no_build(self):
+        qa.RENDERER = self.renderer(grows=False)
+        qa.run(self.args(frame_limit=None))
+        samples = json.loads((self.root / "qa" / "pass-01" / "samples.json").read_text())
+        self.assertTrue(all("ink" in s for s in samples), samples)
+        self.assertEqual(sum(1 for s in samples if s.get("builds")), 2)
+        card = self.card()
+        [f] = [f for f in card["mechanical"] if f["kind"] == "no-build"]
+        self.assertEqual((f["shot"], f["severity"], f["owner"]), ("1.2", "minor", "vfx"))
+        self.assertIn("fx-steps", f["problem"])
+        self.assertEqual(card["scores"]["visual_quality"], 9.2)   # advisory: no cap
+
+    def test_a_diagram_that_grows_files_none_and_nor_does_its_later_shot(self):
+        qa.RENDERER = self.renderer(grows=True)
+        qa.run(self.args(frame_limit=None))
+        card = self.card()
+        self.assertEqual([f for f in card["mechanical"] if f["kind"] == "no-build"], [])
+        self.assertFalse(any(n.startswith("builds:") for n in card["not_evidenced"]))
 
 
 # --------------------------------------------------------------------------- #
