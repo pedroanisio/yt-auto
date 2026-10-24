@@ -71,6 +71,17 @@ until the channel-level `work/retention.json` exists (§12); the per-film
 belongs to `script`, whose duty names the same story as row 9 (hook,
 stakes, re-hooks, open questions, payoff).
 
+Editing / pacing is also measured, not only judged (`ytstudio/rhythm.py`,
+direction 12 and 25): `yt qa` writes `pass-NN/rhythm.json` with the
+coefficient of variation of the intervals between cuts and builds (by
+shot from `build.json`, by change event once the render is scanned), the
+longest hold with no visual change while the narration runs, the opening
+30 s's change rate against the film's median, and the words a minute of
+each section from `voice.json`. The reviewer is shown these numbers as
+measurements beside its own judgement, which they do not replace; what
+they find is filed as `hold`, `metronomic`, `slow-opening` and `wpm`
+mechanical findings (§10).
+
 **READY TO PUBLISH requires all of:**
 
 - overall **≥ 9.0**
@@ -457,7 +468,13 @@ category, is the size of the steps read as progress), takes each category's
 median and records its spread (max - min), keeps a finding two samples
 report and lists one a single sample reports (a blocking claim included) as low-confidence, calls a pass
 with fewer than two valid samples `not_evidenced` (never READY), applies the bar of section 2 mechanically (a blocking
-mechanical finding caps `visual_quality` and `animation_vfx` at 6; no audio
+mechanical finding caps `visual_quality` and `animation_vfx` at 6, a blocking
+rhythm finding caps `editing_pacing` at 6 instead and a blocking hold caps
+all three, while a hold, a slow opening or an events-basis metronomic
+finding rests on scan thresholds not yet measured on real renders
+(`rhythm.RHYTHM["calibrated"]` False) it is filed minor, marked TO VERIFY,
+and caps nothing; a render that is stale or cannot be scanned leaves the
+hold and the opening not evidenced, never passed; no audio
 track in `build.json` fixes `sound_design` and `music_score` at 2.0; a
 `voiceover`, `sound_design` or `music_score` with no current listening
 review (§12) is not evidenced, unscored, and READY cannot be judged), and

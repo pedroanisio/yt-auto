@@ -789,6 +789,7 @@ blocking editorial note. It is not a delivery verdict. The order is:
    mechanical finding (flat, clipped, frozen, a jump, an off-camera object
    on the hook, the ending, the payoff shot or more than one sampled shot) blocks on its own
    and caps `visual_quality` and `animation_vfx` at 6 until it is fixed.
+   The rhythm findings (`ytstudio/rhythm.py`, `pass-NN/rhythm.json`: a hold over 8 s while the narration runs, a slow opening, shot or change intervals with a CV under 0.3, a section outside 130-200 wpm) cap `editing_pacing` at 6 instead (a hold caps all three); until the scan's thresholds are measured a hold, a slow opening or an events-basis metronomic finding is minor and TO VERIFY, and a stale or unscanned render leaves them not evidenced.
    QA's mechanical pass also compares the film with the authors' proof
    frames (as `yt build` did on the built document before the encode):
    for each world's latest proof frame it renders the film at the
