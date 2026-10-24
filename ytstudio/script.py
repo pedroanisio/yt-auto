@@ -650,7 +650,13 @@ LEDGER_REVISE_SCHEMA = {
 #: effect) is revised but binds nothing downstream. A static process
 #: (AUTO-144: `shows` asks for a change over time, `visual` is one fixed
 #: state; direction 7, direction 9) binds the picture too, and vfx re-checks
-#: it on the authored documents.
+#: it on the authored documents. A formula nothing built first, or one the
+#: beat does not need (AUTO-145), cites direction 9: the rule comes after
+#: the viewer has seen it happen. A spatial idea shown flat cites attention
+#: 15 for its scale part only; its arrangement, path and interior part is a
+#: house rule with no corpus evidence. Both bind the picture, and a writer's
+#: keep answers both, since a line can carry the worked case or the
+#: comparison.
 PICTURE_FLAGS = {
     "picture:section": ("important", "change what the section's shots show so its beat "
                                      "can be read from the pictures alone"),
@@ -663,6 +669,12 @@ PICTURE_FLAGS = {
     "picture:static-process": ("important", "show the change: a simulation, a step "
                                             "animation or a build the viewer watches, one "
                                             "state per beat"),
+    "picture:formula": ("important", "show the relation first as a worked case or a "
+                                     "picture of its quantities, then the formula; cut the "
+                                     "formula when the beat does not need it"),
+    "picture:spatial": ("important", "show it in space: a comparison at human scale, a "
+                                     "cutaway or cross-section, or a camera move through "
+                                     "the geometry"),
 }
 
 #: The picture-check's kinds a writer's `keep` does not answer: the line can
@@ -4866,7 +4878,8 @@ class Screenwriter:
             "its number: the claim its pictures alone carry, written first, then whether "
             "that is its beat, what is missing and the shot numbers where the thread is "
             "lost. Under reports list only the shots with a bare number, an unshown "
-            "claim, an unsignposted list or a static process, by their number."])
+            "claim, an unsignposted list, a static process, an unneeded formula or a "
+            "spatial idea shown flat, by their number."])
         wanted = [row["section"] for row in listing]
 
         def unread(review: dict) -> list[int]:
@@ -6080,7 +6093,8 @@ def picture_flags(review: dict, sections: list[Section]) -> list[dict]:
     beat (`carries_beat` false) is a flag on each shot the reading says the
     thread is lost at, or on the section's first shot when it names none of
     its own; each shot report's bare number, unshown claim, unsignposted
-    list and static process is a flag on that shot. Severity and fix are PICTURE_FLAGS'. What
+    list, static process, unneeded formula and flat spatial idea is a flag
+    on that shot. Severity and fix are PICTURE_FLAGS'. What
     the model said is kept in the problem, verbatim; nothing is judged
     here (invariant 3), and a row naming no shot of the film is dropped."""
     review = review if isinstance(review, dict) else {}
@@ -6116,7 +6130,9 @@ def picture_flags(review: dict, sections: list[Section]) -> list[dict]:
         for key, kind in (("bare_number", "picture:bare-number"),
                           ("unshown_claim", "picture:unshown-claim"),
                           ("unsignposted_list", "picture:unsignposted-list"),
-                          ("static_process", "picture:static-process")):
+                          ("static_process", "picture:static-process"),
+                          ("unneeded_formula", "picture:formula"),
+                          ("flat_spatial", "picture:spatial")):
             text = " ".join(str(rep.get(key) or "").split())
             if text:
                 flag(kind, i, shot, text)

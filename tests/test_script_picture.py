@@ -157,7 +157,8 @@ def picture(sections=None, reports=()):
          "confused_at": []} for n in (1, 2, 3)]
     return {"sections": rows,
             "reports": [{"n": 0, "bare_number": "", "unshown_claim": "",
-                         "unsignposted_list": "", "static_process": "", **r}
+                         "unsignposted_list": "", "static_process": "",
+                         "unneeded_formula": "", "flat_spatial": "", **r}
                         for r in reports]}
 
 
@@ -573,7 +574,7 @@ class StaticProcess(unittest.TestCase):
         for key in ("static_process", "unshown_claim"):
             self.assertIn("one state", items["properties"][key]["description"], key)
         self.assertIn("static_process", items["required"])
-        self.assertIn("four", role)
+        self.assertIn("six", role)                    # AUTO-145 added two more
 
     def test_a_frozen_reaction_is_flagged_revised_and_binds_when_it_stands(self):
         # The card's acceptance: shows asks for a change, visual is one state.
@@ -646,6 +647,106 @@ class StaticProcess(unittest.TestCase):
         w.run(review=True)
         [revise] = named(calls, "revise-picture")
         self.assertNotIn(STATIC_KEEP, revise["prompt"])
+
+
+# --------------------------------------------------------------------------- #
+# AUTO-145: a formula the beat does not need, a spatial idea shown flat
+# --------------------------------------------------------------------------- #
+
+class FormulaAndSpatial(unittest.TestCase):
+    """A formula on screen that nothing built first or the beat does not
+    need (direction 9), and a size, arrangement, path, interior or
+    geometry the picture gives only in words or a flat label (attention 15
+    for the scale part; a house rule for the rest)."""
+
+    def test_the_schema_requires_both_fields(self):
+        items = narrative.PICTURE_SCHEMA["properties"]["reports"]["items"]
+        for key in ("unneeded_formula", "flat_spatial"):
+            self.assertIn(key, items["required"], key)
+            self.assertEqual(items["properties"][key]["type"], "string")
+            self.assertIn("empty", items["properties"][key]["description"], key)
+
+    def test_each_is_a_flag_with_its_severity_and_fix_and_the_models_words(self):
+        sections = Flags.sections()
+        said = "the section opens on  E = mc^2 with nothing built before it"
+        review = picture(reports=[
+            {"n": 1, "unneeded_formula": said},
+            {"n": 4, "flat_spatial": "the nested shells are only named in a label"},
+            {"n": 2, "unneeded_formula": "", "flat_spatial": ""}])
+        flags = script.picture_flags(review, sections)
+        self.assertEqual([(f["n"], f["kind"], f["severity"]) for f in flags],
+                         [(1, "picture:formula", "important"),
+                          (4, "picture:spatial", "important")])
+        formula, spatial = flags
+        self.assertEqual(formula["fix"], script.PICTURE_FLAGS["picture:formula"][1])
+        self.assertEqual(spatial["fix"], script.PICTURE_FLAGS["picture:spatial"][1])
+        self.assertEqual(formula["problem"], "picture:formula: shot 1.1: "
+                         + " ".join(said.split()))
+        self.assertEqual(spatial["problem"], "picture:spatial: shot 2.2: the nested shells "
+                                             "are only named in a label")
+        self.assertIn("worked case", formula["fix"])
+        self.assertIn("cutaway", spatial["fix"])
+        self.assertEqual(script.PICTURE_FLAGS["picture:formula"][0], "important")
+        self.assertEqual(script.PICTURE_FLAGS["picture:spatial"][0], "important")
+
+    def test_the_role_names_six_faults_and_no_treatment(self):
+        role = narrative.picture_role()
+        self.assertIn("one of six faults", role)
+        self.assertIn("(an unneeded formula)", role)
+        self.assertIn("(a flat spatial idea)", role)
+        for words in ("cross-section", "cutaway", "human scale"):
+            self.assertIn(words, role)
+
+    def test_the_prompt_names_every_fault(self):
+        w = writer()
+        calls = faked(w, picture())
+        w.run(review=True)
+        [check] = named(calls, "picture-check")
+        for words in ("a bare number", "an unshown claim", "an unsignposted list",
+                      "a static process", "an unneeded formula", "a spatial idea shown flat"):
+            self.assertIn(words, check["prompt"])
+
+    def test_the_rules_cite_direction_nine_and_not_fifteen(self):
+        self.assertIn("direction 9", narrative.PICTURE_RULES)
+        self.assertIn("attention 15", narrative.PICTURE_RULES)
+        self.assertNotIn("direction 15", narrative.PICTURE_RULES)
+
+    def test_an_opening_equation_is_flagged_revised_and_binds_when_it_stands(self):
+        # The card's acceptance: a section opening on an equation.
+        import tempfile
+        from ytstudio import vfx
+        w = writer()
+        calls = faked(w, picture(reports=[{"n": 1, "unneeded_formula":
+                                           "the section opens on F = ma before any push"}]),
+                      fixes=[{"n": 1, "action": "fix", "narration": "SPOKEN LINE 1.1.",
+                              "why": "nothing to change"}])
+        data = w.run(review=True)
+        [revise] = named(calls, "revise-picture")
+        self.assertIn("picture:formula", revise["prompt"])
+        self.assertEqual([f["kind"] for f in data["picture"]["flags"]], ["picture:formula"])
+        self.assertTrue(any(f.startswith("warning: picture:formula")
+                            for f in data["findings"]), data["findings"])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "script.md"
+            script.write_md(str(path), idea(), data, script.sections_of(data))
+            md = path.read_text(encoding="utf-8").split("## Picture check", 1)[1]
+        self.assertIn("picture:formula: shot 1.1", md)
+        rows = [r for r in vfx.picture_constraints(data) if r["source"] == "picture"]
+        self.assertEqual([r["label"] for r in rows], ["1.1"])
+
+    def test_a_nested_arrangement_in_words_is_a_spatial_flag_a_keep_answers(self):
+        # Unlike a static process, a line can carry a comparison at human
+        # scale, so the writer's keep answers a spatial flag.
+        w = writer()
+        faked(w, picture(reports=[{"n": 3, "flat_spatial":
+                                   "the shells inside shells are described, never shown"}]),
+              fixes=[{"n": 3, "action": "keep", "narration": "SPOKEN LINE 2.1.",
+                      "why": "the line compares it to nested bowls"}])
+        data = w.run(review=True)
+        self.assertEqual(data["picture"]["flags"], [])
+        self.assertEqual([(k["n"], k["kind"]) for k in data["picture"]["kept"]],
+                         [(3, "picture:spatial")])
+        self.assertNotIn("picture:spatial", script.PICTURE_UNKEPT)
 
 
 if __name__ == "__main__":

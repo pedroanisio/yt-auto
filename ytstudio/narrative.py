@@ -794,6 +794,13 @@ def check_review(review: Any, drafted: bool | None = None) -> list[str]:
 # one fixed state (direction 7's discrete steps, direction 9's worked
 # example or simulation before the rule; AUTO-144): a mechanism drawn but
 # frozen, which the unshown claim, a mechanism not drawn at all, misses.
+# Two more since AUTO-145: a formula put on screen before anything showed
+# what it relates, or that the beat does not need (direction 9: the rule
+# comes after the viewer has seen it happen), and a size, arrangement,
+# path, interior or geometry the picture gives only as words or a flat
+# label. Its scale part is attention 15's; arrangement, path and interior
+# are a house rule with no corpus evidence, so no other rule is cited
+# (direction 15 is a cutting rule, not a spatial one).
 # What a count can find, a super that prints the line, is
 # `rule:wall-of-text` in script.RULES (direction 2); motion is measured from
 # frames at vfx and qa, never here.
@@ -817,16 +824,23 @@ def picture_role() -> str:
         "alone, as if the plan were not in front of you; then read the beat the plan gave "
         "that section and say whether the pictures carry it, what of it they leave out, "
         "and the shot numbers where the pictures lose the thread.",
-        "Then report the shots that show one of four faults, and only those: a figure of "
+        "Then report the shots that show one of six faults, and only those: a figure of "
         "1,000 or more put on screen or asked of the picture with no comparison at human "
         "scale and no picture of the quantity (a bare number); a mechanism or claim the "
         "shot says its picture demonstrates that the picture as described does not show "
         "(an unshown claim); a list or set of parts the pictures present with no count "
         "and no label telling the viewer which part is which, or which one is being "
-        "spoken of (an unsignposted list); and a change over time the shot says its "
+        "spoken of (an unsignposted list); a change over time the shot says its "
         "picture demonstrates (a sequence of states, a flow, growth, a cascade, a cause "
         "acting on something) while the picture as described is one fixed state, with no "
-        "steps, change or build the viewer watches (a static process). When the mechanism "
+        "steps, change or build the viewer watches (a static process); a formula or "
+        "equation the shot puts on screen when no earlier shot of its section built it "
+        "first from a worked case or a picture of the quantities it relates, or when the "
+        "section's beat does not need it (an unneeded formula); and a size, arrangement, "
+        "path, interior or geometry the shot asks the viewer to grasp while the picture "
+        "gives it only as words or a flat label, with no comparison at human scale, no "
+        "cutaway or cross-section and no camera move through it (a flat spatial idea). "
+        "When the mechanism "
         "is drawn but shown in one state, report static_process and leave unshown_claim "
         "empty; unshown_claim is for a mechanism the picture does not show at all.",
         "Judge what is shown, never how it looks: the treatment decides the look, so a "
@@ -888,9 +902,20 @@ PICTURE_SCHEMA = {
                         "the mechanism is drawn but shown in one state it is reported "
                         "here and unshown_claim is left empty; empty when `shows` asks "
                         "for no change")},
+                    "unneeded_formula": {"type": "string", "description": (
+                        "the formula or equation the shot puts on screen (in `visual`, "
+                        "`shows` or `on_screen_text`) when no earlier shot of its section "
+                        "builds it intuitively first (a worked case, or a picture or "
+                        "simulation of the quantities it relates), or when the section's "
+                        "beat does not need it; empty when none")},
+                    "flat_spatial": {"type": "string", "description": (
+                        "the size, arrangement, path, interior or geometry the shot asks "
+                        "the viewer to grasp while the picture gives it only as words or "
+                        "a flat label, with no comparison at human scale, no cutaway or "
+                        "cross-section and no camera move through it; empty when none")},
                 },
                 "required": ["n", "bare_number", "unshown_claim", "unsignposted_list",
-                             "static_process"],
+                             "static_process", "unneeded_formula", "flat_spatial"],
             },
         },
     },
