@@ -959,6 +959,15 @@ class Docs(unittest.TestCase):
         self.assertIn("length", item)
         self.assertRegex(item, r"about \$\d+")
 
+    def test_the_stated_cost_of_a_live_run_is_the_shipped_set_s(self):
+        # one case and one padded read each cost CALIBRATE_USD_PER_CASE; a new
+        # fixture moves the figure the docs state (AUTO-138)
+        reads = len(cases()) + sum(1 for p in cases().values() if (p / "padded.json").is_file())
+        want = f"about ${reads * narrative.CALIBRATE_USD_PER_CASE:g} for the shipped set"
+        for doc in (ROOT / "ytstudio" / "SKILL.md", ROOT / "docs" / "narrative" / "README.md"):
+            with self.subTest(doc=doc.name):
+                self.assertIn(want, " ".join(doc.read_text(encoding="utf-8").split()))
+
     def test_gate_when_names_the_calibration(self):
         self.assertIn("calibrate", script.GATE_WHEN)
         self.assertIn(str(narrative.GATE_LABELLED), script.GATE_WHEN)

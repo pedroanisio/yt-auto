@@ -712,6 +712,13 @@ the plan's `hook.trigger`; only an opening heard to pull none is a flag, a
 whole-script hook flag left unresolved (`hook-trigger-match`, carrying the
 samples' own whole-script hook problem and fix). The `tension`
 row grades whether each middle section puts more at risk than the one before.
+The `voice` row (AUTO-138) grades whether the narrator finds things out with
+the viewer rather than lecturing: speaking to them, asking aloud what they are
+about to ask, flagging the step likeliest to lose them, letting a discovery
+land, and any humour serving the point (allowed, never required). A Poor
+voice is a consider, never a reject on its own, and a voice flag must name
+its shot and quote it: one on shot 0 is asked again, so a lecture-register
+line goes to `revise-story-1`.
 A consider sends its binding flags
 back: a shot's to `revise-story-1` (the line may be restructured, never given
 a new fact), a section's (shot 0) to `redraft-NN` (the section written again
