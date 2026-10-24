@@ -207,6 +207,8 @@ class ScriptTest(DecisionCase):
                 return {"logline": "l", "promise": "p", "payoff": "p",
                         "train": "Someone must learn whether it moves before it falls?",
                         "stakes": "s", "viewer_stake": "v", "audience": "lay",
+                        # AUTO-136: the opening's trigger and gap
+                        "hook": {"trigger": "question", "gap": "whether it moves"},
                         "reveal": {"section": 1, "constraint_section": 1},
                         "questions": [{"id": "Q1", "text": "Does it move?",
                                        "opened_in": 1, "closed_in": 1}],
@@ -214,7 +216,8 @@ class ScriptTest(DecisionCase):
                                    "next_film": "n"},
                         "sections": [{"heading": "One", "purpose": "p", "seconds": 10,
                                       "beats": ["b"], "opens": ["Q1"], "closes": ["Q1"],
-                                      "connective": "open", "anchor_visual": "a drawing"}]}
+                                      "connective": "open", "rehook": "", "escalation": "",
+                                      "anchor_visual": "a drawing"}]}
             if "shots" in schema.get("required", []):
                 return {"shots": [{"visual": "a drawing", "narration": "It moves.",
                                    "seconds": 4, "asset": "", "style": "",

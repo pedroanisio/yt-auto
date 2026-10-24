@@ -59,9 +59,12 @@ def _listen():
 #: records rewrites these; --listen left off never may. AUTO-106 rewrote the
 #: prompt's: the "Previous pass, for comparison" brief (null on a first
 #: pass) is gone, and that is the only difference from the digest before it.
+#: AUTO-136 rewrote the role's: the story rubric's hook row names its
+#: curiosity trigger and a tension row follows reveal setup, and those are
+#: the only differences from the digest before it.
 OFF = {
     "prompt_sha": "57bab3709bba64b6ead210e9a504a5cbb9e4990608e590d0a9194ea7bfc9714b",
-    "role_sha": "fb112df18eac174eff86df8020f3ab2bd3d51f9bea23f0577196bf2efba22954",
+    "role_sha": "689d58b15f4913baff9447748a32cf97acc8df4373fc2c61422df8ed4e03f951",
     "card_keys": ["audio_not_evidenced", "bar", "blocking", "capped", "comparison",
                   "contact_sheet", "cut", "engine", "findings", "frames", "lines_unsampled",
                   "listening", "low_confidence", "mechanical", "not_evidenced", "overall",
