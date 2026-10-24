@@ -252,8 +252,12 @@ def collect(card: dict, *, gate: dict | None = None,
                          "fix": b.get("fix", ""), "severity": "blocking"})
     for level, area, message, fix in doctor:
         if level in ("fail", "warn") and area in ROUTABLE:
+            # A fix naming one section (`--sections N`, AUTO-144) is where the
+            # finding lives: routed_sections re-authors that section alone.
+            one = re.search(r"--sections\s+(\d+)(?![\d,])", str(fix or ""))
             add("doctor", {"owner": area, "problem": message, "fix": fix,
-                           "severity": "blocking" if level == "fail" else "minor"})
+                           "severity": "blocking" if level == "fail" else "minor"},
+                **({"section_n": int(one.group(1))} if one else {}))
     for f in retention or ():
         if isinstance(f, dict):
             add("retention", f, kind=None, tag=f.get("tag"), corpus_rule=f.get("rule"),
@@ -783,7 +787,8 @@ def _replay(argv: list[str]) -> list[str]:
 
 
 def routed_sections(root: Path, findings: Iterable[dict]) -> list[int] | None:
-    """The vfx sections the findings fall in, by shot label then by timestamp
+    """The vfx sections the findings fall in, by a doctor row's `section_n`
+    (its fix's `--sections N`), then by shot label, then by timestamp
     against each section's worlds, or None when the whole film is to be
     authored again: a finding no section holds (a film-wide one), no
     authoring record, or every section hit."""
@@ -793,10 +798,15 @@ def routed_sections(root: Path, findings: Iterable[dict]) -> list[int] | None:
     if not authored or not findings:
         return None
     hit: set[int] = set()
+    numbers = {r["n"] for r in authored}
     for f in findings:
         found = None
         shot, t = f.get("shot"), f.get("timestamp")
-        for rec in authored:
+        # A doctor row whose fix named its section (`section_n`, AUTO-144).
+        n = f.get("section_n")
+        if isinstance(n, int) and not isinstance(n, bool) and n in numbers:
+            found = n
+        for rec in authored if found is None else ():
             if shot and any(str(shot) in [str(x) for x in w.get("shots") or []]
                             for w in rec.get("worlds") or []):
                 found = rec["n"]
