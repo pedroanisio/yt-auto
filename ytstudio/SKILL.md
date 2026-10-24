@@ -1339,6 +1339,15 @@ hand-authored world showed the cost.
   and downbeats: a measure for the reviewers, never a bar, and cuts stay on
   the narration. Nothing judges picture and sound together yet: `--listen`
   gets a text timeline to judge timing by ear, and `--watch` sends no sound.
+  Voice-to-picture alignment (each shot's `on_screen_text` and supers
+  against the words that match them, as an offset in seconds) is gated
+  (AUTO-152 Part C): no code until the owner reopens AUTO-127's visual-only
+  default for an opt-in mode and a live test shows a `models.LISTEN_MODELS`
+  or watch model on the gateway taking picture and sound in one request,
+  with its size and duration limit recorded; it would take AUTO-140's
+  `beat_sync` and the listen timeline as given, never judge cue-to-reveal
+  sync again, and be judged by another family than the screenplay's author
+  (`listen.family`).
   The search window, the beat tempo range, its confidence, the 4/4 downbeat,
   the 83 ms tolerance and the host's envelope chain are TO VERIFY.
 - **The ocean is a height field.** It cannot overturn, break or pinch off a

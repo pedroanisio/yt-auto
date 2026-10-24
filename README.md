@@ -2052,6 +2052,21 @@ satisfaction. That prediction scores nothing and is listed under
 retention` writes does not count. A pass written before this has no `story` and still
 compares, since the comparison reads the scores only.
 
+Nothing judges picture and sound together. `--listen` hears without seeing
+and `--watch` sees without hearing. A pass that checks whether each shot's
+`on_screen_text` and supers appear while their matching words are spoken is
+gated, and no code exists for it (AUTO-152 Part C). It is built only when
+both of two conditions hold. First, the owner records that AUTO-127's
+visual-only default is reopened for an opt-in mode. Second, a live test
+shows that a `models.LISTEN_MODELS` or watch model on the gateway accepts
+picture and sound in one request, and records that request's size and
+duration limits. Until both hold, `--watch` sends no sound. If the gate
+opens, the pass measures only what AUTO-140 cannot: each text's offset in
+seconds from its words. It takes `beat_sync` and the listen's picture
+timeline as given and does not judge them again, so cue-to-reveal sync stays
+AUTO-140's. Its judge must be of another model family than the
+screenplay's author (`listen.family`).
+
 The bar is applied mechanically on top: READY TO PUBLISH needs an overall of
 9.0, no category under 8.5 and nothing blocking, where blocking includes what
 the manifests already prove (a placeholder, a build error, a failed gate, a
