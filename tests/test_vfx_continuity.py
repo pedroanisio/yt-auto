@@ -460,6 +460,15 @@ class DoctorReadsContinuity(unittest.TestCase):
             ("continuity: Elsewhere: the hero doubles [major; reviewer opus]",
              f"yt vfx --project {self.root}")])
 
+    def test_unmatched_owners_spelled_two_ways_are_one_row(self):
+        # the same fold the join uses: one owner retyped is still one section
+        report = self.report(self.breaks(("Elsewhere", "the hero doubles", "major"),
+                                         (" elsewhere", "the light flips", "major")),
+                             self.AUTHORED)
+        rows = self.continuity_rows(report)
+        self.assertEqual([r.message for r in rows], [
+            "continuity: Elsewhere: the hero doubles; the light flips [major; reviewer opus]"])
+
     def test_one_film_false_with_no_serious_break_is_one_plain_warn(self):
         report = self.report(self.breaks(("Later", "a tick mark moves", "minor")),
                              self.AUTHORED)

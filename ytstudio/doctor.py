@@ -1337,11 +1337,16 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
         if cont.get("skipped") or cont.get("error"):
             report.add("note", "vfx", "continuity was not judged: "
                        f"{_clip(str(cont.get('skipped') or cont.get('error')), 240)}")
+        # An owner that joins no section is grouped by the fold the join
+        # uses, so one heading retyped is still one row, under its first spelling.
         by_owner: dict = {}
+        spelled: dict = {}
         for b in serious:
             owner = str(b.get("owner_section") or "?")
             n = vfx_stage.owner_section_n(owner, authored)
-            by_owner.setdefault(n if n is not None else owner, []).append(b)
+            key = n if n is not None else " ".join(owner.casefold().split()) or owner
+            spelled.setdefault(key, owner.strip() or owner)
+            by_owner.setdefault(key, []).append(b)
         who = cont.get("reviewer")
         model = str(who.get("model") or "") if isinstance(who, dict) else ""
         apart = vfx_stage.judged_apart(cont)
@@ -1352,7 +1357,7 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
                 where, fix = (f"section {key} ({heading})",
                               _cmd("vfx", project, "--sections", str(key)))
             else:
-                where, fix = key, _cmd("vfx", project)
+                where, fix = spelled[key], _cmd("vfx", project)
             blocking = any(b.get("severity") == "blocking" for b in rows)
             problems = "; ".join(str(b.get("problem", "")) for b in rows)
             report.add("warn", "vfx", f"continuity: {where}: {_clip(problems, 240)} "
