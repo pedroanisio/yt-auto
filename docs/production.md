@@ -115,6 +115,8 @@ never passed.
 - nothing left that a normal viewer would notice
 - no fact-check blocker standing (resolved by a revision, or marked
   `resolved` by hand)
+- for a film with a dossier: an on-screen accuracy check by another
+  model family, with no blocking finding
 
 A 9 is not "nothing is broken". A 9 is work that would not look out of place
 on a channel people subscribe to. Score 8 for competent and unremarkable, 6

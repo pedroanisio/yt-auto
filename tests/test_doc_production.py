@@ -155,6 +155,14 @@ class ProductionDoc(unittest.TestCase):
         self.assertIn("no fact-check blocker standing (resolved by a revision, or marked\n"
                       "  `resolved` by hand)", bar)
 
+    def test_the_ready_bar_names_the_on_screen_accuracy_check(self):
+        # AUTO-150: with a dossier, the text vfx drew is read against it
+        text = DOC.read_text()
+        start = text.index("**READY TO PUBLISH requires all of:**")
+        bar = text[start:text.index("\n\n", text.index("\n- ", start))]
+        self.assertIn("- for a film with a dossier: an on-screen accuracy check by another\n"
+                      "  model family, with no blocking finding", bar)
+
     def test_captions_are_a_sidecar_unless_burned(self):
         text = _section("### The frame, in bands")
         self.assertIn("sidecar", text)
