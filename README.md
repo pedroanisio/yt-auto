@@ -731,7 +731,11 @@ channel's `## format` fixes (`- Form: countdown`), and the reading says
 summary `(advisory: form)` and the findings a note; only when that reading
 names its `form_problem`, left nothing `unsettled`, and lists no problem
 that is not about the form (a rehook or an ending fault still stops it:
-`narrative.form_only_revise`). A reading whose fields
+`narrative.form_only_revise`; a problem is about the form only when its
+problem text, not its fix, speaks of the film's form, names the plan's form
+or repeats `form_problem`, so "does not form a question" is a rehook fault).
+Without `--review` the form's `house:` pre-checks are kept as `note: house:`
+findings. A reading whose fields
 contradict its verdict (an accept that finds the order a list or
 `stakes_concrete` or `form_fits` false, a revise that names no problem and whose fields find
 no fault, a reject on stakes or the form alone: `narrative.check_plan_review`) is asked once more as

@@ -886,6 +886,17 @@ class Form(unittest.TestCase):
         asked = {c["name"]: c["prompt"] for c in calls}
         self.assertIn("- Form: countdown", asked["plan"])
         self.assertIn("- " + line, asked["plan-review"])
+        # without --review nobody reads the pre-checks, so the form's lines
+        # are filed as notes, as the channel's are
+        w = writer(house=block)
+        faked(w, [], plan=plan)
+        data = w.run()
+        self.assertIn("note: " + line, data["findings"])
+        kept = copy.deepcopy(PLAN)
+        kept["form"]["name"] = "countdown"
+        w = writer(house=block)
+        faked(w, [], plan=kept)
+        self.assertFalse([f for f in w.run()["findings"] if "form" in f])
 
     def test_the_plan_review_reads_the_form_row(self):
         prompt = Prompt.review_prompt(self, PLAN)

@@ -5417,6 +5417,12 @@ class Screenwriter:
             self.findings += [f"note: {line}" for line in (
                 channel.shared_form(story, self.earlier)
                 + channel.repeats(story, self.earlier, channel.PLAN_DIMENSIONS))]
+        # The same for the form's house lines (AUTO-157): a plan that ignores
+        # the form the house fixes, or gives a reason any topic could wear,
+        # leaves a trace even when no reviewer reads the pre-checks.
+        if not review:
+            self.findings += [f"note: {line}" for line in _form_checks(
+                plan, self.idea.title, house_form(self.house or ""))]
         # A paper film's misplaced framing is recorded whether or not the
         # plan was reviewed (AUTO-131): doctor warns on it.
         self.findings += [f"warning: paper framing: {line[len('rule: '):]}"
