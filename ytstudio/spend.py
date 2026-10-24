@@ -207,7 +207,12 @@ VFX_PASS_USD = 10.0
 #: pass asks qa.QA_SAMPLES of them (AUTO-107); qa imports this module, so
 #: the default below is that product written out, and test_qa_samples pins it.
 QA_SAMPLE_USD = 0.5
-DEFAULT_USD = {"research": 5.0, "styles": 2.0, "script": 3.0, "props": 0.0,
+#: The script's default is a run with the fact-check, which `yt run` has
+#: always asked and a standalone `yt script` with a dossier now asks too
+#: (AUTO-133): the reviewer's `verify` over the whole script and its
+#: re-checks. A guess until a real 8-12 minute film measures it (TO VERIFY);
+#: a measured script.json already holds its verify decisions.
+DEFAULT_USD ={"research": 5.0, "styles": 2.0, "script": 3.0, "props": 0.0,
                "keyframe": 5.0, "voice": 2.0, "retime": 0.5, "vfx": VFX_PASS_USD,
                "sound": 0.5, "build": 0.1, "render": 0.0, "gate": 0.1,
                "qa": 3 * QA_SAMPLE_USD}
