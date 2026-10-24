@@ -372,6 +372,17 @@ class Prepare(unittest.TestCase):
         for argv in host.calls:
             self.assertNotIn(Path(argv[0]).name, ("ffmpeg", "ffprobe"))
 
+    def test_a_scan_rides_the_upload_before_the_directory_goes(self):
+        # AUTO-141: `yt qa`'s rhythm scan reads the cut the watch already
+        # sent, so it goes up once; the host directory is still there then.
+        host = FakeHost(self)
+        prep = self.prep(host)
+        seen = []
+        _watch().prepare_remote(prep, while_up=lambda h, path: seen.append(
+            (h, path, [c[0] for c in host.calls], list(host.removed))))
+        self.assertEqual(seen, [("render-1", f"{prep.root}/cut.mp4", ["rsync"], [])])
+        self.assertEqual(host.removed, [("render-1", prep.root)])
+
     def test_prepare_refused_under_no_remote(self):
         calls = []
         with mock.patch.object(_watch().subprocess, "run", lambda *a, **k: calls.append(a)), \
@@ -877,6 +888,40 @@ class Run(Watching):
         self.assertTrue(any("the super lands two seconds late" in b for b in card["blocking"]))
         self.assertEqual(card["watch"]["status"], "watched")
         self.assertEqual(code, 1)                          # a blocking finding stands
+
+    def test_the_rhythm_scan_rides_the_watchs_upload(self):
+        # AUTO-141: with --watch the cut is already on the host, so the
+        # rhythm scan reads it there: one upload, one directory removed,
+        # and rhythm.json says the upload was reused.
+        from ytstudio import rhythm
+        qa.RHYTHM_SCAN = rhythm.scan_remote
+        scores = "".join(f"frame:{k} pts:{k} pts_time:{k / 4:g}\n"
+                         f"lavfi.scene_score={0.05 if k % 8 else 0.0}\n"
+                         for k in range(66))
+        plain = self.host.run
+
+        def run(argv, *a, **kw):
+            if argv and argv[0] == "ssh" and "lavfi.scene_score" in argv[-1]:
+                self.host.calls.append(list(argv))
+                return subprocess.CompletedProcess(argv, 0, "", scores)
+            return plain(argv, *a, **kw)
+        with mock.patch.object(_watch().subprocess, "run", run):
+            self.run_qa()
+        record = self.watch_json()
+        self.assertEqual(record["status"], "watched", self.stderr)
+        ups = [c for c in self.host.calls if c[0] == "rsync" and c[-1].endswith("/cut.mp4")]
+        self.assertEqual(len(ups), 1, self.host.calls)
+        root = ups[0][-1].split(":", 1)[1].rsplit("/", 1)[0]
+        scan = next(c for c in self.host.calls
+                    if c[0] == "ssh" and "lavfi.scene_score" in c[-1])
+        self.assertIn(f"{root}/cut.mp4", scan[-1])
+        self.assertEqual(self.host.removed, [("render-1", root)])
+        kept = json.loads((self.root / "qa" / "pass-01" / "rhythm.json").read_text())
+        self.assertEqual(kept["scan"]["upload"], "reused")
+        self.assertEqual(kept["scan"]["host"], "render-1")
+        self.assertEqual(kept["cv"]["basis"], "events")
+        self.assertFalse([n for n in self.card()["not_evidenced"]
+                          if n.startswith("rhythm: hold")])
 
     def test_a_cut_without_sound_is_sent_as_it_is(self):
         self.make_project(audio_tracks=0)

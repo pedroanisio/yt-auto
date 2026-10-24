@@ -1824,8 +1824,24 @@ RHYTHM_SCAN = rhythm.scan_remote
 rhythm_brief = rhythm.brief_of
 
 
+def rhythm_while_up(args, project, into: dict):
+    """The callback `--watch` runs while its cut is on a render host
+    (watch.prepare_remote's `while_up`): the rhythm scan reads that cut
+    there, so the cut goes up once, and what it got (or why it failed) is
+    kept in `into` for rhythm_pass. It never raises: the watch goes on."""
+    video = project.path("video")
+
+    def scan(host: str, path: str) -> None:
+        try:
+            into["got"] = RHYTHM_SCAN(video, args, slug=Path(project.root).name,
+                                      remote_cut=(host, path))
+        except rhythm.RhythmError as exc:
+            into["error"] = str(exc)
+    return scan
+
+
 def rhythm_pass(args, project, build: dict, voice: dict | None, pass_dir: Path, *,
-                reused: bool) -> dict:
+                reused: bool, shared: dict | None = None) -> dict:
     """The film's rhythm for this pass, written to pass-NN/rhythm.json and
     returned (the record; its `scores` stay out of the scorecard). The
     timeline measures always run. The render's are scanned only when
@@ -1833,7 +1849,8 @@ def rhythm_pass(args, project, build: dict, voice: dict | None, pass_dir: Path, 
     otherwise the hold and the opening are named under not_evidenced with
     why and the command that evidences them, never scored as passing. A
     reused pass measures the scores its first run recorded and scans
-    nothing."""
+    nothing. `shared` is what rhythm_while_up kept: a scan of the cut the
+    watch already sent, taken instead of sending it again."""
     from . import doctor                     # doctor imports nothing of qa
     record_file = pass_dir / rhythm.RECORD
     takes = [t for t in (voice or {}).get("takes") or [] if isinstance(t, dict)]
@@ -1858,7 +1875,8 @@ def rhythm_pass(args, project, build: dict, voice: dict | None, pass_dir: Path, 
             unscanned = stale[0]
         else:
             try:
-                got = RHYTHM_SCAN(video, args, slug=Path(project.root).name)
+                got = (shared or {}).get("got") or RHYTHM_SCAN(
+                    video, args, slug=Path(project.root).name)
                 scores, scan = [tuple(pair) for pair in got["scores"]], got.get("scan")
             except rhythm.RhythmError as exc:
                 unscanned = (str(exc), f"{rerun} (with a render host: RS_RENDER_HOSTS, "
@@ -4200,6 +4218,7 @@ def run(args) -> int:
     # --watch (AUTO-127): the gateway, the catalog, the model and a render
     # host, checked before a pass directory is made or anything renders.
     watching, watched = None, None
+    rhythm_shared: dict = {}      # the rhythm scan of the cut --watch sends (AUTO-141)
     if getattr(args, "watch", False):
         from . import watch as watch_pass   # it reads this module's owners and duties
         if not args.reuse and not (build or {}).get("shots"):
@@ -4234,7 +4253,8 @@ def run(args) -> int:
             rules_now, digest_now = house.for_args(args, project, "qa")
             watched = watch_pass.watch(project, pass_dir, watching, args, home=home,
                                        build=build, title=idea.title, treatment=treatment,
-                                       house=rules_now, house_digest=digest_now)
+                                       house=rules_now, house_digest=digest_now,
+                                       while_up=rhythm_while_up(args, project, rhythm_shared))
             if not args.quiet:
                 print(f"[qa] watch: {watched['status']}"
                       + (f" ({watched['reason']})" if watched.get("reason") else "")
@@ -4296,7 +4316,7 @@ def run(args) -> int:
     # The film's rhythm (AUTO-141): after the re-owning, which never moves
     # one of these, and filed beside the other mechanical findings.
     rhythm_record = rhythm_pass(args, project, build, voice, pass_dir,
-                                reused=bool(args.reuse))
+                                reused=bool(args.reuse), shared=rhythm_shared)
     rhythm_block = {k: v for k, v in rhythm_record.items() if k != "scores"}
     mechanical += rhythm_block["findings"]
     if proof_note and not args.quiet:

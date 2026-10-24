@@ -80,7 +80,9 @@ longest hold with no visual change while the narration runs, the opening
 each section from `voice.json`. The reviewer is shown these numbers as
 measurements beside its own judgement, which they do not replace; what
 they find is filed as `hold`, `metronomic`, `slow-opening` and `wpm`
-mechanical findings (§10).
+mechanical findings (§10). The scan runs on a render host only; with
+`--watch` it reads the cut the watch already sent there, so the cut goes up
+once, and rhythm.json's scan block records the upload's seconds and bytes.
 
 **READY TO PUBLISH requires all of:**
 
