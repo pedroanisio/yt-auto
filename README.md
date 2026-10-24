@@ -1386,9 +1386,10 @@ it). `--local` runs it here.
 The gate's three audio checks live in `ytstudio/audiotools/`: `sr-margin`
 (the narration's margin over the rest of the mix, per line and per worst 3 s,
 floor 11 dB), `sr-audiocheck` (true peak, digital silence, DC offset, loudness
-range inside the narration, a muted channel beside a live one, and stereo whose
-phase correlation averages under 0 or sits at or under -0.5 for 1 s, which
-cancels in mono) and `sr-sibilance` (5-10 kHz bursts per take).
+range inside the narration, a muted channel of a stereo pair beside a live one,
+and stereo whose phase correlation averages under 0 outside digital silence or
+sits at or under -0.5 for 1 s, which cancels in mono) and `sr-sibilance`
+(5-10 kHz bursts per take).
 Python standard library and ffmpeg only, so they run on a render host; they ship
 into the job's `tools/audio` whenever the tools directory lacks them. The gate's
 tail check is yt's own `tail_check.py` in the same directory (pnkit's rules 2-4
