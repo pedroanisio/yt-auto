@@ -225,5 +225,68 @@ class HumanStories(unittest.TestCase):
                                            "human_stories": []}))
 
 
+# --------------------------------------------------------------------------- #
+# AUTO-149: press coverage by N id, apart from the licensed footage
+# --------------------------------------------------------------------------- #
+
+def article(headline, outlet="Reuters", date="03 Mar 2024", n=0):
+    return {"kind": "article", "title": f"{headline} ({outlet})",
+            "source": f"news/{outlet}", "licence": "All rights reserved",
+            "credit_line": f"{outlet}, {date}", "note": "",
+            "url": f"https://news.example/{n}", "reference_only": True}
+
+
+def image(n):
+    return {"kind": "image", "title": f"photo {n}", "licence": "CC0",
+            "commercial_ok": True, "use_for": "the deck"}
+
+
+class PressBlock(unittest.TestCase):
+    def block(self, data, **kw):
+        with contextlib.redirect_stderr(io.StringIO()):
+            return script.research_block(data, **kw)
+
+    def test_the_press_is_numbered_and_kept_out_of_the_footage(self):
+        data = {"assets": [image(n) for n in range(70)]
+                + [article("Genoa bridge inquiry names 59 defendants", n=1),
+                   article("Bridge operator loses concession", "AP", "15 Jul 2020", 2)]}
+        text = self.block(data)
+        self.assertIn("Press coverage you may stage as a recreated headline card "
+                      "(typeset, attributed, never a screenshot):\n"
+                      "- N1: \"Genoa bridge inquiry names 59 defendants\" — Reuters, "
+                      "03 Mar 2024 (https://news.example/1)\n"
+                      "- N2: \"Bridge operator loses concession\" — AP, 15 Jul 2020 "
+                      "(https://news.example/2)", text)
+        footage = text.split("Licensed footage and imagery found by the research:\n", 1)[1]
+        footage = footage.split("\n\n", 1)[0]
+        self.assertNotIn("[article]", footage)
+        self.assertEqual(footage.count("[image]"), 60)
+
+    def test_an_older_dossier_differs_only_in_the_footage_heading(self):
+        data = {"claims": [claim("one fact")], "assets": [image(1), image(2)],
+                "misconceptions": [{"belief": "b", "source": "s"}],
+                "identifiable_case": {"who": "w", "source": "s"}}
+        text = self.block(data)
+        old = text.replace("Licensed footage and imagery found by the research:",
+                           "Footage and imagery already found and licensed:")
+        self.assertNotEqual(text, old)
+        self.assertNotIn("Press coverage", text)
+        self.assertNotIn("P1", text)
+        self.assertEqual(old, self.block(data, ids=True).replace(
+            "Licensed footage and imagery found by the research:",
+            "Footage and imagery already found and licensed:"))
+
+    def test_without_ids_the_block_is_todays_whatever_the_dossier_holds(self):
+        # a screenplay written before the ids is revised against the block it
+        # was written from, so its cached revisions hold
+        data = {"assets": [image(1), article("A headline", n=1)],
+                "human_stories": [STORY]}
+        text = self.block(data, ids=False)
+        self.assertIn("Footage and imagery already found and licensed:", text)
+        self.assertIn("[article] A headline (Reuters)", text)
+        self.assertNotIn("Press coverage", text)
+        self.assertNotIn("P1", text)
+
+
 if __name__ == "__main__":
     unittest.main()

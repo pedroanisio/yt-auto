@@ -47,6 +47,7 @@ from .core import Idea, read_json, timecode, wrap, write_json
 from .ideas import CHANNEL_STYLES, style_brief
 from . import flags, harness, house, narrative, reviewers, spend, workspace
 from .research import STANDINGS, claim_key, paper_url, same_paper
+from .assets import press_items
 
 #: Narration pace. 150 wpm is an unhurried documentary read; 180 is brisk.
 DEFAULT_WPM = 150
@@ -1453,6 +1454,12 @@ def identifiable_case(data: dict) -> str:
     return f"{who} (source: {source})" if source else f"{who} (no source)"
 
 
+#: How the script brief introduces the press coverage (AUTO-149): a
+#: headline is staged as a card the film typesets, never a page it shows.
+PRESS_HEADING = ("Press coverage you may stage as a recreated headline card "
+                 "(typeset, attributed, never a screenshot)")
+
+
 def human_story_lines(data: dict) -> list[str]:
     """The dossier's kept human stories (AUTO-149) as brief lines, `P<k>` for
     their place in the dossier; [] for a dossier written before them."""
@@ -1475,7 +1482,13 @@ def research_block(data: dict, *, limit: int = 60, ids: bool = True) -> str:
     a shot cites stays the claim's however the outline reorders them; and
     with its standing, where the dossier gives one. `ids=False` lists them
     as before, for a screenplay written before the ids (`yt script
-    --revise`), whose cached revisions then still hold."""
+    --revise`), whose cached revisions then still hold: that block is
+    today's whole, articles among the footage and no human stories.
+
+    With ids, the press coverage (AUTO-149, `assets.press_items`) is its
+    own N-numbered block and the footage list holds only the rest, and the
+    dossier's human stories are numbered P1.. beside the identifiable
+    case."""
     parts = []
     if data.get("premise"):
         parts.append(f"Researched premise: {data['premise']}")
@@ -1519,14 +1532,26 @@ def research_block(data: dict, *, limit: int = 60, ids: bool = True) -> str:
                      "cite for it" + (" and its id" if ids else "") + ":\n"
                      + "\n".join(claims))
 
+    # AUTO-149: the press is read before the slice, so 60 images never push
+    # an article out, and listed by its N id apart from the footage: it is a
+    # headline to typeset and attribute, never a file to show.
+    found = data.get("assets", [])
+    press = press_items(found) if ids else []
+    if ids:
+        found = [a for a in found if a.get("kind") != "article"]
     assets = [f"- [{a.get('kind', '?')}] {a.get('title', '')} "
               f"({a.get('licence', 'licence unknown')}"
               f"{', commercial ok' if a.get('commercial_ok') else ''})"
               f" -- for {a.get('use_for', 'unspecified')}"
-              for a in data.get("assets", [])[:limit]]
+              for a in found[:limit]]
     if assets:
-        parts.append("Footage and imagery already found and licensed:\n"
+        parts.append(("Licensed footage and imagery found by the research:\n" if ids
+                      else "Footage and imagery already found and licensed:\n")
                      + "\n".join(assets))
+    if press:
+        parts.append(f"{PRESS_HEADING}:\n" + "\n".join(
+            f"- {p['id']}: \"{p['headline']}\" — {p['outlet']}, {p['date']} ({p['url']})"
+            for p in press))
     if data.get("misconceptions"):
         # Numbered, so the plan cites one ("[M2] ...") rather than invents it.
         parts.append("Misconceptions to correct out loud, with where people are "
