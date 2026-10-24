@@ -213,10 +213,14 @@ def usage_of(files: dict[str, str]) -> dict:
 #: dimension on their own. textAnimator/@zDepth is left out: its 3D
 #: placement is open in scene-render, and today it is a perspective scale.
 DIMENSION_RULES = {
-    "3d": "any '3d stage' element, and either no `camera` or more `camera` elements "
-          "than `camera/@projection=orthographic` keys: a camera that is not "
-          "orthographic is perspective, scene-render's default, and a viewport3D "
-          "with no camera renders through a default perspective one",
+    "3d": "a '3d stage' element that draws or holds a 3D world (not only a camera, "
+          "lights or materials, which alone could rig a 2D picture), and either no "
+          "`camera`, or more `camera` elements than `camera/@projection=orthographic` "
+          "keys, or more `viewport3D` elements than those keys: a camera that is not "
+          "orthographic is perspective, scene-render's default, and a viewport3D with "
+          "no camera renders through a default perspective one. Counts are per "
+          "symbol, not per viewport, so a viewport holding two orthographic cameras "
+          "beside one holding none reads as having no perspective one",
     "2.5d": "`camera/@projection=orthographic`, or `<el>/@threeD=true` where <el> is "
             "not a '3d stage' element (a 2D node placed in camera space at zDepth)",
     "2d": "any '2d stage' element",
@@ -226,6 +230,10 @@ DIMENSION_RULES = {
 DIMENSION_ORDER = ("2d", "2.5d", "3d")
 
 _ORTHO = "camera/@projection=orthographic"
+
+#: '3d stage' elements that alone draw no 3D world: a camera, lights or
+#: materials with no viewport, object, mesh or scene beside them.
+_RIG_ONLY = frozenset({"camera", "light", "lights", "material", "materials"})
 
 
 def _symbol_dimensions(per: dict, flagged: bool) -> tuple[set, dict]:
@@ -238,7 +246,8 @@ def _symbol_dimensions(per: dict, flagged: bool) -> tuple[set, dict]:
     why: dict = {d: {} for d in DIMENSION_ORDER}
     stage3d = {el: n for el, n in elements.items() if family_of(el) == "3d stage"}
     cameras, ortho = elements.get("camera", 0), attributes.get(_ORTHO, 0)
-    if stage3d and (cameras == 0 or cameras > ortho):
+    viewports = elements.get("viewport3D", 0)
+    if set(stage3d) - _RIG_ONLY and (cameras == 0 or cameras > ortho or viewports > ortho):
         dims.add("3d")
         why["3d"] = {(el, ""): n for el, n in stage3d.items()}
     if ortho:
@@ -367,7 +376,9 @@ def dimension_gap(styles: dict | None, script: dict | None, vfx_doc: dict | None
     since authoring failures have findings of their own. `shots` counts the
     script's shots and `unmapped_shots` those naming a treatment the library
     does not hold. With no reach usage it is not measured and holds no row.
-    Pure; nothing here judges or fails the film."""
+    Sections join by heading (core._key), so two script sections with the
+    same heading are held to one world's row. Pure; nothing here judges or
+    fails the film."""
     from .core import _key
     from .styles import dimension_of
     styles = styles if isinstance(styles, dict) else {}

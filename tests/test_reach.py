@@ -953,6 +953,20 @@ class Dimensions(unittest.TestCase):
         both = ORTHOGRAPHIC.replace("</viewport3D>", '<camera id="c2"/></viewport3D>')
         self.assertEqual(dims_of(both), ["2.5d", "3d"])
 
+    def test_a_camera_or_light_alone_is_not_a_3d_world(self):
+        # a camera with no viewport or object (a pan or zoom rig, say) draws
+        # nothing in 3D, so the world is what its 2D stage is
+        self.assertEqual(dims_of('<camera id="c"/>' + FLAT), ["2d"])
+        self.assertEqual(dims_of('<camera id="c"/><lights><light id="k"/></lights>' + FLAT),
+                         ["2d"])
+
+    def test_a_viewport_with_no_camera_beside_an_orthographic_one_is_3d(self):
+        # the second viewport renders through the default perspective camera
+        second = '<viewport3D id="v2"><object3D id="o2" primitive="box"/></viewport3D>'
+        self.assertEqual(dims_of(ORTHOGRAPHIC + second), ["2.5d", "3d"])
+        self.assertEqual(dims_of(ORTHOGRAPHIC + ORTHOGRAPHIC.replace('"v"', '"v2"')),
+                         ["2.5d"])
+
     def test_threeD_group_is_2_5d(self):
         self.assertIn("2.5d", dims_of(THREED_GROUP))
         self.assertIn("group/@threeD=true x2",
