@@ -918,6 +918,56 @@ def identity_problem(styles: dict | None) -> tuple[str, str, tuple[str, ...]] | 
             critique)
 
 
+#: Section dimension gaps given a warn of their own; the rest are one more.
+DIMENSION_WARNS = 5
+
+
+def dimension_findings(report: Report, project: workspace.Project, styles: dict | None,
+                       script: dict | None, vfx: dict) -> None:
+    """AUTO-154: a section whose shots declare 3d or 2.5d (script.json
+    `style`, through styles.dimension_of) and whose authored world is
+    flatter is a warn routed by `yt vfx --sections N`, the first
+    DIMENSION_WARNS each on their own and the rest as one; a primary
+    treatment no section realises is one more. Flat is allowed, so a 2D or
+    footage-led film says nothing; a record with no usage, or shots that
+    mostly name no library treatment, are notes. Measured, never asked:
+    nothing here fails, and nothing reaches READY, the gate or the lane."""
+    from . import reach
+    gap = reach.dimension_gap(styles or {}, script or {}, vfx)
+    # Unmeasured matters only where a shot declares depth: a flat or
+    # footage-led film, or one with no script yet, has nothing to check.
+    deep = any(r["dim"] in ("2.5d", "3d") for _, _, shots in reach.declared_dimensions(script)
+               for r in shots)
+    if not gap["measured"] and deep:
+        report.add("note", "vfx", "dimension mix not measured: the reach record has no usage")
+    rows = gap["sections"]
+    for row in rows[:DIMENSION_WARNS]:
+        report.add("warn", "vfx", f"section {row['n']} ({row['section']}): shots "
+                   f"{', '.join(row['shots'])} are {row['declared']} "
+                   f"({', '.join(row['styles'])}) but its authored world is "
+                   f"{', '.join(row['realised'])}"
+                   + (f" [{_clip(', '.join(row['evidence']), 120)}]" if row["evidence"] else ""),
+                   _cmd("vfx", project, "--sections", str(row["n"])))
+    rest = rows[DIMENSION_WARNS:]
+    if rest:
+        numbers = [str(r["n"]) for r in rest]
+        report.add("warn", "vfx", f"and {len(rest)} more section(s) whose shots are 3d or 2.5d "
+                   f"but whose authored world is flatter: {', '.join(numbers)}",
+                   _cmd("vfx", project, "--sections", ",".join(numbers)))
+    for row in gap["film"]:
+        report.add("warn", "vfx", f"the primary treatment {row['style']} is "
+                   f"{row['dimension']} and no section realises it",
+                   _cmd("vfx", project, "--sections", str(rows[0]["n"])) if rows else
+                   "give its shots the primary treatment (" + _cmd("script", project, "--fresh")
+                   + ") or choose the treatment the film is (" + _cmd("styles", project)
+                   + ")")
+    if gap["shots"] and gap["unmapped_shots"] > gap["shots"] / 2:
+        example = next((r["style"] for _, _, shots in reach.declared_dimensions(script)
+                        for r in shots if r["style"] and r["dim"] == "unknown"), "")
+        report.add("note", "vfx", "most shots name a treatment that is not in the style "
+                   f"library (e.g. '{_clip(example, 60)}'); their dimension is unknown")
+
+
 def fact_evidence(project: workspace.Project) -> list[tuple[str, str]]:
     """What the fact-check leaves between the narration and publication, as
     (problem, fix) pairs (AUTO-133): every blocker of script.json's `check`
@@ -1619,6 +1669,7 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
         # A film with nothing authored says so in its reach reason already.
         if motion.get("reason") and motion["reason"] != (vfx.get("reach") or {}).get("reason"):
             report.add("note", "vfx", f"motion audit: {_clip(str(motion['reason']), 240)}")
+        dimension_findings(report, project, styles, script, vfx)
         for group in vfx.get("sections") or []:
             for w in (group.get("warnings") or [] if isinstance(group, dict) else []):
                 report.add("note", "vfx", f"plan: {_clip(str(w), 240)}")
