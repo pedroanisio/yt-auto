@@ -94,7 +94,10 @@ LISTEN_ROLE = (
     "quality, the root cause in the owning stage's source, the owner and the "
     "fix. You file no score. Whatever the audio alone cannot settle (whether "
     "the voice is in sync with the picture, what the frames show) you list "
-    "under not_heard and never guess."
+    "under not_heard and never guess. When the picture's timeline as built is "
+    "listed, judge whether each hit or music entry is audibly at the listed time "
+    "of its anchored word or cut, and file one that lands early or late as a "
+    "finding at its time."
 )
 
 _FINDING = {
@@ -429,10 +432,46 @@ def listen_prompt(title: str, seconds: float, *, script: dict, build: dict, voic
         brief("The narration as written: what the film should say, context and not "
               "evidence of what is audible", said.splitlines() if said else []),
         brief("The cue sheet as spotted: context, not evidence", cues),
+        *picture_timeline(build),
         brief("Each finding's owner is exactly one of these; one you cannot place is "
               "`external`, with the reason in `fix`",
               {o: qa.DUTIES[o] for o in LISTEN_OWNERS}),
     ])
+
+
+#: The shot roles whose start is a reveal, as build.beat_sync reads them.
+_REVEALS = ("reveal", "payoff")
+
+
+def picture_timeline(build: dict | None) -> list[str]:
+    """The picture's timeline as `yt build` laid it (AUTO-140), for the
+    listener to judge timing against by ear: every cut, each reveal with its
+    line, each anchored cue at its placed time with its word, and how the
+    cuts sit on the music's beats. One brief, or none when build.json has
+    neither cue_anchors nor beat_sync, so an older build asks as before."""
+    build = build or {}
+    if not ("cue_anchors" in build or "beat_sync" in build):
+        return []
+    shots = sorted((s for s in build.get("shots") or [] if isinstance(s, dict)),
+                   key=lambda s: float(s.get("at") or 0))
+    cues = []
+    for row in build.get("cue_anchors") or []:
+        anchor = row.get("anchor") or {}
+        cues.append({"cue": row.get("cue"), "at": row.get("placed_at"),
+                     "shot": anchor.get("shot"),
+                     "word": anchor.get("text") if int(anchor.get("word", -1)) >= 0
+                     else "shot start",
+                     "status": row.get("status")})
+    sync = build.get("beat_sync")
+    return [brief("The picture's timeline as built: context, not evidence", {
+        "cuts": [s.get("at") for s in shots[1:]],
+        "reveals": [{"label": s.get("label"), "at": s.get("at"),
+                     "line": str(s.get("narration") or "")[:200]}
+                    for s in shots if s.get("function") in _REVEALS],
+        "cues": cues,
+        **({"beats": {k: v for k, v in sync.items() if k != "cuts"}}
+           if isinstance(sync, dict) else {}),
+    })]
 
 
 # --------------------------------------------------------------------------- #

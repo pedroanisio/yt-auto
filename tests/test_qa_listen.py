@@ -889,5 +889,58 @@ class PlacedTimes(unittest.TestCase):
                          json.dumps(legacy))
 
 
+class Timeline(unittest.TestCase):
+    """--listen's listener is given the picture's timeline as built, to judge
+    by ear whether each hit and music entry lands on its word or cut; it
+    still hears without seeing (AUTO-140)."""
+
+    prompt = PlacedTimes.prompt
+
+    def built(self):
+        data = _anchored_build(beat_sync={
+            "cuts_in_music": 3, "on_beat_share": 0.67, "median_abs_offset_ms": 50,
+            "downbeat_share": 0.33, "unmeasured": [], "cuts_outside_music": 0,
+            "tolerance_ms": 83,
+            "reveals": [{"label": "1.3", "at": 7.0, "downbeat_offset_ms": 20, "cue": "M1"}],
+            "cuts": [{"at": 3.0, "cue": "M1", "beat_offset_ms": 50,
+                      "downbeat_offset_ms": 550}]})
+        data["shots"][2].update(function="reveal", narration="And its tail is in front.")
+        return data
+
+    def brief(self, prompt):
+        head = "The picture's timeline as built: context, not evidence:\n"
+        self.assertIn(head, prompt)
+        return json.loads(prompt.split(head, 1)[1].split("\n\n", 1)[0])
+
+    def test_the_prompt_lists_cuts_reveals_and_each_cues_word(self):
+        got = self.brief(self.prompt(self.built()))
+        self.assertEqual(got["cuts"], [3.0, 7.0, 11.0])
+        self.assertEqual(got["reveals"], [{"label": "1.3", "at": 7.0,
+                                           "line": "And its tail is in front."}])
+        self.assertIn({"cue": "S1", "at": 5.4, "shot": "1.2", "word": "its",
+                       "status": "moved"}, got["cues"])
+        self.assertEqual(got["beats"]["on_beat_share"], 0.67)
+        self.assertEqual(got["beats"]["reveals"][0]["downbeat_offset_ms"], 20)
+
+    def test_the_prompt_is_the_same_for_every_pass_of_the_same_build(self):
+        first, second = self.prompt(self.built()), self.prompt(self.built())
+        self.assertEqual(first, second)
+        self.assertNotIn("pass-", first)
+
+    def test_beat_sync_alone_is_enough_for_the_brief(self):
+        data = self.built()
+        del data["cue_anchors"]
+        got = self.brief(self.prompt(data))
+        self.assertEqual(got["cues"], [])
+        self.assertEqual(got["cuts"], [3.0, 7.0, 11.0])
+
+    def test_the_role_still_hears_without_seeing_and_asks_for_the_timing(self):
+        role = _listen().LISTEN_ROLE
+        self.assertIn("what the frames show", role)
+        self.assertIn("under not_heard", role)
+        self.assertIn("judge whether each hit or music entry is audibly at the listed time "
+                      "of its anchored word or cut", role)
+
+
 if __name__ == "__main__":
     unittest.main()
