@@ -533,7 +533,9 @@ holds for those bytes, `yt qa`, `yt improve` while QA is not READY, then
 `yt doctor`'s delivery verdict as its last word (exit 0 only when delivery is
 ready, 4 when it is not). Gate's triage and QA are scored by
 `--reviewer-model` (a claude or codex model, else opus), never the author's
-family; `--no-deliver` or `--quick` stops the run at the render instead.
+family, and as improve reruns stages reviewed by opus, an opus `--model` is
+refused before any stage whatever `--reviewer-model` says; `--no-deliver` or
+`--quick` stops the run at the render instead.
 
 `yt gate` needs ffprobe and the engine, so it runs on a render host
 (`--host`, or the one an encode would go to; `--local` runs it here) in a

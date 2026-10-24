@@ -2750,7 +2750,12 @@ requires. The tail's gate triage and QA are scored by `--reviewer-model`
 when it is a claude or codex model, else `opus` (`vfx.REVIEWER_MODEL`), never
 the author's family: `yt run --model opus` with no `--reviewer-model` is
 refused with exit 2 before any stage, unless `--no-deliver`; improve's passes
-are `--model`'s and its QA `--qa-model` that reviewer. A gate that writes no
+are `--model`'s and its QA `--qa-model` that reviewer. improve takes no
+`--reviewer-model`: the stages it reruns review with `opus`, and it refuses an
+`opus` author itself, so `yt run --model opus --reviewer-model gpt-5.1-codex`
+is refused before any stage too, unless `--no-deliver`, rather than by
+improve after the render, gate and qa. An improve refusal (exit 2) still
+prints doctor's verdict last. A gate that writes no
 gate.json for this render (no render host: `--host` or `RS_RENDER_HOSTS`)
 stops the run with gate's exit; one that finds the film not deliverable goes
 on to QA. Under `--budget-usd` gate and qa are refused like any stage (exit
