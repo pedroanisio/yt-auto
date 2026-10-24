@@ -405,5 +405,50 @@ class Stage(unittest.TestCase):
         self.assertIn("yt voice", self.md)
 
 
+class Measured(unittest.TestCase):
+    """build.json's cue_anchors (and beat_sync) reach the scorecard reviewer's
+    measurements only when the build wrote them: omitted, never null, so a
+    film not rebuilt keeps its cached scorecard (AUTO-140)."""
+
+    # Stage's project and runner, without running Stage's own tests again
+    setUp, put, built_last = Stage.setUp, Stage.put, Stage.built_last
+    args, run_qa = Stage.args, Stage.run_qa
+
+    def measurements(self):
+        head = "Measurements and decisions from the stages:\n"
+        body = self.prompt.split(head, 1)[1]
+        return json.loads(body.split("\n\n", 1)[0])
+
+    def test_the_new_keys_are_handed_over_when_build_json_has_them(self):
+        self.put("sound.json", _sound())
+        self.put("voice.json", _voice())
+        built = motion._build(audio_tracks=3)
+        built["cue_anchors"] = [{"cue": "S1", "sheet_at": 3.0, "placed_at": 5.4,
+                                 "status": "moved", "anchor": {"shot": "1.2"}}]
+        built["beat_sync"] = {"cuts_in_music": 3, "on_beat_share": 0.67,
+                              "median_abs_offset_ms": 40, "downbeat_share": 0.33,
+                              "reveals": [], "unmeasured": [], "cuts_outside_music": 0}
+        self.put("build.json", built)
+        later = (self.root / "build.json").stat().st_mtime + 60
+        os.utime(self.root / "build.json", (later, later))
+        self.run_qa()
+        got = self.measurements()
+        self.assertEqual(got["cue_anchors"], built["cue_anchors"])
+        self.assertEqual(got["beat_sync"], built["beat_sync"])
+        self.assertEqual([c["at"] for c in got["sound_cues"]], [0, 5.4])
+
+    def test_they_are_omitted_when_build_json_has_neither(self):
+        self.put("sound.json", _sound())
+        self.put("voice.json", _voice())
+        self.built_last()
+        self.run_qa()
+        got = self.measurements()
+        self.assertNotIn("cue_anchors", got)
+        self.assertNotIn("beat_sync", got)
+        self.assertNotIn("cue_anchors", self.prompt)
+        self.assertNotIn("beat_sync", self.prompt)
+        self.assertEqual([c["at"] for c in got["sound_cues"]], [0, 3])
+
+
 if __name__ == "__main__":
     unittest.main()

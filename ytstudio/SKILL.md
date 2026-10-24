@@ -159,7 +159,7 @@ itself, and `--project DIR` names a directory directly.
 | `yt retime` | script, voice | `retime.json`, the screenplay's measured lengths (`script.json.bak` kept) | yes (accept, rerecord, rewrite, keep; a `rerecord` prints `yt voice --redo <labels>` and a `rewrite` prints `yt script --revise retime`) |
 | `yt keyframe` | script, voice, styles, props (what `yt vfx` reads) | the vfx plan, the lead section in `vfx/vNN/`, `keyframe/keyframe.png`, `keyframe/frames.png`, `keyframe.json`, `keyframe.md` | yes (the vfx plan; one author agent, one attempt, no vision review; `--sheet`: the older composed frame) |
 | `yt vfx` | script, voice, styles, props | `vfx/vNN/<section>.scene.xml`, `vfx/vNN/frames/` (and `frames/grid/`, the review's grid copies), `vfx.json`, `vfx.md`, `vfx.csv` | yes (one author agent per section, a frame review per round) |
-| `yt sound` | script | `sound.json`, `sound.md`, `cues.csv`; with `--fetch`, `sound/` and `sound/index.json` | yes (spotting; `yt sound --review` listens back and fixes its own important and blocking findings, one revision of the cue's design fields each, two rounds at most, and `yt sound --review --report-only` only reports them; the review keeps `heard`, `sound.heard`'s digest of the cue sheet's design as the review left it (not the files `--fetch` adds), which `yt qa` checks before it scores sound and music from it; the fetch judges each candidate that passes the level checks against its cue, from its evidence and a spectrogram, and records the verdict in the cue's `judgement`) |
+| `yt sound` | script | `sound.json`, `sound.md`, `cues.csv`; with `--fetch`, `sound/` and `sound/index.json` | yes (spotting; `yt sound --review` listens back and fixes its own important and blocking findings, one revision of the cue's design fields each, two rounds at most, and `yt sound --review --report-only` only reports them; the review keeps `heard`, `sound.heard`'s digest of the cue sheet's design as the review left it (not the files `--fetch` adds), which `yt qa` checks before it scores sound and music from it; the fetch judges each candidate that passes the level checks against its cue, from its evidence and a spectrogram, and records the verdict in the cue's `judgement`; a fresh spot then anchors each cue to the spoken word it lands on, `anchor`, derived and never asked, outside `heard`, which `yt build` follows when a take is redone and reports in build.json's `cue_anchors`, a word it cannot find once `lost` at the sheet's `at` with a warning, AUTO-140) |
 | `yt build` | all of the above | `scene.xml`, `build.json`, `vfx/vNN/<section>.include.scene.xml` | yes (coverage, captions, tail, blocking) |
 | `yt render` | `scene.xml` | `video.mp4`, `render.json` (a still, a validation, an audio pass or a pilot writes `render-<job>.json`) | no |
 
@@ -1243,6 +1243,18 @@ hand-authored world showed the cost.
   the cue's name. `--fetch --synth` fetches first and synthesises the rest;
   a later `--fetch` keeps a synthesised cue. `yt doctor` warns while any
   cue has no file and names that command.
+- **Sound follows the words; cuts do not follow the beat** (AUTO-140). A
+  cue's `anchor` lets `yt build` re-place it when a take is redone
+  (`cue_anchors`: kept, moved, lost); a sheet spotted before anchors places
+  on its seconds, and re-spotting with `yt sound --fresh` is the fix. A music
+  or stinger file's `beat_grid` is measured on the render host with its
+  levels (none without a host, or for a bed with no steady beat), and
+  build.json's `beat_sync` reports how near cuts and reveals land to beats
+  and downbeats: a measure for the reviewers, never a bar, and cuts stay on
+  the narration. Nothing judges picture and sound together yet: `--listen`
+  gets a text timeline to judge timing by ear, and `--watch` sends no sound.
+  The search window, the beat tempo range, its confidence, the 4/4 downbeat,
+  the 83 ms tolerance and the host's envelope chain are TO VERIFY.
 - **The ocean is a height field.** It cannot overturn, break or pinch off a
   droplet. A liquid that must do that is a GLSL `effect type="shader"` over
   a rect, which the engine's effect pass renders with full ray intersections:

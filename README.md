@@ -1141,6 +1141,18 @@ beside its `entry` and `exit` prose, required for music and ambience
 (`rule:fade` flags a bed with no fade out) and optional for the rest; `yt
 build` sets the track's `fadeIn`/`fadeOut` from them.
 
+A fresh spot then anchors every cue to the spoken word it lands on
+(`sound.anchor_cues`, AUTO-140), on the timeline `yt build` places the
+takes on: `anchor` is the shot (the cue's `shot` when it names one, else the
+shot its `at` falls in), the take as `<file>@<sha256>` (`build.take_mark`;
+"" with no recording), the index and text of the word whose start is nearest
+`at` within 1 s (else -1 and "", the shot's start) and the `offset` in
+seconds from it. The model is never asked for it and `at` stays its whole
+second; `sound.md` and `cues.csv` list it beside the shot. A `--fetch` or
+`--synth` re-entry keeps the sheet as it is, anchors or none, and `anchor`
+is not in the listen-back's `heard` digest, so adding anchors leaves a
+review current.
+
 Coverage is computed, not asked for — merged music intervals, share of runtime
 scored, longest unbroken run, unscored stretches — and `--review` hands those
 numbers back for a listen-back pass that flags wall-to-wall music, cues that
@@ -1201,6 +1213,16 @@ is refused with the measured floor and gain, and the next-ranked hit of the same
 search is tried (three in all) before the cue is left unfilled. With no render
 host, or `YT_NO_REMOTE` set, nothing is measured: the summary and the stage's
 output say `NOT LEVELLED`, and a later `--fetch` measures the kept files.
+A music or stinger file also brings back, in the same ssh, an RMS envelope
+of its first minute at a 10 ms hop (mono, resampled, ffmpeg's `astats`,
+the chain TO VERIFY on the host); a failure there costs the file nothing
+of its level checks. `sound.beat_grid` works the tempo, the first beat and
+a 4/4 downbeat out of it in stdlib Python (onset strength, autocorrelation
+over `BEAT_BPM` 60-180, a comb for the phase, a line through the onset
+peaks; `BEAT_CONFIDENCE` 0.3; all TO VERIFY on real previews) and the cue
+keeps `beat_grid` (`bpm`, `period`, `first_beat`, `downbeat_first`,
+`confidence`), or none for a bed with no steady beat. A refetch clears it,
+and it is not in `heard`. `--synth` measures its music the same way.
 A new candidate that passes those checks is then judged against its cue by the model (the library's name, tags, description and length, the measured levels and spectral centroid and flatness, and a spectrogram made on the same host): a reject tries the next-ranked hit, the cue keeps the `judgement` with its evidence, and a cue every candidate failed is left unfilled with the reasons.
 
 ### `yt build`
@@ -1296,6 +1318,43 @@ in `build.json`, not invented, and a sound design of which nothing could be
 placed sets `publishable: false` — a project with no sound design at all is
 not blocked. `build.json` also counts `audio_tracks`, `narration_tracks`,
 `buses` and `silence_windows`.
+
+A cue with an `anchor` (AUTO-140) is placed on its word, not its second:
+`build.anchor_time` finds the anchored shot's take on the current timeline,
+adds the word's start and the offset, and calls the cue `kept`, `moved`
+(the take was redone, by file or sha256, or the shot starts elsewhere) or
+`lost`. A word no longer at its index is looked for by its text (case and
+punctuation folded) within `build.ANCHOR_SEARCH_WORDS` (8, TO VERIFY) of it,
+and only a single match is used: a word said twice there, a missing word or
+a missing shot is `lost`, placed at the sheet's `at`, and a `warning:`
+names the cue, its anchor and the time used. The placed times are checked
+again with `sound.rule_findings` against the built runtime, and an overlap
+or a cue past the end that only re-anchoring made is a `warning:`.
+`build.json`'s `cue_anchors` lists each anchored cue (`cue`, `sheet_at`,
+`placed_at`, `anchor`, `status`) and the summary names the moved and the
+lost. A sheet with no anchors places as before, has no `cue_anchors`, and the
+build prints one line saying cues will not follow a redone voice. `yt qa`'s
+scorecard reviewer and `--listen`'s listener are given each cue's
+`placed_at` in place of its `at` when build.json has it.
+
+`build.json`'s `beat_sync` measures how the cuts sit on the music, and
+never moves one: cuts stay on the narration. For every placed music or
+stinger cue the mix reports where it starts, each play's length, its loops
+and its `clipOut`, and `build.beat_sync` lays the cue's `beat_grid` over
+each play. Each join (the incoming shot's `at`) under measured music gets
+its signed offset to the nearest beat and downbeat; the record is
+`cuts_in_music`, `on_beat_share` (within `BEAT_TOLERANCE_S`, 83 ms, TO
+VERIFY), `median_abs_offset_ms`, `downbeat_share`, each reveal or payoff
+shot's offset to the nearest downbeat (`reveals`), the music cues with no
+grid (`unmeasured`, their cuts not scored) and `cuts_outside_music`. A film
+with no music has none. `yt qa` hands `beat_sync` and `cue_anchors` to the
+scorecard reviewer only when build.json has them, and `--listen` adds one
+brief, the picture's timeline as built (cuts, reveals with their lines, each
+anchored cue's placed time and word, the beat summary), so the listener can
+say by ear whether a hit lands on its word or cut; it still hears without
+seeing, and `--watch` still sends no sound. A film rebuilt with these keys
+asks its scorecard once more (the prompt changed); one not rebuilt keeps its
+cached decision.
 
 Short effects are staged before the gain is split. The limiter runs after
 normalisation, so a tap or stinger far above the bed is limited after the

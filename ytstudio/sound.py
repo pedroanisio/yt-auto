@@ -57,7 +57,7 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 from claude_engine import ClaudeError, EngineConfig, Usage
-from .build import NORMALIZE_MODES
+from .build import BEAT_KINDS, BEATS_A_BAR, NORMALIZE_MODES
 from .core import (Idea, read_json, slugify, timecode, wrap,
                    write_json)
 from .ideas import CHANNEL_STYLES, style_brief
@@ -254,10 +254,14 @@ def heard(cues, *, mix: dict | None = None, normalize: dict | None = None) -> di
     Takes Cue objects or the dicts sound.json holds; a cue's numbers are
     compared as numbers, so 1 and 1.0 agree.
 
-    What it does not cover: the narration. The listen-back reads the cue
-    sheet and the mix targets, never the recorded takes, so a voice
-    re-record under an unchanged sheet leaves it current; the takes are
-    what voice.json's take review hears, and voiceover is scored from that."""
+    What it does not cover: the narration, and so not where a re-recorded
+    voice moves the cues. The listen-back reads the cue sheet and the mix
+    targets, never the recorded takes, so a voice re-record under an
+    unchanged sheet leaves it current; the takes are what voice.json's take
+    review hears, and voiceover is scored from that. A cue's `anchor` (its
+    spoken word, `anchor_cues`) is written after the review and is not in
+    HEARD_FIELDS: when a redone take moves an anchored cue, `yt build`
+    reports the move in build.json's `cue_anchors`, not this digest."""
     rows = []
     for cue in cues or []:
         raw = asdict(cue) if hasattr(cue, "__dataclass_fields__") else dict(cue or {})
@@ -315,6 +319,9 @@ class Cue:
     duration: float = 0.0
     freesound_id: int = 0
     query_used: str = ""
+    # The spoken word the cue was spotted on (`anchor_cues`), so `yt build`
+    # can follow a redone take; derived after spotting, never asked for.
+    anchor: dict = field(default_factory=dict)
 
     @classmethod
     def from_raw(cls, raw: dict) -> Cue:
@@ -326,6 +333,9 @@ class Cue:
                     "query", "note"):
             if key in clean:
                 clean[key] = str(clean[key]).strip()
+        # The anchor is derived from the timeline (`anchor_cues`), never taken
+        # from what the model wrote.
+        clean.pop("anchor", None)
         clean["kind"] = clean.get("kind", "music").lower()
         if clean["kind"] not in CUE_KINDS:
             clean["kind"] = "sfx"
@@ -380,6 +390,81 @@ def on_measured_clock(script: dict, voice: dict | None) -> list[Section]:
     from . import retime
     import copy
     return sections_of(retime.apply(copy.deepcopy(script), voice))
+
+
+#: How far from a cue's time a word start may be and still be its anchor (s).
+ANCHOR_WINDOW_S = 1.0
+
+
+def anchor_cues(cues: list, placed: list, voice: dict | None, *,
+                window: float = ANCHOR_WINDOW_S) -> list:
+    """Give each cue the spoken word it lands on, so `yt build` can place it
+    on that word when the voice is redone (AUTO-140). Mechanical, after
+    spotting and revision: the model is never asked for it, and `at` stays
+    its whole second.
+
+    `placed` is `build.timeline(sections_of(script), voice)`. The shot is the
+    cue's `shot` when that names a placed shot, else the one its `at` falls
+    in; the anchor is the word of that shot's take whose start is nearest
+    `at` within `window` seconds, else the shot's start (word -1). `offset`
+    is `at` minus the anchor's time, so it may be negative. `take` is the
+    take's `build.take_mark`, "" for a shot with no recording. Takes the
+    dicts sound.json holds or Cue objects, sets `anchor` on each, and
+    returns them; with nothing placed no cue gets one."""
+    from . import build
+    takes = {t.get("label"): t for t in (voice or {}).get("takes", []) if isinstance(t, dict)}
+    by_label = {p.label: p for p in placed}
+    ordered = sorted(placed, key=lambda p: p.at)
+
+    def shot_for(at: float, named: str):
+        if named in by_label:
+            return by_label[named]
+        inside = [p for p in ordered if p.at <= at < p.at + p.seconds]
+        if inside:
+            return inside[-1]
+        before = [p for p in ordered if p.at <= at]
+        return before[-1] if before else (ordered[0] if ordered else None)
+
+    for cue in cues:
+        is_obj = hasattr(cue, "__dataclass_fields__")
+        get = (lambda k, c=cue: getattr(c, k, "")) if is_obj else cue.get
+        try:
+            at = float(get("at") or 0)
+        except (TypeError, ValueError):
+            continue
+        p = shot_for(at, str(get("shot") or ""))
+        if p is None:
+            if not is_obj and not cue.get("anchor"):
+                cue.pop("anchor", None)
+            continue
+        word, text, start = -1, "", p.at
+        best = None
+        for n, w in enumerate(p.words or []):
+            ws = build._word_start(w)
+            if ws is None:
+                continue
+            gap = abs(p.at + ws - at)
+            if gap <= window and (best is None or gap < best[0]):
+                best = (gap, n, str(w.get("text", "")), p.at + ws)
+        if best is not None:
+            _, word, text, start = best
+        anchor = {"shot": p.label,
+                  "take": build.take_mark(takes.get(p.label)) if p.source == "voice" else "",
+                  "word": word, "text": text, "offset": round(at - start, 3)}
+        if is_obj:
+            cue.anchor = anchor
+        else:
+            cue["anchor"] = anchor
+    return cues
+
+
+def anchor_text(anchor: dict | None) -> str:
+    """An anchor as the cue sheet lists it: `S03 word 3 "the" +0.2s`."""
+    if not anchor:
+        return ""
+    word = (f'word {anchor.get("word")} "{anchor.get("text", "")}"'
+            if int(anchor.get("word", -1)) >= 0 else "shot start")
+    return f"{anchor.get('shot', '')} {word} {float(anchor.get('offset') or 0):+g}s"
 
 
 def coverage(cues: list[Cue], runtime: int) -> dict:
@@ -1129,7 +1214,7 @@ FETCH_QUALITY = (f"Freesound {freesound.PREVIEW}: the high-quality mp3 preview, 
 #: The fields `--fetch` writes into a cue, and clears before trying again.
 FETCHED_FIELDS = ("file", "licence", "credit", "source_url", "duration",
                   "freesound_id", "query_used", "synth", "gain_db",
-                  "source_peak_dbfs", "judgement")
+                  "source_peak_dbfs", "judgement", "beat_grid")
 #: Function words that carry no sound: dropped when a cue's name is shortened
 #: into a last-resort query. Nothing about any subject lives here.
 _STOP = frozenset("a an and the of on in at to for with from by or into onto "
@@ -1230,6 +1315,164 @@ class Levels:
     flatness: float | None = None
     tonal: bool | None = None
     spectrogram: bytes = b""
+    # The RMS level per BEAT_HOP_S (dB), for a file asked for its beat;
+    # empty when not asked or when the host could not make it.
+    envelope: list[float] = field(default_factory=list)
+
+
+# --------------------------------------------------------------------------- #
+# beat grids (AUTO-140): measured on the render host, worked out here
+# --------------------------------------------------------------------------- #
+
+# BEAT_KINDS (the cue kinds whose files get an envelope and a `beat_grid`)
+# and BEATS_A_BAR (4/4 assumed, TO VERIFY) are build's, which lays the grid.
+#: The envelope's hop: BEAT_RATE samples a second in blocks of
+#: BEAT_HOP_SAMPLES, one RMS level per block (10 ms).
+BEAT_RATE, BEAT_HOP_SAMPLES = 8000, 80
+BEAT_HOP_S = BEAT_HOP_SAMPLES / BEAT_RATE
+#: How much of a file the envelope covers (s): a minute is plenty to find a
+#: steady tempo and keeps the host's printout near 6000 numbers.
+BEAT_SECONDS = 60
+#: The tempi looked for, in beats a minute. TO VERIFY on real previews.
+BEAT_BPM = (60, 180)
+#: The grid's strength, its autocorrelation peak above the mean of the
+#: range over the signal's own energy, under which there is no steady beat
+#: (a rubato or ambient bed). TO VERIFY on real previews and synthesised beds.
+BEAT_CONFIDENCE = 0.3
+#: What a silent block (-inf) counts as, in dB.
+BEAT_FLOOR_DB = -120.0
+
+
+def parse_envelope(text: str) -> list[float]:
+    """The host's RMS levels, one number per block; -inf is BEAT_FLOOR_DB
+    and anything unreadable is dropped."""
+    out: list[float] = []
+    for token in (text or "").split():
+        try:
+            value = float(token)
+        except ValueError:
+            continue
+        if math.isnan(value):
+            continue
+        out.append(max(BEAT_FLOOR_DB, value) if math.isfinite(value) else BEAT_FLOOR_DB)
+    return out
+
+
+def beat_grid(envelope: list[float], hop: float = BEAT_HOP_S) -> dict | None:
+    """A tempo, phase and downbeat from an RMS envelope (dB per `hop`), or
+    None when it has no steady beat.
+
+    Onset strength is the envelope's rise, half-wave rectified. Its
+    autocorrelation over the lags of BEAT_BPM, weighted toward 120 BPM by an
+    octave-wide log-normal so a beat is not read at half its tempo, gives
+    the period (refined between lags by a parabola); a comb summed over
+    every phase gives the first beat; and of the BEATS_A_BAR phases of the
+    bar, the one whose beats carry the most onset is the downbeat (4/4
+    assumed). `confidence` is the chosen lag's autocorrelation above the
+    range's mean, over the onset's energy: a click track is near 1, noise
+    near 0. Stdlib only, and nothing here was taken from another library."""
+    level = [max(BEAT_FLOOR_DB, float(v)) for v in envelope or []]
+    if hop <= 0 or len(level) < 3:
+        return None
+    onset = [0.0] + [max(0.0, b - a) for a, b in zip(level, level[1:])]
+    n = len(onset)
+    lo = max(1, int(math.floor(60.0 / BEAT_BPM[1] / hop)))
+    hi = int(math.ceil(60.0 / BEAT_BPM[0] / hop))
+    if n < 2 * hi + 2:
+        return None
+    energy = sum(v * v for v in onset) / n
+    if energy <= 0:
+        return None
+
+    def ac(lag: int) -> float:
+        return sum(onset[i] * onset[i + lag] for i in range(n - lag)) / n
+
+    lags = range(lo, hi + 1)
+    raw = {lag: ac(lag) for lag in range(lo - 1, hi + 2)}
+    weight = {lag: math.exp(-0.5 * math.log2(60.0 / (lag * hop) / 120.0) ** 2)
+              for lag in lags}
+    best = max(lags, key=lambda lag: raw[lag] * weight[lag])
+    mean = sum(raw[lag] for lag in lags) / len(lags)
+    confidence = (raw[best] - mean) / energy
+    if confidence < BEAT_CONFIDENCE:
+        return None
+    a, b, c = raw[best - 1], raw[best], raw[best + 1]
+    bend = a - 2 * b + c
+    shift = 0.5 * (a - c) / bend if bend < 0 else 0.0
+    period = (best + max(-0.5, min(0.5, shift)))  # in hops
+
+    def strength(at: float) -> float:
+        k = int(round(at))
+        return max(onset[j] for j in range(max(0, k - 1), min(n, k + 2)))
+
+    def beats(phase: float) -> list[float]:
+        out, t = [], phase
+        while t < n:
+            out.append(t)
+            t += period
+        return out
+
+    phase = max(range(int(math.ceil(period))),
+                key=lambda f: (sum(strength(t) for t in beats(f)),
+                               sum(onset[int(round(t))] for t in beats(f) if t < n - 0.5)))
+    # The comb's grid drifts by the lag's rounding over a long file; a line
+    # through the onset peak nearest each of its beats is the grid itself.
+    peaks = []
+    for k, t in enumerate(beats(phase)):
+        span = range(max(0, int(round(t - period / 4))), min(n, int(round(t + period / 4)) + 1))
+        j = max(span, key=lambda i: onset[i], default=None)
+        if j is not None and onset[j] > 0:
+            peaks.append((k, j))
+    if len(peaks) >= 4:
+        ks, js = [k for k, _ in peaks], [j for _, j in peaks]
+        mk, mj = sum(ks) / len(ks), sum(js) / len(js)
+        spread = sum((k - mk) ** 2 for k in ks)
+        if spread > 0:
+            slope = sum((k - mk) * (j - mj) for k, j in peaks) / spread
+            if abs(slope - period) < 0.1 * period:
+                period, phase = slope, mj - slope * mk
+                while phase < -0.5:
+                    phase += period
+                while phase >= period - 0.5:
+                    phase -= period
+                phase = max(0.0, phase)
+    # The mean, not the sum: the first phase of the bar has one beat more
+    # whenever the file does not end on a bar line.
+    sums, counts = [0.0] * BEATS_A_BAR, [0] * BEATS_A_BAR
+    for k, t in enumerate(beats(phase)):
+        sums[k % BEATS_A_BAR] += strength(t)
+        counts[k % BEATS_A_BAR] += 1
+    bar = max(range(BEATS_A_BAR), key=lambda j: sums[j] / max(1, counts[j]))
+    seconds = period * hop
+    return {"bpm": round(60.0 / seconds, 2), "period": round(seconds, 4),
+            "first_beat": round(phase * hop, 3),
+            "downbeat_first": round((phase + bar * period) * hop, 3),
+            "confidence": round(confidence, 3)}
+
+
+def add_beat_grid(cue: dict, got: Levels | None) -> None:
+    """Store the beat grid of a music or stinger cue's measured file, when
+    its envelope has a steady beat; an unsteady one stores none."""
+    if got is None or not got.envelope or cue.get("kind") not in BEAT_KINDS:
+        return
+    grid = beat_grid(got.envelope, BEAT_HOP_S)
+    if grid:
+        cue["beat_grid"] = grid
+
+
+def measured_with(measure, paths: list, beat: set[int]):
+    """Call a meter with the batch's beat indices when it takes them; a
+    meter written before beats (a test's stub, a caller's own) is called as
+    before and simply measures no envelope."""
+    if beat:
+        import inspect
+        try:
+            params = inspect.signature(measure).parameters.values()
+        except (TypeError, ValueError):
+            params = []
+        if any(p.name == "beat" or p.kind is p.VAR_KEYWORD for p in params):
+            return measure(paths, beat=set(beat))
+    return measure(paths)
 
 
 def reference_of(kind: str) -> str:
@@ -1271,12 +1514,32 @@ _SPECTRAL_MEAN = (r"awk -F= '/aspectralstats\.[0-9]+\.centroid=/{c+=$2;a++} "
                   r'END{if(a&&b)printf "centroid=%.1f flatness=%.5f\n",c/a,f/b}' + "'")
 
 
-def measure_script(remote: str, names: list[str], ffmpeg: str = "") -> str:
+#: The host's RMS envelope: mono, resampled to BEAT_RATE, one astats block
+#: of BEAT_HOP_SAMPLES at a time with its counters reset, each block's RMS
+#: printed and folded onto one line. TO VERIFY on the render host: the exact
+#: chain, the volume of output and its runtime per minute of audio.
+_BEAT_CHAIN = (f"aformat=channel_layouts=mono,aresample={BEAT_RATE},"
+               f"asetnsamples=n={BEAT_HOP_SAMPLES}:p=0,astats=metadata=1:reset=1,"
+               "ametadata=mode=print:key=lavfi.astats.Overall.RMS_level:file=-")
+_BEAT_LINE = r"""awk -F= '/RMS_level=/{printf "%s ", $2} END{print ""}'"""
+
+
+def measure_script(remote: str, names: list[str], ffmpeg: str = "",
+                   beat=frozenset()) -> str:
     """The one remote shell for a batch: unpack the files into `remote`, run
     ebur128 on each between @@FILE/@@END marks, then the spectral means and a
     spectrogram PNG (base64) between @@SPEC/@@SPECEND marks, and remove the
-    directory. The spectral part may fail without touching the levels."""
+    directory. The spectral part may fail without touching the levels. The
+    files whose index is in `beat` (music and stingers) also print their RMS
+    envelope between @@BEAT/@@BEATEND marks, which may fail the same way."""
     q = shlex.quote
+
+    def envelope(n: int, name: str) -> str:
+        if n not in beat:
+            return ""
+        return (f'echo "@@BEAT {n}"; "$F" -hide_banner -nostats -loglevel error '
+                f'-t {BEAT_SECONDS} -i {q(name)} -vn -af {_BEAT_CHAIN} -f null - '
+                f'2>/dev/null | {_BEAT_LINE}; echo "@@BEATEND {n}"; ')
     runs = "".join(
         f'echo "@@FILE {n}"; "$F" -hide_banner -nostats -loglevel verbose -i {q(name)} -vn '
         f'-af ebur128=peak=true:framelog=verbose -f null - 2>&1; '
@@ -1288,19 +1551,20 @@ def measure_script(remote: str, names: list[str], ffmpeg: str = "") -> str:
         f'echo "@@PNG {n}"; "$F" -hide_banner -nostats -loglevel error -y -i {q(name)} '
         f'-lavfi showspectrumpic=s={SPECTROGRAM_SIZE}:legend=0 -frames:v 1 spec{n}.png '
         f'2>/dev/null && base64 -w0 spec{n}.png 2>/dev/null; echo; '
-        f'echo "@@SPECEND {n}"; ' for n, name in enumerate(names))
+        f'echo "@@SPECEND {n}"; ' + envelope(n, name) for n, name in enumerate(names))
     return (f"mkdir -p {q(remote)} && cd {q(remote)} && tar -xf - && "
             f'{{ F=$(command -v ffmpeg 2>/dev/null); [ -n "$F" ] || F={q(ffmpeg)}; '
             f'if [ -x "$F" ]; then {runs}true; else echo __NO_FFMPEG__; false; fi; }}; '
             f"code=$?; cd /; rm -rf {q(remote)}; exit $code")
 
 
-def measure_remote(paths) -> list[Levels | None]:
+def measure_remote(paths, beat=frozenset()) -> list[Levels | None]:
     """Measure every file on a render host, in one ssh: the files travel as a
     tar on stdin (as a still's bundle does), ffmpeg runs there, and the
     answers come back on stdout. ffmpeg is not run on this workstation. A
     file the host could not read is None; no host, no ffmpeg, or a dead link
-    is a MeasureError."""
+    is a MeasureError. The files whose index is in `beat` also bring back
+    their RMS envelope (`Levels.envelope`), empty when that part failed."""
     from . import render
     paths = [Path(p) for p in paths]
     if not paths:
@@ -1315,7 +1579,8 @@ def measure_remote(paths) -> list[Levels | None]:
     known = render._HOSTS.get(host) or render.probe(host)
     beside = f"{Path(known.ffprobe).parent}/ffmpeg" if known.ffprobe else ""
     names = [f"{n}{re.sub(r'[^.A-Za-z0-9]', '', p.suffix)}" for n, p in enumerate(paths)]
-    script = measure_script(f"{render.REMOTE_ROOT}/sound-{render.job_tag()}", names, beside)
+    script = measure_script(f"{render.REMOTE_ROOT}/sound-{render.job_tag()}", names, beside,
+                            beat=frozenset(beat or ()))
     seconds = MEASURE_SECONDS + MEASURE_SECONDS_PER_FILE * len(paths)
     try:
         render.refuse_remote()
@@ -1336,6 +1601,8 @@ def measure_remote(paths) -> list[Levels | None]:
                            f"{done.stderr.decode('utf-8', 'replace').strip()[:200]}")
     specs = {int(n): (facts, png) for n, facts, png in re.findall(
         r"@@SPEC (\d+)\n(.*?)\n?@@PNG \1\n(.*?)\n?@@SPECEND \1", out, re.S)}
+    envelopes = {int(n): body for n, body in re.findall(
+        r"@@BEAT (\d+)\n(.*?)\n?@@BEATEND \1", out, re.S)}
     found: list[Levels | None] = []
     for n in range(len(paths)):
         code, body = blocks.get(n, (1, ""))
@@ -1343,6 +1610,7 @@ def measure_remote(paths) -> list[Levels | None]:
         if got is not None:
             got.host = host
             add_spectral(got, *specs.get(n, ("", "")))
+            got.envelope = parse_envelope(envelopes.get(n, ""))
         found.append(got)
     return found
 
@@ -1817,8 +2085,11 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
                     break
                 wanted = sorted({j.rel for j in testing} - set(levels))
                 if wanted and "measure_error" not in summary:
+                    beat = {i for i, rel in enumerate(wanted)
+                            if any(j.rel == rel and j.cue.get("kind") in BEAT_KINDS
+                                   for j in testing)}
                     try:
-                        got = measure([root / rel for rel in wanted])
+                        got = measured_with(measure, [root / rel for rel in wanted], beat)
                         levels.update(zip(wanted, got))
                     except MeasureError as exc:
                         summary["measure_error"] = str(exc)
@@ -1856,6 +2127,7 @@ def fetch(root: str | Path, data: dict, *, token: str | None = None,
                         refuse(job, why)
                     else:
                         accept(job, fields, verdict)
+                        add_beat_grid(job.cue, got)
                 said(testing)
                 for rel in discard - taken - {j.rel for j in work if not j.done}:
                     (root / rel).unlink(missing_ok=True)
@@ -2147,7 +2419,9 @@ def realise(root: str | Path, data: dict, *, author=None, model: str | None = No
     if made:
         narration, _ = narration_level(data)
         try:
-            got = (measure or measure_remote)([root / t["file"] for t in made])
+            got = measured_with(measure or measure_remote, [root / t["file"] for t in made],
+                                {i for i, t in enumerate(made)
+                                 if by_id[t["cue_id"]].get("kind") in BEAT_KINDS})
         except MeasureError as exc:
             summary["measure_error"] = str(exc)
             summary["unmeasured"] = [t["cue_id"] for t in made]
@@ -2173,6 +2447,7 @@ def realise(root: str | Path, data: dict, *, author=None, model: str | None = No
                 say(f"  {t['cue_id']} synthesised file refused: {why}")
             else:
                 cue.update(fields)
+                add_beat_grid(cue, levels)
                 summary["levelled"] += 1
     data["unfilled"] = list(unfilled.values())
     return summary
@@ -2322,7 +2597,8 @@ def write_md(path: str, idea: Idea, data: dict, cues: list[Cue]) -> None:
             md += [f"## {section}", ""]
         md += [f"### {cue.cue_id} · {timecode(cue.at)}–{timecode(cue.out)} "
                f"({cue.seconds}s) · {cue.kind}"
-               + (f" · {cue.shot}" if cue.shot else ""), "",
+               + (f" · {cue.shot}" if cue.shot else "")
+               + (f" · on {anchor_text(cue.anchor)}" if cue.anchor else ""), "",
                f"**{cue.name}** — {cue.purpose}", "", cue.description, ""]
         for label, value in (("Motif", cue.motif),
                              ("Instrumentation", cue.instrumentation),
@@ -2375,7 +2651,7 @@ def write_md(path: str, idea: Idea, data: dict, cues: list[Cue]) -> None:
 
 
 def write_csv(path: str, cues: list[Cue]) -> None:
-    cols = ["cue_id", "kind", "in", "out", "seconds", "section", "shot", "name",
+    cols = ["cue_id", "kind", "in", "out", "seconds", "section", "shot", "anchor", "name",
             "purpose", "description", "motif", "instrumentation", "tempo",
             "sync", "layers", "entry", "exit", "fade_in", "fade_out", "level",
             "source", "search", "query", "note", "file", "licence", "credit",
@@ -2385,6 +2661,7 @@ def write_csv(path: str, cues: list[Cue]) -> None:
         writer.writeheader()
         for cue in cues:
             row = asdict(cue) | {"in": timecode(cue.at), "out": timecode(cue.out),
+                                 "anchor": anchor_text(cue.anchor),
                                  "layers": "; ".join(cue.layers),
                                  "search": "; ".join(cue.search)}
             writer.writerow({c: row.get(c, "") for c in cols})
@@ -2520,6 +2797,11 @@ def run(args) -> int:
     except ClaudeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    # Each cue on the word it lands on, after spotting and the review, on
+    # the timeline `yt build` places the takes on (AUTO-140). Only a fresh
+    # spot does this: a --fetch/--synth re-entry keeps the sheet as it is.
+    from . import build
+    anchor_cues(data.get("cues") or [], build.timeline(sections_of(script), voice), voice)
     code = _finish(args, idea, project, data)
     print(f"{designer.usage}", file=sys.stderr)
     return code

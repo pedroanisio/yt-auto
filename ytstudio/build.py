@@ -953,6 +953,246 @@ def timeline(sections: list[Section], voice: dict | None) -> list[Placed]:
 
 
 # --------------------------------------------------------------------------- #
+# cue anchors: a cue follows the word it was spotted on (AUTO-140)
+# --------------------------------------------------------------------------- #
+
+#: How many words either side of its old index an anchor's word is looked
+#: for once the take no longer has it there. TO VERIFY against a real
+#: re-recorded line.
+ANCHOR_SEARCH_WORDS = 8
+#: Under this many seconds an anchored cue is where the sheet put it.
+ANCHOR_SAME_S = 0.001
+#: What a take's mark is made of when voice.json records no sha256 of it:
+#: what the take review hears of it (voice.HEARD_FIELDS) and its word
+#: timings, so a re-record changes it and a move along the timeline does not.
+TAKE_MARK_FIELDS = ("label", "text", "file", "seconds", "engine", "voice", "words")
+
+
+def take_mark(take: dict | None) -> str:
+    """The recording a cue was anchored on: its file and a sha256, as
+    `<file>@<sha256>`. voice.json's takes carry no hash of the audio, so the
+    sha256 is the take's own `sha256` when it has one, else a digest of
+    TAKE_MARK_FIELDS. "" with no take."""
+    if not take:
+        return ""
+    sha = str(take.get("sha256") or "")
+    if not sha:
+        import hashlib
+        text = json.dumps({k: take.get(k) for k in TAKE_MARK_FIELDS},
+                          sort_keys=True, ensure_ascii=False)
+        sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return f"{take.get('file', '')}@{sha}"
+
+
+def fold_word(text: str) -> str:
+    """A word as it is compared: lower case, letters and digits only."""
+    return re.sub(r"[^\w]", "", str(text or "").lower())
+
+
+def _word_start(word) -> float | None:
+    try:
+        return float(word.get("start"))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def resolve_anchor(cue: dict, placed: list[Placed],
+                   voice: dict | None) -> tuple[float, str, str]:
+    """(seconds, status, why) for a cue with an `anchor`: the time its anchor
+    word now has on the current timeline, plus the anchor's offset.
+
+    status is "kept" (same take, same time), "moved" (the take was redone,
+    or the shot now starts elsewhere) or "lost": the shot, the take or the
+    word is gone, or the word appears more than once within
+    ANCHOR_SEARCH_WORDS of its old index and nothing says which is meant. A
+    lost cue is placed at its sheet `at`, and `why` says what was not found."""
+    anchor = cue.get("anchor") or {}
+    sheet_at = float(cue.get("at") or 0)
+    shot = str(anchor.get("shot") or "")
+    try:
+        offset = float(anchor.get("offset") or 0)
+        index = int(anchor.get("word", -1))
+    except (TypeError, ValueError):
+        return sheet_at, "lost", "the anchor is not readable"
+    p = next((p for p in placed if p.label == shot), None)
+    if p is None:
+        return sheet_at, "lost", f"shot {shot} is no longer in the film"
+    takes = {t.get("label"): t for t in (voice or {}).get("takes", []) if isinstance(t, dict)}
+    mark = take_mark(takes.get(shot)) if p.source == "voice" else ""
+    redone = mark != str(anchor.get("take") or "")
+    if index < 0:
+        at = p.at + offset
+    else:
+        words = p.words or []
+        text = fold_word(anchor.get("text", ""))
+        found = None
+        if index < len(words) and fold_word(words[index].get("text", "")) == text:
+            found = index
+        else:
+            near = [n for n in range(max(0, index - ANCHOR_SEARCH_WORDS),
+                                     min(len(words), index + ANCHOR_SEARCH_WORDS + 1))
+                    if text and fold_word(words[n].get("text", "")) == text]
+            if len(near) > 1:
+                return (sheet_at, "lost",
+                        f"{anchor.get('text', '')!r} is said {len(near)} times near "
+                        f"word {index} of shot {shot}'s take (ambiguous)")
+            found = near[0] if near else None
+        start = _word_start(words[found]) if found is not None else None
+        if start is None:
+            return (sheet_at, "lost",
+                    f"shot {shot}'s take no longer says {anchor.get('text', '')!r} "
+                    f"near word {index}")
+        at = p.at + start + offset
+    at = round(max(0.0, at), 3)
+    moved = redone or abs(at - sheet_at) > ANCHOR_SAME_S
+    return at, "moved" if moved else "kept", ""
+
+
+def anchor_time(cue: dict, placed: list[Placed], voice: dict | None) -> tuple[float, str]:
+    """(seconds, status) of an anchored cue on the current timeline; see
+    resolve_anchor."""
+    at, status, _ = resolve_anchor(cue, placed, voice)
+    return at, status
+
+
+# --------------------------------------------------------------------------- #
+# beat_sync (AUTO-140): how near the cuts land to the music, never moved to it
+# --------------------------------------------------------------------------- #
+
+#: The cue kinds whose files carry a beat grid (`yt sound` measures them).
+BEAT_KINDS = ("music", "stinger")
+#: Beats a bar, for the downbeat grid: 4/4 is assumed, as sound.beat_grid does.
+BEATS_A_BAR = 4
+#: How far from a beat a cut may land and count as on it: about 2.5 frames
+#: at 30 fps. TO VERIFY.
+BEAT_TOLERANCE_S = 0.083
+#: The shots whose cut is a reveal, by their screenplay role (script.FUNCTIONS).
+REVEAL_FUNCTIONS = ("reveal", "payoff")
+
+
+def _grid_ok(row: dict) -> bool:
+    grid = row.get("beat_grid")
+    try:
+        return isinstance(grid, dict) and float(grid.get("period") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _row_span(row: dict) -> tuple[float, float]:
+    """Where a music row sounds: from its start to its clip_out, or to the
+    end of its last play."""
+    start = float(row.get("start") or 0)
+    length = float(row.get("length") or 0)
+    plays = int(row.get("loops") or 0) + 1
+    clip = row.get("clip_out")
+    return start, start + (float(clip) if clip is not None else length * plays)
+
+
+def row_beats(row: dict, *, downbeats: bool = False) -> list[float]:
+    """The film times of a music row's beats (or downbeats): the grid from
+    each play's start, restarting at every loop and stopping at clip_out."""
+    grid = row["beat_grid"]
+    period = float(grid["period"]) * (BEATS_A_BAR if downbeats else 1)
+    first = float(grid.get("downbeat_first" if downbeats else "first_beat") or 0)
+    start, end = _row_span(row)
+    length = float(row.get("length") or 0) or (end - start)
+    out = []
+    for play in range(int(row.get("loops") or 0) + 1):
+        base = start + play * length
+        stop = min(end, base + length)
+        t = base + first
+        while t < stop - 1e-9:
+            out.append(round(t, 4))
+            t += period
+    return out
+
+
+def _nearest_ms(t: float, times: list[float]) -> int | None:
+    if not times:
+        return None
+    return round((t - min(times, key=lambda b: abs(t - b))) * 1000)
+
+
+def beat_sync(placed: list[Placed], music_rows: list[dict]) -> dict:
+    """How the cuts and reveals sit on the music: a measure, never a bar.
+
+    A cut is the incoming shot's `at` at every join, as built. For each cut
+    under a sounding music row with a `beat_grid`, the signed offset (cut
+    minus beat, ms) to the nearest beat and to the nearest downbeat; a cut
+    under music nobody measured is not scored, and its cue is listed under
+    `unmeasured`. Reveals are the shots whose role is in REVEAL_FUNCTIONS,
+    with their offset to the nearest downbeat. Cuts stay on the narration
+    (house rule); nothing here moves one."""
+    ordered = sorted(placed, key=lambda p: p.at)
+    unmeasured = list(dict.fromkeys(str(r.get("cue_id")) for r in music_rows
+                                    if not _grid_ok(r)))
+
+    def under(t: float):
+        here = [r for r in music_rows if _row_span(r)[0] <= t < _row_span(r)[1]]
+        return here, next((r for r in here if _grid_ok(r)), None)
+
+    cuts, outside = [], 0
+    for p in ordered[1:]:
+        here, row = under(p.at)
+        if not here:
+            outside += 1
+            continue
+        if row is None:
+            continue
+        cuts.append({"at": p.at, "cue": str(row.get("cue_id")),
+                     "beat_offset_ms": _nearest_ms(p.at, row_beats(row)),
+                     "downbeat_offset_ms": _nearest_ms(p.at, row_beats(row, downbeats=True))})
+    reveals = []
+    for p in ordered:
+        if p.function not in REVEAL_FUNCTIONS:
+            continue
+        _, row = under(p.at)
+        if row is not None:
+            reveals.append({"label": p.label, "at": p.at,
+                            "downbeat_offset_ms": _nearest_ms(
+                                p.at, row_beats(row, downbeats=True)),
+                            "cue": str(row.get("cue_id"))})
+    tol = round(BEAT_TOLERANCE_S * 1000)
+    offs = [abs(c["beat_offset_ms"]) for c in cuts if c["beat_offset_ms"] is not None]
+    downs = [abs(c["downbeat_offset_ms"]) for c in cuts if c["downbeat_offset_ms"] is not None]
+    share = (lambda xs: round(sum(1 for x in xs if x <= tol) / len(xs), 2) if xs else None)
+    import statistics
+    return {"cuts_in_music": len(cuts), "on_beat_share": share(offs),
+            "median_abs_offset_ms": round(statistics.median(offs)) if offs else None,
+            "downbeat_share": share(downs), "reveals": reveals,
+            "unmeasured": unmeasured, "cuts_outside_music": outside,
+            "tolerance_ms": tol, "cuts": cuts}
+
+
+#: Printed by `yt build` for a cue sheet spotted before anchors existed.
+NO_ANCHORS = ("cue sheet has no anchors: cues will not follow a redone voice "
+              "(re-spot with yt sound --fresh)")
+#: The sheet rules a re-anchored placement can newly break.
+REANCHOR_RULES = ("rule:overlap", "rule:clock")
+
+
+def reanchored_rules(timed: list[tuple[dict, float]], runtime: float) -> list[str]:
+    """Warnings for what re-anchoring broke: sound.rule_findings run on the
+    cues at the times the mix placed them, against the built runtime, less
+    what the same rules already said of the sheet's own times (the sound
+    stage reported those). Only REANCHOR_RULES: the rest do not depend on
+    where a cue sits."""
+    from . import sound
+    sheet, moved = [], []
+    for raw, at in timed:
+        cue = sound.Cue.from_raw(raw)
+        sheet.append(cue)
+        copy = sound.Cue.from_raw(raw)
+        copy.at = at
+        moved.append(copy)
+    before = {(f["cue"], f["rule"]) for f in sound.rule_findings(sheet, runtime)}
+    return [f"warning: cue {f['cue']} after re-anchoring to its word: {f['problem']}; "
+            f"{f['fix']}"
+            for f in sound.rule_findings(moved, runtime)
+            if f["rule"] in REANCHOR_RULES and (f["cue"], f["rule"]) not in before]
+
+
+# --------------------------------------------------------------------------- #
 # the document
 # --------------------------------------------------------------------------- #
 
@@ -1287,13 +1527,14 @@ class SceneBuilder:
         """
         normalize, reason, normalize_from, said = self.normalize_mode()
         report = {"tracks": 0, "narration": 0, "buses": {}, "missing": [],
-                  "silence": 0, "unplaced": False, "findings": [],
+                  "silence": 0, "unplaced": False, "findings": [], "music_rows": [],
                   "normalize": normalize, "normalize_from": normalize_from,
                   "staging": {"bed_db": None, "headroom_db": None,
                               "shift_db": 0.0, "shifted": []}}
         if not self.audio:
             return report
         findings = report["findings"]
+        music_rows = report["music_rows"]
         if said:
             findings.append(said)
         if self.sound_rules_kept:
@@ -1341,6 +1582,15 @@ class SceneBuilder:
             routed.append([NARRATION_BUS, track, 0.0, "narration", p.seconds, p.label])
             report["narration"] += 1
 
+        # A cue spotted on a spoken word (sound.anchor_cues) is placed where
+        # that word is now said, so a redone take carries its cues with it;
+        # a sheet spotted before anchors places on its own seconds.
+        anchored = any(isinstance(c.get("anchor"), dict) and c.get("anchor")
+                       for c in self.cues)
+        if self.cues and not anchored:
+            self._say(NO_ANCHORS)
+        anchors: list[dict] = []
+        timed: list[tuple[dict, float]] = []
         designed = 0
         for n, cue in enumerate(self.cues, 1):
             kind = str(cue.get("kind") or "").lower()
@@ -1353,6 +1603,18 @@ class SceneBuilder:
             except (TypeError, ValueError):
                 findings.append(f"warning: cue {cue_id} has no usable time; left out")
                 continue
+            anchor = cue.get("anchor")
+            if isinstance(anchor, dict) and anchor:
+                sheet_at = at
+                at, status, why = resolve_anchor(cue, placed, self.voice)
+                anchors.append({"cue": cue_id, "sheet_at": round(sheet_at, 3),
+                                "placed_at": at, "anchor": anchor, "status": status})
+                if status == "lost":
+                    findings.append(
+                        f"warning: cue {cue_id}'s anchor (shot {anchor.get('shot')}, "
+                        f"word {anchor.get('word')} {anchor.get('text', '')!r}) was lost: "
+                        f"{why}; it is placed at its sheet time, {sheet_at:g}s")
+            timed.append((cue, at))
             if kind == "silence":
                 if seconds > 0 and at < duration:
                     windows.append((round(at, 3), round(min(duration, at + seconds), 3)))
@@ -1395,6 +1657,7 @@ class SceneBuilder:
             track.bus = bus
             if role_of[bus]:
                 track.role = role_of[bus]
+            plays, clip_out = 1, None
             if cue.get("loop"):
                 if length:
                     plays = max(1, math.ceil(window / length))
@@ -1405,7 +1668,14 @@ class SceneBuilder:
                                     f"length of {file} could not be read; it plays "
                                     "once")
             elif length is None or length > window:
-                track.clipOut = window
+                track.clipOut = clip_out = window
+            if kind in BEAT_KINDS:
+                # What beat_sync lays the cue's beat grid over: where it starts,
+                # each play's length, how often it restarts, and where it stops.
+                music_rows.append({"cue_id": cue_id, "start": round(at, 3),
+                                   "length": round(length, 3) if length else window,
+                                   "loops": plays - 1, "clip_out": clip_out,
+                                   "beat_grid": cue.get("beat_grid") or None})
             def number(key: str) -> float:
                 try:
                     return float(cue.get(key) or 0)
@@ -1439,6 +1709,10 @@ class SceneBuilder:
                                 f"words only ({said[:60]!r}); it is mixed at 0 dB "
                                 "trim")
             routed.append([bus, track, (level or 0.0) + trim, kind, window, cue_id])
+
+        if anchored:
+            report["anchors"] = anchors
+            findings.extend(reanchored_rules(timed, duration))
 
         # Transients first: the limiter runs after normalisation, so a hit
         # far above the bed is limited after the lift and the programme loses
@@ -2108,6 +2382,13 @@ class SceneBuilder:
             "audio_missing": sound["missing"],
             "audio_staging": sound["staging"],
             "silence_windows": sound["silence"],
+            # Where each anchored cue was placed and whether its word moved;
+            # only for a sheet with anchors, so an older one reads as before.
+            **({"cue_anchors": sound["anchors"]} if "anchors" in sound else {}),
+            # How near the cuts and reveals land to the placed music's beats:
+            # a measure for the reviewers, never a bar; only with music.
+            **({"beat_sync": beat_sync(placed, sound["music_rows"])}
+               if sound.get("music_rows") else {}),
             "cues": cues,
             "markers": {"sections": len(self.sections), "beats": len(placed)},
             # The timings here are the measured ones, so this reading check
@@ -2333,6 +2614,22 @@ def print_build(manifest: dict) -> None:
         print(f"  proof frames: {len(proof['worlds'])} world(s) {proof['status']}"
               + (f", mismatched: {', '.join(proof['mismatched'])}"
                  if proof.get("mismatched") else ""))
+    if manifest.get("cue_anchors"):
+        rows = manifest["cue_anchors"]
+
+        def named(status: str) -> str:
+            ids = [r["cue"] for r in rows if r["status"] == status]
+            return f"{len(ids)} {status}" + (f" ({', '.join(ids[:12])})" if ids else "")
+        print(f"  cue anchors: {named('moved')}, {named('lost')}, "
+              f"{sum(1 for r in rows if r['status'] == 'kept')} kept")
+    sync = manifest.get("beat_sync")
+    if sync:
+        scored = (f"{sync['on_beat_share']:.0%} on a beat (±{sync['tolerance_ms']} ms), "
+                  f"median {sync['median_abs_offset_ms']} ms off, "
+                  f"{sync['downbeat_share']:.0%} on a downbeat"
+                  if sync.get("cuts_in_music") else "none scored")
+        print(f"  beat sync: {sync['cuts_in_music']} cut(s) under measured music, {scored}"
+              + (f"; unmeasured: {', '.join(sync['unmeasured'])}" if sync["unmeasured"] else ""))
     if manifest.get("audio_missing"):
         rows = manifest["audio_missing"]
         print(f"\n  {len(rows)} cue(s) with no file to place:")
