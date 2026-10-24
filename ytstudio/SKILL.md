@@ -393,7 +393,10 @@ them; an id the press list does not hold is cleared from `asset` with a
 every rule and every prompt is as it was. `yt vfx`'s section brief gets
 "## Headline cards to typeset" for the ids its shots cite: typeset in the
 film's own type, never the outlet's masthead, logo or a screenshot, the
-source line visible, the headline never paraphrased; a section citing
+source line visible, the headline never paraphrased (a shot whose
+on-screen text no longer holds the headline its Nk names, the research
+re-run since the script, is listed as a mismatch to re-run `yt script` for,
+never with the other article to quote); a section citing
 one adds the cited records to its `inputs_sha256` under `press`, so a
 changed headline re-reviews that section and the others keep their
 digest. Nothing is downloaded, and no AssetHit field or cached search

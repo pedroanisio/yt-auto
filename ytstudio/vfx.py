@@ -68,7 +68,8 @@ from .ideas import CHANNEL_STYLES
 from .research import Dossier
 from .scene_sdk import sdk
 from .assets import press_items
-from .script import Shot, cited_headline, load_script, source_line, visible_text
+from .script import (Shot, _as_quoted, cited_headline, load_script, screen_strings,
+                     source_line, visible_text)
 
 #: The stack. Stated once, read by the prompts and the reports.
 STACK = "scene-render (Rust engine) + sr-core (schema and SDK)"
@@ -1685,21 +1686,43 @@ def headline_card_lines(assets: list[dict], shots: list[dict]) -> list[str]:
     press headline a shot of this section cites, with its outlet, date, url
     and the shots, and how a card is made. Read from the bundle's raw
     dossier assets, as research_block numbers them, so N2 here is the N2 the
-    screenplay's writer was shown. A section citing none gets no lines."""
-    cited = cited_press(shots, press_items(assets))
-    if not cited:
+    screenplay's writer was shown. A section citing none gets no lines.
+
+    The dossier is numbered as it is now, and `yt research` may have run
+    again since `yt script`: a shot whose on-screen text does not hold the
+    headline its Nk now names is listed as a mismatch to re-run the script
+    for, never with the other article's headline to quote, which would
+    contradict the screenplay the shot is built from."""
+    press = press_items(assets)
+    by_label = {str(s.get("label", "")): s for s in shots or [] if isinstance(s, dict)}
+    cards, stale = [], []
+    for nid, item in cited_press(shots, press).items():
+        held = [label for label in item["shots"]
+                if _as_quoted(item["headline"]) in {
+                    _as_quoted(t) for t in screen_strings(Shot(
+                        on_screen_text=list(by_label.get(label, {}).get("on_screen_text")
+                                            or [])))}]
+        stale += [(label, nid) for label in item["shots"] if label not in held]
+        if held:
+            label = "shot" if len(held) == 1 else "shots"
+            cards.append(f"- {nid} ({label} {', '.join(held)}): \"{item['headline']}\" "
+                         f"— {source_line(item)} ({item['url']})")
+    if not cards and not stale:
         return []
     lines = ["## Headline cards to typeset", "",
              "These shots stage a press headline the research found as a recreated card. "
              "Typeset it in the film's own type, never the outlet's masthead, logo, "
              "masthead font or page layout, and never a screenshot of the article: the "
              "card is made from its text alone. Show \"outlet, date\" as a visible source "
-             "line on the card. Quote the headline verbatim, as given here; never "
-             "paraphrase or shorten it.", ""]
-    for nid, item in cited.items():
-        label = "shot" if len(item["shots"]) == 1 else "shots"
-        lines.append(f"- {nid} ({label} {', '.join(item['shots'])}): \"{item['headline']}\" "
-                     f"— {source_line(item)} ({item['url']})")
+             "line on the card."
+             + (" Quote the headline verbatim, as given here; never paraphrase or "
+                "shorten it." if cards else ""), ""]
+    lines += cards
+    lines += [f"- shot {label} cites {nid}, but its on-screen text does not hold the "
+              f"dossier's {nid} headline: the research changed after the screenplay was "
+              "written. Typeset no headline for it from the dossier; re-run `yt script`, "
+              "then this section."
+              for label, nid in stale]
     return lines + [""]
 
 

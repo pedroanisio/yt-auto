@@ -535,17 +535,23 @@ ASSETS = [{"kind": "image", "title": "deck", "file": "downloads/deck.jpg"},
           article("Inquiry names the engineers", "AP", "15 Jul 2020", n=2)]
 
 
-def citing(section: dict, label: str, asset: str) -> dict:
+def citing(section: dict, label: str, asset: str, supers=None) -> dict:
     out = copy.deepcopy(section)
     for shot in out["shots"]:
         if shot["label"] == label:
             shot["asset"] = asset
+            if supers is not None:
+                shot["on_screen_text"] = list(supers)
     return out
+
+
+N2_CARD = ("Inquiry names the engineers", "AP, 15 Jul 2020")
 
 
 class HeadlineCards(unittest.TestCase):
     def test_only_the_cited_headlines_are_listed_with_the_rules(self):
-        lines = vfx.headline_card_lines(ASSETS, citing(SECTION, "1.2", "headline [N2]")["shots"])
+        lines = vfx.headline_card_lines(
+            ASSETS, citing(SECTION, "1.2", "headline [N2]", N2_CARD)["shots"])
         text = "\n".join(lines)
         self.assertEqual(lines[0], "## Headline cards to typeset")
         self.assertIn("- N2 (shot 1.2): \"Inquiry names the engineers\" — AP, 15 Jul 2020 "
@@ -560,9 +566,33 @@ class HeadlineCards(unittest.TestCase):
         brief = script.research_block({"assets": ASSETS})
         listed = next(line for line in brief.splitlines() if line.startswith("- N2: "))
         card = next(line for line in vfx.headline_card_lines(
-            ASSETS, citing(SECTION, "1.3", "headline [N2]")["shots"])
+            ASSETS, citing(SECTION, "1.3", "headline [N2]", N2_CARD)["shots"])
             if line.startswith("- N2"))
         self.assertEqual(listed.split(": ", 1)[1], card.split(": ", 1)[1])
+
+    def test_a_dossier_reordered_since_the_script_is_named_not_quoted(self):
+        # `yt research` ran again after `yt script`: N2 is another article
+        # now, and the brief must not tell the author to quote it verbatim
+        # while the shot still shows the screenplay's headline
+        reordered = [ASSETS[0], ASSETS[2], ASSETS[1]]
+        lines = vfx.headline_card_lines(
+            reordered, citing(SECTION, "1.2", "headline [N2]", N2_CARD)["shots"])
+        text = "\n".join(lines)
+        self.assertEqual(lines[0], "## Headline cards to typeset")
+        self.assertNotIn("Operator skipped", text)
+        self.assertNotIn("as given here", text)
+        self.assertIn("shot 1.2 cites N2, but its on-screen text does not hold the "
+                      "dossier's N2 headline", text)
+        self.assertIn("re-run `yt script`", text)
+
+    def test_matched_and_unmatched_citations_are_told_apart(self):
+        cites = citing(citing(SECTION, "1.2", "headline [N2]", N2_CARD),
+                       "1.3", "headline [N1]", ("A headline the dossier lost", "Reuters"))
+        text = "\n".join(vfx.headline_card_lines(ASSETS, cites["shots"]))
+        self.assertIn("- N2 (shot 1.2): \"Inquiry names the engineers\"", text)
+        self.assertIn("as given here", text)
+        self.assertIn("shot 1.3 cites N1, but", text)
+        self.assertNotIn("Operator skipped", text)
 
     def test_a_section_citing_none_adds_no_lines(self):
         self.assertEqual(vfx.headline_card_lines(ASSETS, SECTION["shots"]), [])
