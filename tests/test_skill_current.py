@@ -84,7 +84,8 @@ class Missing(unittest.TestCase):
         from ytstudio import vfx
         self.assertIn(f"work/{vfx.LESSONS_LOG}", FLAT)
         for needle in ("`yt vfx --promote-lesson", "`yt vfx --lessons`", "verified_on",
-                       "never a score"):
+                       "never a score", "cannot hold two asks", "`note: lesson: not asked`",
+                       "`yt keyframe`'s lead section"):
             self.assertIn(needle, FLAT)
 
     def test_keyframe_approve_refuses_a_mixed_record(self):

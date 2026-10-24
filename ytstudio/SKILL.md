@@ -1089,14 +1089,23 @@ hand-authored world showed the cost.
     host's) is a candidate engine lesson (`vfx.fixed_errors`, AUTO-111),
     never a score gain or a verdict alone. The section's reviewer is asked
     once for it (`lesson-<stem>`, booked with the section) from the fixed
-    findings and the two rounds' kept programs: topic, the SDK `elements`,
-    one sentence, `cause` (engine or authoring), the `finding` it answers,
-    `general`. An element the SDK lacks, a colour, a style token or a
-    palette name, or a finding that was not fixed, is asked once more, then
-    left as a `warning: lesson` finding on the record. A general lesson is
+    findings, numbered, and the two rounds' kept programs and their diff (a
+    round whose build failed keeps its program alone under
+    `rounds/<stem>/rNN/`, never restored): topic, the SDK `elements`, one
+    sentence, `cause` (engine or authoring), the `finding` it answers (its
+    number, or its words with any spacing), `general`. An element the SDK
+    lacks, a colour, a style token, a palette, style or font name (whole
+    words, any case), or a finding that was not fixed, is asked once more
+    (the refused answer forgotten), then left as a `warning: lesson` finding
+    on the record; whatever fails in the step is that finding, never a
+    section without its record. A section whose budget cannot hold two asks
+    at `--review-budget-usd`, or a run asked to finish, is not asked (a
+    `note: lesson: not asked` finding). `yt keyframe`'s lead section is
+    authored by the same planner and logs its lessons too. A general lesson is
     appended to `work/lessons-log.jsonl` with the engine version and
-    `label: null`, and `yt doctor` notes the log as evidence to copy out of
-    `work/`. `yt vfx --lessons` lists the rows; `yt vfx --promote-lesson
+    `label: null` (once per section and lesson, `--fresh` or not), and
+    `yt doctor` notes the log as evidence to copy out of `work/`.
+    `yt vfx --lessons` lists the rows; `yt vfx --promote-lesson
     ROW[,ROW]` is the only way one reaches `ytstudio/kit/engine_facts.json`
     (source `yt vfx <slug> section <n> r<from>-><to>`, its own
     `verified_on`), so every later kit's `ENGINE.md` prints it. The author's
