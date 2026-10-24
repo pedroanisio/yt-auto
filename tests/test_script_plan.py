@@ -1277,5 +1277,69 @@ class PaperUnchanged(unittest.TestCase):
         self.assertEqual(got, PLAN_PROMPTS)
 
 
+# --------------------------------------------------------------------------- #
+# AUTO-132: a sourced shot names its claim and its status
+# --------------------------------------------------------------------------- #
+
+def _sha(value) -> str:
+    import hashlib
+    text = value if isinstance(value, str) else json.dumps(value, sort_keys=True)
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+#: sha256 of today's schemas and of the unsourced write prompt, taken on
+#: develop 29d523a before AUTO-132. Harness.decide hashes the schema into
+#: the cache key, so a change here would make every cached decision miss.
+FROZEN = {
+    "REVISE_SCHEMA": "bd7066142cbe40fa86325e73b7b6bb56292f852cafcf119305e0d9e5158347b3",
+    "RULE_REVISE_SCHEMA": "879be68a7fa5eabae7668c65173dff1e31bb73d67781f32c4b8a8346219154ef",
+    "BACK_REVISE_SCHEMA": "bc7b69345440a4ed9f84669e5f150b13b7da0357208d8cbf46431c4446c2b9bc",
+    "section_schema(False)":
+        "4679dcf7bb0ce9bd03dd8aa6a60e749824d1ae0748a4c3bd25431edbf61b59db",
+    "write prompt": "eb62109106e78f40334deaf9d08b3417da8dfa55b095714aea53d505ec58eb1f",
+}
+
+
+class StatusSchema(unittest.TestCase):
+    def write_prompt(self, sourced):
+        seen = []
+        w = writer(research="R" if sourced else "")
+        w._ask = lambda name, prompt, schema: seen.append(prompt) or {"shots": []}
+        w.write_section({"heading": "A", "seconds": 10, "beats": ["b"]}, index=1, total=1,
+                        plan={}, written=[], next_heading="", sourced=sourced)
+        return seen[0]
+
+    def test_a_sourced_shot_must_name_its_claim_and_status(self):
+        items = script.section_schema(True)["properties"]["shots"]["items"]
+        self.assertIn("claim", items["required"])
+        self.assertIn("status", items["required"])
+        status = items["properties"]["status"]
+        self.assertEqual(status["enum"],
+                         ["established", "hypothesis", "speculation", "what-if", "none"])
+        self.assertIn("asked again once", status["description"])
+        self.assertNotIn("ceiling", items["properties"])
+
+    def test_the_unsourced_schema_and_the_revise_schemas_are_todays(self):
+        self.assertEqual(_sha(script.section_schema(False)), FROZEN["section_schema(False)"])
+        for name in ("REVISE_SCHEMA", "RULE_REVISE_SCHEMA", "BACK_REVISE_SCHEMA"):
+            self.assertEqual(_sha(getattr(script, name)), FROZEN[name], name)
+
+    def test_the_fact_revise_schema_adds_only_an_optional_status(self):
+        fact = copy.deepcopy(script.FACT_REVISE_SCHEMA)
+        item = fact["properties"]["fixes"]["items"]
+        self.assertNotIn("status", item["required"])
+        self.assertEqual(item["properties"].pop("status")["enum"], list(script.STATUSES))
+        self.assertEqual(fact, script.REVISE_SCHEMA)
+
+    def test_the_sourced_prompt_asks_for_the_weakest_claim_and_the_status(self):
+        prompt = self.write_prompt(True)
+        self.assertIn("weakest claim", prompt)
+        self.assertIn("- status:", prompt)
+        self.assertIn("says so aloud or on screen", prompt)
+
+    def test_the_unsourced_prompt_is_todays(self):
+        self.assertEqual(_sha(self.write_prompt(False)), FROZEN["write prompt"])
+
+
 if __name__ == "__main__":
     unittest.main()

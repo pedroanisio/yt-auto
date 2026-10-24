@@ -120,12 +120,13 @@ class Shape(unittest.TestCase):
         self.assertEqual({k for k, v in tiers.items() if v == "important"},
                          {"rule:unspoken-number", "rule:legibility", "rule:numbers",
                           "rule:hook-subject", "rule:hook-answer", "rule:payoff-last",
-                          "rule:wall-of-text", "rule:marks"})
+                          "rule:wall-of-text", "rule:marks", "rule:unframed-status"})
         self.assertEqual({k for k, v in tiers.items() if v == "minor"}, {"rule:last-line"})
         self.assertEqual({k for k, v in tiers.items() if v == "house"},
                          {"rule:clause", "rule:passive", "rule:person", "rule:pace",
                           "rule:density", "rule:hook-promise", "rule:hook-stakes",
-                          "rule:end-signal", "rule:recap", "rule:pronouncer"})
+                          "rule:end-signal", "rule:recap", "rule:pronouncer",
+                          "rule:uncited-claim"})
 
     def test_only_the_error_and_important_tiers_are_revisable(self):
         flags = rules(film(["Welcome. " + " ".join(["word"] * 30) + "."]))
@@ -767,6 +768,202 @@ class Build(unittest.TestCase):
         from ytstudio import build
         self.assertEqual(build.script_errors({}), [])
         self.assertEqual(build.script_errors(None), [])
+
+
+# --------------------------------------------------------------------------- #
+# AUTO-132: a line that is not settled says so (attention 20, attention 18)
+# --------------------------------------------------------------------------- #
+
+#: c1 is a settled finding, c4 a limitation the source names, c7 a claim
+#: the research rates low.
+TABLE = {"c1": {"standing": "established", "confidence": "high", "caveat": "US only",
+                "source_kind": "secondary"},
+         "c4": {"standing": "limitation", "confidence": "high", "caveat": "",
+                "source_kind": "primary"},
+         "c7": {"standing": "", "confidence": "low", "caveat": "",
+                "source_kind": "secondary"}}
+
+
+def status_shot(line, status, claim="", source="Paper", on_screen=(), lang=""):
+    shot = script.Shot(narration=line, status=status, claim=claim, source=source,
+                       on_screen_text=list(on_screen), n=1, label="1.1", seconds=5)
+    script.cap([shot], TABLE)
+    return shot
+
+
+def framed(shot, lang=""):
+    """The status rules' flags on a one-shot film of `shot`."""
+    sections = [script.Section(heading="S1", shots=[shot])]
+    return [f for f in script.rule_findings({}, sections, 150, lang, claims=TABLE)
+            if f["rule"] in ("rule:unframed-status", "rule:uncited-claim")]
+
+
+class EffectiveStatus(unittest.TestCase):
+    def test_an_established_label_is_capped_at_its_ceiling(self):
+        shot = status_shot("It melts.", "established", "c7")
+        self.assertEqual(script.effective_status(shot), "speculation")
+        self.assertEqual(script.effective_status(status_shot("It melts.", "established",
+                                                             "c4")), "hypothesis")
+
+    def test_none_on_a_cited_line_takes_the_ceiling_and_is_flagged_unhedged(self):
+        shot = status_shot("It melts at noon.", "none", "c7")
+        self.assertEqual(script.effective_status(shot), "speculation")
+        self.assertEqual([f["rule"] for f in framed(shot)], ["rule:unframed-status"])
+
+    def test_none_with_no_claim_stays_none(self):
+        shot = status_shot("And then.", "none", "")
+        self.assertEqual(script.effective_status(shot), "none")
+        self.assertEqual(framed(shot), [])
+
+    def test_a_what_if_with_no_claim_passes_through(self):
+        self.assertEqual(script.effective_status(status_shot("Picture a sea.", "what-if")),
+                         "what-if")
+
+    def test_a_cited_what_if_with_no_cue_takes_the_ceiling(self):
+        shot = status_shot("The sea boils away.", "what-if", "c7")
+        self.assertEqual(script.effective_status(shot), "speculation")
+        framed_one = status_shot("Imagine the sea boils away.", "what-if", "c7")
+        self.assertEqual(script.effective_status(framed_one), "what-if")
+
+    def test_a_label_written_before_auto_132_takes_no_part(self):
+        shot = status_shot("It melts.", "", "c7")
+        self.assertEqual(script.effective_status(shot), "")
+        self.assertEqual(framed(shot), [])
+
+
+class UnframedStatus(unittest.TestCase):
+    def test_a_hedged_hypothesis_passes(self):
+        self.assertEqual(framed(status_shot("The core might be liquid.", "hypothesis",
+                                            "c4")), [])
+
+    def test_an_unhedged_hypothesis_is_flagged_with_its_claim_and_why(self):
+        flags = framed(status_shot("The core is liquid.", "established", "c4"))
+        self.assertEqual([(f["rule"], f["tier"], f["severity"]) for f in flags],
+                         [("rule:unframed-status", "important", "important")])
+        self.assertIn("hypothesis", flags[0]["problem"])
+        self.assertIn("c4: the source calls it a limitation", flags[0]["problem"])
+        self.assertIn("capped from established", flags[0]["problem"])
+        low = framed(status_shot("The core is liquid.", "hypothesis", "c7"))
+        self.assertIn("c7: low confidence", low[0]["problem"])
+
+    def test_a_cited_what_if_read_at_its_ceiling_is_not_called_capped(self):
+        flags = framed(status_shot("The sea boils away.", "what-if", "c7"))
+        self.assertEqual([f["rule"] for f in flags], ["rule:unframed-status"])
+        self.assertNotIn("capped from", flags[0]["problem"])
+        self.assertIn("labelled what-if, read at its claim's ceiling", flags[0]["problem"])
+        self.assertIn("c7: low confidence", flags[0]["problem"])
+
+    def test_ordinary_words_the_lexicon_leaves_out_are_no_hedge(self):
+        for line in ("If you heat it, it melts.", "the theory of relativity says so.",
+                     "It could not explain the result.", "In May 1953 it was found."):
+            flags = framed(status_shot(line, "hypothesis", "c4"))
+            self.assertEqual([f["rule"] for f in flags], ["rule:unframed-status"], line)
+
+    def test_a_label_on_screen_frames_it(self):
+        self.assertEqual(framed(status_shot("The core is liquid.", "hypothesis", "c4",
+                                            on_screen=["Hypothesis"])), [])
+
+    def test_a_what_if_says_or_shows_it_is_one(self):
+        flags = framed(status_shot("A sea of iron rains down.", "what-if"))
+        self.assertEqual([f["rule"] for f in flags], ["rule:unframed-status"])
+        self.assertIn("what-if", flags[0]["problem"])
+        self.assertEqual(framed(status_shot("Imagine a sea of iron.", "what-if")), [])
+
+    def test_an_established_line_is_not_hedged(self):
+        # a settled finding from a secondary source with a scope caveat
+        self.assertEqual(framed(status_shot("The bridge carries four lanes.",
+                                            "established", "c1")), [])
+
+    def test_portuguese_has_its_own_hedges(self):
+        self.assertEqual(framed(status_shot("O núcleo talvez seja líquido.", "hypothesis",
+                                            "c4"), "pt-BR"), [])
+        flags = framed(status_shot("O núcleo pode estar quente.", "hypothesis", "c4"),
+                       "pt-BR")
+        self.assertEqual([f["rule"] for f in flags], ["rule:unframed-status"])
+
+    def test_a_language_with_no_lexicon_runs_no_status_rule_and_says_so(self):
+        shot = status_shot("Der Kern ist flüssig.", "hypothesis", "c4")
+        self.assertEqual(framed(shot, "de"), [])
+        sections = [script.Section(heading="S1", shots=[shot])]
+        lines = script.not_evidenced("de", sections)
+        self.assertIn("not_evidenced: rule:unframed-status (de)", lines)
+        self.assertIn("not_evidenced: rule:uncited-claim (de)", lines)
+
+    def test_a_screenplay_with_no_status_records_nothing_new(self):
+        sections = [script.Section(heading="S1", shots=[script.Shot(narration="Ja.")])]
+        lines = script.not_evidenced("de", sections)
+        self.assertNotIn("not_evidenced: rule:unframed-status (de)", lines)
+        self.assertNotIn("not_evidenced: rule:uncited-claim (de)", lines)
+
+    def test_a_cited_line_with_no_claim_id_is_a_house_note(self):
+        flags = framed(status_shot("The bridge carries four lanes.", "established", "",
+                                   source="DOT 2019"))
+        self.assertEqual([(f["rule"], f["tier"]) for f in flags],
+                         [("rule:uncited-claim", "house")])
+        self.assertIn("cites a source but no claim id", flags[0]["problem"])
+        self.assertNotIn(flags[0]["severity"], script.REVISABLE)
+
+    def test_the_bound_names_attention_20_and_is_a_house_prior(self):
+        bound = script.BOUNDS["unframed_status"]
+        self.assertIn("attention 20", bound["corpus"])
+        self.assertIn("attention 18", bound["corpus"])
+        self.assertEqual(bound["strength"], "house")
+        self.assertIn("false flag", bound["note"])
+        self.assertEqual(script.BOUNDS["uncited_claim"]["strength"], "house")
+
+    def test_the_screen_may_be_revised_for_it(self):
+        self.assertIn("rule:unframed-status", script.SCREEN_RULES)
+
+
+class FramingCues(unittest.TestCase):
+    """Every cue the prompts and the flag's fix name as an example clears
+    the flag: a line reframed as it was told to be is framed."""
+
+    def test_each_named_hedge_clears_a_hypothesis_line(self):
+        cues = script.FRAMING_CUES.split(", ")
+        self.assertGreaterEqual(len(cues), 3)
+        for cue in cues:
+            line = f"The core, {cue}, is liquid."
+            self.assertEqual(framed(status_shot(line, "hypothesis", "c4")), [], cue)
+            self.assertEqual(framed(status_shot(line, "established", "c7")), [], cue)
+        self.assertEqual(framed(status_shot("The core is liquid.", "hypothesis", "c4",
+                                            on_screen=[script.FRAMING_LABEL])), [])
+
+    def test_each_named_what_if_cue_clears_a_what_if_line(self):
+        for cue in script.WHATIF_CUES.split(", "):
+            self.assertEqual(framed(status_shot(f"{cue}, a sea of iron.", "what-if")),
+                             [], cue)
+        self.assertEqual(framed(status_shot("A sea of iron.", "what-if",
+                                            on_screen=[script.WHATIF_LABEL])), [])
+
+    def test_the_flags_fix_names_the_cues_it_accepts(self):
+        hedge = framed(status_shot("The core is liquid.", "hypothesis", "c4"))
+        self.assertIn(script.FRAMING_CUES, hedge[0]["fix"])
+        self.assertIn(script.FRAMING_LABEL, hedge[0]["fix"])
+        whatif = framed(status_shot("A sea of iron.", "what-if"))
+        self.assertIn(script.WHATIF_CUES, whatif[0]["fix"])
+
+
+class StatusEdges(unittest.TestCase):
+    def test_a_label_off_the_list_on_an_uncited_sourced_line_reads_established(self):
+        shot = status_shot("The bridge carries four lanes.", "proven", "",
+                           source="DOT 2019")
+        self.assertEqual(script.effective_status(shot), "established")
+        self.assertEqual([f["rule"] for f in framed(shot)], ["rule:uncited-claim"])
+        # cited, it is read at its claim's ceiling as before
+        self.assertEqual(script.effective_status(status_shot("It melts.", "proven",
+                                                             "c7")), "speculation")
+        # unsourced, at the speculation the cap gives it
+        self.assertEqual(script.effective_status(status_shot("It melts.", "proven", "",
+                                                             source="UNSOURCED")),
+                         "speculation")
+
+    def test_a_cited_what_if_takes_its_ceiling_where_there_is_no_lexicon(self):
+        shot = status_shot("Das Meer kocht.", "what-if", "c7")
+        self.assertEqual(script.effective_status(shot, "de"), "speculation")
+        self.assertEqual(script.effective_status(status_shot("Das Meer kocht.",
+                                                             "what-if"), "de"),
+                         "what-if")
 
 
 if __name__ == "__main__":

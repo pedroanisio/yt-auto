@@ -99,7 +99,12 @@ SCOPES = {
             "came from, mark whether that URL is a primary or secondary "
             "source, and set confidence honestly. If a claim appears in the "
             "notes with no URL, mark it unsourced and low confidence rather "
-            "than dropping it."),
+            "than dropping it. Give each claim its standing from how the source "
+            "itself presents it, not from how reliable the source is: "
+            "established for a result it reports as shown, hypothesis for a "
+            "proposal or interpretation, speculation for a guess, and "
+            "limitation for a limitation, open question, preliminary result or "
+            "future work it names."),
         "shots": "",
         "gaps": (
             "Audit this research before scripting. List what is missing, "
@@ -489,6 +494,13 @@ QUESTIONS_SCHEMA = {
     "required": ["premise", "questions"],
 }
 
+#: How a source presents a claim (AUTO-132), strongest first: a result it
+#: reports as shown, a proposal or interpretation, a guess, and what it
+#: names as a limitation, an open question, a preliminary result or future
+#: work. It is not the source's reliability, which `confidence` and
+#: `source_kind` record.
+STANDINGS = ("established", "hypothesis", "speculation", "limitation")
+
 CLAIMS_SCHEMA = {
     "type": "object",
     "properties": {
@@ -507,6 +519,18 @@ CLAIMS_SCHEMA = {
                     "confidence": {"type": "string",
                                    "enum": ["high", "medium", "low"]},
                     "caveat": {"type": "string"},
+                    # AUTO-132: optional, so a dossier written before it still
+                    # reads; the screenplay then judges the claim from its
+                    # confidence and caveat (script.ceiling).
+                    "standing": {"type": "string", "enum": list(STANDINGS),
+                                 "description": (
+                                     "how the source itself presents the claim: a "
+                                     "result it reports as shown, a proposal or "
+                                     "interpretation, a guess, or a limitation, open "
+                                     "question, preliminary result or future work it "
+                                     "names. A value outside this list is asked again "
+                                     "once, then read as no standing: the claim is "
+                                     "judged from its confidence and caveat.")},
                 },
                 "required": ["claim", "detail", "source_title", "source_url",
                              "source_kind", "confidence"],

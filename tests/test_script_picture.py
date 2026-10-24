@@ -99,6 +99,8 @@ class WallOfText(unittest.TestCase):
         self.assertIn("direction 2", rule.corpus)
         self.assertEqual(script.BOUNDS[rule.bound]["value"], 6)
         self.assertIn("rule:wall-of-text", script.SCREEN_RULES)
+        # AUTO-132: an unframed status may be answered by a label on screen
+        self.assertIn("rule:unframed-status", script.SCREEN_RULES)
 
     def test_a_standing_one_is_a_warning_in_script_json_findings(self):
         w = script.Screenwriter(idea(), verbose=False, jobs=1, minutes=1, research="")
