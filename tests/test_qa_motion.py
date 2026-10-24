@@ -486,6 +486,19 @@ class NoBuild(unittest.TestCase):
         self.assertIn("1.2", line)
         self.assertIn("ink", line)
 
+    def test_a_shot_that_ends_on_a_blank_frame_files_nothing_and_is_named(self):
+        # A render that came out black has nothing to grow towards: not a
+        # no-build, and not measured either, so the scorecard says so.
+        rows = _built([0.0, 0.0, 0.0])
+        self.assertEqual(self.found([0.0, 0.0, 0.0]), [])
+        card = qa.note_builds({"not_evidenced": []}, BUILDS, rows)
+        [line] = card["not_evidenced"]
+        self.assertIn("1.2", line)
+        self.assertIn("ended on a blank frame", line)
+        # one that grows from blank is measured and named nowhere
+        self.assertEqual(qa.note_builds({"not_evidenced": []}, BUILDS,
+                                        _built([0.0, 0.1, 0.2])), {"not_evidenced": []})
+
 
 class Cap(unittest.TestCase):
     def scores(self, **over):

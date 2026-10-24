@@ -1285,9 +1285,9 @@ def builds_unsampled(builds, samples: list[dict]) -> list[str]:
 
 def note_builds(card: dict, builds, samples: list[dict], *, reused: bool = False) -> dict:
     """The scorecard says which diagram shots were not checked for a build
-    (AUTO-145): a not_evidenced line for the shots with no build stills and
-    one for the shots whose stills have no ink reading. A film with no
-    build shot is left as it is."""
+    (AUTO-145): a not_evidenced line for the shots with no build stills,
+    the shots whose stills have no ink reading and the shots that end on a
+    blank frame. A film with no build shot is left as it is."""
     if not builds:
         return card
     parts = []
@@ -1303,6 +1303,14 @@ def note_builds(card: dict, builds, samples: list[dict], *, reused: bool = False
     if unread:
         parts.append(f"the build stills of {', '.join(unread)} have no ink reading "
                      "(a frame was not rendered or could not be read)")
+    # A shot that ends on a blank frame (a render that came out black) has
+    # nothing to grow towards: no_build_findings files nothing for it.
+    blank = [label for label, rec in _build_series(samples).items()
+             if rec["points"] and label not in unread
+             and float(rec["points"][-1][1]["ink"]) <= 0]
+    if blank:
+        parts.append(f"{', '.join(blank)} ended on a blank frame (ink 0 at the last "
+                     "build still), so its build was not measured")
     if parts:
         card = dict(card, not_evidenced=list(card.get("not_evidenced") or []) + [
             "builds: " + "; ".join(parts) + "; whether those shots build in steps "
