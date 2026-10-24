@@ -3806,8 +3806,13 @@ class Screenwriter:
                   **_channel_reading(review), "rounds": rounds}
         # AUTO-157: a form that still does not fit after planning once more is
         # an advisory, never a stop, since form is a ground to revise only.
+        # A reading still contradicting itself, or naming another fault in
+        # its problems, is not on the form alone and stops as before.
+        form = plan.get("form") if isinstance(plan.get("form"), dict) else {}
         advisory = (verdict == "revise" and fix and previous is not None
-                    and narrative.form_only_revise(review))
+                    and narrative.form_only_revise(
+                        review, unsettled=rounds[-1]["unsettled"],
+                        form=str(form.get("name") or "")))
         if advisory:
             record["advisory"] = ["form"]
         if self.pool_reviewer is not None:

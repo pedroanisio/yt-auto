@@ -526,6 +526,34 @@ class Form(unittest.TestCase):
         self.assertFalse(narrative.form_only_revise(old))
         self.assertFalse(narrative.form_only_revise(None))
 
+    def test_form_only_revise_needs_a_named_settled_problem_about_the_form(self):
+        # A reading that still contradicts itself after the again ask, or
+        # that names no form problem, has not said the form is all that is
+        # wrong; nor has one whose problems name another fault no field
+        # mirrors (an ending, a rehook), which would stop without the form.
+        self.assertFalse(narrative.form_only_revise(self.clean(form_problem=" ")))
+        self.assertFalse(narrative.form_only_revise(
+            self.clean(), unsettled=["form_fits is false and form_problem is empty"]))
+        self.assertTrue(narrative.form_only_revise(self.clean(), unsettled=[]))
+        about_form = {"section": 0, "problem": "the form is a label any topic could wear",
+                      "fix": "follow the evidence in the order Biermann had it"}
+        named = {"section": 0, "problem": "a mystery nothing in this subject keeps back",
+                 "fix": "f"}
+        mirrored = {"section": 0, "problem": "a mystery any topic could wear", "fix": "f"}
+        other = {"section": 3, "problem": "the rehook repeats section 2's question",
+                 "fix": "ask what the photographs could not show"}
+        ending = {"section": 0, "problem": "the ending recaps instead of paying off",
+                  "fix": "end on the tail"}
+        self.assertTrue(narrative.form_only_revise(self.clean(problems=[about_form])))
+        self.assertTrue(narrative.form_only_revise(self.clean(problems=[named]),
+                                                   form="mystery"))
+        self.assertFalse(narrative.form_only_revise(self.clean(problems=[named])))
+        self.assertTrue(narrative.form_only_revise(self.clean(problems=[mirrored])))
+        for fault in (other, ending):
+            with self.subTest(problem=fault["problem"]):
+                self.assertFalse(narrative.form_only_revise(
+                    self.clean(problems=[about_form, fault]), form="mystery"))
+
     def test_the_plan_role_names_the_form_a_ground_to_revise_only(self):
         for channel in (False, True):
             with self.subTest(channel=channel):

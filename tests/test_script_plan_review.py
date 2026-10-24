@@ -957,6 +957,33 @@ class Form(unittest.TestCase):
         self.assertNotIn("plan-2", names(calls))
         self.assertNotIn("advisory", data["plan_review"])
 
+    def test_a_second_revise_naming_another_fault_in_problems_still_stops(self):
+        # a fault only the problems list carries (a section 3 rehook, the
+        # ending) is not the form, so the form does not make the gate lenient
+        rehook = (3, "the rehook repeats section 2's question",
+                  "ask what the photographs could not show")
+        second = form_only()
+        second["problems"].append({"section": rehook[0], "problem": rehook[1],
+                                   "fix": rehook[2]})
+        w = writer()
+        faked(w, [form_only(), second])
+        with self.assertRaises(ClaudeError):
+            w.run(review=True)
+        self.assertNotIn("advisory", w.plan_review_stop)
+
+    def test_a_second_form_revise_still_unsettled_stops(self):
+        # form_fits false with no form_problem, asked again and still so: the
+        # reading has not named what is wrong, so nothing is drafted on it
+        unnamed = dict(form_only(), form_problem="")
+        w = writer()
+        calls = faked(w, [form_only(), unnamed, unnamed])
+        with self.assertRaises(ClaudeError):
+            w.run(review=True)
+        self.assertEqual(names(calls), ["plan", "plan-review", "plan-2", "plan-review-2",
+                                        "plan-review-2-again"])
+        self.assertTrue(w.plan_review_stop["unsettled"])
+        self.assertNotIn("advisory", w.plan_review_stop)
+
     def test_a_reject_on_the_form_alone_is_asked_again(self):
         w = writer()
         calls = faked(w, [form_only("reject"), form_only(), verdict("accept")])

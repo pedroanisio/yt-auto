@@ -727,8 +727,11 @@ name), an `other` that names none, and a form other than the one the
 channel's `## format` fixes (`- Form: countdown`), and the reading says
 `form_fits` with its `form_problem`, which a second plan is told. A second
 `revise` whose only fault is the form drafts on: `plan_review` records
-`advisory: ["form"]`, script.md an `advisory: form` line and the findings a
-note. A reading whose fields
+`advisory: ["form"]`, script.md an `advisory: form` line, the terminal
+summary `(advisory: form)` and the findings a note; only when that reading
+names its `form_problem`, left nothing `unsettled`, and lists no problem
+that is not about the form (a rehook or an ending fault still stops it:
+`narrative.form_only_revise`). A reading whose fields
 contradict its verdict (an accept that finds the order a list or
 `stakes_concrete` or `form_fits` false, a revise that names no problem and whose fields find
 no fault, a reject on stakes or the form alone: `narrative.check_plan_review`) is asked once more as

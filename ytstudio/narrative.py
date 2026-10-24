@@ -926,23 +926,46 @@ def _text(value: Any) -> str:
     return " ".join(str(value or "").split())
 
 
-def form_only_revise(review: Any) -> bool:
-    """Whether a plan review is a revise on the form alone (AUTO-157):
-    form_fits false and every other ground its fields hold clean (the
-    train, the order, no idle section, no unanswered question, a concrete
-    payoff, stakes and, with earlier channel films, no repeat). The stage
-    drafts on after a second such reading, since the form is a ground to
-    revise only; any other second revise stops it as before. A field the
-    reading leaves out is not clean."""
-    if not isinstance(review, dict):
+#: A problem that speaks of the form by that word (AUTO-157).
+_FORM_WORD = re.compile(r"(?<![\w-])forms?(?![\w-])", re.I)
+
+
+def _about_form(problem: Any, form: str, said: str) -> bool:
+    """Whether one entry of a review's problems is about the form: it says
+    "form", names the plan's form, or repeats the review's form_problem."""
+    if not isinstance(problem, dict):
         return False
+    text = f"{_text(problem.get('problem'))} {_text(problem.get('fix'))}"
+    return bool(_FORM_WORD.search(text) or (form and _names(text, form))
+                or (said and said.lower() in text.lower()))
+
+
+def form_only_revise(review: Any, unsettled: Sequence[str] = (), form: str = "") -> bool:
+    """Whether a plan review is a revise on the form alone (AUTO-157):
+    form_fits false with a form_problem named, every other ground its
+    fields hold clean (the train, the order, no idle section, no
+    unanswered question, a concrete payoff, stakes and, with earlier
+    channel films, no repeat), no line left `unsettled` by the again ask,
+    and every problem it lists about the form (_about_form; `form` is the
+    plan's form name). A fault only the problems list carries, a section's
+    rehook or the ending, is no form fault, and without this the form
+    would make the gate more lenient than the same revise without it. The
+    stage drafts on after a second such reading, since the form is a
+    ground to revise only; any other second revise stops it as before. A
+    field the reading leaves out is not clean."""
+    if not isinstance(review, dict) or unsettled:
+        return False
+    said = _text(review.get("form_problem"))
+    problems = review.get("problems") if isinstance(review.get("problems"), list) else []
     return (review.get("verdict") == "revise" and review.get("form_fits") is False
+            and bool(said)
             and review.get("train_ok") is True and review.get("reorder_survives") is False
             and review.get("sections_advancing_none") == []
             and review.get("questions_unanswered") == []
             and not review.get("repeats")
             and review.get("payoff_concrete") is True
-            and review.get("stakes_concrete") is True)
+            and review.get("stakes_concrete") is True
+            and all(_about_form(p, str(form or ""), said) for p in problems))
 
 
 def _shot_of(flag: Mapping) -> int | None:
