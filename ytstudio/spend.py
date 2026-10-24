@@ -212,7 +212,7 @@ QA_SAMPLE_USD = 0.5
 #: (AUTO-133): the reviewer's `verify` over the whole script and its
 #: re-checks. A guess until a real 8-12 minute film measures it (TO VERIFY);
 #: a measured script.json already holds its verify decisions.
-DEFAULT_USD ={"research": 5.0, "styles": 2.0, "script": 3.0, "props": 0.0,
+DEFAULT_USD = {"research": 5.0, "styles": 2.0, "script": 3.0, "props": 0.0,
                "keyframe": 5.0, "voice": 2.0, "retime": 0.5, "vfx": VFX_PASS_USD,
                "sound": 0.5, "build": 0.1, "render": 0.0, "gate": 0.1,
                "qa": 3 * QA_SAMPLE_USD}
