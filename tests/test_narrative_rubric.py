@@ -319,10 +319,102 @@ class Schema(unittest.TestCase):
         props = narrative.PLAN_REVIEW_SCHEMA["properties"]
         self.assertEqual(props["verdict"]["enum"], ["accept", "revise", "reject"])
         for field in ("train_ok", "reorder_survives", "sections_advancing_none",
-                      "payoff_concrete", "questions_unanswered", "problems"):
+                      "payoff_concrete", "stakes_concrete", "questions_unanswered",
+                      "problems"):
             self.assertIn(field, narrative.PLAN_REVIEW_SCHEMA["required"])
         self.assertEqual(sorted(props["problems"]["items"]["required"]),
                          ["fix", "problem", "section"])
+        # AUTO-161: one judged field, never a grade, so "give no grade" holds
+        required = narrative.PLAN_REVIEW_SCHEMA["required"]
+        self.assertEqual(required.index("stakes_concrete"),
+                         required.index("payoff_concrete") + 1)
+        self.assertEqual(props["stakes_concrete"]["type"], "boolean")
+        said = props["stakes_concrete"]["description"]
+        for words in ("concrete consequence the viewer can picture",
+                      "before the first section that explains a mechanism",
+                      "withheld as its twist"):
+            self.assertIn(words, said)
+        self.assertNotIn("grades", props)
+
+
+def _grounds(text: str) -> tuple[str, str]:
+    """The reject sentence and the revise sentence of a plan-review text."""
+    flat = " ".join(text.split())
+    reject = flat[flat.index("Only the train"):]
+    reject = reject[:reject.index(".") + 1]
+    revise = flat[flat.index("Those four, and stakes"):]
+    revise = revise[:revise.index(".") + 1]
+    return reject, revise
+
+
+class StakesGround(unittest.TestCase):
+    """AUTO-161: a plan with no reason to care before its mechanism is
+    grounds to revise, never to reject, in the role, the attack and the
+    contradictions alike."""
+
+    REJECT = ("Only the train, the order, a section that moves nothing and the payoff "
+              "are grounds to reject.")
+    REVISE = "Those four, and stakes, are grounds to revise."
+
+    def check_text(self, text):
+        flat = " ".join(text.split())
+        reject, revise = _grounds(text)
+        self.assertEqual(reject, self.REJECT)
+        self.assertNotIn("stakes", reject)
+        self.assertEqual(revise, self.REVISE)
+        self.assertIn("withheld", flat)
+        self.assertIn("twist", flat)
+        # the old sentence that made stakes never a ground is gone
+        self.assertNotIn("grounds to revise or reject", flat)
+        self.assertNotIn("A weak stakes line", flat)
+        return flat
+
+    def test_the_plan_role_names_stakes_as_a_revise_ground_never_a_reject_ground(self):
+        flat = self.check_text(narrative.reviewer_role(plan=True))
+        self.assertIn("an accept has stakes_concrete true", flat)
+        # still no grade: one named field, not a level
+        self.assertIn("give no grade", flat)
+
+    def test_plan_attack_names_stakes_as_a_revise_ground_never_a_reject_ground(self):
+        flat = self.check_text(script.PLAN_ATTACK)
+        self.assertIn("its stakes (before the first section that explains a mechanism, "
+                      "does the viewer hear a concrete consequence they can picture, or "
+                      "does the plan say the danger is withheld as its twist?)", flat)
+        # the system prompt and the user prompt of one call agree on the grounds
+        self.assertEqual(_grounds(script.PLAN_ATTACK),
+                         _grounds(narrative.reviewer_role(plan=True)))
+
+    @staticmethod
+    def accept(**change):
+        return dict({"verdict": "accept", "train_ok": True, "reorder_survives": False,
+                     "sections_advancing_none": [], "payoff_concrete": True,
+                     "stakes_concrete": True, "questions_unanswered": [],
+                     "problems": []}, **change)
+
+    def test_an_accept_without_stakes_is_a_contradiction(self):
+        lines = narrative.check_plan_review(self.accept(stakes_concrete=False))
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("stakes_concrete", lines[0])
+        self.assertEqual(narrative.check_plan_review(self.accept()), [])
+        old = self.accept()
+        del old["stakes_concrete"]       # an old stub or cached answer reads as today
+        self.assertEqual(narrative.check_plan_review(old), [])
+
+    def test_a_reject_on_stakes_alone_is_a_contradiction(self):
+        problem = [{"section": 1, "problem": "no reason to care", "fix": "open on 1989"}]
+        alone = self.accept(verdict="reject", stakes_concrete=False, problems=problem)
+        lines = narrative.check_plan_review(alone)
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("stakes alone is grounds to revise", lines[0])
+        for ground in ({"reorder_survives": True}, {"train_ok": False},
+                       {"payoff_concrete": False}, {"sections_advancing_none": [2]}):
+            with self.subTest(ground=ground):
+                self.assertEqual(narrative.check_plan_review(dict(alone, **ground)), [])
+        # a revise on stakes alone is what the role asks for
+        self.assertEqual(narrative.check_plan_review(dict(alone, verdict="revise")), [])
+        missing = dict(alone)
+        del missing["stakes_concrete"]
+        self.assertEqual(narrative.check_plan_review(missing), [])
 
 
 def review(verdict="recommend", grades=None, flags=()) -> dict:
@@ -689,7 +781,7 @@ SEEDED = {"list-plan": "train", "topic-train": "train", "empty-payoff": "ending"
           "and-chain": "train", "reveal-first": "reveal_setup",
           "recap-ending": "ending", "hook-enumerates": "hook",
           "flat-tension": "tension", "no-trigger": "hook", "lecture-voice": "voice",
-          "bad-metaphor": "devices", "aside-joke": "voice"}
+          "bad-metaphor": "devices", "aside-joke": "voice", "no-stakes": "stakes"}
 
 #: The cases that expect recommend: the good pair, and the good script whose
 #: one joke makes the point (AUTO-159), which must not be graded down for it.
@@ -703,7 +795,7 @@ GOOD = ("good", "claim-joke")
 COLD_READ = ("no-premise", "jargon")
 
 #: The cases with no script: the plan is the whole of what is read.
-PLAN_ONLY = ("list-plan", "topic-train", "empty-payoff", "and-chain")
+PLAN_ONLY = ("list-plan", "topic-train", "empty-payoff", "and-chain", "no-stakes")
 
 
 class Fixtures(unittest.TestCase):
@@ -860,6 +952,41 @@ class Fixtures(unittest.TestCase):
         self.assertTrue(said["list-plan"]["sections_advancing_none"])
         self.assertFalse(said["topic-train"]["train_ok"])
         self.assertFalse(said["empty-payoff"]["payoff_concrete"])
+        # AUTO-161: no reason to care before the mechanism is sent back to be
+        # planned again, never rejected on that alone
+        stakes = load(FIXTURES / "no-stakes" / "expected.json")["plan_review"]
+        self.assertIs(stakes["stakes_concrete"], False)
+        self.assertEqual(stakes["verdict"], "revise")
+        self.assertEqual(narrative.check_plan_review(stakes), [])
+        self.assertEqual([p["section"] for p in stakes["problems"]], [1])
+        # every canned plan review says whether the plan has stakes
+        for name, path in cases().items():
+            plan_review = load(path / "expected.json").get("plan_review")
+            if plan_review is not None:
+                with self.subTest(case=name):
+                    self.assertIn(plan_review["stakes_concrete"], (True, False))
+                    self.assertEqual(problems(plan_review, narrative.PLAN_REVIEW_SCHEMA), [])
+                    self.assertIs(plan_review["stakes_concrete"], name != "no-stakes")
+
+    def test_the_no_stakes_plan_is_the_good_one_with_its_reason_to_care_taken_out(self):
+        good = load(FIXTURES / "good" / "plan.json")
+        plan = load(FIXTURES / "no-stakes" / "plan.json")
+        for key in ("stakes", "viewer_stake"):
+            self.assertIn("matters for science", plan[key].lower())
+            self.assertNotIn("grid", plan[key].lower())
+        first = " ".join(plan["sections"][0]["beats"]).lower()
+        self.assertTrue(plan["sections"][0]["beats"][0].lower().startswith("sunlight"), first)
+        self.assertNotIn("earth", first)
+        # no twist is declared anywhere, so nothing excuses the late consequence
+        self.assertNotRegex(json.dumps(plan).lower(), r"twist|withheld")
+        rest = {k: v for k, v in plan.items() if k not in ("stakes", "viewer_stake",
+                                                             "sections")}
+        self.assertEqual(rest, {k: v for k, v in good.items()
+                                if k not in ("stakes", "viewer_stake", "sections")})
+        self.assertEqual(plan["sections"][1:], good["sections"][1:])
+        expected = load(FIXTURES / "no-stakes" / "expected.json")
+        self.assertEqual((expected["criterion"], expected["verdict"]), ("stakes", "reject"))
+        self.assertEqual(expected["review"]["grades"]["stakes"], "Poor")
 
     def test_every_review_grades_devices(self):
         # AUTO-135: the good case shows its mechanism directly, with no

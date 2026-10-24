@@ -1,0 +1,59 @@
+{
+  "criterion": "stakes",
+  "verdict": "reject",
+  "why": "The plan explains how sunlight pushes the tail before it gives the viewer a reason to care, and its stakes line is abstract (\"matters for science\"); no twist is declared to excuse it (attention 8, 10).",
+  "evidence": {
+    "in": "plan.stakes",
+    "says": "matters for science"
+  },
+  "review": {
+    "logline": "A comet's tail leads it away from the Sun because sunlight and a wind from the Sun push it, not because it trails behind.",
+    "synopsis": "Sunlight presses on a comet's dust and gas; a comet leaves the Sun tail first; sunlight is too weak to explain the gas tail; Biermann proposes a wind from the Sun and Mariner 2 measures it; the opening comet is seen again. Nothing says what the wind does to anyone.",
+    "grades": {
+      "train": "Excellent",
+      "hook": "Good",
+      "stakes": "Poor",
+      "open_loops": "Excellent",
+      "reveal_setup": "Excellent",
+      "tension": "Excellent",
+      "ending": "Excellent",
+      "honesty": "Excellent",
+      "voice": "Good",
+      "devices": "Good"
+    },
+    "verdict": "reject",
+    "flags": [
+      {
+        "n": 0,
+        "section": 0,
+        "criterion": "stakes",
+        "problem": "The plan explains the push of sunlight before it gives any reason to care, and its stakes line says only that understanding this matters for science: no consequence the viewer can picture, and no twist declared to excuse it.",
+        "severity": "blocker",
+        "fix": "Open on a consequence the viewer can picture before the mechanism: the same wind that bends this tail put Quebec's grid out for nine hours in March 1989.",
+        "quote": ""
+      }
+    ],
+    "first_minute": {
+      "promise_match": "From the plan (no script yet): section 1 opens on how sunlight pushes a comet's dust and gas, then a comet leaving the Sun tail first, the subject the title promised.",
+      "question_and_stakes": "From the plan: why the tail leads, but section 1 explains the push before it says why anyone should care, and the stakes line says only that it matters for science.",
+      "trigger": "not_heard",
+      "gap": ""
+    }
+  },
+  "plan_review": {
+    "verdict": "revise",
+    "train_ok": true,
+    "reorder_survives": false,
+    "sections_advancing_none": [],
+    "payoff_concrete": true,
+    "stakes_concrete": false,
+    "questions_unanswered": [],
+    "problems": [
+      {
+        "section": 1,
+        "problem": "Section 1 explains how sunlight pushes the tail before the viewer hears any consequence they can picture, and the stakes line says only that it matters for science.",
+        "fix": "Open section 1 on the 1989 Quebec blackout, a storm in the same wind that bends the tail, before the push is explained."
+      }
+    ]
+  }
+}

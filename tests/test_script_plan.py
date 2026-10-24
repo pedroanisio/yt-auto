@@ -1241,7 +1241,9 @@ def plan_prompts() -> dict[str, str]:
 #: devices row of the rubric in the plan review), and AUTO-158 did (the
 #: plan's optional persona, in STORY_BRIEF and the two plan schemas; the
 #: plan review's prompt is unchanged for a plan without one).
-#: PLAN_REVIEW_SCHEMA is unchanged by all three.
+#: PLAN_REVIEW_SCHEMA is unchanged by all three. AUTO-161 changed only the
+#: plan review's prompt and schema (stakes as a revise ground, and the
+#: `stakes_concrete` field); every plan prompt and schema kept its value.
 PLAN_PROMPTS = {
     "plan":
         "3878df073210e90fc0fda6d366107d0d72c14b7f11f7d802e44a96c43bc0260e",
@@ -1262,9 +1264,9 @@ PLAN_PROMPTS = {
     "plan-fields:schema":
         "77508224eb2a27046c7408b44a54e422ddf631c4a207a9f20ad9aa1ead7ce4f8",
     "plan-review":
-        "2f315dd21c627871fd696bf28367b8ed9c9494782552ed24b4d0edbb9e89c610",
+        "d54037ff86762bec8147f79c1479264a8da24dec686d028e9f0cb6e0dd07c271",
     "plan-review:schema":
-        "54df6d553271e47a5d258ee979450bc3def63951c4b93833663c964c5a284c5f",
+        "d78a2db03a07add01992161c942750505a3d2b296c5bce3738b5ea707d6b03d0",
     "plan:schema":
         "236f0d4b71ec8b56f7594abca16d6a59af4e5297d734ee3efc085515194215e6",
 }

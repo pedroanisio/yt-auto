@@ -94,6 +94,7 @@
       4
     ],
     "payoff_concrete": true,
+    "stakes_concrete": true,
     "questions_unanswered": [],
     "problems": [
       {

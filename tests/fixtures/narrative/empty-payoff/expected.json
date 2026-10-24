@@ -46,6 +46,7 @@
     "reorder_survives": false,
     "sections_advancing_none": [],
     "payoff_concrete": false,
+    "stakes_concrete": true,
     "questions_unanswered": [],
     "problems": [
       {

@@ -82,7 +82,8 @@ judging 13; Zeigarnik → attention Contested.
    with no curiosity trigger, a premise a cold reader could not restate,
    terms a lay audience is never given, the good film read as a lecture,
    an analogy that maps a comet's tail onto its path, an aside that serves
-   no claim), the good pair, and a joke that makes the point: the good
+   no claim, a plan that explains its mechanism before it gives a reason to
+   care), the good pair, and a joke that makes the point: the good
    script with one joke whose punchline is the shot's claim, which expects
    recommend with voice no lower than Good (its `at_least`, AUTO-159,
    with the reason a failing row prints in `at_least_why`),
@@ -126,11 +127,15 @@ judging 13; Zeigarnik → attention Contested.
    reviewer's own verdict. A live run reads the cases on the real models
    with the plan review where the case names a plan verdict, the three
    samples on every case, and the cold read where there is narration, at
-   about $1 a case at opus, about $18 for the shipped set with its two
+   about $1 a case at opus, about $19 for the shipped set with its two
    padded reads, capped by `--budget-usd`; `yt
    doctor` warns `gate on with N labelled verdicts (20 needed)` for a
    script written under `--gate` below that count. The plan review before
-   any section is drafted is wired too (`yt script --review`, AUTO-92).
+   any section is drafted is wired too (`yt script --review`, AUTO-92);
+   since AUTO-161 a plan with no concrete consequence before its mechanism,
+   and no declared twist, is a ground for it to revise, never on its own to
+   reject (attention 8), and the plan that explains before it gives a reason
+   to care fails a plan review that says its `stakes_concrete` is true.
 4. **The evidence loop.** `yt improve` ingests the channel's retention curves
    (judging 1–3), maps dips, spikes and the Intro figure to beat ids and
    routes findings to the script stage under the rule they bear on. Every
