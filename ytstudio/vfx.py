@@ -4860,6 +4860,12 @@ class VfxPlanner:
                 "revisions": max(numbers) if numbers else 0, "rounds": rounds,
                 "best_round": chosen["round"] if chosen else None,
                 "score": best["score"] if best else None,
+                # These rounds were authored by this version's run, which
+                # --recover and --take-attempt repeat: its model and bar. A
+                # record without its author would turn the continuity gate off
+                # for the whole film (judged_apart), and one without its bar
+                # would be measured against whatever bar the next run passes.
+                "bar": self.author_bar, "author": self.model,
                 "review": best["review"] if best else None,
                 "cost_usd": round(sum(r["cost_usd"] for r in rounds), 4),
                 "inputs_sha256": self._inputs_sha256(section, group),
