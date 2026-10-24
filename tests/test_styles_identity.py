@@ -296,6 +296,21 @@ class Review(EngineCase):
         data, _ = self.director().run([("Diagram", "d")])
         self.assertEqual(data["identity"]["review"]["verdict"], "not_evidenced")
 
+    def off_scale(self, scale):
+        Fake.judgements = [dict(PASS, **scale), dict(PASS, **scale)]
+        data, _ = self.director().run([("Diagram", "d")])
+        review = data["identity"]["review"]
+        self.assertEqual(review["verdict"], "not_evidenced")
+        self.assertIn("0-10", review["error"])
+        self.assertNotIn("scores", review)
+
+    def test_scores_out_of_a_hundred_are_not_evidenced(self):
+        # a reviewer answering on another scale would otherwise pass on nonsense
+        self.off_scale({"fit_to_subject": 45, "distinct": 50})
+
+    def test_a_negative_score_is_not_evidenced(self):
+        self.off_scale({"fit_to_subject": 8, "distinct": -1})
+
     def test_a_failed_revise_keeps_the_first_identity_and_its_weak_verdict(self):
         Fake.judgements = [SWAPPABLE]
         Fake.revise = {"atmosphere": "only one field"}       # misses four, twice
@@ -477,7 +492,10 @@ class Modules(unittest.TestCase):
         self.assertEqual(styles.REVIEWER_MODEL, vfx.REVIEWER_MODEL)
 
     def test_styles_does_not_import_vfx_for_it(self):
-        # styles.py names its own constant: no import of the vfx module
+        # styles.py names its own constant: no import of the vfx module. The
+        # card's subprocess check (`ytstudio.vfx` not in sys.modules after
+        # `import ytstudio.styles`) cannot hold: styles already reaches vfx
+        # through assess, so this pins the narrower rule.
         tree = ast.parse((ROOT / "ytstudio" / "styles.py").read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):

@@ -811,15 +811,18 @@ class Director:
             return {"verdict": "not_evidenced", "error": str(exc)}
 
         def number(value):
+            # A score off the 0-10 scale the prompt asks for (an answer out of
+            # 100, say) is as unusable as a word: compared with IDENTITY_BAR
+            # it would record a pass or a weak verdict on nonsense.
             ok = isinstance(value, (int, float)) and not isinstance(value, bool)
-            return float(value) if ok else None
+            return float(value) if ok and 0 <= value <= 10 else None
         scores = {k: number(got.get(k)) for k in ("fit_to_subject", "distinct")}
         if None in scores.values() or not isinstance(got.get("swappable"), bool):
             # kept, the same unusable answer would be served on every rerun
             self.reviewer.forget(name)
             return {"verdict": "not_evidenced",
                     "error": f"{name}: the reviewer's swappable or scores are not of "
-                             "the schema's types"}
+                             "the schema's types (a bool, and numbers 0-10)"}
         failing = got["swappable"] or min(scores.values()) < IDENTITY_BAR
         if not failing:
             return {"verdict": "pass", "scores": scores, "swap_target": ""}
