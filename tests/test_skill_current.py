@@ -104,6 +104,13 @@ class Missing(unittest.TestCase):
     def test_keyframe_approve_refuses_a_mixed_record(self):
         self.assertIn("refuses a record whose digests", FLAT)
 
+    def test_headlines_on_screen_are_documented(self):
+        # AUTO-149
+        for needle in ("**Headlines on screen (AUTO-149).**", "`assets.press_items`",
+                       "headline [Nk]", "`source:headline`", "## Headline cards to typeset",
+                       "never the outlet's masthead"):
+            self.assertIn(needle, FLAT, needle)
+
 
 if __name__ == "__main__":
     unittest.main()

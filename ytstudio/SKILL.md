@@ -351,7 +351,8 @@ footage, sound, meshes), the Internet Archive, the RCSB PDB (structures,
 CC0), open-access papers in PMC (the PDF, captioned figures, supplementary
 movies), the open-access papers the research itself cites, and news
 (Wikinews under CC BY; the rest of the press as `reference_only` records,
-cited and never downloaded). Each shot's shortlist holds the best relevant
+cited and never downloaded; a reference-only article reaches the screen only
+as a recreated, attributed headline card, see "Headlines on screen"). Each shot's shortlist holds the best relevant
 hit of each kind before more stills, the subject's own searches are one need
 searched once, and the vetting decision keeps at most `--per-shot` of each
 kind per shot. `kind` is one of `assets.KINDS`. A cached search made with
@@ -365,6 +366,37 @@ the licensed images and clips. `yt run` always passes it (AUTO-143), and
 image or video assets have no `ok` row in `raw/08-downloads.json`: never
 downloaded when there is no manifest, none succeeded when its rows are all
 deferred or failed.
+
+**Headlines on screen (AUTO-149).** `assets.press_items` reads the
+dossier's `article` records back into headline, outlet, date and url
+(`assets.press_reference`: only the exact " (outlet)" suffix removed; a
+title cut at 160 characters, or one with no outlet, is `truncated` and left
+out, since a cut headline cannot be quoted verbatim) and numbers at most 8
+of them N1.. in dossier order: the one place an N id is given. `yt script`'s
+research block lists them as press coverage to stage as a recreated
+headline card (typeset, attributed, never a screenshot), apart from
+"Licensed footage and imagery found by the research", which no longer
+holds articles. A shot staging one sets `asset` to "headline [Nk]" and puts
+the headline verbatim in `on_screen_text` with "outlet, date" as a second
+string. With the press list the narration rules leave exactly those two
+strings out of rule:wall-of-text, rule:legibility and rule:unspoken-number
+(a quotation keeps its words and figures), and `script.headline_findings`
+measures them instead as `source:headline` (important, a screen rule):
+the headline not verbatim (the problem quotes it, so `revise-rules`
+restores it), no string naming the outlet, or a hold shorter than headline
+and source line at `READING_CPS` (more time, never a shorter headline).
+`revise_rules`, the final re-read and the `--revise` re-check all read
+them; an id the press list does not hold is cleared from `asset` with a
+`warning: source:headline:` finding. Without a dossier (no press list)
+every rule and every prompt is as it was. `yt vfx`'s section brief gets
+"## Headline cards to typeset" for the ids its shots cite: typeset in the
+film's own type, never the outlet's masthead, logo or a screenshot, the
+source line visible, the headline never paraphrased; a section citing
+one adds the cited records to its `inputs_sha256` under `press`, so a
+changed headline re-reviews that section and the others keep their
+digest. Nothing is downloaded, and no AssetHit field or cached search
+changes. Whether a verbatim, attributed headline is fair quotation in the
+channel's markets is the owner's call, not checked here.
 
 **Research scales to the film's length.** `yt research` reads the idea's
 stated runtime ("60 seconds", "8-12 min"). A film under ten minutes shrinks the
