@@ -506,8 +506,8 @@ its temperament is a device of its own (AUTO-158): the same every film when
 the channel's `## format` sets one, otherwise each film's own, chosen from its
 subject and named in the plan's `persona`. Each section opens with a comment
 naming the corpus rules it states; comments never reach a prompt, and a test
-holds the ids to the corpus. The channel's file replaces a section by writing one of the same name.
-The keyframe, which has no section of its own, reads `## vfx` until a house
+holds the ids to the corpus. The channel's file replaces a section by writing
+one of the same name. The keyframe, which has no section of its own, reads `## vfx` until a house
 writes `## keyframe`. A cached decision is keyed on its stage's block (`## all`
 and the sections that stage reads), so an edit to `## all` re-asks every
 decision in every project on its next run, an edit to one section re-asks
