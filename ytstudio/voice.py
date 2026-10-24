@@ -247,15 +247,17 @@ def _xml(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def respell(say: str, engine: str) -> str:
+def respell(say: str, engine: str, *, stress: bool = True) -> str:
     """The engine's form of a human pronouncer: lowercased with its hyphens
     kept, so "SHROH-ding-er" is never read as an initialism or shouted. For
-    an SSML engine the stressed (capitalised) syllables are wrapped in
-    <emphasis>. Always one token."""
+    an SSML engine it is XML-escaped and, with `stress`, its stressed
+    (capitalised) syllables are wrapped in <emphasis>; a word already
+    emphasised as a whole is not stressed inside. Always one token."""
     parts = str(say or "").split("-")
     if engine in SSML_ENGINES:
         return "-".join(f"<emphasis>{_xml(p.lower())}</emphasis>"
-                        if p and p.upper() == p and p.lower() != p else _xml(p.lower())
+                        if stress and p and p.upper() == p and p.lower() != p
+                        else _xml(p.lower())
                         for p in parts)
     return "-".join(p.lower() for p in parts)
 
@@ -337,7 +339,7 @@ def render_marks(text: str, marks: dict, engine: str) -> tuple[str, list[dict], 
     for i, token in enumerate(tokens):
         lead, word, poss, tail = _split_token(token)
         if i in said:
-            word = respell(said[i], "" if i in stressed else engine)
+            word = respell(said[i], engine, stress=i not in stressed)
         else:
             word = esc(word)
         word += esc(poss)

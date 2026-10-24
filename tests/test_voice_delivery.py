@@ -74,6 +74,16 @@ class RenderMarks(unittest.TestCase):
         self.assertIn("&", "".join(root.itertext()))
         self.assertIn("<", "".join(root.itertext()))
 
+    def test_a_respelled_word_that_is_also_stressed_is_escaped_too(self):
+        spoken, applied, _ = voice.render_marks(
+            "Call AT&T now.", {"emphasis": ["AT&T"],
+                               "pronounce": [{"term": "AT&T", "say": "AT-and-T&x"}]},
+            "espeak")
+        root = ET.fromstring(spoken)
+        self.assertEqual(kinds(applied), ["emphasis", "pronounce"])
+        self.assertEqual(root.find("emphasis").text, "at-and-t&x")
+        self.assertEqual(" ".join("".join(root.itertext()).split()), "Call at-and-t&x now.")
+
     def test_chatterbox_takes_the_respelling_only(self):
         spoken, applied, recorded = voice.render_marks(LINE, MARKS, "chatterbox")
         self.assertEqual(spoken, "shroh-ding-er put a cat in a box.")
