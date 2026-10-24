@@ -302,6 +302,7 @@ class PressBlock(unittest.TestCase):
 
 import copy  # noqa: E402
 import json  # noqa: E402
+import os  # noqa: E402
 import tempfile  # noqa: E402
 from unittest import mock  # noqa: E402
 
@@ -439,6 +440,33 @@ class FactCheckByDefault(unittest.TestCase):
         # other reviewer of this stage is
         self.assertIsNone(seen["fact"].engine)
         self.assertIsNone(seen["fact"].gateway)
+
+    def test_with_the_gateway_unset_the_fact_check_is_a_plain_cli_call(self):
+        # The fact reviewer launches exactly what a plain CLI reviewer at
+        # --reviewer-model launches: the same engine and the same config, so
+        # its argv and child env are today's; the author's harness is
+        # untouched by it. No engine is started.
+        import claude_engine
+        seen = {}
+
+        def run(self_, **kw):
+            seen["writer"] = self_
+            raise script.ClaudeError("stop here")
+        self.dossier()
+        clean = {k: v for k, v in os.environ.items()
+                 if not k.startswith(("YT_GATEWAY", "AI_GATEWAY")) and k != "YT_ENGINE"}
+        with mock.patch.dict(os.environ, clean, clear=True), \
+                mock.patch.object(script.Screenwriter, "run", run):
+            self.run_stage("--model", "sonnet")
+            fact, author = seen["writer"].fact_reviewer, seen["writer"].harness
+            plain = harness.Harness(str(self.film), "script", model="opus",
+                                    role=script.FACT_ROLE, verbose=False)
+            got, want = fact._engine(tools=()), plain._engine(tools=())
+        self.assertIsInstance(got, claude_engine.ClaudeEngine)
+        self.assertEqual(got.config, want.config)
+        self.assertEqual((fact.engine, fact.gateway), (None, None))
+        self.assertEqual((author.model, author.role), ("sonnet", script.SYSTEM))
+        self.assertIsNot(fact, author)
 
     # -- the family refusal ------------------------------------------------------
 
