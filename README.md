@@ -594,7 +594,7 @@ forces the work again.
 
 `--depth` questions · `--jobs` · `--shots` / `--per-shot` · `--asset-sources` ·
 `--allow-sa` · `--agentic-assets` · `--download` · `--budget-usd` · `--fresh` ·
-`--paper`
+`--paper` · `--crosscheck N` · `--reviewer-model`
 
 The plan depends on the genre. A narrated explainer gets the full scope; a
 wordless piece -- a genre or premise that says cinematic, music video,
@@ -646,6 +646,22 @@ the problem, significance and implications before the mechanism, with a
 misplaced item recorded as a `warning: paper framing:` finding that
 `yt doctor` reports. Under `YT_ENGINE=codex`, `--paper` is refused with exit
 2: codex reports no WebFetch or Read events, so the read cannot be evidenced.
+
+Independent check (AUTO-134). `--crosscheck N` sends the N key claims -- the
+ones the outline uses first, then the weakly sourced ones, then the numbers
+-- each to a fresh web pass told to find sources independent of the cited
+host, and has a model of another family (`--reviewer-model`, refused when it
+shares the author's family) judge what the pass read. It runs after the
+outline as stage `09-crosscheck`, cached like the others. A verdict must
+name pages the pass opened and quote words found under that page's URL; a
+source on the cited host does not count. Anything else is asked once more,
+then recorded as `unverified`, never as confirmed. The dossier gains a
+`crosscheck` list and each checked claim an `independent` status
+(corroborated, contradicted, disputed, not found, unverified), printed under
+the claim in `dossier.md`; a wordless scope records `crosscheck_skipped`
+instead. It is off by default and costs about $0.40 a claim (TO VERIFY: an
+assumption until a film measures it); `yt run` passes `--crosscheck 8`
+unless `--quick`.
 
 Downloaded assets are untrusted bytes from the open web: they are written to
 `downloads/` and never opened or executed.
