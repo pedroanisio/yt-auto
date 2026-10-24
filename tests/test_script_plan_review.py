@@ -300,6 +300,16 @@ class Stakes(unittest.TestCase):
         self.assertEqual([r["verdict"] for r in stop["rounds"]], ["revise", "revise"])
         self.assertEqual(stop["verdict"], "revise")
 
+    def test_a_revise_whose_fields_name_the_stakes_is_not_asked_again(self):
+        # The fields already tell plan-2 what to fix, so an empty problems
+        # list is no reason for a second call.
+        w = writer()
+        calls = faked(w, [verdict("revise", stakes=False), verdict("accept")])
+        w.run(review=True)
+        self.assertEqual(names(calls)[:3], ["plan", "plan-review", "plan-2"])
+        self.assertIn(STAKES_LINE, calls[2]["prompt"])
+        self.assertNotIn("the reviewer named no problem", calls[2]["prompt"])
+
     def test_report_only_drafts_on_after_a_stakes_revise(self):
         w = writer()
         calls = faked(w, [verdict("revise", [NO_STAKES], stakes=False)])
@@ -386,6 +396,30 @@ class SelfContradiction(unittest.TestCase):
         for needle in ("train_ok", "reorder_survives", "payoff_concrete", "section 2"):
             self.assertTrue(any(needle in line for line in lines), needle)
         self.assertEqual(check(None), [])
+
+    def test_a_revise_names_a_problem_through_a_ground_field(self):
+        check = narrative.check_plan_review
+        for field, value in (("train_ok", False), ("reorder_survives", True),
+                             ("payoff_concrete", False), ("stakes_concrete", False),
+                             ("sections_advancing_none", [2])):
+            self.assertEqual(check(dict(verdict("revise"), **{field: value})), [], field)
+        # an open question is no ground to revise, so it names no problem
+        self.assertEqual(len(check(dict(verdict("revise"), questions_unanswered=["q1"]))), 1)
+        # a reject still names its problems: the operator's --notes need them
+        self.assertEqual(len(check(dict(verdict("reject"), stakes_concrete=False))), 1)
+
+    def test_a_reject_on_stakes_is_alone_only_when_its_four_grounds_are_clean(self):
+        check = narrative.check_plan_review
+        clean = dict(verdict("reject", [NO_STAKES], stakes=False), train_ok=True,
+                     reorder_survives=False, payoff_concrete=True)
+        self.assertEqual(len(check(clean)), 1)
+        # A field the review leaves out is no contradiction: an old or
+        # malformed answer that omits a reject ground is not "stakes alone".
+        for field in ("train_ok", "reorder_survives", "payoff_concrete",
+                      "sections_advancing_none"):
+            partial = dict(clean)
+            del partial[field]
+            self.assertEqual(check(partial), [], field)
 
     def test_an_accept_that_says_the_order_is_a_list_is_asked_again(self):
         w = writer()

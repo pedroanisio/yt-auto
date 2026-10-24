@@ -692,11 +692,12 @@ PLAN_REVIEW_SCHEMA = {
 def check_plan_review(review: Any) -> list[str]:
     """What a plan review says that contradicts its own verdict, one line
     per problem: a revise or a reject that names no problem (a second plan
-    would be told to fix nothing), and an accept whose own fields find the
+    would be told to fix nothing; a revise whose own ground fields find a
+    fault has named it), and an accept whose own fields find the
     train failing, the order a list, the payoff not concrete, no stakes or a
     section that moves nothing. Stakes are grounds to revise and never to
-    reject (AUTO-161), so a reject that finds no stakes and none of the four
-    reject grounds in its own fields contradicts itself too. The schema
+    reject (AUTO-161), so a reject that finds no stakes and each of the four
+    reject grounds clean in its own fields contradicts itself too. The schema
     cannot refuse these. A field the review leaves out is no contradiction
     (old stubs and cached answers carry no `stakes_concrete`). As with
     `check_review`, the caller asks once more (`<name>-again`) with these
@@ -706,7 +707,15 @@ def check_plan_review(review: Any) -> list[str]:
     found: list[str] = []
     verdict = review.get("verdict")
     problems = review.get("problems") if isinstance(review.get("problems"), list) else []
-    if verdict in ("revise", "reject") and not problems:
+    # A revise whose own ground fields find a fault has named it: the second
+    # plan is told each as a field line (script.review_field_lines), so an
+    # empty problems list is no reason to ask again. A reject is still asked:
+    # it stops the stage, and the operator's --notes need a section and a fix.
+    named = verdict == "revise" and (
+        review.get("train_ok") is False or review.get("reorder_survives") is True
+        or review.get("payoff_concrete") is False or review.get("stakes_concrete") is False
+        or bool(review.get("sections_advancing_none")))
+    if verdict in ("revise", "reject") and not problems and not named:
         found.append(f"a {verdict} names the problems that send the plan back, and this "
                      "one carries none: name each with its section and fix, or accept")
     if verdict == "accept":
@@ -728,10 +737,12 @@ def check_plan_review(review: Any) -> list[str]:
                          f"section {', '.join(idle)} under sections_advancing_none: change "
                          "the verdict or the list")
     if verdict == "reject" and review.get("stakes_concrete") is False:
-        grounds = (review.get("train_ok") is False, review.get("reorder_survives") is True,
-                   review.get("payoff_concrete") is False,
-                   bool(review.get("sections_advancing_none")))
-        if not any(grounds):
+        # "Alone" only when each of the four reject grounds is there and
+        # clean: a reading that leaves one out has not said it is clean.
+        clean = (review.get("train_ok") is True, review.get("reorder_survives") is False,
+                 review.get("payoff_concrete") is True,
+                 review.get("sections_advancing_none") == [])
+        if all(clean):
             found.append("a reject needs the train, the order, an idle section or the "
                          "payoff; stakes alone is grounds to revise: revise, or name the "
                          "reject ground")
