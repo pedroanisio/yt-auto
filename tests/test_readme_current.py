@@ -115,6 +115,14 @@ class Missing(unittest.TestCase):
                        f"${spend.CROSSCHECK_CLAIM_USD:.2f}", "`yt run`", "--quick"):
             self.assertIn(needle, text, needle)
 
+    def test_script_verify_accounts_for_the_independent_check(self):
+        # AUTO-134 step B: every disagreement flagged or cleared with why
+        text = flat(section("script"))
+        for needle in ("INDEPENDENT CHECK:", "`script.disagreements_of`", "`crosscheck`",
+                       "`crosscheck_clear`", "`verify-again`", "`verify-account`",
+                       "(independent check X2: <url>)", "script-wide"):
+            self.assertIn(needle, text, needle)
+
     def test_voice_retakes_and_redo(self):
         text = flat(section("voice"))
         self.assertIn("speed", text)

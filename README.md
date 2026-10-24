@@ -769,6 +769,27 @@ speculation), and `script.md` prints it as `**STATUS**`. With `--review`,
 sure as its research (`verify-status`), and the fact-check's revise may
 weaken a status, never raise it; without `--review` that check is recorded
 as not evidenced, never as passed.
+On a dossier from `yt research --crosscheck N` (AUTO-134), each checked
+claim's line in the research block carries its `INDEPENDENT CHECK:` verdict,
+so the writer and the fact-check both see it, and every screenplay decision
+is asked once more on such a dossier. The claims the independent sources
+contradict or dispute are numbered X1, X2 .. (`script.disagreements_of`),
+and the first full `--verify` must account for each: flag the lines stating
+it with the id in the flag's `crosscheck` (a contradicted claim told as fact
+is a blocker, a disputed one told as settled important), or list it in
+`crosscheck_clear` with why (the script does not state it, or the line
+already frames it as disputed). An answer that leaves one out, names an id
+that does not exist, or calls a contradicted claim minor is asked once more
+(`verify-again`); what is still unaccounted stands as a blocker
+(contradicted) or important (disputed) flag on each shot whose source cites
+the claim's URL, or script-wide when none does, and a failed check records
+them all rather than nothing. The rounds' re-checks make no such demand;
+after them, `verify-account` re-reads the shots the X flags still name
+(every shot for a script-wide one), so a line the revise fixed can retire
+its flag. `script.md`'s Fact-check section names the independent check
+behind each flag, `(independent check X2: <url>)`, and lists every
+`crosscheck_clear` with its reason. A dossier with no `crosscheck` is
+checked, cached and priced exactly as before.
 `--polish` reads the narration end to end and rewrites only what repeats,
 stumbles or buries its point.
 

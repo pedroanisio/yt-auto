@@ -12,9 +12,17 @@ that still need checking, and a script outline that cites both.
         --description "Tin droplets, lasers and 13.5 nm light."
     cat one-idea.json | yt research -
     yt research --from ideas.json --index 1 --download --model opus
+    yt research --from ideas.json --index 1 --crosscheck 6 --reviewer-model opus
 
 Every stage is cached under the dossier directory, so a re-run resumes instead
 of paying twice; --fresh forces the work again.
+
+--crosscheck N (AUTO-134, off by default) checks the N key claims after the
+outline (stage 09-crosscheck): a fresh web pass per claim looks for sources
+independent of the cited host, and --reviewer-model, a model of another family,
+judges what it read. A verdict that names a page the pass did not open, or
+words its notes do not hold, is asked once more and then recorded as
+unverified; it never counts as corroborated.
 
 Downloaded assets are untrusted bytes from the open web: they are written to
 <dossier>/downloads/ and never opened or executed by this script.
