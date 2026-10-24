@@ -113,5 +113,39 @@ class Digest(SceneEvidence):
         self.assertEqual(doctor.scene_digest(self.root / "scene.xml"), digest(SCENE_1))
 
 
+class JudgeCalibration(SceneEvidence):
+    """AUTO-156: whether the QA judge was fixture-calibrated is recorded in
+    qa.json and gates nothing: doctor's delivery result is the same."""
+
+    def scored_with(self, label: dict | None) -> None:
+        body = {"pass": "pass-03", "verdict": "READY TO PUBLISH", "overall": 9.2,
+                "scene_sha256": digest(SCENE_1)}
+        if label is not None:
+            body["judge_calibration"] = label
+        self.write("qa.json", body)
+        self.stamp("qa.json")
+
+    def outcome(self):
+        report = self.report()
+        return (report.metrics["delivery"],
+                sorted((f.level, f.message) for f in report.findings if f.area == "delivery"))
+
+    def test_the_delivery_result_is_the_same_calibrated_or_not(self):
+        self.built(); self.rendered(); self.gated()
+        results = []
+        for fixtures in (None, False, True):
+            self.scored_with(None if fixtures is None else {
+                "fixtures": fixtures, "labelled": 0, "model": "sonnet", "digest": "d",
+                "why": "no report"})
+            results.append(self.outcome())
+        self.assertTrue(results[0][0]["ready"])
+        self.assertEqual(results[1], results[0])
+        self.assertEqual(results[2], results[0])
+
+    def test_doctor_never_reads_it(self):
+        source = Path(doctor.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("judge_calibration", source)
+
+
 if __name__ == "__main__":
     unittest.main()

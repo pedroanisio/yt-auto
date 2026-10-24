@@ -558,6 +558,32 @@ An honest spec says where it is blind, so nobody mistakes silence for a pass:
   (judging 4): `yt qa` records it and names it under `not_evidenced` until
   the work directory holds the channel's own `work/retention.json`, which a
   film's `work/<slug>/retention.json` from `yt retention` is not.
+- **The QA judge is not yet calibrated on the owner's films** (AUTO-156).
+  READY is the bar applied to the medians of a model's scores, and nothing
+  showed those scores separate a good film from a bad one. `python -m
+  ytstudio.qa calibrate tests/fixtures/qa` scores labelled fixture films
+  (a good one and seeded faults a mechanical check cannot see: a drifting
+  slide, a wall of text, type out of its band, illegible type, a moving
+  placeholder, narration that tells what the picture never shows) and
+  judges the raw card, before any cap, mechanical blocker or silence rule,
+  writing `work/calibration-qa/report.json`. The committed good cases are
+  drawn stand-ins, so the set cannot pass until the owner captures one of
+  their own films (`python -m ytstudio.qa capture-fixture`) and labels it.
+  `qa.json` records `judge_calibration` (`fixtures`, how many owner-labelled
+  films back it: none yet) and `yt qa` prints it under the verdict; it gates
+  nothing, and READY means what §2 says either way. `fixtures` true means
+  this pass's judge (its model, role, categories, bar, schemas, prompt
+  template and house rules, `qa.judge_digest`) passed every case of the
+  shipped set (`fixture_set` in the report), on what two of its readings
+  agree on, and that the pass neither listened nor watched, since the
+  fixtures run the unheard judge only. It does not mean that this film's scores are right, that the judge
+  agrees with the owner on real films (`labelled` counts those, and is 0),
+  or anything about the audio categories, which the fixtures carry no
+  listening review for. The re-run rule: any card that edits qa.ROLE, the
+  categories, the scorecard schema or `review_prompt` changes the digest,
+  so `fixtures` is false until calibrate is run again; AUTO-141, AUTO-145,
+  AUTO-146 and AUTO-148 do this, and each adds or adjusts a fixture case
+  for the category it changes.
 
 ---
 

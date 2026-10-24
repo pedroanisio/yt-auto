@@ -1,0 +1,16 @@
+{
+  "label": "seeded",
+  "judge_only": false,
+  "verdict": "READY",
+  "under_bar": [],
+  "over_bar": [
+    "visual_quality",
+    "animation_vfx",
+    "cinematography",
+    "editing_pacing",
+    "graphics_overlays",
+    "narrative_clarity",
+    "overall_production"
+  ],
+  "must_find": []
+}

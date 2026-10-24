@@ -36,6 +36,7 @@ FOREIGN_FLAGS = {
     "--process",                        # govern new
     "--ignore-scripts",                 # npm ci, the gateway engine's install step
     "--package-lock-only",              # npm install, writes gateway/package-lock.json
+    "--base",                           # scripts/seed_qa_fixtures.py, a captured good case
 }
 
 #: A retired yt spelling that is a live flag of another tool: (document, flag).

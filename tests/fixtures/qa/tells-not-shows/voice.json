@@ -1,0 +1,44 @@
+{
+  "takes": [
+    {
+      "label": "1.1",
+      "text": "This comet is leaving the Sun, and its tail is in front.",
+      "seconds": 4.0
+    },
+    {
+      "label": "1.2",
+      "text": "Dust and gas stream off the head as it warms.",
+      "seconds": 4.0
+    },
+    {
+      "label": "1.3",
+      "text": "So what is pushing them the other way?",
+      "seconds": 4.0
+    },
+    {
+      "label": "2.1",
+      "text": "Watch single dust grains glint as sunlight knocks them loose from the crust.",
+      "seconds": 4.0
+    },
+    {
+      "label": "2.2",
+      "text": "See the ions glow blue and spiral along the Sun's magnetic field lines.",
+      "seconds": 4.0
+    },
+    {
+      "label": "2.3",
+      "text": "Now the field lines snap and reconnect, and a knot of plasma breaks off the tail.",
+      "seconds": 4.0
+    },
+    {
+      "label": "3.1",
+      "text": "So the tail always points away from the Sun.",
+      "seconds": 4.0
+    },
+    {
+      "label": "3.2",
+      "text": "The tail is showing you the wind.",
+      "seconds": 4.0
+    }
+  ]
+}

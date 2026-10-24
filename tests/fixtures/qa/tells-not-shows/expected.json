@@ -1,0 +1,25 @@
+{
+  "label": "seeded",
+  "judge_only": true,
+  "verdict": "NOT_READY",
+  "under_bar": [
+    "narrative_clarity"
+  ],
+  "over_bar": [],
+  "must_find": [
+    {
+      "t_range": [
+        15.0,
+        30.0
+      ],
+      "owners": [
+        "script",
+        "vfx"
+      ]
+    }
+  ],
+  "base": "good",
+  "drop": {
+    "narrative_clarity": 1.0
+  }
+}

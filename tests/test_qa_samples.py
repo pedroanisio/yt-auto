@@ -397,6 +397,97 @@ class Samples(unittest.TestCase):
         record = json.loads((self.root / "qa.json").read_text())
         self.assertIn("cinematography", record["regressions"])
 
+    #: What run() asked before the score_evidence seam was pulled out of it
+    #: (AUTO-156): every inspection's prompt and system, every merge prompt
+    #: and the decisions' names, with the temporary paths written as <root>.
+    #: Regenerate it only for a change that means to change the prompt:
+    #: YT_QA_GOLDEN=write runs this test and writes the file.
+    GOLDEN = Path(__file__).resolve().parent / "fixtures" / "qa-seam" / "prompts.json"
+
+    def _asked(self) -> dict:
+        """What the engine was asked since setUp, the paths made stable."""
+        def stable(text: str) -> str:
+            return text.replace(str(self.tmp), "<root>")
+        return {"prompts": [stable(p) for p in self.seen["prompts"]],
+                "systems": [stable(s) for s in self.seen.get("systems", [])],
+                "merges": [stable(p) for p in self.seen["merges"]]}
+
+    def test_run_prompts_are_unchanged_by_the_score_evidence_seam(self):
+        # AUTO-156: run()'s review is pulled out as score_evidence so the
+        # calibration set can be judged by the same code. The pin: the
+        # prompts, the system and the decisions' names are what they were
+        # before the extraction, byte for byte, and score_evidence called
+        # directly on the same inputs asks exactly the same.
+        systems = self.seen["systems"] = []
+        engine = harness.ENGINE
+
+        class Recording(engine):
+            def stream(self_, prompt, system=None):
+                systems.append(system or "")
+                yield from super().stream(prompt, system)
+        harness.ENGINE = Recording
+        saved = qa.GEOMETRY
+        self.addCleanup(setattr, qa, "GEOMETRY", saved)
+        qa.GEOMETRY = lambda args, project, scene, shots: {"status": "skipped",
+                                                           "why": "a fake geometry check"}
+        f1, f2 = finding("the tail is static", t=2.0), finding("the tail never moves", t=2.1)
+        self.answers[:] = [sample(8.0, findings=[f1]), sample(8.0, findings=[f2]),
+                           sample(8.0)]
+        self.groups[:] = [["s1.F1", "s2.F1"]]
+        self.run_qa()
+        card = self.card()
+        got = self._asked() | {"decisions": [d["name"] for d in card["engine"]["decisions"]]}
+        if os.environ.get("YT_QA_GOLDEN") == "write":
+            self.GOLDEN.parent.mkdir(parents=True, exist_ok=True)
+            self.GOLDEN.write_text(json.dumps(got, indent=1, ensure_ascii=False) + "\n",
+                                   encoding="utf-8")
+        golden = json.loads(self.GOLDEN.read_text(encoding="utf-8"))
+        self.assertEqual(got["decisions"], golden["decisions"])
+        self.assertEqual(got["merges"], golden["merges"])
+        self.assertEqual(got["systems"], golden["systems"])
+        self.assertEqual(len(got["prompts"]), len(golden["prompts"]))
+        for mine, theirs in zip(got["prompts"], golden["prompts"]):
+            self.assertEqual(mine, theirs)
+
+        # score_evidence directly, on a copy of the pass's evidence under a
+        # project of its own (so nothing is served from run()'s cache): the
+        # same prompts, the same system, the same names.
+        from ytstudio import reach
+        other = self.tmp / "other"
+        before = self.root / "qa" / "pass-01"
+        here = other / "qa" / "pass-01"
+        shutil.copytree(before / "frames", here / "frames")
+        samples = json.loads((before / "samples.json").read_text())
+        build = json.loads((self.root / "build.json").read_text())
+        script = json.loads((self.root / "script.json").read_text())
+        voice = json.loads((self.root / "voice.json").read_text())
+        sound = json.loads((self.root / "sound.json").read_text())
+        for key in ("prompts", "merges"):
+            self.seen[key].clear()
+        systems.clear()
+        self.answers[:] = [sample(8.0, findings=[f1]), sample(8.0, findings=[f2]),
+                           sample(8.0)]
+        reviewer = harness.Harness(other, "qa", model="sonnet", role=qa.ROLE,
+                                   verbose=False, timeout=1800.0)
+        measurements = qa.stage_measurements(
+            build, voice, sound=sound, gate=None,
+            geometry={"status": "skipped", "why": "a fake geometry check"}, styles={},
+            reach=None)
+        self.assertIsNone(reach.summary(None))
+        direct = qa.score_evidence(
+            reviewer, here, title="one take", build=build, script=script, voice=voice,
+            samples=samples, frames_dir=here / "frames", listening=card["listening"],
+            mechanical=card["mechanical"], diagnostics={}, measurements=measurements,
+            blockers=[])
+        again = self._asked() | {"decisions": [d["name"] for d in
+                                               reviewer.report()["decisions"]]}
+        self.assertEqual(again["decisions"], golden["decisions"])
+        self.assertEqual(again["merges"], golden["merges"])
+        self.assertEqual(again["systems"], golden["systems"])
+        self.assertEqual(again["prompts"], golden["prompts"])
+        self.assertEqual(direct["scores"]["cinematography"], 8.0)
+        self.assertNotIn("gaps", direct)
+
     def test_no_merge_is_asked_when_no_two_samples_have_findings(self):
         self.answers[:] = [sample(8.0, findings=[finding("a")]), sample(8.0), sample(8.0)]
         self.run_qa()

@@ -1,0 +1,16 @@
+{
+  "label": "seeded",
+  "judge_only": true,
+  "verdict": "NOT_READY",
+  "under_bar": [
+    "animation_vfx",
+    "cinematography"
+  ],
+  "over_bar": [],
+  "must_find": [],
+  "base": "good",
+  "drop": {
+    "animation_vfx": 1.0,
+    "cinematography": 1.0
+  }
+}

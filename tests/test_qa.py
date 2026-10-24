@@ -660,6 +660,89 @@ class StoryStage(unittest.TestCase):
         card = json.loads((self.root / "qa" / "pass-01" / "scorecard.json").read_text())
         self.assertFalse(any("satisfaction" in n for n in card["not_evidenced"]))
 
+    # AUTO-156: qa.json says whether the judge is the one the QA fixtures
+    # passed, and a line under the verdict says so; nothing reads it to gate.
+
+    def printed(self, **kw) -> list[str]:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            qa.run(self.args(**kw))
+        return out.getvalue().splitlines()
+
+    def judge_line(self, lines: list[str]) -> str:
+        i = next(n for n, line in enumerate(lines) if " — QA pass-" in line)
+        return lines[i + 1]
+
+    def calibrated(self, **report):
+        path = self.work / qa.CALIBRATION_QA / "report.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"passed": True, "model": "sonnet", "cases": [],
+                                    "fixture_set": qa.fixture_set_digest(qa.QA_FIXTURES)}
+                                   | report))
+
+    def test_qa_json_records_judge_calibration_false_without_report(self):
+        lines = self.printed()
+        record = json.loads((self.root / "qa.json").read_text())
+        calibration = record["judge_calibration"]
+        self.assertEqual(set(calibration), {"fixtures", "labelled", "model", "digest", "why"})
+        self.assertIs(calibration["fixtures"], False)
+        self.assertEqual(calibration["labelled"], 0)
+        self.assertEqual(calibration["model"], "sonnet")
+        self.assertEqual(calibration["digest"], qa.judge_digest("sonnet", record["house"]))
+        self.assertIn("calibration-qa", calibration["why"])
+        self.assertEqual(self.judge_line(lines),
+                         f"judge: not calibrated against the QA fixtures ({calibration['why']}); "
+                         "0 owner-labelled films")
+
+    def test_judge_calibration_false_on_model_mismatch(self):
+        self.run_qa()
+        house_digest = json.loads((self.root / "qa.json").read_text())["house"]
+        self.calibrated(model="opus", digest=qa.judge_digest("opus", house_digest))
+        lines = self.printed(model="sonnet")
+        calibration = json.loads((self.root / "qa.json").read_text())["judge_calibration"]
+        self.assertIs(calibration["fixtures"], False)
+        self.assertIn("opus", calibration["why"])
+        self.assertIn("opus", self.judge_line(lines))
+        # a report that did not pass, or another judge's digest, is not calibrated either
+        self.calibrated(passed=False, digest=qa.judge_digest("sonnet", house_digest))
+        self.run_qa()
+        self.assertIs(json.loads((self.root / "qa.json").read_text())
+                      ["judge_calibration"]["fixtures"], False)
+        self.calibrated(digest=qa.judge_digest("sonnet", {"block_sha256": "other rules"}))
+        self.run_qa()
+        self.assertIs(json.loads((self.root / "qa.json").read_text())
+                      ["judge_calibration"]["fixtures"], False)
+
+    def test_judge_calibration_true_when_report_matches(self):
+        self.run_qa()
+        house_digest = json.loads((self.root / "qa.json").read_text())["house"]
+        self.calibrated(digest=qa.judge_digest("sonnet", house_digest))
+        lines = self.printed()
+        calibration = json.loads((self.root / "qa.json").read_text())["judge_calibration"]
+        self.assertIs(calibration["fixtures"], True, calibration["why"])
+        self.assertEqual(calibration["labelled"], 0)
+        self.assertEqual(self.judge_line(lines),
+                         "judge: fixture-calibrated (sonnet); 0 owner-labelled films")
+
+    def test_verdict_strings_unchanged_by_calibration_label(self):
+        before = self.printed()
+        record = json.loads((self.root / "qa.json").read_text())
+        findings = (self.root / "qa" / "pass-01" / "findings.md").read_text()
+        self.calibrated(digest=qa.judge_digest("sonnet", record["house"]))
+        after = self.printed()
+        again = json.loads((self.root / "qa.json").read_text())
+        self.assertEqual(again["verdict"], record["verdict"])
+        self.assertIn(again["verdict"], (qa.READY, qa.NOT_READY))
+        self.assertEqual(again["reasons"], record["reasons"])
+        verdict_line = lambda lines: next(l for l in lines if " — QA pass-" in l)  # noqa: E731
+        self.assertEqual(verdict_line(after).split(": ", 1)[1],
+                         verdict_line(before).split(": ", 1)[1])
+        self.assertTrue(self.judge_line(before).startswith("judge: not calibrated"))
+        self.assertTrue(self.judge_line(after).startswith("judge: fixture-calibrated"))
+        for text in (findings, (self.root / "qa" / "pass-01" / "findings.md").read_text()):
+            self.assertNotIn("judge:", text)
+            self.assertNotIn("calibrat", text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -214,14 +214,14 @@ from collections import Counter
 from pathlib import Path
 
 from . import geometry as geo
-from . import framecheck, house, narrative, reach, spend, workspace
+from . import framecheck, house, narrative, spend, workspace
 from . import listen as listen_pass
 from .proofframes import (PROOF_DIFF, PROOF_LIMIT, mismatch_text,  # noqa: F401
                           proof_diff, proof_plan, ungraded)
 from . import render as render_stage
 from .build import EVEN_SHOTS, shots_from_scene  # noqa: F401  (standalone sampling)
 from .core import read_json, timecode, write_json
-from .harness import Harness, HarnessError, brief
+from .harness import Harness, HarnessError, _digest, brief
 from .script import SILENT as SILENT_LINE, Shot, spoken, visible_text
 from .sound import heard as sheet_heard
 from .voice import heard as takes_heard, words_estimated
@@ -866,16 +866,23 @@ def _spread_times(shots: list[dict], taken: list[float],
     if count >= len(pool):
         return pool
     runtime = max(float(s["at"]) + float(s["seconds"]) for s in shots)
-    times = [t for t, _ in pool]
-    out: list[tuple[float, dict]] = []
+    return [pool[k] for k in _even_steps([t for t, _ in pool], count, runtime)]
+
+
+def _even_steps(times: list[float], count: int, runtime: float) -> list[int]:
+    """The indices of `count` of the sorted `times`, one nearest each of
+    `count` even steps over `runtime`, in order, each later than the one
+    before: what `_spread_times` takes from its pool, and what a fixture
+    keeps of a pass's samples (`fixture_samples`). `count` < len(times)."""
+    out: list[int] = []
     lo = 0
     for j in range(count):
         target = runtime * (j + 0.5) / count
-        hi = len(pool) - (count - j)        # leave one for every step still to come
+        hi = len(times) - (count - j)       # leave one for every step still to come
         k = bisect.bisect_left(times, target, lo, hi + 1)
         if k > hi or (k > lo and target - times[k - 1] <= times[k] - target):
             k -= 1
-        out.append(pool[k])
+        out.append(k)
         lo = k + 1
     return out
 
@@ -3143,6 +3150,770 @@ def combine_samples(reviewer: Harness, pass_name: str, rows: list[dict], *,
             "gaps": chosen["gaps"]}
 
 
+# --------------------------------------------------------------------------- #
+# the review, as one seam (AUTO-156)
+# --------------------------------------------------------------------------- #
+#
+# What run() asks the reviewer, pulled out of it so the QA calibration set
+# (`calibrate`, below) is judged by the very code a pass is: the evidence
+# rows, the stages' measurements, the prompt and the scoring. run() calls
+# score_evidence; the prompts it sends and the inspections' names are what
+# they were before the extraction (test_qa_samples pins them to a golden).
+
+#: The contact sheet's file name in a pass.
+CONTACT_SHEET = "contact-sheet.png"
+
+
+def evidence_rows(samples: list[dict], script: dict, voice: dict | None, *, have: set,
+                  diagnostics: dict, mechanical: list[dict]) -> list[dict]:
+    """What the reviewer sees beside each frame: the shot it belongs to, the
+    line said there, the take, and what was measured of it (the still's
+    statistics, the burst's motion, the engine's diagnostics and the
+    mechanical findings already filed on its shot). `have` is the stills
+    that exist under frames/."""
+    voice = voice or {}
+    shots = {s.get("label"): s for sec in script.get("sections", [])
+             for s in sec.get("shots", [])}
+    takes = {t.get("label"): t for t in voice.get("takes", [])}
+    evidence = []
+    for row in samples:
+        shot = shots.get(row["label"], {})
+        take = takes.get(row["label"], {})
+        evidence.append({
+            "frame": row["frame"], "present": row["frame"] in have,
+            "timestamp": row["t"], "why_sampled": row["why"],
+            "shot": row["label"], "section": row["section"],
+            "visual": str(shot.get("visual", ""))[:300],
+            # Its role in the story and what its picture must demonstrate of
+            # its line (AUTO-90): the visual support narrative_clarity reads.
+            **{k: str(shot[k])[:300] for k in ("function", "shows") if shot.get(k)},
+            **super_fields(shot),
+            "narration": str(shot.get("narration", ""))[:300],
+            # The line said where this still was taken (AUTO-104), with the
+            # time it starts and the frame that shows that moment: is it on
+            # screen when it is said?
+            **({"lines": [{"at": ln.get("at"), "text": str(ln.get("text", ""))[:300],
+                           "frame": ln.get("frame", row["frame"])}
+                          for ln in row["lines"]]} if row.get("lines") else {}),
+            "drawn_by": row.get("asset", ""),
+            "take": {k: take.get(k) for k in ("seconds", "planned_seconds", "cps")
+                     if k in take},
+            # Measured, not judged: the still's statistics, the burst's motion
+            # numbers, what the engine said about this shot, and what the
+            # mechanical checks already filed for it.
+            "still": row.get("still"),
+            "burst": {"frames": (row.get("burst") or {}).get("frames"),
+                      "span_seconds": (row.get("burst") or {}).get("span"),
+                      "files": (row.get("burst") or {}).get("files")},
+            "motion": row.get("motion"),
+            "engine": diagnostics.get(row["label"]),
+            "mechanical": [f"[{f['severity']}] {f['kind']}: {f['problem']}"
+                           for f in mechanical if f["shot"] == row["label"]]})
+    return evidence
+
+
+def stage_measurements(build: dict, voice: dict | None, *, sound: dict, gate: dict | None,
+                       geometry: dict, styles: dict, reach: dict | None) -> dict:
+    """The measurements and decisions of the stages, as the reviewer is shown
+    them: the build's frame and findings, the narration, the cue sheet and
+    mix, the gate's triage, the geometry check (`geometry`, its report),
+    the treatment, and how far the authored documents reach into the engine
+    (`reach`, vfx.json's `reach`, or None without one)."""
+    from . import reach as reach_audit       # the parameter is the record
+    voice, sound, styles = voice or {}, sound or {}, styles or {}
+    cues_near = [{"at": c.get("at"), "seconds": c.get("seconds"), "kind": c.get("kind"),
+                  "level": c.get("level"), "motif": c.get("motif")}
+                 for c in sound.get("cues", [])][:80]
+    return {
+        "runtime": build.get("scene", {}).get("duration"),
+        "frame": {k: build.get("scene", {}).get(k) for k in ("width", "height", "fps")},
+        "layers": build.get("layers"), "placeholders": build.get("placeholders"),
+        "legibility": build.get("legibility"), "stale_takes": build.get("stale_takes"),
+        "editorial": build.get("editorial"), "findings": build.get("findings"),
+        "narration": narration_measurements(voice),
+        "sound_cues": cues_near, "mix": sound.get("mix"),
+        "gate": (gate or {}).get("triage"),
+        "geometry": {k: (geometry or {}).get(k) for k in
+                     ("status", "why", "evaluated", "worst", "floating", "reads_merged")},
+        "treatment": (styles.get("styles") or [{}])[0] if isinstance(
+            styles.get("styles"), list) else styles.get("treatment"),
+        # How far the authored documents reach into the engine, per `yt vfx`:
+        # a weak-motion finding can name the construct that was left unused.
+        "reach": reach_audit.summary(reach),
+    }
+
+
+def review_prompt(*, title: str, pass_name: str, sheet_name: str, has_narration: bool,
+                  missing: list[str], total_shots: int, dropped_lines: list[dict],
+                  narrated_total: int, story: dict | None, evidence: list[dict],
+                  mechanical: list[dict], listening: list[dict], unheard: dict,
+                  silent_film: bool, measurements: dict, blockers: list[str],
+                  extra_briefs=()) -> str:
+    """The scorecard's prompt, before each sample's category order is added.
+    `extra_briefs` are the listener's and the watcher's text (`--listen`,
+    `--watch`), placed after the measurements."""
+    return "\n\n".join([
+        f"Review {pass_name} of \"{title}\". Read `{sheet_name}` first "
+        "(every still tiled in time order with its timestamp), then every PNG "
+        "directly under `frames/` (each is one still of the rendered composition "
+        "at the timestamp in its name), judge each against the shot it belongs "
+        "to and the bands (supers in the top 21%, stage in the middle, captions "
+        "in the bottom 24%), then score the ten categories against the whole "
+        "runtime and file the scorecard. Motion is evidenced by the burst under "
+        f"`frames/burst/` (up to {BURST_MAX_FRAMES} consecutive frames over "
+        f"{BURST_SECONDS:g}s around each still, which is the middle one) and "
+        "summarised beside each frame as `motion.steps`, the mean absolute "
+        "difference between consecutive frames, and `motion.total`, first frame "
+        "against last: both near zero is frozen, one step far above the rest is "
+        "a jump; read the burst frames themselves only where those numbers or "
+        "the still call for it. A frame sampled where a line of the narration "
+        "starts (`why_sampled` has `line: ...`) carries that line under `lines` "
+        "with the time it starts and `frame`, the file under `frames/` that shows "
+        "that moment: the still itself, or the burst frame when the line starts "
+        "a few frames from the still. Judge from that file whether the picture "
+        "shows what the line says at the moment it is said; a picture that does "
+        "not is a finding on its shot. The "
+        "mechanical findings are measured, not judged: do not repeat them as "
+        "your own, but score as if they stand, because they do. Blocking items "
+        "already proven by the manifests are listed; add what the frames show."
+        + (" " + unseen_brief(missing, total_shots) if missing else "")
+        + (" " + unseen_lines_brief(dropped_lines, narrated_total)
+           if dropped_lines else ""),
+        (f"Read `{NARRATION}` too: the whole narration, one shot a line with its "
+         "time on the film. Judge narrative_clarity and editing_pacing on the film "
+         "as told: can the explanation be followed by ear alone, from the "
+         "narration, and by eye alone, from the frames? It should need both "
+         "(attention 23): frames that repeat the narration as text, or narration "
+         "the pictures add nothing to, count against narrative_clarity. "
+         if has_narration else
+         "There is no narration to read; judge the story from the frames. ")
+        + "The screenplay's story below is what the writer declared, context and "
+        "not evidence: judge whether the film delivers it. Then fill `story`: "
+        "restate the premise in one sentence as the film made it, say for each "
+        "section what the viewer has at its end that they lacked at its start "
+        "(structure 20: one line for every section of the screenplay, none blank; "
+        "where a section leaves the viewer nothing new, the line says so), and predict how satisfied a viewer who watched to the "
+        "end would say they were, with why. That prediction is recorded for "
+        "calibration and scores nothing (judging 4). A finding on the story "
+        f"itself ({', '.join(STORY_DUTY)}) is owned by `script`; a picture that "
+        "does not show what its line says is owned by whoever draws it.",
+        brief("The screenplay's story, as the plan declared it", story)
+        if story else "The screenplay declares no story fields (written before them).",
+        brief("Frames and what each should show", evidence),
+        brief("Mechanical findings, measured before this review (a blocking one "
+              f"caps {' and '.join(CAPPED)} at {MECHANICAL_CAP:g})", mechanical),
+        brief("Listening evidence: the reviews that heard the film's sound, each "
+              "marked with what it heard (`heard`) and whether that is what the film "
+              "carries (`current`); what a stale or absent one said is left out and "
+              "`why` says what is missing", listening),
+        (f"No current listening review covers {', '.join(unheard)}: do not score "
+         f"{'it' if len(unheard) == 1 else 'them'} (enter 0; the number is discarded "
+         "and each is recorded not evidenced), leave them out of `overall` (it is "
+         "recomputed as the mean of the categories you score), and file no finding on "
+         "how they sound, since nothing heard them."
+         if unheard else
+         f"Every one of {', '.join(k for k in AUDIO if k not in SILENT or not silent_film)} "
+         "has a current listening review: score it from what that review heard, "
+         "with the measurements as context only."),
+        brief("Measurements and decisions from the stages", measurements),
+        *extra_briefs,
+        brief("Blocking, already proven", blockers),
+        brief("Each finding's owner is exactly one of these; one you cannot place is "
+              "`external`, with the reason in `fix`", {o: DUTIES[o] for o in OWNERS}),
+        # Nothing of the previous pass (AUTO-106): shown its scores, the
+        # reviewer filed them again. compare() takes the deltas from the
+        # two scorecards once this one exists, and --recheck puts the
+        # previous findings to a decision of their own after the scoring.
+    ])
+
+
+def score_evidence(reviewer: Harness, pass_dir: Path, *, title: str, build: dict,
+                   script: dict, voice: dict | None, samples: list[dict], frames_dir: Path,
+                   listening: list[dict], mechanical: list[dict], diagnostics: dict,
+                   measurements: dict, blockers: list[str], extra_briefs=(),
+                   watched: bool = False, quiet: bool = True,
+                   readings: list | None = None) -> dict:
+    """The review of one pass's evidence: the raw combined scorecard of
+    QA_SAMPLES readings, before any rule (score_silence, score_unheard,
+    cap_scores) or bar is applied.
+
+    `samples` are measured (`measure`). The pass's narration.txt is written
+    from the files when it is missing, and so is its contact sheet; then the
+    evidence rows, the story brief and what went unsampled make the prompt,
+    the samples are asked (`ask_samples`) and combined (`combine_samples`),
+    and a story line still missing is named under not_evidenced. `readings`,
+    when given, is extended with the samples' rows (the watch's merge reads
+    them)."""
+    pass_dir, frames_dir, voice = Path(pass_dir), Path(frames_dir), voice or {}
+    narration_file = pass_dir / NARRATION
+    if not narration_file.is_file():
+        said = narration_text(script, build, voice)
+        if said:
+            narration_file.write_text(said, encoding="utf-8")
+    sheet = pass_dir / CONTACT_SHEET
+    if not sheet.is_file():
+        contact_sheet(samples, frames_dir, sheet)
+    have = {p.name for p in frames_dir.glob("*.png")} if frames_dir.is_dir() else set()
+    evidence = evidence_rows(samples, script, voice, have=have, diagnostics=diagnostics,
+                             mechanical=mechanical)
+    story = story_brief(script, build)
+    # What a --frames below the shot count (or past the default) left
+    # unseen is said to the reviewer before it scores, and in the scorecard;
+    # and which narrated lines no still shows where they start (AUTO-104).
+    missing = unsampled(build, samples)
+    dropped_lines = lines_unsampled(build, voice, samples)
+    unheard = audio_unheard(listening, silent=silent(build))
+    prompt = review_prompt(
+        title=title, pass_name=pass_dir.name, sheet_name=sheet.name,
+        has_narration=narration_file.is_file(), missing=missing,
+        total_shots=len(build.get("shots", [])), dropped_lines=dropped_lines,
+        narrated_total=len(narrated_lines(build, voice)), story=story, evidence=evidence,
+        mechanical=mechanical, listening=listening, unheard=unheard,
+        silent_film=silent(build), measurements=measurements, blockers=blockers,
+        extra_briefs=extra_briefs)
+    # QA_SAMPLES readings of the same evidence (AUTO-107): one reading's
+    # noise is the size of the steps read as progress. structure 20 is
+    # checked past the schema in each (one non-blank line per screenplay
+    # section, asked once more); what still lacks a line is named under
+    # not_evidenced, never filled in.
+    rows = ask_samples(reviewer, pass_dir, prompt, script, quiet=quiet,
+                       **({"watched": True} if watched else {}))
+    if readings is not None:
+        readings.extend(rows)
+    card = combine_samples(reviewer, pass_dir.name, rows, unheard=unheard)
+    gaps = card.pop("gaps")
+    if gaps:
+        card["not_evidenced"] = list(card.get("not_evidenced") or []) + [
+            f"story.sections (structure 20): {'; '.join(gaps)}, asked once more"]
+    return card
+
+
+# --------------------------------------------------------------------------- #
+# calibrating the judge on fixture films (AUTO-156)
+# --------------------------------------------------------------------------- #
+#
+# The bar reads the medians of an LLM judge's scores; nothing showed that
+# those scores tell a good film from a bad one. tests/fixtures/qa/ holds
+# labelled films, each case exactly what score_evidence reads (build.json,
+# script.json, voice.json, samples.json, frames/ and frames/burst/) and an
+# expected.json; `calibrate` scores every case through score_evidence and
+# judges the raw card (`judge_case`), with no cap, no mechanical blocker and
+# no silence rule, since what is calibrated is the judge and not the rules
+# after it. `yt qa` then records whether its READY came from a judge that
+# passed this set (`judge_calibration` in qa.json). The label gates nothing.
+
+#: Under the work directory: one folder per case (named by `case_key`, never
+#: by the case: the judge's working directory must not say "placeholder")
+#: holding its manifests, its pass and its cached decisions, and the report.
+#: <work>/calibration/ is narrative.calibrate's and is never written here.
+CALIBRATION_QA, CALIBRATION_REPORT = "calibration-qa", "report.json"
+#: A fixture case: at most this many samples, each burst trimmed to its
+#: first, middle and last frame, every PNG at most the contact-sheet tile's
+#: width; and the sizes the committed set is held to (test_qa_calibrate).
+#: TO VERIFY: the sizes of a real capture against these budgets.
+FIXTURE_SAMPLES = 8
+FIXTURE_WIDTH = SHEET_TILE[0]
+FIXTURE_CASE_BYTES, FIXTURE_TREE_BYTES = 600_000, 5_000_000
+#: The files of a case read as the project's, beside its pass.
+FIXTURE_INPUTS = ("build.json", "script.json", "voice.json")
+#: expected.json's verdict words, and the strings the bar uses for them.
+EXPECTED_VERDICTS = {"READY": READY, "NOT_READY": NOT_READY}
+#: What `python -m ytstudio.qa calibrate` may spend before it reads no
+#: further case: 8 cases of QA_SAMPLES readings at spend.QA_SAMPLE_USD, with
+#: the merges and room to spare. TO VERIFY: one live run's cost.
+CALIBRATE_QA_BUDGET_USD = 20.0
+#: The fixture set the repo ships: a report counts as calibration only for
+#: the set it ran (`fixture_set_digest`), so one easy case, or a set that
+#: has since gained a case, is not this one.
+QA_FIXTURES = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "qa"
+
+
+def case_key(name: str) -> str:
+    """A case's folder name under <work>/calibration-qa/: stable, so its
+    decisions are found again, and saying nothing of what the case seeds."""
+    return "case-" + hashlib.sha256(str(name).encode("utf-8")).hexdigest()[:10]
+
+
+def case_dir(work, name: str) -> Path:
+    return Path(work) / CALIBRATION_QA / case_key(name)
+
+
+def load_case(path) -> dict:
+    """One fixture case, read with the readers `yt qa` uses: {name, dir,
+    build, script, voice (None without voice.json), samples, expected}. A
+    missing file, or a still or burst frame samples.json names that is not
+    there, is a ValueError naming its path."""
+    path = Path(path)
+    for name in ("expected.json", "build.json", "script.json", "samples.json"):
+        if not (path / name).is_file():
+            raise ValueError(f"{path / name}: missing from the case")
+    expected = read_json(path / "expected.json", warn=False)
+    build = read_json(path / "build.json", warn=False)
+    script = read_json(path / "script.json", warn=False)
+    samples = read_json(path / "samples.json", warn=False, shape=list)
+    voice = read_json(path / "voice.json", warn=False) if (path / "voice.json").is_file() \
+        else None
+    for name, data in (("expected.json", expected), ("build.json", build),
+                       ("script.json", script), ("samples.json", samples)):
+        if not data:
+            raise ValueError(f"{path / name}: unreadable or empty")
+    named = set()
+    for row in samples:
+        for name in [row.get("frame", ""), *((row.get("burst") or {}).get("files") or [])]:
+            if not (path / "frames" / name).is_file():
+                raise ValueError(f"{path / 'frames' / name}: named in samples.json, missing")
+            named.add(Path(name).as_posix())
+    # The judge reads every PNG under frames/: one no sample names (a
+    # stand-in's still a capture left behind) would be judged as the film.
+    for png in sorted((path / "frames").rglob("*.png")):
+        if png.relative_to(path / "frames").as_posix() not in named:
+            raise ValueError(f"{png}: under frames/ but named by no sample in samples.json")
+    return {"name": path.name, "dir": path, "build": build, "script": script,
+            "voice": voice, "samples": samples, "expected": expected}
+
+
+def _agreed(finding) -> bool:
+    """A finding two readings filed. combine_samples keeps one reading's
+    findings among the kept ones when its merge fails (samples=[k]); the
+    calibration counts only what two agreed on."""
+    return isinstance(finding, dict) and len(finding.get("samples") or []) >= 2
+
+
+def judge_verdict(card: dict) -> tuple[str, list[str]]:
+    """The bar applied to the judge alone: the side categories' medians
+    (SIDE_CATEGORIES, what a still can show), their mean as the overall,
+    and as blocking the judge's own two-sample `blocking` claims and the
+    kept findings it called blocking. The audio categories are left out, so
+    a fixture with no listening review is not NOT READY for that, and
+    nothing mechanical is read: no cap, no blocker, no silence rule."""
+    if card.get("verdict") == NOT_EVIDENCED:
+        return NOT_EVIDENCED, ["fewer than two scoring samples answered"]
+    scores = card.get("scores") or {}
+    side = {k: _number(scores.get(k)) for k in SIDE_CATEGORIES}
+    scored = [v for v in side.values() if v is not None]
+    overall = round(sum(scored) / len(scored), 2) if scored else 0.0
+    reasons = []
+    if overall < OVERALL_BAR:
+        reasons.append(f"overall {overall:.1f} is under {OVERALL_BAR}")
+    for key, value in side.items():
+        if value is None:
+            reasons.append(f"{key} was not scored")
+        elif value < CATEGORY_BAR:
+            reasons.append(f"{key} {value:.1f} is under {CATEGORY_BAR}")
+    blocking = [str(b) for b in card.get("blocking") or []] + [
+        f"{f.get('problem')} at {f.get('timestamp')}s" for f in card.get("findings") or []
+        if _agreed(f) and f.get("severity") == "blocking"]
+    if blocking:
+        reasons.append(f"{len(blocking)} blocking item(s)")
+    return (READY if not reasons else NOT_READY), reasons
+
+
+def judge_case(expected: dict, card: dict, base_card: dict | None = None) -> list[str]:
+    """What the judge got wrong on one case, as failures ([] when it passed).
+
+    `card` is the raw combined card after score_unheard. The case passes
+    when the judge's verdict (`judge_verdict`) is the expected one, every
+    under_bar category is under CATEGORY_BAR and every over_bar one at or
+    over it, each must_find has a kept finding (two samples agreed on it; a
+    low-confidence one does not count) whose timestamp is inside its
+    t_range and, when owners are named, whose owner is one of them, and each
+    `drop` category's median is at least that far under the base case's
+    (`base_card`, scored in the same run). A card whose findings merge
+    failed fails too: its findings and blocking claims are every reading's,
+    unmerged, so what two readings agree on cannot be told."""
+    failures = []
+    merge = ((card.get("scoring") or {}).get("merge") or {})
+    if merge.get("failed"):
+        failures.append(f"merge: the readings' findings could not be merged "
+                        f"({merge['failed']}); nothing two readings agree on can be told")
+    want = EXPECTED_VERDICTS.get(str(expected.get("verdict")), expected.get("verdict"))
+    got, _ = judge_verdict(card)
+    if got != want:
+        failures.append(f"verdict: expected {want}, the judge gave {got}")
+    scores = card.get("scores") or {}
+    for key in expected.get("under_bar") or []:
+        value = _number(scores.get(key))
+        if value is None or value >= CATEGORY_BAR:
+            failures.append(f"under_bar: {key} scored "
+                            f"{'nothing' if value is None else f'{value:g}'}, not under "
+                            f"{CATEGORY_BAR}")
+    for key in expected.get("over_bar") or []:
+        value = _number(scores.get(key))
+        if value is None or value < CATEGORY_BAR:
+            failures.append(f"over_bar: {key} scored "
+                            f"{'nothing' if value is None else f'{value:g}'}, under "
+                            f"{CATEGORY_BAR}")
+    kept = [f for f in card.get("findings") or [] if _agreed(f)]
+    for need in expected.get("must_find") or []:
+        a, b = (float(x) for x in need["t_range"])
+        owners = list(need.get("owners") or [])
+        hit = any(a <= (_number(f.get("timestamp")) if _number(f.get("timestamp")) is not None
+                        else -1.0) <= b and (not owners or f.get("owner") in owners)
+                  for f in kept)
+        if not hit:
+            failures.append(f"must_find: no finding two samples agree on in {a:g}-{b:g}s"
+                            + (f" owned by {' or '.join(owners)}" if owners else ""))
+    drop = expected.get("drop") or {}
+    if drop and base_card is None:
+        failures.append(f"drop: the base case {expected.get('base')} was not scored, so "
+                        "nothing can be compared with it")
+    elif drop:
+        base_scores = base_card.get("scores") or {}
+        for key, amount in drop.items():
+            mine, theirs = _number(scores.get(key)), _number(base_scores.get(key))
+            if mine is None or theirs is None or theirs - mine < float(amount):
+                failures.append(f"drop: {key} {mine if mine is not None else 'unscored'} is "
+                                f"not {float(amount):g} under the base case "
+                                f"{expected.get('base')}'s "
+                                f"{theirs if theirs is not None else 'unscored'}")
+    return failures
+
+
+#: The fixed inputs of review_prompt that judge_digest covers: no film's
+#: narration, samples or numbers, so only the template text of the prompt
+#: is in the digest. Every audio category is unheard, as in a calibration
+#: run, which carries no listening review.
+PROBE = {"title": "", "pass_name": "pass-01", "sheet_name": CONTACT_SHEET,
+         "has_narration": True, "missing": [], "total_shots": 0, "dropped_lines": [],
+         "narrated_total": 0, "story": None, "evidence": [], "mechanical": [],
+         "listening": [], "unheard": {k: {"missing": "", "command": ""} for k in AUDIO},
+         "silent_film": False, "measurements": {}, "blockers": []}
+
+
+# The re-run rule. The judge is what this digest covers: its role, the
+# categories and the bar, the scorecard and merge schemas, how many samples
+# and in which orders, the prompt's template (review_prompt on PROBE), the
+# model and the house rules it is handed. Any card that edits ROLE,
+# CATEGORIES, the scorecard schema or review_prompt changes it, and qa.json's
+# `judge_calibration.fixtures` is false until `python -m ytstudio.qa
+# calibrate` is run again. AUTO-141, AUTO-145, AUTO-146 and AUTO-148 do this,
+# and each must add or adjust a fixture case for the category it changes.
+def judge_digest(model: str, house_digest) -> str:
+    """What the QA judge is, as one digest: a calibration report carries it,
+    and a pass whose judge has another is not the one calibrated. The house
+    rules count by the block the judge is handed (`block_sha256`), not by
+    where the files were found."""
+    block = (house_digest.get("block_sha256") if isinstance(house_digest, dict)
+             else house_digest)
+    return _digest(ROLE, ROLE_LISTENED, scorecard_schema(False), scorecard_schema(True),
+                   MERGE_SCHEMA, CATEGORIES, OVERALL_BAR, CATEGORY_BAR, QA_SAMPLES,
+                   [category_order(k) for k in range(1, QA_SAMPLES + 1)],
+                   review_prompt(**PROBE), model, block or "")
+
+
+def fixture_set_digest(directory) -> str:
+    """What a fixture set is, as one digest: every case's name and the bytes
+    of every file in it (expected.json, the manifests, samples.json, the
+    frames). A report records the set it ran; a set with a case more or
+    less, a relabelled case or a recaptured film is another set."""
+    directory = Path(directory)
+    if not directory.is_dir():
+        return ""
+    rows = []
+    for case in sorted(p for p in directory.iterdir()
+                       if p.is_dir() and (p / "expected.json").is_file()):
+        for file in sorted(f for f in case.rglob("*") if f.is_file()):
+            rows.append([file.relative_to(directory).as_posix(),
+                         hashlib.sha256(file.read_bytes()).hexdigest()])
+    return _digest(rows)
+
+
+def judge_calibration(work, model: str, house_digest, *, listened: bool = False,
+                      watched: bool = False, fixtures_dir=None) -> dict:
+    """qa.json's `judge_calibration`: whether this pass's judge is the one
+    the QA fixtures last passed. `fixtures` is true only when the pass
+    asked the unheard, unwatched judge calibrate runs (ROLE, no listener's
+    or watcher's brief: a `--listen` pass is ROLE_LISTENED with audio
+    scored, a `--watch` pass another schema), and
+    <work>/calibration-qa/report.json exists, passed, was made at this
+    pass's model, carries this judge's digest and ran the shipped fixture
+    set (`fixtures_dir`, default QA_FIXTURES, by `fixture_set_digest`).
+    `labelled` is how many owner-labelled films back it: none yet.
+    Informational: nothing reads it to gate READY, doctor or improve."""
+    path = Path(work) / CALIBRATION_QA / CALIBRATION_REPORT
+    want = judge_digest(model, house_digest)
+    shipped = Path(fixtures_dir) if fixtures_dir is not None else QA_FIXTURES
+    report = read_json(path, warn=False)
+    asked = [word for word, on in (("listened", listened), ("watched", watched)) if on]
+    if asked:
+        why = (f"a {' and '.join(asked)} pass: the QA fixtures calibrate the unheard, "
+               "unwatched judge only")
+    elif not isinstance(report, dict):
+        why = (f"no {path}; run python -m ytstudio.qa calibrate tests/fixtures/qa "
+               f"--model {model} --work {work}")
+    elif not report.get("passed"):
+        why = f"the last calibration ({path}) did not pass"
+    elif report.get("model") != model:
+        why = (f"the fixtures were calibrated at {report.get('model')}, and this pass "
+               f"scores at {model}")
+    elif report.get("digest") != want:
+        why = ("the judge has changed since the fixtures were calibrated (its role, "
+               "categories, schema, prompt or house rules); run calibrate again")
+    elif not report.get("fixture_set") or report.get("fixture_set") != fixture_set_digest(
+            shipped):
+        why = (f"the calibration ran another fixture set than {shipped} (a case added, "
+               "dropped, relabelled or recaptured since); run calibrate on it again")
+    else:
+        why = ""
+    return {"fixtures": not why, "labelled": 0, "model": model, "digest": want,
+            "why": why or f"{path} passed at {model} with this judge"}
+
+
+def judge_line(calibration: dict) -> str:
+    """The line `yt qa` prints under its verdict line."""
+    films = f"{int(calibration.get('labelled') or 0)} owner-labelled films"
+    if calibration.get("fixtures"):
+        return f"judge: fixture-calibrated ({calibration.get('model')}); {films}"
+    return (f"judge: not calibrated against the QA fixtures ({calibration.get('why')}); "
+            f"{films}")
+
+
+def _case_title(script: dict, build: dict) -> str:
+    """The title the judge is told: the film's, never the case's name."""
+    idea = (script or {}).get("idea") if isinstance((script or {}).get("idea"), dict) else {}
+    return str(idea.get("title") or (build or {}).get("title") or "the film")
+
+
+def calibrate(directory, *, work, model: str = "sonnet", budget_usd: float | None = None,
+              fresh: bool = False, verbose: bool = True) -> dict:
+    """Score every case under `directory` with the QA judge and compare each
+    raw card with its expected.json (`judge_case`).
+
+    Per case, its frames and samples.json are copied into
+    <work>/calibration-qa/<key>/qa/pass-01/ and its manifests beside that
+    pass, as a project's are; the samples are measured, the mechanical
+    findings filed (they reach the prompt, as in run(), and are recorded,
+    never judged), and score_evidence asks the QA_SAMPLES readings on a
+    harness rooted there (decisions cached under it, so a second run pays
+    for nothing that did not change), with no listening review, no engine
+    diagnostics and no blockers; then score_unheard. Every case is scored
+    before any is judged, so a case's `base` is read from the same run.
+    Once `budget_usd` is spent no further case is read, and an unread case
+    fails. The set passes when every case does and at least one case is
+    labelled by the owner (`label: owner`): a set of drawn stand-ins says
+    the judge separates drawings, not films. The report is written to
+    <work>/calibration-qa/report.json."""
+    directory, work = Path(directory), Path(work)
+    # The judge's cwd is under <work>/calibration-qa/, beside report.json,
+    # which maps each case folder to its labels: the last report goes before
+    # any case is scored, so a judge reading past its cwd finds no answers.
+    (work / CALIBRATION_QA / CALIBRATION_REPORT).unlink(missing_ok=True)
+    rules = house.load(work)
+    block, digest = rules.for_stage("qa"), rules.digest("qa")
+    names = sorted(p.name for p in directory.iterdir()
+                   if p.is_dir() and (p / "expected.json").is_file())
+    rows, cards, reviewers = [], {}, []
+
+    def spent_usd() -> float:
+        return sum(float(r.report()["cost_usd"]) for r in reviewers)
+
+    for name in names:
+        row = {"name": name, "dir": case_key(name), "judge_only": None, "expected": None,
+               "got": None, "mechanical": [], "ran": False, "passed": False, "failures": []}
+        rows.append(row)
+        try:
+            case = load_case(directory / name)
+        except ValueError as exc:
+            row["failures"] = [f"unreadable: {exc}"]
+            continue
+        expected = case["expected"]
+        row.update(expected=expected, judge_only=bool(expected.get("judge_only")))
+        if budget_usd is not None and spent_usd() >= budget_usd:
+            row["failures"] = [f"not read: the budget of ${budget_usd:g} was spent"]
+            continue
+        row["ran"] = True
+        root = case_dir(work, name)
+        pass_dir = root / QA_DIR / "pass-01"
+        if pass_dir.exists():
+            shutil.rmtree(pass_dir)        # the same evidence every run: the cache holds
+        pass_dir.mkdir(parents=True)
+        for file in FIXTURE_INPUTS:
+            (root / file).unlink(missing_ok=True)
+            if (case["dir"] / file).is_file():
+                shutil.copyfile(case["dir"] / file, root / file)
+        shutil.copytree(case["dir"] / "frames", pass_dir / "frames")
+        build, script, voice = case["build"], case["script"], case["voice"]
+        samples = measure(copy.deepcopy(case["samples"]), pass_dir / "frames")
+        write_json(pass_dir / "samples.json", samples)
+        mechanical = mechanical_findings(samples)
+        reviewer = Harness(root, "qa", model=model, role=ROLE, house=block,
+                           house_digest=digest, fresh=fresh, verbose=verbose, timeout=1800.0)
+        reviewers.append(reviewer)
+        card = score_evidence(
+            reviewer, pass_dir, title=_case_title(script, build), build=build, script=script,
+            voice=voice, samples=samples, frames_dir=pass_dir / "frames", listening=[],
+            mechanical=mechanical, diagnostics={}, blockers=[], quiet=not verbose,
+            measurements=stage_measurements(build, voice, sound={}, gate=None, geometry={},
+                                            styles={}, reach=None))
+        card = score_unheard(card, audio_unheard([], silent=silent(build)))
+        cards[name] = card
+        row["mechanical"] = mechanical
+        row["got"] = {"verdict": judge_verdict(card)[0], "scores": card.get("scores"),
+                      "spread": card.get("spread"), "findings": card.get("findings") or [],
+                      "low_confidence": card.get("low_confidence") or [],
+                      "blocking": card.get("blocking") or []}
+    false_positive: Counter = Counter()
+    false_negative: Counter = Counter()
+    for row in rows:
+        if not row["ran"]:
+            continue
+        expected = row["expected"]
+        base = cards.get(expected["base"]) if expected.get("base") else None
+        row["failures"] = judge_case(expected, cards[row["name"]], base)
+        row["passed"] = not row["failures"]
+        scores = row["got"]["scores"] or {}
+        for key in expected.get("over_bar") or []:
+            value = _number(scores.get(key))
+            if value is None or value < CATEGORY_BAR:
+                false_positive[key] += 1
+        for key in expected.get("under_bar") or []:
+            value = _number(scores.get(key))
+            if value is not None and value >= CATEGORY_BAR:
+                false_negative[key] += 1
+    failures = []
+    if not any((r["expected"] or {}).get("label") == "owner" for r in rows):
+        failures.append("no case is labelled by the owner: the good cases are drawn "
+                        "stand-ins until a real film is captured (`python -m ytstudio.qa "
+                        "capture-fixture`) and labelled, so passing them says the judge "
+                        "separates drawings, not films")
+    report = {"directory": str(directory), "model": model,
+              "digest": judge_digest(model, digest), "house": digest,
+              "fixture_set": fixture_set_digest(directory), "cases": rows,
+              "false_positive": dict(sorted(false_positive.items())),
+              "false_negative": dict(sorted(false_negative.items())),
+              "failures": failures,
+              "passed": bool(rows) and all(r["passed"] for r in rows) and not failures,
+              "cost_usd": round(spent_usd(), 4)}
+    write_json(work / CALIBRATION_QA / CALIBRATION_REPORT, report)
+    return report
+
+
+def calibration_lines(report: dict) -> list[str]:
+    """The calibration as the operator reads it: one row per case (expected
+    and got verdict, the under- and over-bar categories the judge missed,
+    the must_find it missed, the result), the false positives and negatives
+    per category, and the set's result."""
+    rows = report.get("cases") or []
+    width = max([len("case")] + [len(r["name"]) for r in rows]) + 2
+    out = ["case".ljust(width) + "expected".ljust(18) + "got".ljust(18) + "result"]
+    for r in rows:
+        want = (r.get("expected") or {}).get("verdict") or "-"
+        got = (r.get("got") or {}).get("verdict") or "-"
+        result = "pass" if r.get("passed") else "fail" if r.get("ran") else "not run"
+        failures = r.get("failures") or []
+        missed = {kind: [f.split(": ", 1)[1].split(" ", 1)[0] for f in failures
+                         if f.startswith(kind + ":")] for kind in ("under_bar", "over_bar")}
+        found = [f.split(": ", 1)[1] for f in failures if f.startswith("must_find:")]
+        notes = "; ".join(
+            [f"missed under bar: {', '.join(missed['under_bar'])}"] * bool(missed["under_bar"])
+            + [f"missed over bar: {', '.join(missed['over_bar'])}"] * bool(missed["over_bar"])
+            + [f"missed {len(found)} must_find"] * bool(found))
+        out.append(r["name"].ljust(width) + str(want).ljust(18) + str(got).ljust(18) + result
+                   + (f"  ({notes})" if notes else ""))
+        out += [f"    - {line}" for line in failures]
+    fp, fn = report.get("false_positive") or {}, report.get("false_negative") or {}
+    out.append("false positives (an over-bar category scored under the bar): "
+               + (", ".join(f"{k} {n}" for k, n in fp.items()) or "none"))
+    out.append("false negatives (an under-bar category scored at or over the bar): "
+               + (", ".join(f"{k} {n}" for k, n in fn.items()) or "none"))
+    out += [f"set: {line}" for line in report.get("failures") or []]
+    out.append(f"{'passed' if report.get('passed') else 'not passed'} at "
+               f"{report.get('model')}; spent ${float(report.get('cost_usd') or 0):.2f}")
+    return out
+
+
+def fixture_samples(samples: list[dict], build: dict | None = None,
+                    keep: int = FIXTURE_SAMPLES) -> list[dict]:
+    """A real pass's samples cut down to a fixture: at most `keep`, chosen
+    over the runtime by the even steps `_spread_times` takes (`_even_steps`),
+    each burst trimmed to its first, middle (the still's frame) and last
+    file, `frames` and `times` rewritten to match, a line whose frame was
+    trimmed shown by the still, and the measurements dropped (calibrate
+    measures again)."""
+    rows = sorted((copy.deepcopy(r) for r in samples), key=lambda r: float(r["t"]))
+    if len(rows) > keep:
+        shots = (build or {}).get("shots") or []
+        runtime = max([float(s["at"]) + float(s.get("seconds") or 0) for s in shots]
+                      + [float(r["t"]) for r in rows])
+        rows = [rows[k] for k in _even_steps([float(r["t"]) for r in rows], keep, runtime)]
+    for row in rows:
+        row.pop("still", None)
+        row.pop("motion", None)
+        burst = row.get("burst") or {}
+        files, frames = list(burst.get("files") or []), list(burst.get("frames") or [])
+        if len(files) > 3:
+            mid = (frames.index(burst["still_frame"])
+                   if burst.get("still_frame") in frames and len(frames) == len(files)
+                   else len(files) // 2)
+            pick = sorted({0, mid, len(files) - 1})
+            burst["files"] = [files[i] for i in pick]
+            if len(frames) == len(files):
+                burst["frames"] = [frames[i] for i in pick]
+                times = burst.get("times") or []
+                if len(times) == len(files):
+                    burst["times"] = [times[i] for i in pick]
+        kept = set(burst.get("files") or []) | {row["frame"]}
+        for line in row.get("lines") or []:
+            if line.get("frame") not in kept:
+                line["frame"] = row["frame"]
+    return rows
+
+
+def fixture_png(src: Path, dst: Path) -> int:
+    """One frame as a fixture keeps it: RGB, at most FIXTURE_WIDTH wide
+    (the contact-sheet tile), saved optimized. Returns its size in bytes."""
+    from PIL import Image
+    with Image.open(src) as im:
+        frame = im.convert("RGB")
+    if frame.width > FIXTURE_WIDTH:
+        frame = frame.resize((FIXTURE_WIDTH, max(1, round(frame.height * FIXTURE_WIDTH
+                                                          / frame.width))), Image.LANCZOS)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    frame.save(dst, optimize=True)
+    return dst.stat().st_size
+
+
+def capture_fixture(pass_dir, case_dir) -> dict:
+    """A fixture case from one real `yt qa` pass of one of the owner's own
+    films: the project's build.json, script.json and voice.json (when it
+    has one), the pass's samples cut down (`fixture_samples`) and the frames
+    they name downscaled (`fixture_png`). Whatever else the case directory
+    held is removed first, but for expected.json, which is never written:
+    the owner labels the case. A frame the pass lacks is a ValueError."""
+    pass_dir, case = Path(pass_dir), Path(case_dir)
+    project = pass_dir.parent.parent
+    samples = read_json(pass_dir / "samples.json", warn=False, shape=list)
+    if not samples:
+        raise ValueError(f"{pass_dir / 'samples.json'}: missing or empty")
+    for name in ("build.json", "script.json"):
+        if not (project / name).is_file():
+            raise ValueError(f"{project / name}: missing; capture a pass inside its project")
+    build = read_json(project / "build.json", warn=False) or {}
+    kept = fixture_samples(samples, build)
+    case.mkdir(parents=True, exist_ok=True)
+    # A case captured into one in use (the drawn stand-in in
+    # tests/fixtures/qa/good) keeps nothing of it but expected.json, the
+    # label the owner edits: a stale still would be judged as this film's.
+    if (case / "frames").exists():
+        shutil.rmtree(case / "frames")
+    for name in (*FIXTURE_INPUTS, "samples.json"):
+        (case / name).unlink(missing_ok=True)
+    for name in FIXTURE_INPUTS:
+        if (project / name).is_file():
+            shutil.copyfile(project / name, case / name)
+    size = 0
+    for row in kept:
+        for name in [row["frame"], *((row.get("burst") or {}).get("files") or [])]:
+            src = pass_dir / "frames" / name
+            if not src.is_file():
+                raise ValueError(f"{src}: named in samples.json, missing")
+            size += fixture_png(src, case / "frames" / name)
+    write_json(case / "samples.json", kept)
+    size += sum(p.stat().st_size for p in case.iterdir() if p.is_file())
+    return {"case": str(case), "samples": len(kept), "bytes": size,
+            "over_budget": size > FIXTURE_CASE_BYTES}
+
+
 def register(sub, parents=()) -> argparse.ArgumentParser:
     from . import cutcompare      # it reads this module's categories and tally
     p = sub.add_parser(
@@ -3363,64 +4134,10 @@ def run(args) -> int:
                   f"{f['shot']}: {f['problem']}", file=sys.stderr)
 
     # -- what the reviewer sees beside each frame ----------------------------
-    shots = {s.get("label"): s for sec in script.get("sections", [])
-             for s in sec.get("shots", [])}
-    takes = {t.get("label"): t for t in voice.get("takes", [])}
-    evidence = []
-    for row in samples:
-        shot = shots.get(row["label"], {})
-        take = takes.get(row["label"], {})
-        evidence.append({
-            "frame": row["frame"], "present": row["frame"] in have,
-            "timestamp": row["t"], "why_sampled": row["why"],
-            "shot": row["label"], "section": row["section"],
-            "visual": str(shot.get("visual", ""))[:300],
-            # Its role in the story and what its picture must demonstrate of
-            # its line (AUTO-90): the visual support narrative_clarity reads.
-            **{k: str(shot[k])[:300] for k in ("function", "shows") if shot.get(k)},
-            **super_fields(shot),
-            "narration": str(shot.get("narration", ""))[:300],
-            # The line said where this still was taken (AUTO-104), with the
-            # time it starts and the frame that shows that moment: is it on
-            # screen when it is said?
-            **({"lines": [{"at": ln.get("at"), "text": str(ln.get("text", ""))[:300],
-                           "frame": ln.get("frame", row["frame"])}
-                          for ln in row["lines"]]} if row.get("lines") else {}),
-            "drawn_by": row.get("asset", ""),
-            "take": {k: take.get(k) for k in ("seconds", "planned_seconds", "cps")
-                     if k in take},
-            # Measured, not judged: the still's statistics, the burst's motion
-            # numbers, what the engine said about this shot, and what the
-            # mechanical checks already filed for it.
-            "still": row.get("still"),
-            "burst": {"frames": (row.get("burst") or {}).get("frames"),
-                      "span_seconds": (row.get("burst") or {}).get("span"),
-                      "files": (row.get("burst") or {}).get("files")},
-            "motion": row.get("motion"),
-            "engine": diagnostics.get(row["label"]),
-            "mechanical": [f"[{f['severity']}] {f['kind']}: {f['problem']}"
-                           for f in mechanical if f["shot"] == row["label"]]})
-    cues_near = [{"at": c.get("at"), "seconds": c.get("seconds"), "kind": c.get("kind"),
-                  "level": c.get("level"), "motif": c.get("motif")}
-                 for c in sound.get("cues", [])][:80]
-    measurements = {
-        "runtime": build.get("scene", {}).get("duration"),
-        "frame": {k: build.get("scene", {}).get(k) for k in ("width", "height", "fps")},
-        "layers": build.get("layers"), "placeholders": build.get("placeholders"),
-        "legibility": build.get("legibility"), "stale_takes": build.get("stale_takes"),
-        "editorial": build.get("editorial"), "findings": build.get("findings"),
-        "narration": narration_measurements(voice),
-        "sound_cues": cues_near, "mix": sound.get("mix"),
-        "gate": (gate or {}).get("triage"),
-        "geometry": {k: geometry_report.get(k) for k in
-                     ("status", "why", "evaluated", "worst", "floating", "reads_merged")},
-        "treatment": (styles.get("styles") or [{}])[0] if isinstance(
-            styles.get("styles"), list) else styles.get("treatment"),
-        # How far the authored documents reach into the engine, per `yt vfx`:
-        # a weak-motion finding can name the construct that was left unused.
-        "reach": reach.summary((read_json(project.source("vfx"), warn=False) or {}).get("reach")
-                               if project.source("vfx") else None),
-    }
+    measurements = stage_measurements(
+        build, voice, sound=sound, gate=gate, geometry=geometry_report, styles=styles,
+        reach=(read_json(project.source("vfx"), warn=False) or {}).get("reach")
+        if project.source("vfx") else None)
     blockers = mechanical_blockers(build, gate=gate) + problems
     previous = chosen
     for earlier in [] if named else reversed(_passes(home)):
@@ -3434,7 +4151,6 @@ def run(args) -> int:
     if not named and previous is not None:
         previous = kept_instead(home, previous) or previous
 
-    story = story_brief(script, build)
     # What a --frames below the shot count (or past the default) left
     # unseen is said to the reviewer before it scores, and in the scorecard.
     missing = unsampled(build, samples)
@@ -3481,92 +4197,14 @@ def run(args) -> int:
                        house=rules, house_digest=digest,
                        fresh=getattr(args, "fresh", False), verbose=not args.quiet,
                        timeout=1800.0)
-    prompt = "\n\n".join([
-        f"Review {pass_dir.name} of \"{idea.title}\". Read `{sheet.name}` first "
-        "(every still tiled in time order with its timestamp), then every PNG "
-        "directly under `frames/` (each is one still of the rendered composition "
-        "at the timestamp in its name), judge each against the shot it belongs "
-        "to and the bands (supers in the top 21%, stage in the middle, captions "
-        "in the bottom 24%), then score the ten categories against the whole "
-        "runtime and file the scorecard. Motion is evidenced by the burst under "
-        f"`frames/burst/` (up to {BURST_MAX_FRAMES} consecutive frames over "
-        f"{BURST_SECONDS:g}s around each still, which is the middle one) and "
-        "summarised beside each frame as `motion.steps`, the mean absolute "
-        "difference between consecutive frames, and `motion.total`, first frame "
-        "against last: both near zero is frozen, one step far above the rest is "
-        "a jump; read the burst frames themselves only where those numbers or "
-        "the still call for it. A frame sampled where a line of the narration "
-        "starts (`why_sampled` has `line: ...`) carries that line under `lines` "
-        "with the time it starts and `frame`, the file under `frames/` that shows "
-        "that moment: the still itself, or the burst frame when the line starts "
-        "a few frames from the still. Judge from that file whether the picture "
-        "shows what the line says at the moment it is said; a picture that does "
-        "not is a finding on its shot. The "
-        "mechanical findings are measured, not judged: do not repeat them as "
-        "your own, but score as if they stand, because they do. Blocking items "
-        "already proven by the manifests are listed; add what the frames show."
-        + (" " + unseen_brief(missing, total_shots) if missing else "")
-        + (" " + unseen_lines_brief(dropped_lines, len(narrated))
-           if dropped_lines else ""),
-        (f"Read `{NARRATION}` too: the whole narration, one shot a line with its "
-         "time on the film. Judge narrative_clarity and editing_pacing on the film "
-         "as told: can the explanation be followed by ear alone, from the "
-         "narration, and by eye alone, from the frames? It should need both "
-         "(attention 23): frames that repeat the narration as text, or narration "
-         "the pictures add nothing to, count against narrative_clarity. "
-         if narration_file.is_file() else
-         "There is no narration to read; judge the story from the frames. ")
-        + "The screenplay's story below is what the writer declared, context and "
-        "not evidence: judge whether the film delivers it. Then fill `story`: "
-        "restate the premise in one sentence as the film made it, say for each "
-        "section what the viewer has at its end that they lacked at its start "
-        "(structure 20: one line for every section of the screenplay, none blank; "
-        "where a section leaves the viewer nothing new, the line says so), and predict how satisfied a viewer who watched to the "
-        "end would say they were, with why. That prediction is recorded for "
-        "calibration and scores nothing (judging 4). A finding on the story "
-        f"itself ({', '.join(STORY_DUTY)}) is owned by `script`; a picture that "
-        "does not show what its line says is owned by whoever draws it.",
-        brief("The screenplay's story, as the plan declared it", story)
-        if story else "The screenplay declares no story fields (written before them).",
-        brief("Frames and what each should show", evidence),
-        brief("Mechanical findings, measured before this review (a blocking one "
-              f"caps {' and '.join(CAPPED)} at {MECHANICAL_CAP:g})", mechanical),
-        brief("Listening evidence: the reviews that heard the film's sound, each "
-              "marked with what it heard (`heard`) and whether that is what the film "
-              "carries (`current`); what a stale or absent one said is left out and "
-              "`why` says what is missing", listening),
-        (f"No current listening review covers {', '.join(unheard)}: do not score "
-         f"{'it' if len(unheard) == 1 else 'them'} (enter 0; the number is discarded "
-         "and each is recorded not evidenced), leave them out of `overall` (it is "
-         "recomputed as the mean of the categories you score), and file no finding on "
-         "how they sound, since nothing heard them."
-         if unheard else
-         f"Every one of {', '.join(k for k in AUDIO if k not in SILENT or not silent(build))} "
-         "has a current listening review: score it from what that review heard, "
-         "with the measurements as context only."),
-        brief("Measurements and decisions from the stages", measurements),
-        *([listen_pass.brief_for(heard)] if listened else []),
-        *([watch_pass.brief_for(watched, samples)] if asked_watched else []),
-        brief("Blocking, already proven", blockers),
-        brief("Each finding's owner is exactly one of these; one you cannot place is "
-              "`external`, with the reason in `fix`", {o: DUTIES[o] for o in OWNERS}),
-        # Nothing of the previous pass (AUTO-106): shown its scores, the
-        # reviewer filed them again. compare() takes the deltas from the
-        # two scorecards once this one exists, and --recheck puts the
-        # previous findings to a decision of their own after the scoring.
-    ])
-    # QA_SAMPLES readings of the same evidence (AUTO-107): one reading's
-    # noise is the size of the steps read as progress. structure 20 is
-    # checked past the schema in each (one non-blank line per screenplay
-    # section, asked once more); what still lacks a line is named under
-    # not_evidenced, never filled in.
-    readings = ask_samples(reviewer, pass_dir, prompt, script, quiet=args.quiet,
-                           **({"watched": True} if asked_watched else {}))
-    card = combine_samples(reviewer, pass_dir.name, readings, unheard=unheard)
-    gaps = card.pop("gaps")
-    if gaps:
-        card["not_evidenced"] = list(card.get("not_evidenced") or []) + [
-            f"story.sections (structure 20): {'; '.join(gaps)}, asked once more"]
+    readings: list[dict] = []
+    card = score_evidence(
+        reviewer, pass_dir, title=idea.title, build=build, script=script, voice=voice,
+        samples=samples, frames_dir=frames_dir, listening=listening, mechanical=mechanical,
+        diagnostics=diagnostics, measurements=measurements, blockers=blockers,
+        extra_briefs=[*([listen_pass.brief_for(heard)] if listened else []),
+                      *([watch_pass.brief_for(watched, samples)] if asked_watched else [])],
+        watched=asked_watched, quiet=args.quiet, readings=readings)
     if heard is not None:
         card = listen_pass.merge_into(card, heard)     # the listener's own findings
     if watched is not None:
@@ -3737,6 +4375,10 @@ def run(args) -> int:
     write_json(pass_dir / "scorecard.json", card)
     (pass_dir / "findings.md").write_text(
         findings_md(pass_dir.name, card, samples, diff, reasons=reasons), encoding="utf-8")
+    # AUTO-156: whether this judge is the one the QA fixtures last passed.
+    # Recorded and printed; nothing reads it to gate READY, doctor or improve.
+    calibration = judge_calibration(workspace.work_dir(args), args.model, digest,
+                                    listened=listened, watched=asked_watched)
     write_json(home / "qa.json", {
         "idea": {"title": idea.title}, "pass": pass_dir.name, "verdict": verdict,
         "overall": card.get("overall"), "scores": card.get("scores"),
@@ -3752,10 +4394,11 @@ def run(args) -> int:
         **({"recheck": {"against": rechecked["against"], "status": rechecked["status"],
                         **rechecked["tally"]}} if rechecked is not None else {}),
         "scorecard": str(pass_dir / "scorecard.json"), "house": digest,
-        "usage": card["usage"]})
+        "judge_calibration": calibration, "usage": card["usage"]})
 
     print(f"\n{idea.title} — QA {pass_dir.name}: {verdict}  (overall {card.get('overall')}, "
           f"the median of {card['scoring']['valid']} of {card['scoring']['asked']} samples)")
+    print(judge_line(calibration))
     for key in CATEGORIES if evidenced else ():
         delta = diff["deltas"].get(key)
         if card["scores"].get(key, 0) is None:
@@ -3804,3 +4447,64 @@ def run(args) -> int:
     print(f"wrote {pass_dir / 'findings.md'}", file=sys.stderr)
     print(f"wrote {home / 'qa.json'}", file=sys.stderr)
     return 0 if verdict == READY else 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    """`python -m ytstudio.qa calibrate <dir>` and `python -m ytstudio.qa
+    capture-fixture <pass> <case>`: module entry points, not `yt` stages,
+    since they read fixtures and not a film. calibrate exits 0 when the
+    judge passed the set, 1 when it did not, 2 on a refused argument."""
+    from . import flags
+
+    parser = argparse.ArgumentParser(
+        prog="python -m ytstudio.qa",
+        description="Check the QA judge against labelled fixture films, or capture a "
+                    "pass of one of your own films as a fixture case.")
+    sub = parser.add_subparsers(dest="command", required=True)
+    p = sub.add_parser("calibrate", help="score every fixture case and print the table")
+    p.add_argument("directory", help="the cases, e.g. tests/fixtures/qa")
+    p.add_argument("--model", default="sonnet",
+                   help="the judge's model, as `yt qa --model` names it (default sonnet)")
+    p.add_argument("--work", default="work",
+                   help=f"where the cases' passes and readings are cached and the report is "
+                        f"written (<work>/{CALIBRATION_QA}/; default work)")
+    flags.budget(p, default=CALIBRATE_QA_BUDGET_USD,
+                 help=f"read no further case once this much is spent (default "
+                      f"{CALIBRATE_QA_BUDGET_USD:g})")
+    flags.fresh(p, help="ask every reading again instead of reusing the ones on disk")
+    p.add_argument("--quiet", action="store_true", help="print the table only")
+    c = sub.add_parser("capture-fixture",
+                       help="cut one `yt qa` pass of your own film down to a fixture case")
+    c.add_argument("pass_dir", help="the pass, e.g. work/my-film/qa/pass-03")
+    c.add_argument("case", help="the case folder to write, e.g. tests/fixtures/qa/my-film")
+    args = parser.parse_args(argv)
+    if args.command == "capture-fixture":
+        try:
+            summary = capture_fixture(args.pass_dir, args.case)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        print(f"wrote {summary['case']}: {summary['samples']} samples, "
+              f"{summary['bytes']} bytes"
+              + (f" (over the {FIXTURE_CASE_BYTES} a case may hold)"
+                 if summary["over_budget"] else ""))
+        print("label it: write expected.json beside samples.json (label \"owner\")",
+              file=sys.stderr)
+        return 0
+    if not Path(args.directory).is_dir():
+        print(f"error: no QA fixture cases at {args.directory}", file=sys.stderr)
+        return 2
+    report = calibrate(args.directory, work=args.work, model=args.model,
+                       budget_usd=args.budget_usd, fresh=args.fresh, verbose=not args.quiet)
+    print("\n".join(calibration_lines(report)))
+    if not args.quiet:
+        print(f"wrote {Path(args.work) / CALIBRATION_QA / CALIBRATION_REPORT}",
+              file=sys.stderr)
+    return 0 if report["passed"] else 1
+
+
+if __name__ == "__main__":
+    # Run as a program this file is `__main__`; `yt qa` imports it as
+    # ytstudio.qa. The entry point is that one's, so one copy answers both.
+    from ytstudio.qa import main as _main
+    sys.exit(_main())
