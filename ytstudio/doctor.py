@@ -1329,7 +1329,8 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
                        + (f": {_clip(str(s.get('fix', '')), 160)}" if s.get("fix") else ""),
                        _cmd("vfx", project, "--sections", str(n)) if n is not None
                        else _cmd("vfx", project))
-        if motion.get("reason"):
+        # A film with nothing authored says so in its reach reason already.
+        if motion.get("reason") and motion["reason"] != (vfx.get("reach") or {}).get("reason"):
             report.add("note", "vfx", f"motion audit: {_clip(str(motion['reason']), 240)}")
         for group in vfx.get("sections") or []:
             for w in (group.get("warnings") or [] if isinstance(group, dict) else []):
