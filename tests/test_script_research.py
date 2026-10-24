@@ -296,5 +296,193 @@ class PressBlock(unittest.TestCase):
         self.assertNotIn("P1", text)
 
 
+# --------------------------------------------------------------------------- #
+# AUTO-133: the fact-check is on with a dossier, and read by another family
+# --------------------------------------------------------------------------- #
+
+import copy  # noqa: E402
+import json  # noqa: E402
+import tempfile  # noqa: E402
+from unittest import mock  # noqa: E402
+
+from ytstudio import cli, harness  # noqa: E402
+from tests.test_script_plan import PLAN, kind, shots_for  # noqa: E402
+
+DOSSIER = {"claims": [claim("the bolt was painted over")]}
+
+
+class FactCheckByDefault(unittest.TestCase):
+    """`yt script` against fake harnesses: every decision is answered by
+    `Harness.decide` below, which records which harness (its role and its
+    model) was asked. No engine is reached."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.film = self.root / "a-film"
+        self.film.mkdir()
+        (self.root / "work").mkdir()
+        (self.film / "idea.json").write_text(
+            '{"title": "Why the bridge fell", "genre": "g", "description": "d"}')
+        #: what each verify* decision answers, in order
+        self.checks: list[list[dict]] = []
+        self.asked: list[tuple[str, str, str]] = []
+
+    def dossier(self):
+        (self.film / "dossier.json").write_text(json.dumps(DOSSIER))
+
+    def who(self, h) -> str:
+        return ("fact" if h.role == script.FACT_ROLE else
+                "author" if h.role == script.SYSTEM else "other")
+
+    def run_stage(self, *flags):
+        test = self
+
+        def decide(h, name, prompt, schema, **kw):
+            test.asked.append((name, test.who(h), h.model))
+            which = kind(schema)
+            if which == "plan":
+                return copy.deepcopy(PLAN)
+            if which in ("shots", "function"):
+                return shots_for(int(name.split("-")[1]), ("context", "payoff"))
+            if "flags" in schema["properties"]:
+                if name.startswith("verify-status"):
+                    return {"flags": [], "verdict": "ok"}
+                return {"flags": test.checks.pop(0) if test.checks else [],
+                        "verdict": "defensible"}
+            if "fixes" in schema["properties"]:
+                if name == "revise-1":
+                    return {"fixes": [{"n": 3, "action": "fix", "why": "w",
+                                       "narration": "A bolt, painted over, held it."}]}
+                return {"fixes": []}
+            return {k: [] if v.get("type") == "array" else ""
+                    for k, v in schema["properties"].items() if k in schema.get("required", [])}
+        args = cli.build_parser().parse_args(
+            ["script", "--project", str(self.film), "--work", str(self.root / "work"),
+             "--quiet", *flags])
+        with mock.patch.object(harness.Harness, "decide", decide), \
+                contextlib.redirect_stdout(io.StringIO()) as out, \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            code = script.run(args)
+        return code, out.getvalue() + err.getvalue()
+
+    def names(self) -> list[str]:
+        return [name for name, _, _ in self.asked]
+
+    # -- the default ---------------------------------------------------------
+
+    def test_with_a_dossier_and_no_flag_the_fact_check_runs(self):
+        self.dossier()
+        code, said = self.run_stage()
+        self.assertEqual(code, 0, said)
+        self.assertIn("verify", self.names())
+
+    def test_no_verify_turns_it_off(self):
+        self.dossier()
+        code, said = self.run_stage("--no-verify")
+        self.assertEqual(code, 0, said)
+        self.assertFalse([n for n in self.names() if n.startswith("verify")], self.names())
+
+    def test_without_a_dossier_nothing_is_checked_and_nothing_is_said(self):
+        code, said = self.run_stage()
+        self.assertEqual(code, 0, said)
+        self.assertFalse([n for n in self.names() if n.startswith("verify")])
+        self.assertNotIn("--verify needs research", said)
+
+    def test_an_explicit_verify_with_no_dossier_still_warns(self):
+        code, said = self.run_stage("--verify")
+        self.assertIn("warning: --verify needs research", said)
+
+    def test_the_flag_parses_three_ways(self):
+        parse = cli.build_parser().parse_args
+        self.assertIsNone(parse(["script"]).verify)
+        self.assertTrue(parse(["script", "--verify"]).verify)
+        self.assertFalse(parse(["script", "--no-verify"]).verify)
+
+    # -- who reads it ----------------------------------------------------------
+
+    def test_the_fact_check_is_asked_of_the_reviewer_and_the_revise_of_the_author(self):
+        self.dossier()
+        self.checks = [[{"n": 3, "severity": "important", "problem": "overstated",
+                         "fix": "hedge"}], []]
+        code, said = self.run_stage("--model", "sonnet")
+        self.assertEqual(code, 0, said)
+        by_name = {name: (who, model) for name, who, model in self.asked}
+        self.assertEqual(by_name["verify"], ("fact", "opus"))
+        self.assertEqual(by_name["verify-1"], ("fact", "opus"))
+        self.assertEqual(by_name["revise-1"], ("author", "sonnet"))
+        self.assertEqual(by_name["write-01"][1], "sonnet")
+        record = json.loads((self.film / "script.json").read_text())
+        self.assertEqual(record["check"]["model"], "opus")
+
+    def test_the_reviewer_model_names_the_reader(self):
+        self.dossier()
+        code, said = self.run_stage("--model", "sonnet", "--reviewer-model", "haiku")
+        self.assertEqual(code, 0, said)
+        self.assertIn(("verify", "fact", "haiku"), self.asked)
+
+    def test_without_a_dossier_the_fact_reviewer_is_never_built(self):
+        seen = {}
+
+        def run(self_, **kw):
+            seen["fact"] = self_.fact_reviewer
+            raise script.ClaudeError("stop here")
+        with mock.patch.object(script.Screenwriter, "run", run):
+            self.run_stage()
+        self.assertIsNone(seen["fact"])
+        self.dossier()
+        with mock.patch.object(script.Screenwriter, "run", run):
+            self.run_stage()
+        self.assertEqual(seen["fact"].model, "opus")
+        # with YT_GATEWAY unset it is a claude/codex CLI harness, as every
+        # other reviewer of this stage is
+        self.assertIsNone(seen["fact"].engine)
+        self.assertIsNone(seen["fact"].gateway)
+
+    # -- the family refusal ------------------------------------------------------
+
+    def test_an_opus_author_with_a_dossier_is_refused_before_anything_is_paid(self):
+        self.dossier()
+        code, said = self.run_stage("--model", "opus")
+        self.assertEqual(code, 2, said)
+        self.assertEqual(self.asked, [])
+        self.assertIn("the fact-check (on by default with a dossier) needs a reviewer of "
+                      "another family than --model opus", said)
+        self.assertIn("--reviewer-model", said)
+        self.assertIn("--no-verify", said)
+        self.assertFalse((self.film / "decisions").exists())
+
+    def test_an_opus_author_without_the_fact_check_runs(self):
+        self.dossier()
+        code, said = self.run_stage("--model", "opus", "--no-verify")
+        self.assertEqual(code, 0, said)
+        self.assertIn("write-01", self.names())
+
+    def test_an_explicit_verify_is_refused_in_the_review_wording(self):
+        self.dossier()
+        code, said = self.run_stage("--model", "opus", "--verify")
+        self.assertEqual(code, 2, said)
+        self.assertEqual(self.asked, [])
+        self.assertIn("does not grade its own work", said)
+
+    def test_review_with_the_authors_family_is_refused_as_today(self):
+        self.dossier()
+        code, said = self.run_stage("--model", "opus", "--reviewer-model", "opus",
+                                    "--review", "--no-verify")
+        self.assertEqual(code, 2, said)
+        self.assertEqual(self.asked, [])
+        self.assertIn("does not grade its own work", said)
+        self.assertNotIn("on by default", said)
+
+    def test_a_revise_with_a_dossier_is_refused_for_the_authors_family(self):
+        self.dossier()
+        (self.film / "script.json").write_text(json.dumps({"sections": []}))
+        code, said = self.run_stage("--model", "opus", "--revise", "1.1")
+        self.assertEqual(code, 2, said)
+        self.assertEqual(self.asked, [])
+        self.assertIn("--reviewer-model", said)
+
+
 if __name__ == "__main__":
     unittest.main()

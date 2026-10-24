@@ -255,6 +255,32 @@ class ReviseLabels(unittest.TestCase):
         self.assertEqual(check["unresolved"], [])
         self.assertIn("yt voice --redo 1.3", self.said)
 
+    def test_the_changed_lines_are_fact_checked_by_the_reviewer_not_the_author(self):
+        # AUTO-133: verify-labels* go to --reviewer-model; the revise and
+        # the fact revision stay with the author. Every harness is faked.
+        from ytstudio import harness
+        self.research()
+        self.checks = [[self.YEARS], []]
+        self.fact_fixes = {3: "The crack grew under the paint, out of sight."}
+        asked = []
+        test = self
+
+        def decide(h, name, prompt, schema, **kw):
+            asked.append((name, "fact" if h.role == script.FACT_ROLE else "author", h.model))
+            return test.fake(None, name, prompt, schema)
+        args = cli.build_parser().parse_args(
+            ["script", "--project", str(self.film), "--work", str(self.work), "--quiet",
+             "--model", "sonnet", "--revise", "1.3,2.1"])
+        with mock.patch.object(harness.Harness, "decide", decide), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            code = script.run(args)
+        self.assertEqual(code, 0, err.getvalue())
+        self.assertEqual(asked, [
+            ("revise-labels", "author", "sonnet"), ("verify-labels", "fact", "opus"),
+            ("revise-labels-facts-1", "author", "sonnet"), ("verify-labels-1", "fact", "opus")])
+        self.assertEqual(self.record()["check"]["model"], "opus")
+
     def test_a_fact_flag_the_revision_keeps_stands_with_its_reason(self):
         self.research()
         self.checks = [[self.YEARS]]
