@@ -461,7 +461,8 @@ misconceptions and names its identifiable case and, as `P1`.., its
 happened to them and what followed, each kept by `research.human_stories_of`
 only when its claim is a dossier claim and its source that claim's or a page
 the research opened, a dropped one a `human story dropped:` warning in
-dossier.json and none never a failure), the `audience` (lay,
+dossier.json that `yt doctor` shows as a note, not a provenance warning,
+and none never a failure), the `audience` (lay,
 enthusiast, expert), an optional `persona` (AUTO-158: the narrator's
 `temperament` for this film, free text, and `why` the subject calls for it;
 the house format's temperament when it names one), told to every section

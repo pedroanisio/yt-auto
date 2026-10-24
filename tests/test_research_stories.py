@@ -168,5 +168,46 @@ class TheWebPass(_Researched):
         self.assertIn("dated consequences", asked[0])
         self.assertIn("Flag anything you could not verify", asked[0])
 
+
+class InDoctor(unittest.TestCase):
+    """A dropped story is reported, not enforced, and it is no provenance
+    warning: `yt research --fresh` would pay for a full re-research and not
+    trace the story any better, and it must not hide the blind-question
+    check that a dossier with no provenance warning gets."""
+
+    def findings(self, warnings):
+        import json
+        import tempfile
+        from ytstudio import doctor, workspace
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "idea.json").write_text(json.dumps({"title": "T"}))
+            (root / "dossier.json").write_text(json.dumps({
+                "claims": CLAIMS, "urls_opened": OPENED, "warnings": warnings,
+                "notes": [{"question": "q1", "notes": "n", "visited": OPENED,
+                           "searches": 1},
+                          {"question": "q2", "notes": "n", "visited": [],
+                           "searches": 2}]}))
+            return [f for f in doctor.check_project(workspace.Project(root)).findings
+                    if f.area == "research"]
+
+    def test_a_dropped_story_leaves_the_blind_question_warning_standing(self):
+        dropped = research.story_warnings([{"who": "A family", "why": "source never opened"}])
+        found = [f.message for f in self.findings(dropped) if "opened no page" in f.message]
+        self.assertEqual(found, ["question(s) 2 opened no page; those facts rest on "
+                                 "search snippets"])
+
+    def test_a_dropped_story_is_a_note_with_no_fresh_research(self):
+        dropped = research.story_warnings([{"who": "A family", "why": "source never opened"}])
+        rows = [f for f in self.findings(dropped) if f.message.startswith(research.STORY_DROPPED)]
+        self.assertEqual([(f.level, f.fix) for f in rows], [("note", "")])
+
+    def test_a_provenance_warning_still_asks_for_fresh_research(self):
+        rows = [f for f in self.findings(["question 1: no search or fetch happened"])
+                if f.message.startswith("question 1:")]
+        self.assertEqual([f.level for f in rows], ["warn"])
+        self.assertIn("--fresh", rows[0].fix)
+
+
 if __name__ == "__main__":
     unittest.main()
