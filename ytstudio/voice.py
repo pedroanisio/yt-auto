@@ -784,7 +784,10 @@ def caption_words(take: Take, aligned: dict) -> tuple[list[Word], str]:
     take.delivery = dict(take.delivery or {},
                          caption_mismatch={"spoken": len(folded), "text": len(source)})
     seconds = take.seconds or (folded[-1].end if folded else 0.0)
-    return words_estimated(take.text, seconds), "estimated"
+    words = words_estimated(take.text, seconds)
+    # Nothing aligned and no length to spread the line over: no words, as
+    # an unmarked take with no alignment has, not words of no duration.
+    return words, ("estimated" if words else "none")
 
 
 # --------------------------------------------------------------------------- #

@@ -273,6 +273,12 @@ class Captions(unittest.TestCase):
         self.assertEqual(words, voice.words_estimated(LINE, 2.0))
         self.assertEqual(take.delivery["caption_mismatch"], {"spoken": 9, "text": 7})
 
+    def test_no_alignment_and_no_length_is_no_words_not_estimated_ones(self):
+        take = self.take("shroh-ding-er put a cat in a box.")
+        take.seconds = 0.0
+        self.assertEqual(voice.caption_words(take, {}), ([], "none"))
+        self.assertEqual(take.delivery["caption_mismatch"], {"spoken": 0, "text": 7})
+
     def test_an_unmarked_take_is_folded_as_today(self):
         take = voice.Take(n=1, label="1.1", section="One", text=LINE, seconds=2.0)
         words, timing = voice.caption_words(take, self.alignment(LINE))
