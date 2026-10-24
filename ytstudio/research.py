@@ -42,7 +42,7 @@ from urllib.parse import urlparse
 
 from claude_engine import ClaudeEngine, ClaudeError, EngineConfig, Usage
 from . import assets as yt_assets
-from . import flags, harness, spend, workspace
+from . import flags, harness, reviewers, spend, workspace
 from .core import (PAPER_ARXIV, PAPER_DOI, PAPER_HTTP, Idea, _merge_usage,
                    paper_is_local, slugify, write_json)
 
@@ -995,6 +995,223 @@ def parallels_why_of(outline: dict | None, kept: list[dict]) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# the independent cross-check (AUTO-134)
+# --------------------------------------------------------------------------- #
+
+#: The checker's role: another family than the research model's, so the
+#: research never judges its own claims against the world.
+CROSSCHECK_ROLE = (
+    "You are an independent fact-checker. You did not write the research you are "
+    "checking and owe it nothing. You judge one claim at a time against what other "
+    "sources say about it, using only the pages a web pass opened and the words its "
+    "notes record from each; a page the notes do not quote is evidence of nothing. "
+    "You never count the claim's own cited source, or another page on its host, as "
+    "independent, you say plainly when the sources disagree or say nothing, and you "
+    "never invent a URL or put words in a page's mouth.")
+
+#: A verdict the checker may give; `unverified` is never one of them, it is
+#: what the stage records when no valid verdict was given.
+CROSSCHECK_STATUSES = ("corroborated", "contradicted", "disputed", "not_found")
+UNVERIFIED = "unverified"
+
+CROSSCHECK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "status": {"type": "string", "enum": list(CROSSCHECK_STATUSES)},
+        "sources": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string",
+                            "description": "a page the web pass opened, exactly as listed"},
+                    "says": {"type": "string",
+                             "description": "the words the notes record from that page"},
+                    "agrees": {"type": "string", "enum": ["yes", "no", "partly"]},
+                },
+                "required": ["url", "says", "agrees"],
+            },
+        },
+        "correction": {"type": "string", "description": (
+            "what the independent sources state instead; empty unless contradicted")},
+        "note": {"type": "string"},
+    },
+    "required": ["status", "sources", "note"],
+}
+
+#: How a cross-check's provenance warning opens, so `yt doctor` can tell it
+#: from a research question's.
+CROSSCHECK_WARNING = "cross-check"
+
+#: How an entry whose web pass raised says so among its problems.
+PASS_FAILED = "the web pass failed"
+
+#: What dossier.json keeps of each entry; raw/09-crosscheck.json keeps the
+#: pass's notes, searches and denials too.
+CROSSCHECK_KEPT = ("claim", "source_url", "status", "sources", "correction", "note",
+                   "visited", "searches", "denied", "problems")
+
+
+def crosscheck_url_key(url: object) -> str:
+    """A URL as the cross-check compares it: `_url_key`'s (fragment and
+    trailing '/' dropped, scheme and host in any case) with a leading www.
+    dropped from the host. Nothing looser: another path is another page."""
+    key = _url_key(url)
+    parsed = urlparse(key)
+    if parsed.scheme and parsed.netloc.startswith("www."):
+        return parsed._replace(netloc=parsed.netloc[4:]).geturl()
+    return key
+
+
+def crosscheck_host(url: object) -> str:
+    """The normalised host of a URL, "" when it has none ("", "no url", or
+    anything unparsable): then no host is excluded as the cited one."""
+    try:
+        return urlparse(crosscheck_url_key(url)).netloc
+    except ValueError:
+        return ""
+
+
+def crosscheck_targets(claims: list[dict], outline: dict | None, gaps: dict | None,
+                       limit: int) -> list[dict]:
+    """The claims the cross-check checks, at most `limit`, in this order:
+    those the outline quotes (matched by `claim_key`, as research_block
+    matches them); then the weak ones (low or medium confidence, a caveat,
+    a secondary or unsourced source); then the high, primary ones that carry
+    a number. Ties keep dossier order. `gaps` is taken for the stage's
+    shape, but decides nothing: the audit names its issues in free text, and
+    matching that to a claim would be the fuzzy matching this check refuses."""
+    rows = [c for c in claims or [] if isinstance(c, dict)]
+    used = {claim_key(q) for s in (outline or {}).get("sections") or [] if isinstance(s, dict)
+            for q in s.get("claims_used") or []}
+
+    def tier(c: dict) -> int | None:
+        if claim_key(c.get("claim", "")) in used:
+            return 0
+        if (c.get("confidence") in ("low", "medium") or str(c.get("caveat") or "").strip()
+                or c.get("source_kind") in ("secondary", "unsourced")):
+            return 1
+        if str(c.get("number") or "").strip():
+            return 2
+        return None
+    ranked = sorted(((t, n, c) for n, c in enumerate(rows) if (t := tier(c)) is not None),
+                    key=lambda row: row[:2])
+    return [c for _, _, c in ranked][:max(0, int(limit or 0))]
+
+
+def notes_by_url(notes: str, visited: list[str]) -> list[tuple[str, str]]:
+    """The pass's notes cut at each line naming one of the pages it fetched,
+    as (url, the lines under it): the prompt puts each page's words beside
+    its URL. Text before any such line is kept under "". A fetched page the
+    notes never name gets an empty text."""
+    urls = list(dict.fromkeys(str(u) for u in visited or [] if str(u).strip()))
+    keys = {crosscheck_url_key(u): u for u in urls}
+    out: list[tuple[str, list[str]]] = [("", [])]
+    for line in str(notes or "").splitlines():
+        named = next((keys[k] for k in keys
+                      if any(crosscheck_url_key(w) == k
+                             for w in re.findall(r"https?://[^\s)\]>\"']+", line))), None)
+        if named is not None:
+            out.append((named, [line]))
+        else:
+            out[-1][1].append(line)
+    said = {u for u, _ in out}
+    out += [(u, []) for u in urls if u not in said]
+    return [(u, "\n".join(lines).strip()) for u, lines in out if u or "\n".join(lines).strip()]
+
+
+def crosscheck_problems(result: object, claim: dict, visited: list[str],
+                        notes: str) -> list[str]:
+    """What is wrong with one verdict, one line each. Every source must be a
+    page this pass fetched and its `says` words the pass's notes record
+    (script.said_in); a source on the claim's own cited host is dropped
+    from the counts, not wrong in itself. Over the counted rest:
+    corroborated needs an agreeing source and none disagreeing,
+    contradicted a disagreeing one and a correction, disputed one of each,
+    not_found nothing. Nothing is repaired on the model's behalf."""
+    from .script import said_in       # script reads this module; asked only here
+    if not isinstance(result, dict):
+        return ["the answer is not an object"]
+    status = str(result.get("status") or "")
+    problems: list[str] = []
+    if status not in CROSSCHECK_STATUSES:
+        problems.append(f"status {status!r} is not one of {', '.join(CROSSCHECK_STATUSES)}")
+    fetched = {crosscheck_url_key(u) for u in visited or []}
+    cited = crosscheck_host((claim or {}).get("source_url"))
+    counted: list[dict] = []
+    for src in result.get("sources") or []:
+        if not isinstance(src, dict):
+            problems.append("a source is not an object")
+            continue
+        url = str(src.get("url") or "").strip()
+        if crosscheck_url_key(url) not in fetched:
+            problems.append(f"{url or '(no url)'} is not a page this pass fetched")
+        says = str(src.get("says") or "")
+        if not said_in(says, notes):
+            problems.append(f"what {url or '(no url)'} says (\"{' '.join(says.split())}\") "
+                            "is not words the pass's notes record")
+        if src.get("agrees") not in ("yes", "no", "partly"):
+            problems.append(f"{url or '(no url)'}: agrees is {src.get('agrees')!r}, not yes, "
+                            "no or partly")
+        if cited and crosscheck_host(url) == cited:
+            continue
+        counted.append(src)
+    yes = sum(1 for s in counted if s.get("agrees") == "yes")
+    no = sum(1 for s in counted if s.get("agrees") == "no")
+    beyond = f" independent of the cited host {cited}" if cited else ""
+    if status == "corroborated":
+        if not yes:
+            problems.append(f"corroborated, but no source{beyond} agrees")
+        if no:
+            problems.append(f"corroborated, but {no} source(s){beyond} disagree")
+    elif status == "contradicted":
+        if not no:
+            problems.append(f"contradicted, but no source{beyond} disagrees")
+        if not str(result.get("correction") or "").strip():
+            problems.append("contradicted, but the correction is empty")
+    elif status == "disputed" and not (yes and no):
+        problems.append(f"disputed needs a source{beyond} that agrees and one that "
+                        f"disagrees ({yes} agree, {no} disagree)")
+    return problems
+
+
+def independent_of(entry: dict, claim: dict | None = None) -> dict:
+    """A cross-check entry as a claim's `independent`: its status and the
+    hosts of the sources counted (not the cited host's); none when
+    unverified, since nothing was counted."""
+    status = str((entry or {}).get("status") or UNVERIFIED)
+    if status not in CROSSCHECK_STATUSES:
+        return {"status": UNVERIFIED, "hosts": []}
+    cited = crosscheck_host((claim or entry or {}).get("source_url"))
+    hosts = [h for h in dict.fromkeys(crosscheck_host(s.get("url"))
+                                      for s in entry.get("sources") or [] if isinstance(s, dict))
+             if h and h != cited]
+    return {"status": status, "hosts": hosts}
+
+
+def independent_line(entry: dict) -> str:
+    """One entry's verdict in words, as the dossier's README and the
+    screenplay's research block print it."""
+    status = str((entry or {}).get("status") or UNVERIFIED)
+    found = independent_of(entry)
+    hosts = ", ".join(found["hosts"])
+    cited = crosscheck_host(entry.get("source_url"))
+    if status == "corroborated":
+        return f"corroborated by {hosts}" if hosts else "corroborated"
+    if status == "contradicted":
+        urls = [str(s.get("url") or "") for s in entry.get("sources") or []
+                if isinstance(s, dict) and s.get("agrees") == "no"
+                and crosscheck_host(s.get("url")) != cited]
+        return (f"contradicted by {', '.join(urls) or hosts}: "
+                f"{' '.join(str(entry.get('correction') or '').split())}")
+    if status == "disputed":
+        return f"disputed ({hosts})" if hosts else "disputed"
+    if status == "not_found":
+        return "not found independently"
+    return UNVERIFIED
+
+
+# --------------------------------------------------------------------------- #
 # dossier storage
 # --------------------------------------------------------------------------- #
 
@@ -1060,7 +1277,9 @@ class Researcher:
                  shot_count: int | None = None, per_shot: int = 2,
                  asset_sources: tuple[str, ...] = yt_assets.DEFAULT_SOURCES,
                  allow_sa: bool = False, agentic_assets: bool = False,
-                 user_agent: str = DEFAULT_USER_AGENT) -> None:
+                 user_agent: str = DEFAULT_USER_AGENT, crosscheck: int = 0,
+                 reviewer_model: str = "opus",
+                 pooled: "reviewers.Resolved | None" = None) -> None:
         self.idea = idea
         self.dossier = dossier
         self.model = model
@@ -1086,6 +1305,21 @@ class Researcher:
             dossier.dir, "research", model=model, role=RESEARCHER_SYSTEM,
             fresh=fresh, verbose=verbose, budget_usd=budget)
         self._agent_usage = Usage()
+        self._agent_lock = threading.Lock()
+        #: The independent cross-check (AUTO-134): how many claims it checks
+        #: (0, the default: off) and its checker, the reviewer of another
+        #: family (`pooled`, one from another maker on the gateway engine).
+        #: A film that speaks no claim, or one with the check off, builds
+        #: no checker and is researched exactly as before.
+        self.crosscheck_n = max(0, int(crosscheck or 0))
+        self.checker: harness.Harness | None = None
+        self.checker_model = ""
+        if self.crosscheck_n and self.scope["spoken"]:
+            kw = reviewers.harness_kwargs(pooled)
+            self.checker_model = kw.pop("model", reviewer_model)
+            self.checker = harness.Harness(
+                dossier.dir, "research", model=self.checker_model, role=CROSSCHECK_ROLE,
+                budget_usd=budget, fresh=fresh, verbose=verbose, **kw)
         self.visited: list[str] = []
         #: The paper the film explains (AUTO-131), as given and as cited;
         #: both empty for a film that is not about one paper.
@@ -1618,6 +1852,132 @@ class Researcher:
         self.dossier.save("07-outline-assets", used)
         return outline
 
+    def crosscheck(self, claims: dict, outline: dict, gaps: dict) -> list[dict] | None:
+        """The independent check of the key claims (AUTO-134), `09-crosscheck`:
+        one entry per target (crosscheck_targets), or None when it is off or
+        the film speaks no claim. Cached; redone when the targets differ from
+        the ones it checked ('09-crosscheck-targets', their sorted claim
+        keys), so a redone outline or new claims check the new ones."""
+        if not self.crosscheck_n or self.checker is None:
+            return None
+        targets = crosscheck_targets(claims.get("claims", []), outline, gaps, self.crosscheck_n)
+        keys = sorted(claim_key(c.get("claim", "")) for c in targets)
+        redo = self.dossier.load("09-crosscheck-targets") not in (None, keys)
+
+        def work() -> list[dict]:
+            self._say(f"  {len(targets)} claim(s) cross-checked, {self.jobs} at a time")
+            with ThreadPoolExecutor(max_workers=self.jobs) as pool:
+                return list(pool.map(lambda job: self._crosscheck_entry(*job),
+                                     enumerate(targets, 1)))
+        entries = self._stage("09-crosscheck", work, redo=redo)
+        self.dossier.save("09-crosscheck-targets", keys)
+        return entries
+
+    def _crosscheck_one(self, i: int, claim: dict) -> dict:
+        """One web pass looking for sources independent of the claim's cited
+        host: an agent, not a decision, booked with the other web passes.
+        Records every URL fetched and the notes, page by page."""
+        engine = harness.build_engine(self._config(web=True), ClaudeEngine)
+        host = crosscheck_host(claim.get("source_url"))
+        number = f"\nITS NUMBER: {claim['number']}" if str(claim.get("number") or "").strip() else ""
+        prompt = (
+            f"Check one claim from a YouTube video's research against independent "
+            f"sources.\n\n{self._idea_block()}\n\n"
+            f"CLAIM UNDER CHECK: {claim.get('claim', '')}{number}\n"
+            f"DETAIL: {claim.get('detail', '')}\n"
+            f"CITED SOURCE: {claim.get('source_url') or 'no url'}"
+            + (f" (host {host})" if host else "") + "\n\n"
+            "Use WebSearch and WebFetch to find sources independent of "
+            + (f"{host}: pages on that host, or copies of the cited page, do not count. "
+               if host else "the cited source. ")
+            + "Prefer primary sources: papers, datasets, standards, official reports. "
+            "Look for what confirms the claim and for what contradicts, corrects or "
+            "retracts it, including a newer figure. Open the pages rather than trusting "
+            "search snippets.\n\n"
+            "For each page you opened, write its full URL on a line of its own, then under "
+            "its URL the words it says about the claim, quoted as the page writes them, "
+            "with any number, unit and date. Say plainly when a page says nothing about "
+            "it, and when you found no independent source. No preamble, no summary of "
+            "your process.")
+        visited: list[str] = []
+        notes: list[str] = []
+        searches = 0
+        denied: list[dict] = []
+        try:
+            for event in engine.stream(prompt):
+                if event.subtype == "tool_use" and event.tool_input:
+                    url = event.tool_input.get("url")
+                    if url:
+                        visited.append(url)
+                        self._say(f"    cross-check {i}: fetch {url[:80]}")
+                    elif event.tool_input.get("query"):
+                        searches += 1
+                if event.type == "assistant" and event.text:
+                    notes.append(event.text)
+                if event.type == "result":
+                    denied = _denials(event)
+        finally:
+            with self._agent_lock:      # the passes book from --jobs threads at once
+                _merge_usage(self._agent_usage, engine.usage)
+        return {"visited": visited, "searches": searches, "denied": denied,
+                "notes": "\n".join(notes).strip()}
+
+    def _crosscheck_entry(self, i: int, claim: dict) -> dict:
+        """One target's entry: its web pass, then the checker's verdict on
+        it (`09-crosscheck-<i>`), validated (crosscheck_problems) and asked
+        once more (`-again`) with what was wrong. A pass that failed, or a
+        verdict still invalid, is `unverified` with its problems: never
+        counted, and nothing repaired on the checker's behalf."""
+        entry = {"claim": claim.get("claim", ""), "source_url": claim.get("source_url", ""),
+                 "status": UNVERIFIED, "sources": [], "correction": "", "note": "",
+                 "visited": [], "searches": 0, "denied": [], "notes": "", "problems": []}
+        try:
+            found = self._crosscheck_one(i, claim)
+        except ClaudeError as exc:
+            self._say(f"  cross-check {i} failed: {exc}")
+            entry["problems"] = [f"{PASS_FAILED}: {exc}"]
+            return entry
+        entry.update(found)
+        pages = "\n\n".join(f"### {url}\n{text or '(the notes record nothing under this URL)'}"
+                            if url else f"### notes under no fetched URL\n{text}"
+                            for url, text in notes_by_url(found["notes"], found["visited"]))
+        number = f" [{claim['number']}]" if str(claim.get("number") or "").strip() else ""
+        cited = crosscheck_host(claim.get("source_url"))
+        prompt = (
+            f"{self._idea_block()}\n\n"
+            f"The claim: {claim.get('claim', '')}{number} -- {claim.get('detail', '')}\n"
+            f"Its cited source: {claim.get('source_url') or 'no url'}"
+            + (f" (host {cited}: a page there is not independent)" if cited else "") + "\n\n"
+            "An independent web pass opened these pages; under each URL is what its notes "
+            "record from that page:\n\n" + (pages or "(the pass opened no page)") + "\n\n"
+            "Judge the claim against these pages only. corroborated: at least one "
+            "independent page agrees and none disagrees. contradicted: an independent page "
+            "states otherwise; give what it states instead as the correction. disputed: "
+            "independent pages disagree with each other about it. not_found: no page says "
+            "anything either way. List each page you rest on with its URL exactly as above, "
+            "the words its notes record (quoted exactly from the notes, never "
+            "paraphrased) and whether it agrees (yes, no or partly).")
+        verdict = self.checker.decide(f"09-crosscheck-{i}", prompt, CROSSCHECK_SCHEMA)
+        problems = crosscheck_problems(verdict, claim, found["visited"], found["notes"])
+        if problems:
+            self._say(f"  [09-crosscheck-{i}] asking again ({'; '.join(problems)})")
+            verdict = self.checker.decide(
+                f"09-crosscheck-{i}-again", prompt + "\n\nYour previous answer was rejected:\n"
+                + "\n".join(f"- {p}" for p in problems)
+                + "\nAnswer again, citing only the URLs above and words their notes record.",
+                CROSSCHECK_SCHEMA)
+            problems = crosscheck_problems(verdict, claim, found["visited"], found["notes"])
+        verdict = verdict if isinstance(verdict, dict) else {}
+        if problems:
+            entry["problems"] = problems
+            entry["note"] = str(verdict.get("note") or "")
+            return entry
+        entry.update(status=str(verdict["status"]),
+                     sources=[dict(s) for s in verdict.get("sources") or []],
+                     correction=str(verdict.get("correction") or ""),
+                     note=str(verdict.get("note") or ""))
+        return entry
+
     # -- run ---------------------------------------------------------------
 
     @staticmethod
@@ -1655,6 +2015,9 @@ class Researcher:
                 *([lambda: self.paper_digest(claims, sources)] if paper else [])))
         digest = digest[0] if digest else None
         outline = self.outline(claims, assets, gaps, digest)
+        # The key claims checked against sources the research did not cite
+        # (AUTO-134), once the outline says which ones the film rests on.
+        checked = self.crosscheck(claims, outline, gaps)
         stories, dropped = human_stories_of(outline, claims.get("claims", []),
                                             sorted(set(self.visited)))
         parallels, unkept = parallels_of(outline, sorted(set(self.visited)))
@@ -1664,6 +2027,26 @@ class Researcher:
             idea["paper"] = paper_label(self.paper_ref)
         else:
             idea.pop("paper", None)     # a film without one records the idea as before
+        rows = claims.get("claims", [])
+        extra: dict = {}
+        if checked is not None:
+            # Each targeted claim says what the check found; the claim's
+            # text, confidence and source are never touched.
+            found = {claim_key(e.get("claim", "")): e for e in checked}
+            rows = [dict(c, independent=independent_of(found[claim_key(c.get("claim", ""))], c))
+                    if isinstance(c, dict) and claim_key(c.get("claim", "")) in found else c
+                    for c in rows]
+            extra["crosscheck"] = [{k: e.get(k) for k in CROSSCHECK_KEPT} for e in checked]
+        elif self.crosscheck_n and not self.scope["spoken"]:
+            extra["crosscheck_skipped"] = f"{self.scope['name']} scope"
+        usage = spend.from_usage(self.usage, self.model)
+        engine = self.harness.report()
+        if self.checker is not None:
+            # The checker's decisions at the checker's own price, beside the
+            # research model's total, which Researcher.usage stays.
+            usage = spend.merge_records(usage, spend.from_usage(self.checker.usage,
+                                                                self.checker_model))
+            engine = {**engine, "crosscheck": self.checker.report()}
         return {
             "idea": idea,
             "scope": self.scope["name"],
@@ -1671,7 +2054,7 @@ class Researcher:
             "questions": plan.get("questions", []),
             "shots": (self.dossier.load("05-shots") or {}).get("shots", []),
             "notes": notes,
-            "claims": claims.get("claims", []),
+            "claims": rows,
             "sources": sources.get("sources", []),
             "assets": assets.get("assets", []),
             "gaps": gaps.get("gaps", []),
@@ -1689,10 +2072,12 @@ class Researcher:
             # What the paper means, each item citing its claims (AUTO-131).
             **({"paper": digest} if digest is not None else {}),
             "urls_opened": sorted(set(self.visited)),
-            "warnings": provenance_warnings(notes) + story_warnings(dropped) + unkept,
+            "warnings": provenance_warnings(notes, crosscheck=checked or ())
+                        + story_warnings(dropped) + unkept,
             "allow_sa": self.allow_sa,
-            "usage": spend.from_usage(self.usage, self.model),
-            "engine": self.harness.report(),
+            **extra,
+            "usage": usage,
+            "engine": engine,
         }
 
 
@@ -1736,12 +2121,28 @@ def _paper_provenance(entry: dict) -> list[str]:
     return []
 
 
-def provenance_warnings(notes: list[dict]) -> list[str]:
+def provenance_warnings(notes: list[dict], *, crosscheck=()) -> list[str]:
     """What, if anything, says these notes did not come from the web.
 
     Written into the dossier rather than only printed, so a later stage -- or
-    `yt doctor` -- can see that a question was answered blind.
+    `yt doctor` -- can see that a question was answered blind. A cross-check
+    pass (AUTO-134) whose web tools were denied, or that opened no page,
+    says so after them: its verdict can rest on nothing.
     """
+    out = _question_warnings(notes)
+    for k, entry in enumerate(crosscheck or (), 1):
+        if entry.get("denied"):
+            tools = sorted({str(d.get("tool", d)) if isinstance(d, dict) else str(d)
+                            for d in entry["denied"]})
+            out.append(f"{CROSSCHECK_WARNING} {k}: {', '.join(tools)} denied, so it could "
+                       "not search or open pages; its verdict rests on no page")
+        elif not entry.get("visited") and not any(
+                str(p).startswith(PASS_FAILED) for p in entry.get("problems") or []):
+            out.append(f"{CROSSCHECK_WARNING} {k}: opened no page, so it corroborates nothing")
+    return out
+
+
+def _question_warnings(notes: list[dict]) -> list[str]:
     out = []
     n = 0
     for entry in notes:
@@ -2076,6 +2477,9 @@ def write_dossier(dossier: Dossier, data: dict, downloads: list[dict]) -> list[P
            for n, q in enumerate(data["questions"], 1)]
 
     md += ["", "## Claims", ""]
+    # AUTO-134: what the independent check found, under each claim it checked.
+    checked = {claim_key(e.get("claim", "")): e for e in data.get("crosscheck") or []
+               if isinstance(e, dict)}
     for claim in data["claims"]:
         mark = {"high": "●", "medium": "◐", "low": "○"}.get(claim.get("confidence"), "·")
         number = f" **{claim['number']}**" if claim.get("number") else ""
@@ -2086,7 +2490,12 @@ def write_dossier(dossier: Dossier, data: dict, downloads: list[dict]) -> list[P
                f" confidence)"]
         if claim.get("caveat"):
             md += [f"  - ⚠ {claim['caveat']}"]
+        entry = checked.get(claim_key(claim.get("claim", "")))
+        if entry is not None:
+            md += [f"  - Independent check: {independent_line(entry)}"]
     md += ["", "`●` high · `◐` medium · `○` low confidence", ""]
+    if data.get("crosscheck_skipped"):
+        md += [f"No independent check: {data['crosscheck_skipped']}.", ""]
 
     md += ["## Sources", ""]
     md += _table([[f"[{s['title']}]({s['url']})", s.get("kind", ""),
@@ -2274,6 +2683,17 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                         "id or a local PDF, read first by the claude engine (WebFetch, "
                         "or Read for a file; refused under YT_ENGINE=codex) and kept "
                         "in idea.json")
+    from .vfx import REVIEWER_MODEL       # vfx reads this module; asked only here
+    p.add_argument("--crosscheck", type=int, default=0, metavar="N",
+                   help="check up to N key claims against sources independent of the one "
+                        "each cites: one web pass and one verdict by --reviewer-model per "
+                        "claim, after the outline (default 0: off; a wordless film skips "
+                        "it; about $0.40 a claim, TO VERIFY)")
+    flags.reviewer_model(p, default=REVIEWER_MODEL,
+                         help="the model that judges the cross-check, never the author's "
+                              f"family (default {REVIEWER_MODEL}; `pool` or sdk:<id>, one "
+                              "from another maker on the gateway engine); checked only "
+                              "with --crosscheck")
     flags.fresh(p, help="redo every stage instead of reusing cached ones")
     p.set_defaults(run=run)
     return p
@@ -2289,6 +2709,22 @@ def run(args) -> int:
         # Kept on the idea, so a later stage, or `yt run`, finds it there.
         idea.paper = paper_to_keep(asked)
         project.save_idea(idea)
+    # The cross-check's verdicts are a reading of the research model's
+    # claims (AUTO-134): never its own family, refused before anything is
+    # paid. `pool` and `sdk:<id>` are resolved to one reviewer from another
+    # maker first. Without --crosscheck no reviewer is asked, so none is checked.
+    crosscheck = max(0, getattr(args, "crosscheck", 0) or 0)
+    reviewer = getattr(args, "reviewer_model", None) or "opus"
+    pooled = None
+    if crosscheck:
+        try:
+            pooled = reviewers.resolve(args.model, reviewer)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        if pooled is None and (own := flags.own_reviewer(args.model, reviewer)):
+            print(own, file=sys.stderr)
+            return 2
     dossier = Dossier(project.root, idea, at=project.root)
     verbose = not args.quiet
     if verbose:
@@ -2300,7 +2736,8 @@ def run(args) -> int:
         shot_count=args.shots, per_shot=args.per_shot,
         asset_sources=tuple(s for s in args.asset_sources.split(",") if s),
         allow_sa=args.allow_sa, agentic_assets=args.agentic_assets,
-        user_agent=args.user_agent)
+        user_agent=args.user_agent, crosscheck=crosscheck, reviewer_model=reviewer,
+        pooled=pooled)
     try:
         data = researcher.run()
     except ClaudeError as exc:

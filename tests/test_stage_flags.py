@@ -22,7 +22,7 @@ SKILL = ROOT / "ytstudio" / "SKILL.md"
 CONCEPTS = {
     "rounds": ("--rounds", {"--revisions": "vfx"}, ("keyframe", "vfx", "probe", "script")),
     "reviewer": ("--reviewer-model", {}, ("keyframe", "vfx", "probe", "run", "script", "build",
-                                          "styles")),
+                                          "styles", "research")),
     "review budget": ("--review-budget-usd", {}, ("keyframe", "vfx", "probe", "run", "script",
                                                   "build")),
     "bar": ("--bar", {"--author-bar": "vfx"}, ("keyframe", "vfx", "probe")),

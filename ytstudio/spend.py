@@ -263,6 +263,23 @@ JOINS_REVIEW_USD = 0.5
 #: `06b-paper-again`). A guess until one real paper measures it (TO VERIFY).
 PAPER_USD = 1.0
 
+#: What `yt research --crosscheck N` adds per claim (AUTO-134): one web pass
+#: looking for independent sources at the research model and one verdict by
+#: the reviewer (`09-crosscheck-<i>`, at most one `-again`). Assumed, TO
+#: VERIFY: measure on one real film before the README states a price.
+CROSSCHECK_CLAIM_USD = 0.40
+
+
+def crosscheck_usd(root: Path | None, argv: Iterable[str] = ()) -> float:
+    """What `--crosscheck N` adds: N claims at CROSSCHECK_CLAIM_USD; 0 for
+    a value that is no number or not above 0, which checks nothing."""
+    try:
+        claims = int(_argv_value(argv, "--crosscheck", 0))
+    except (TypeError, ValueError):
+        return 0.0
+    return round(CROSSCHECK_CLAIM_USD * max(0, claims), 2)
+
+
 #: What the picture-check adds under the same flag (AUTO-98), assumed until
 #: a record measures it: the reviewer's reading of every shot's picture (and
 #: at most one `picture-check-again`) plus the author's one `revise-picture`.
@@ -384,7 +401,10 @@ def watch_usd(root: Path | None, argv: Iterable[str] = ()) -> float:
 #: the plan review (AUTO-92), the story review (AUTO-93) and the
 #: picture-check (AUTO-98), so a record written before one of them gains
 #: only what it lacks.
-FLAG_USD = {"research": {"--paper": ((PAPER_USD, "06b-paper"),)},
+FLAG_USD = {"research": {"--paper": ((PAPER_USD, "06b-paper"),),
+                         # the checker's verdicts are on dossier.json's
+                         # engine["crosscheck"] (AUTO-134), read below
+                         "--crosscheck": ((crosscheck_usd, "09-crosscheck"),)},
             "script": {"--review": ((PLAN_REVIEW_USD, "plan-review"),
                                     (story_review_usd, "review-r1"),
                                     (PICTURE_CHECK_USD, "picture-check"))},
@@ -451,6 +471,9 @@ def flag_increments(root: Path | None, stage: str, argv: Iterable[str]) -> list[
         for key in ("engine", "compare_engine"):     # compare_engine: AUTO-128
             engine = doc.get(key) if isinstance(doc, dict) else None
             rows += (engine.get("decisions") if isinstance(engine, dict) else None) or []
+            # research's checker keeps its own report under engine (AUTO-134)
+            checker = engine.get("crosscheck") if isinstance(engine, dict) else None
+            rows += (checker.get("decisions") if isinstance(checker, dict) else None) or []
         names = {re.sub(r"^pass-\d+-", "", str(d.get("name")))
                  for d in rows if isinstance(d, dict)}
         # A video comparison that runs stands in for the still pairs, which
