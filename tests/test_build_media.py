@@ -385,6 +385,20 @@ class Footage(unittest.TestCase):
         self.assertTrue(any(f.startswith("warning:") and "07-raw.webm" in f
                             and "length" in f for f in manifest["findings"]))
 
+    def test_the_brief_tells_the_editor_why_a_clip_was_not_placed(self):
+        # a matching clip too short for its shot is uncovered; the editor sees why
+        builder = self.builder(self.shots("a short splash"))
+        brief = builder.brief()
+        self.assertEqual(brief["uncovered"], ["1.1"])
+        self.assertEqual(len(brief["notes"]), 1)
+        self.assertIn("downloads/06-short.mp4", brief["notes"][0])
+        prompt = build.edit_prompt(brief)
+        self.assertIn(brief["notes"][0], prompt)
+        # with nothing to say, the brief and the prompt are as they were
+        quiet = self.builder(self.shots("the 1969 launch film")).brief()
+        self.assertNotIn("notes", quiet)
+        self.assertNotIn("Notes on the clips", build.edit_prompt(quiet))
+
     def test_the_brief_and_the_edit_prompt_carry_the_footage(self):
         builder = self.builder(self.shots("the 1969 launch film", "nothing matches this"))
         brief = builder.brief()

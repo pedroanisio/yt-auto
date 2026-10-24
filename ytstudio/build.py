@@ -1433,7 +1433,8 @@ class SceneBuilder:
         the gaps."""
         placed = timeline(self.sections, self.voice)
         media = local_media(self.root, self.dossier)
-        drawn = self._drawn(placed, media)
+        notes: list[str] = []
+        drawn = self._drawn(placed, media, notes)
         design = designer.Design.from_styles(self.styles, height=self.height)
         shots = {s.label: s for sec in self.sections for s in sec.shots}
         rows = []
@@ -1471,6 +1472,10 @@ class SceneBuilder:
             "footage": [{"path": m.path, "licence": m.licence, "credit": m.credit,
                          "about": m.about, "seconds": m.seconds}
                         for m in media if m.kind == "video"],
+            # Why a shot with a matching clip is uncovered, or placed with no
+            # known length. Only when there is something to say, so a brief
+            # with no clip warnings asks the editor what it asked before.
+            **({"notes": notes} if notes else {}),
             **({"story": dict(self.story)} if self.story else {}),
         }
 
@@ -1817,7 +1822,7 @@ class SceneBuilder:
             if credit:
                 asset.credit = credit
             if length:
-                asset.duration =round(length, 3)
+                asset.duration = round(length, 3)
             track = mixer().add_audioTrack(id=ident(f"cue-{cue_id}"), asset=asset.id)
             track.start = round(at, 3)
             track.bus = bus
@@ -2768,6 +2773,8 @@ def edit_prompt(data: dict) -> str:
         brief("Images the project has", data["images"]),
         brief("Footage the project has (path, licence, credit, about, seconds)",
               data.get("footage", [])),
+        *([brief("Notes on the clips the build matched", data["notes"])]
+          if data.get("notes") else []),
     ])
 
 
