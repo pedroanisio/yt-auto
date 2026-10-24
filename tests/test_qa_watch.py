@@ -378,9 +378,14 @@ class Prepare(unittest.TestCase):
         host = FakeHost(self)
         prep = self.prep(host)
         seen = []
-        _watch().prepare_remote(prep, while_up=lambda h, path: seen.append(
-            (h, path, [c[0] for c in host.calls], list(host.removed))))
-        self.assertEqual(seen, [("render-1", f"{prep.root}/cut.mp4", ["rsync"], [])])
+        _watch().prepare_remote(prep, while_up=lambda h, path, upload: seen.append(
+            (h, path, [c[0] for c in host.calls], list(host.removed), upload)))
+        self.assertEqual([s[:4] for s in seen],
+                         [("render-1", f"{prep.root}/cut.mp4", ["rsync"], [])])
+        # the one upload's size and time go with it, for rhythm.json
+        upload = seen[0][4]
+        self.assertEqual(upload["upload_bytes"], Path(prep.cut).stat().st_size)
+        self.assertGreaterEqual(upload["upload_seconds"], 0.0)
         self.assertEqual(host.removed, [("render-1", prep.root)])
 
     def test_prepare_refused_under_no_remote(self):
@@ -919,7 +924,10 @@ class Run(Watching):
         kept = json.loads((self.root / "qa" / "pass-01" / "rhythm.json").read_text())
         self.assertEqual(kept["scan"]["upload"], "reused")
         self.assertEqual(kept["scan"]["host"], "render-1")
-        self.assertEqual(kept["cv"]["basis"], "events")
+        self.assertEqual(kept["scan"]["upload_bytes"],
+                         (self.root / "video.mp4").stat().st_size)
+        self.assertIn("upload_seconds", kept["scan"])
+        self.assertIsNotNone(kept["cv"]["events"])
         self.assertFalse([n for n in self.card()["not_evidenced"]
                           if n.startswith("rhythm: hold")])
 

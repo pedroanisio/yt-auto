@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -738,6 +739,32 @@ class RhythmStage(StageCase):
         self.assertNotIn("editing_pacing", card["capped"])
         self.assertTrue(any("editing_pacing" in r and "metronomic" in r
                             and "cuts and builds vary" in r for r in card["bar"]), card["bar"])
+
+    def test_a_scan_the_link_dropped_is_not_evidenced(self):
+        # The real scan_remote, its ssh exiting 255 after half the film's
+        # scores, the hook held still in that half: nothing render-side is
+        # measured from it, and no hold is filed or passed.
+        from tests import hermetic
+        from ytstudio import render
+        self.current_cut()
+        hermetic.fake_remote(self, RS_RENDER_HOSTS="render-1")
+        half = "".join(f"frame:{k} pts:{k} pts_time:{k / 4:g}\n"
+                       f"lavfi.scene_score={0.0 if k < 36 else 0.05}\n" for k in range(33))
+
+        def run(argv, **kw):
+            if argv[0] == "ssh":
+                return subprocess.CompletedProcess(argv, 255, "", half)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        qa.RHYTHM_SCAN = rhythm.scan_remote
+        qa.RENDERER = self.renderer(frozen_hook=False)
+        with mock.patch.object(rhythm.subprocess, "run", run), \
+                mock.patch.object(render, "remote_host", lambda args, job: "render-1"), \
+                mock.patch.object(render, "remove_remote", lambda host, path, **k: None), \
+                mock.patch.dict(render._HOSTS, {"render-1": render.Host(
+                    addr="render-1", ffprobe="/opt/ff/ffprobe")}), \
+                mock.patch.dict(rhythm.RHYTHM["calibrated"], {"value": True}):
+            qa.run(self.args())
+        self.assert_render_measures_not_evidenced("exit 255")
 
     def assert_render_measures_not_evidenced(self, why):
         card = json.loads((self.root / "qa" / "pass-01" / "scorecard.json").read_text())

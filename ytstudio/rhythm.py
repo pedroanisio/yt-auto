@@ -374,12 +374,17 @@ def _host_ffmpeg(host: str) -> str:
 
 
 def scan_remote(cut, args, *, slug: str = "qa",
-                remote_cut: tuple[str, str] | None = None) -> dict:
+                remote_cut: tuple[str, str] | None = None,
+                upload: dict | None = None) -> dict:
     """The cut's scene score per frame, scored on a render host. The cut
     goes up once (rsync streams it from disk), one ssh runs ffmpeg, the
     scores come back on stderr, and the host's directory is removed
     whatever happened. `remote_cut` (host, path) is a cut already on a host,
-    scored there with no upload of its own. Returns {"scores": [(t, s)],
+    scored there with no upload of its own; `upload` is then that cut's
+    upload as the one who sent it measured it (upload_seconds,
+    upload_bytes), recorded as the scan's. A scan that exits non-zero is
+    an error even when it printed scores: a dropped link or a killed ffmpeg
+    leaves part of the film, never the whole of it. Returns {"scores": [(t, s)],
     "scan": {host, fps, width, frames, upload, upload_seconds, upload_bytes,
     scan_seconds, render_cuts}}. RhythmError when nothing can be scanned:
     under YT_NO_REMOTE nothing is launched at all."""
@@ -397,8 +402,10 @@ def scan_remote(cut, args, *, slug: str = "qa",
     try:
         ffmpeg = _host_ffmpeg(host)
         if remote_cut:
-            path, upload = remote_cut[1], {"upload": "reused", "upload_seconds": 0.0,
-                                           "upload_bytes": 0}
+            path, upload = remote_cut[1], {
+                "upload": "reused",
+                "upload_seconds": round(float((upload or {}).get("upload_seconds") or 0), 2),
+                "upload_bytes": int((upload or {}).get("upload_bytes") or 0)}
         else:
             path = f"{root}/cut.mp4"
             started, sent = time.monotonic(), True
@@ -419,6 +426,10 @@ def scan_remote(cut, args, *, slug: str = "qa",
             raise RhythmError(f"no ffmpeg on render host {host} (not on PATH, not beside "
                               "its ffprobe)")
         scores = parse_scene_scores(done.stderr or "")
+        if done.returncode != 0:
+            raise RhythmError(f"the scan on {host} stopped (exit {done.returncode}) after "
+                              f"{len(scores)} scene score(s): "
+                              f"{(done.stderr or '').strip()[-200:]}")
         if not scores:
             raise RhythmError(f"the scan on {host} returned no scene scores (exit "
                               f"{done.returncode}): {(done.stderr or '').strip()[-200:]}")
@@ -518,17 +529,36 @@ def _gate(severity: str, why: str) -> tuple[str, str]:
     return "minor", f"{why} {UNCALIBRATED}"
 
 
+def coverage(scores, duration: float, fps: float) -> tuple[float, bool]:
+    """How far into the film the scores reach, and whether that is the
+    whole film: the last frame within two frames of the end. A scan cut
+    short (a timeout, a killed ffmpeg) is not the film: a hold after its
+    last frame would be missing and the windows it never reached would
+    count as still."""
+    covered = max((t for t, _ in scores or []), default=0.0)
+    return round(covered, 3), duration <= 0 or covered >= duration - 2.0 / float(fps) - 1e-9
+
+
 def measure(build: dict | None, takes, scores=None, *, fps: float | None = None,
             edge: set | None = None, scan: dict | None = None,
-            unscanned: tuple[str, str] | None = None) -> dict:
+            unscanned: tuple[str, str] | None = None, rescan: str = "") -> dict:
     """The rhythm block of one pass: every measure, the findings it files
     (qa's mechanical shape plus `scope`, and `basis` or `section`), and what
     it could not evidence. `scores` is the render's (t, score) series, or
     None when there was no scan; `unscanned` is then (why, command), named
-    under not_evidenced for the hold and the opening. Nothing missing is
-    scored as a pass or as a failure."""
+    under not_evidenced for the hold and the opening. Scores that stop
+    short of the film's end are no scan: the hold and the opening are
+    not_evidenced, with `rescan` as the command, and the scan block says
+    how far it got. Nothing missing is scored as a pass or as a failure."""
     fps = float(fps or value("scan_fps"))
     shots, duration = _shots(build), duration_of(build)
+    if scores is not None:
+        covered, complete = coverage(scores, duration, fps)
+        scan = dict(scan or {}, covered_seconds=covered, complete=complete)
+        if not complete:
+            unscanned = (f"the scan covered {covered:.1f} of {duration:.1f} s: the rest of "
+                         "the film has no scene scores", rescan)
+            scores = None
     first = shots[0] if shots else None
     edge = set(edge) if edge is not None else edge_labels(build)
     takes = [t for t in takes or [] if isinstance(t, dict)]
@@ -543,7 +573,6 @@ def measure(build: dict | None, takes, scores=None, *, fps: float | None = None,
     events = change_events(build, scores, fps) if scanned else []
     gaps = intervals_of(events, duration) if scanned else []
     cv_events = interval_cv(gaps) if scanned else None
-    basis = "events" if scanned else "shots"
 
     def metronomic(cv: float, count: int, on: str, severity: str, why: str) -> dict:
         return _finding(
@@ -575,6 +604,12 @@ def measure(build: dict | None, takes, scores=None, *, fps: float | None = None,
     elif scanned and cv_events is not None and cv_events < floor:
         severity, why = _gate("blocking", told)
         found.append(metronomic(cv_events, len(gaps), "events", severity, why))
+
+    # The basis is the one that decided: the change events only once the
+    # scan is calibrated (or when they filed the finding), else the shots.
+    filed = [f["basis"] for f in found if f["kind"] == "metronomic"]
+    basis = filed[0] if filed else (
+        "events" if scanned and cv_events is not None and calibrated() else "shots")
 
     # -- holds under narration and the opening -----------------------------
     longest, under = None, []

@@ -1828,13 +1828,15 @@ def rhythm_while_up(args, project, into: dict):
     """The callback `--watch` runs while its cut is on a render host
     (watch.prepare_remote's `while_up`): the rhythm scan reads that cut
     there, so the cut goes up once, and what it got (or why it failed) is
-    kept in `into` for rhythm_pass. It never raises: the watch goes on."""
+    kept in `into` for rhythm_pass. `upload` is the watch's own measure of
+    that one upload, recorded as the scan's. It never raises: the watch
+    goes on."""
     video = project.path("video")
 
-    def scan(host: str, path: str) -> None:
+    def scan(host: str, path: str, upload: dict | None = None) -> None:
         try:
             into["got"] = RHYTHM_SCAN(video, args, slug=Path(project.root).name,
-                                      remote_cut=(host, path))
+                                      remote_cut=(host, path), upload=upload)
         except rhythm.RhythmError as exc:
             into["error"] = str(exc)
     return scan
@@ -1882,7 +1884,8 @@ def rhythm_pass(args, project, build: dict, voice: dict | None, pass_dir: Path, 
                 unscanned = (str(exc), f"{rerun} (with a render host: RS_RENDER_HOSTS, "
                                        "and without YT_NO_REMOTE)")
     block = rhythm.measure(build, takes, scores, fps=(scan or {}).get("fps"), scan=scan,
-                           unscanned=unscanned)
+                           unscanned=unscanned,
+                           rescan=f"{rerun} (the scan stopped short; run it again)")
     record = dict(block, scores=[list(pair) for pair in scores] if scores else None)
     if not (reused and isinstance(earlier, dict)):
         write_json(record_file, record)
@@ -1906,8 +1909,8 @@ def rhythm_lines(block: dict) -> list[str]:
              f"by change event (basis {cv.get('basis', '?')}, floor {cv.get('floor', '?')})",
              "- longest hold under narration: " + (
                  f"{hold['seconds']:.1f} s ({hold['start']:.1f}-{hold['end']:.1f} s, shot "
-                 f"{hold['shot']})" if hold else "none over the bound" if block.get("scan")
-                 else "not measured"),
+                 f"{hold['shot']})" if hold else "none over the bound"
+                 if (block.get("scan") or {}).get("complete") else "not measured"),
              f"- opening: {num(opening.get('rate'), '{:.1f}')} changes/min against a film "
              f"median of {num(opening.get('median'), '{:.1f}')}"]
     for row in block.get("sections") or []:

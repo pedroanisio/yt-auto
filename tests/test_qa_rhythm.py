@@ -460,6 +460,33 @@ class Scan(unittest.TestCase):
         self.assertEqual(scan["upload_bytes"], FIXTURE.stat().st_size)
         self.assertIn("upload_seconds", scan)
 
+    def test_a_scan_cut_short_is_an_error_even_with_scores(self):
+        # ssh exits 255 when the link drops mid-scan: what it printed before
+        # that is part of the film, never a whole scan (AUTO-141 review).
+        calls, removed = self.faked()
+        text = FIXTURE.read_text(encoding="utf-8")
+        half = text[:text.index("frame:4 ")]               # frames 0-3, then the link went
+        self.assertEqual(len(rhythm.parse_scene_scores(half)), 4)
+
+        def dropped(argv, **kw):
+            calls.append(list(argv))
+            if argv[0] == "ssh":
+                return subprocess.CompletedProcess(argv, 255, "", half)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        with mock.patch.object(rhythm.subprocess, "run", dropped):
+            with self.assertRaises(rhythm.RhythmError) as caught:
+                rhythm.scan_remote(FIXTURE, None, slug="film")
+        self.assertIn("exit 255", str(caught.exception))
+        self.assertEqual(len(removed), 1)               # the directory still goes
+
+    def test_a_cut_the_watch_sent_records_that_upload(self):
+        calls, removed = self.faked()
+        got = rhythm.scan_remote(FIXTURE, None, remote_cut=("render-1", "/tmp/yt-render/f/w/cut.mp4"),
+                                 upload={"upload_seconds": 3.25, "upload_bytes": 4096})
+        self.assertEqual([c[0] for c in calls], ["ssh"])
+        self.assertEqual((got["scan"]["upload"], got["scan"]["upload_seconds"],
+                          got["scan"]["upload_bytes"]), ("reused", 3.25, 4096))
+
     def test_a_cut_already_on_the_host_is_not_sent_again(self):
         calls, removed = self.faked()
         got = rhythm.scan_remote(FIXTURE, None, remote_cut=("render-1", "/tmp/yt-render/f/w/cut.mp4"))
@@ -531,7 +558,10 @@ class Record(unittest.TestCase):
                                fps=FPS, scan={"host": "h", "fps": FPS, "width": 320,
                                               "upload_seconds": 1.5, "upload_bytes": 10})
         self.assertEqual(block["shot_lengths"], [12.0, 20.0, 30.0, 25.0, 33.0])
-        self.assertEqual(block["cv"]["basis"], "events")
+        # uncalibrated, the shots decide and the record says so
+        self.assertEqual(block["cv"]["basis"], "shots")
+        self.assertIsNotNone(block["cv"]["events"])
+        self.assertEqual(block["scan"]["covered_seconds"], 119.75)
         self.assertEqual(block["longest_hold"]["seconds"], 10.0)
         self.assertEqual(block["longest_hold"]["shot"], "1.3")
         self.assertIsNotNone(block["opening"]["rate"])
@@ -544,6 +574,44 @@ class Record(unittest.TestCase):
         self.assertEqual(block["scan"]["upload_bytes"], 10)
         self.assertEqual(block["not_evidenced"], [])
         json.dumps(block)
+
+    def test_the_basis_is_the_one_that_decided(self):
+        build = film(LENGTHS)
+        scores = series(120.0, quiet=[(40.25, 50.0)])
+        with calibrated(True):
+            on = rhythm.measure(build, narrated(build), scores, fps=FPS)
+        self.assertEqual(on["cv"]["basis"], "events")
+        equal = film([4, 4, 4, 4, 4])
+        with calibrated(False):
+            off = rhythm.measure(equal, [], series(20.0, base=QUIET, onsets=(1.0, 9.0, 10.5)),
+                                 fps=FPS)
+        filed = kinds(off["findings"], "metronomic")
+        self.assertEqual([f["basis"] for f in filed], ["shots"])
+        self.assertEqual(off["cv"]["basis"], "shots")
+
+    def test_a_scan_that_stops_short_of_the_end_evidences_no_render_measure(self):
+        # Half a film of scores (the scan timed out, ffmpeg was killed): a
+        # hold after that point would not exist and the unscanned windows
+        # would count as still, so nothing render-side is measured from it.
+        build = film(LENGTHS, functions={1: "hook"})
+        with calibrated(True):
+            block = rhythm.measure(build, narrated(build),
+                                   series(60.0, quiet=[(1.25, 11.0), (40.25, 50.0)]),
+                                   fps=FPS, scan={"host": "h", "fps": FPS},
+                                   rescan="yt qa --project p")
+        rows = [r for r in block["not_evidenced"] if r["measure"] != "wpm"]
+        self.assertEqual({r["measure"] for r in rows}, {"hold", "slow-opening"})
+        for row in rows:
+            self.assertIn("scan covered 59.8 of 120.0 s", row["why"])
+            self.assertEqual(row["command"], "yt qa --project p")
+        self.assertEqual([f for f in block["findings"]
+                          if f["kind"] in ("hold", "slow-opening")], [])
+        self.assertIsNone(block["longest_hold"])
+        self.assertIsNone(block["opening"]["rate"])
+        self.assertIsNone(block["cv"]["events"])
+        self.assertEqual(block["cv"]["basis"], "shots")
+        self.assertEqual(block["scan"]["covered_seconds"], 59.75)
+        self.assertIs(block["scan"]["complete"], False)
 
     def test_with_no_scan_the_render_measures_are_not_evidenced(self):
         build = film(LENGTHS)
