@@ -261,6 +261,28 @@ class ReviewerRecord(ContinuityCase):
         world.FakeEngine.reviews = [dict(BREAK)]
         self.assertTrue(vfx.judged_apart(self.planner.continuity(authored)))
 
+    def test_a_sections_run_judges_continuity_again_and_its_verdict_stands(self):
+        # A --sections run re-authors a section, so the cached verdict on the
+        # old film no longer holds: continuity is asked again, and the new
+        # verdict (here: no break) is the one QA reads next.
+        authored = self.author()
+        world.FakeEngine.reviews = [dict(BREAK)]
+        self.assertEqual(self.planner.continuity(authored)["breaks"], BREAK["breaks"])
+        idea = Idea(title="T", genre="g", description="d")
+        bundle = {"idea": idea, "outline": {}, "claims": [], "assets": [], "premise": ""}
+        self.planner = vfx.VfxPlanner(
+            bundle, Dossier(self.root, idea, at=self.root), self.ws, model="sonnet",
+            sections=self.sections, revisions=0, author_bar=0.0, verbose=False,
+            sections_only={2})
+        self.assertIn("12-continuity", self.planner._stale)
+        again = self.author()
+        mended = {"one_film": True, "score": 9, "summary": "one film", "breaks": [],
+                  "monotony": []}
+        world.FakeEngine.reviews = [mended]
+        result = self.planner.continuity(again)
+        self.assertEqual(world.FakeEngine.reviews, [])        # the reviewer was asked
+        self.assertEqual((result["one_film"], result["breaks"]), (True, []))
+
     def test_the_engine_named_is_the_one_the_reviewer_ran_on(self):
         authored = self.author()
         world.FakeEngine.reviews = [dict(BREAK)]
