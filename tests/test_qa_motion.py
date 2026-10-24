@@ -840,6 +840,73 @@ class BuildStage(StageCase):
         self.assertFalse(any(n.startswith("builds:") for n in card["not_evidenced"]))
 
 
+TEXT_WORLD = """<scene version="1.3">
+  <assets>
+    <text id="t-super" text="The paint hid the rust on every last joint" width="900" height="120"/>
+    <text id="t-quote" text="We knew it would fail one day" width="900" height="120"/>
+    <text id="t-gone" text="a label the camera never once turns to see" width="900" height="120"/>
+  </assets>
+  <symbols>
+    <symbol id="world-a" width="640" height="360">
+      <layer id="l-super" asset="t-super"/>
+      <layer id="quote-1" asset="t-quote"/>
+      <layer id="l-gone" asset="t-gone"/>
+    </symbol>
+  </symbols>
+</scene>
+"""
+
+
+class TextStage(StageCase):
+    """AUTO-145 end to end: `yt qa` counts the words the rendered document
+    puts on screen, from the scene QA renders and the world it includes,
+    and files text-dense from them with the screenplay's supers and the
+    engine's off-camera ids."""
+
+    def setUp(self):
+        super().setUp()
+        (self.root / "vfx" / "v01").mkdir(parents=True)
+        (self.root / "vfx" / "v01" / "a.scene.xml").write_text(TEXT_WORLD)
+        (self.root / "scene.xml").write_text(
+            '<scene version="1.3"><project width="640" height="360" fps="30" '
+            'duration="16.5"/><composition><include id="shot-1.2" start="3" end="7" '
+            'src="vfx/v01/a.scene.xml" symbol="world-a"/></composition></scene>')
+        (self.root / "script.json").write_text(json.dumps({"sections": [{"shots": [
+            {"label": "1.2", "narration": "It rusted.",
+             "on_screen_text": ["The paint hid the rust on every last joint"]}]}]}))
+        (self.root / "render.json").write_text(json.dumps({
+            "diagnostics": [], "result": {"outputs": [{"findings": [
+                {"code": "X-rs-scene-render-3D-OFF-CAMERA", "severity": "warning",
+                 "time": [3.0, 7.0],
+                 "message": "text shot-1.2/l-gone is drawn from 3.000 s to 7.000 s and "
+                            "is never inside the camera's view"}]}]}}))
+        self._geometry = qa.GEOMETRY
+        qa.GEOMETRY = lambda args, project, scene, shots: {"status": "skipped",
+                                                           "why": "a test"}
+        self.addCleanup(setattr, qa, "GEOMETRY", self._geometry)
+        steady_cutting(self)
+
+    def test_a_nine_word_label_is_one_minor_text_dense_naming_its_node(self):
+        qa.RENDERER = self.renderer(frozen_hook=False)
+        qa.run(self.args(frame_limit=None))
+        pass_dir = self.root / "qa" / "pass-01"
+        samples = json.loads((pass_dir / "samples.json").read_text())
+        self.assertTrue(all("text" in s for s in samples), samples)
+        [inside] = [s for s in samples if s["label"] == "1.2"]
+        self.assertEqual(sorted(inside["text"]["ids"]),
+                         ["shot-1.2/l-super", "shot-1.2/quote-1"])   # not the unseen one
+        self.assertEqual(inside["text"]["words"], 9)                 # not the quote
+        card = json.loads((pass_dir / "scorecard.json").read_text())
+        [f] = [f for f in card["mechanical"] if f["kind"] == "text-dense"]
+        self.assertEqual((f["shot"], f["severity"], f["owner"]), ("1.2", "minor", "vfx"))
+        self.assertIn("`shot-1.2/l-super`", f["problem"])
+        self.assertIn("the screenplay asked for this super; rule:wall-of-text already "
+                      "flagged it", f["problem"])
+        self.assertNotIn("quote-1", f["problem"])
+        self.assertNotIn("l-gone", f["problem"])
+        self.assertEqual(card["scores"]["visual_quality"], 9.2)      # advisory: no cap
+
+
 # --------------------------------------------------------------------------- #
 # the rhythm step (AUTO-141)
 # --------------------------------------------------------------------------- #
