@@ -107,6 +107,16 @@ class UnreviewedSections(DeliveryCase):
         self.vfx([{"n": 3, "score": None, "inherited": {"score": 7}, "findings": []}])
         self.assertTrue(self.warnings()[0].fix.endswith("--sections 3"))
 
+    def test_the_approved_look_is_a_note_that_does_not_send_it_back_as_lost(self):
+        # never scored, so no review was lost; re-authoring it is the operator's call
+        self.vfx([{"n": 1, "look": True, "score": None, "reviewed": False,
+                   "inherited": {"score": None, "review": None}, "findings": []}])
+        self.assertEqual(self.warnings(), [])
+        notes = [f for f in self.report().findings
+                 if f.area == "vfx" and f.level == "note" and "approved look" in f.message]
+        self.assertEqual(len(notes), 1)
+        self.assertIn("yt keyframe --fresh", notes[0].fix)
+
     def test_records_without_the_fields_give_no_warning(self):
         self.vfx([{"n": 1, "score": 8, "findings": []}, {"n": 2, "score": 7, "findings": []}])
         self.assertEqual(self.warnings(), [])

@@ -1268,11 +1268,22 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
                        "re-author the section(s) named; vfx.json `continuity` has each fix")
         # A section carried after its inputs changed holds a review of other
         # inputs (`inherited`); nothing re-reviews it but authoring it again.
+        # The approved look (`look`) was never scored: it lost no review, and
+        # re-authoring it is the operator's call, so it is a note.
         for rec in vfx.get("authored") or []:
             if not isinstance(rec, dict) or rec.get("n") is None:
                 continue
-            if rec.get("reviewed") is False or rec.get("inherited"):
-                was = (rec.get("inherited") or {}).get("score")
+            if not (rec.get("reviewed") is False or rec.get("inherited")):
+                continue
+            was = (rec.get("inherited") or {}).get("score")
+            if rec.get("look") and was is None:
+                report.add("note", "vfx", f"section {rec['n']} is the approved look, carried "
+                           "as approved; its inputs (shots, timings, effects, tokens) changed "
+                           "since it was made, or it predates their record (`inputs_sha256`)",
+                           "if it no longer fits the script, make the look again "
+                           "(`yt keyframe --fresh`) or re-author it in the film "
+                           f"(`{_cmd('vfx', project, '--sections', str(rec['n']))}`)")
+            else:
                 report.add("warn", "vfx", f"section {rec['n']} was carried forward after its "
                            "inputs changed and has no review of them"
                            + (f" (its {was:g}/10 judged the earlier inputs)"
