@@ -163,6 +163,10 @@ def _register_run(sub, parents: list) -> None:
                               "gateway engine, reaches the script's review only")
     flags.review_budget(p, default=None,
                         help=f"what one review may cost (default {vfx.REVIEW_USD:g})")
+    p.add_argument("--paper", metavar="REF",
+                   help="the paper the film explains (an http(s) URL, a DOI, an arXiv id "
+                        "or a local PDF), planted in idea.json before the first stage and "
+                        "handed to research; refused under YT_ENGINE=codex")
     p.set_defaults(run=_run_pipeline)
 
 #: Stages that call no model: `yt run` hands them the project and the quiet
@@ -189,10 +193,14 @@ def run_extras(args, *, redo: set) -> dict[str, list[str]]:
     script_reviewer = named + cap
     reviewer = ([] if reviewers.is_gateway(getattr(args, "reviewer_model", None))
                 else named) + cap
+    # The paper (AUTO-131) is planted in idea.json too; handed to research,
+    # the estimate prices its read and digest.
+    paper = ["--paper", str(args.paper)] if getattr(args, "paper", None) else []
     return {
         # --redo means run again, which for research means ignoring its
         # cached stages too, or the "rerun" would just replay them.
-        "research": ["--fresh"] if redo & {"research", "all"} and not quick else [],
+        "research": (["--fresh"] if redo & {"research", "all"} and not quick else [])
+                    + paper,
         "styles": ["--rich"] + ([] if quick else ["--deliberate", "critique"]),
         "script": ["--minutes", str(args.minutes)]
                   + ([] if quick else ["--polish", "--verify", "--review"] + script_reviewer),
@@ -390,6 +398,9 @@ def _run_pipeline(args) -> int:
         print(f"error: unknown stage(s) {', '.join(sorted(unknown))}; pick from "
               f"{', '.join(PIPELINE)}", file=sys.stderr)
         return 1
+    if getattr(args, "paper", None) and (why := research.paper_refusal()):
+        print(f"error: {why}", file=sys.stderr)
+        return 2
     # keyframe and vfx review, and the script's plan review unless --quick: a
     # model never grades its own work, so a run that would reach them is
     # refused here, before any stage spends.
@@ -426,6 +437,10 @@ def _run_pipeline(args) -> int:
         return 2
 
     idea, project = workspace.resolve(args)
+    if getattr(args, "paper", None):
+        # Planted before the first stage, so a later `yt run` finds it.
+        idea.paper = str(args.paper).strip()
+        project.save_idea(idea)
     parser = build_parser()
     base = ["--project", str(project.root), "--model", args.model]
     if args.effort:

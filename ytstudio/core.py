@@ -149,6 +149,10 @@ class Idea:
     #: `ideas.TITLE_CONCRETE`); the sort reads only the score.
     curiosity: str = ""
     title_concrete: str = ""
+    #: The paper the film explains (`yt research --paper`, AUTO-131): an
+    #: http(s) URL, a DOI, an arXiv id or a local PDF path. Empty for a film
+    #: that is not about one paper, whose idea.json then never names it.
+    paper: str = ""
 
     @classmethod
     def from_raw(cls, raw: dict) -> Idea:
@@ -161,7 +165,7 @@ class Idea:
             clean.setdefault("description", "")
         for key in ("title", "genre", "description", "hook", "length", "why",
                     "question", "stakes", "viewer_belief", "promise",
-                    "curiosity", "title_concrete"):
+                    "curiosity", "title_concrete", "paper"):
             if key in clean:
                 clean[key] = str(clean[key]).strip()
         return cls(**clean)
@@ -176,6 +180,8 @@ class Idea:
             bits.append(f"Target length: {self.length}")
         if self.keywords:
             bits.append(f"Search intent: {', '.join(self.keywords)}")
+        if self.paper:
+            bits.append(f"Paper: {self.paper}")
         return "\n".join(bits)
 
 

@@ -46,6 +46,7 @@ from claude_engine import ClaudeError
 from .core import Idea, read_json, timecode, wrap, write_json
 from .ideas import CHANNEL_STYLES, style_brief
 from . import flags, harness, house, narrative, reviewers, spend, workspace
+from .research import claim_key, same_paper
 
 #: Narration pace. 150 wpm is an unhurried documentary read; 180 is brisk.
 DEFAULT_WPM = 150
@@ -1011,8 +1012,7 @@ def research_block(data: dict, *, limit: int = 60) -> str:
     # loses the support for a beat it must write, and the fact-check flags
     # the line as unsourced when the dossier holds its source. The other
     # slots go to the best sourced of the rest.
-    def key(text: str) -> str:
-        return " ".join(str(text).lower().split())[:120]
+    key = claim_key
 
     used = {key(c) for section in (data.get("outline") or {}).get("sections", [])
             for c in section.get("claims_used", [])}
