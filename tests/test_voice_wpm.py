@@ -2,6 +2,8 @@
 voice` and `yt doctor` show the read's rate before a render is paid for,
 computed by the same rhythm.section_wpm `yt qa` files its findings from."""
 
+import contextlib
+import io
 import tempfile
 import unittest
 from dataclasses import asdict
@@ -46,6 +48,22 @@ class BySection(unittest.TestCase):
         rows = voice.summarise([take(1, "1.1", "One", 20, 6.0)], layout="sequential")
         self.assertEqual(voice.drift_by_section(rows["by_section"]),
                          {"One": {"planned": 6, "spoken": 6.0, "takes": 1, "drift": 0.0}})
+
+
+class PrintVoice(unittest.TestCase):
+    def test_yt_voice_shows_each_sections_wpm_on_its_header(self):
+        takes = [take(1, "1.1", "One", 20, 6.0),
+                 take(2, "2.1", "Three", 20, 8.0, timing="estimated")]
+        data = voice.summarise(takes, layout="sequential")
+        data.update(idea={"title": "T"}, engine="kokoro", voice="af", timing=["exact"])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            voice.print_voice(data, takes)
+        heads = [line.strip() for line in out.getvalue().splitlines()
+                 if line.strip().startswith(("One", "Three"))]
+        self.assertEqual(len(heads), 2, out.getvalue())
+        self.assertIn("200 wpm (exact)", heads[0])
+        self.assertIn("150 wpm (estimated)", heads[1])
 
 
 class Doctor(unittest.TestCase):
