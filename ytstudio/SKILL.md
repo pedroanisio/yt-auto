@@ -460,16 +460,23 @@ the plan's ledger, its questions' `opened_in`/`closed_in` and the section's
 `opens`/`closes`, has open and close nothing) and, with `--review`,
 `rule:unanswered-by-reader` (important: a question a shot says it answers
 that the cold reader's `cold-read-answers` did not list; one no shot answers
-is the open loop alone). The important flags go to the writer with the
-figures said twice in one `revise-ledger` decision, and the reader's in
+is the open loop alone) and `rule:unexplained-term` (AUTO-138: a term the
+cold reader lists that a line says, on the first line that says it, whole
+words, case folded; important on a lay plan, minor, a warning never sent,
+on an enthusiast, expert or unset audience; a term no line says stays only
+in script.md). The important flags go to
+the writer with the figures said twice in one `revise-ledger` decision,
+and the reader's (unanswered questions and lay terms) in
 `revise-ledger-2` after the story review. For each line flagged about a
 question the writer names the flagged questions the line answers as it
 leaves it (`closes`, `script.LEDGER_REVISE_SCHEMA`): that marks the line or
 takes its mark off, and the ledger is measured again; a changed line that
 names none answers nothing, since the same line can carry a figure's flag.
-A reader's flag is answered by a changed line that names its question; one
-kept carries its reason. Both hold for that line only: a section the story
-review writes again in its place is measured afresh, and a redraft's
+A reader's flag is answered by a changed line that names its question, and
+a term's by a changed line alone (a definition keeps the word, and the
+cold read is not asked again); one kept carries its reason. Both hold for
+that line only: a section the story review writes again in its place is
+measured afresh, and a redraft's
 `note:` lines join the findings only when its round stands. What stands
 is a `warning:` in script.json's `findings` and blocks nothing; under
 `--report-only` the ledger's flags are recorded, not revised. What counts as

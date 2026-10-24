@@ -849,12 +849,15 @@ unless it is left open on purpose), `rule:closed-unopened` (an answer
 before the question was raised), `rule:raises-nothing` (a section the
 ledger has open and close nothing, minor) and, with `--review`,
 `rule:unanswered-by-reader` (an answer a writer marked that the cold reader
-did not hear). The important ones go back to the writer with the figures
-said twice (`revise-ledger`; the reader's in `revise-ledger-2`), and the
-writer names the questions each flagged line answers as it leaves it
-(`closes`): a line that changed is no answer by itself. What stands is a
-warning, and script.json's `questions` names each question's `opened_at`
-and `closed_at` shot labels.
+did not hear) and `rule:unexplained-term` (AUTO-138: a term the cold reader
+needed and was never told, on the first line that says it; important on a
+lay plan, otherwise minor). The important ones go back to the writer with
+the figures said twice (`revise-ledger`; the reader's, questions and lay
+terms, in `revise-ledger-2`), and the writer names the questions each
+flagged line answers as it leaves it (`closes`): a line that changed is no
+answer by itself, except to a term, whose definition keeps the word. What
+stands is a warning, and script.json's `questions` names each question's
+`opened_at` and `closed_at` shot labels.
 
 After the polish the narration is measured against `script.RULES`, each a
 bound in `script.BOUNDS` with the corpus rule it comes from

@@ -1089,8 +1089,59 @@ class QuestionLedger:
 
 def _ledger_key(flag: dict) -> tuple:
     """What a ledger flag is about, kept across renumbering: its rule and
-    its question, or its section for a section's flag."""
-    return (flag["rule"], flag.get("question") or flag.get("section", 0))
+    its question, its term for a term's flag, or its section for a
+    section's flag."""
+    return (flag["rule"], flag.get("question") or flag.get("term")
+            or flag.get("section", 0))
+
+
+def term_findings(plan: dict, sections: list[Section],
+                  cold_read: dict | None = None) -> list[dict]:
+    """The cold reader's unexplained terms as `rule:unexplained-term` flags
+    (AUTO-138), in question_findings' shape with the `term` and the
+    `section` they fall in.
+
+    The reader is told nothing but the narration and lists every term it
+    was never given (judging 14); attention 24 asks for the terms a segment
+    depends on to be taught before they are used. Each term goes on the
+    first shot whose line says it (said_in, case folded): that is where a
+    definition belongs. A term no line says is not flagged; it stays in
+    script.md as the reader said it. Terms that fold to the same words are
+    one flag. Only a lay plan's flag is important: AUDIENCE_BRIEF tells a
+    lay plan's writer to define every term, and an enthusiast's to leave
+    the field's common terms undefined, which a cold reader knows none of;
+    an expert's or a plan with no audience (given no brief at all) is
+    minor, a warning never sent. Unlike question_findings this reads no
+    ledger, so a plan written before AUTO-90 is measured too; there is
+    nothing to measure without a reading, or when the reading failed."""
+    cold = cold_read if isinstance(cold_read, dict) else {}
+    terms = cold.get("unexplained_terms")
+    if not cold or cold.get("failed") or not isinstance(terms, list):
+        return []
+    lay = str((plan or {}).get("audience") or "") == "lay"
+    placed = [(index, shot) for index, sec in enumerate(sections, 1) for shot in sec.shots]
+    out: list[dict] = []
+    seen: set[str] = set()
+    for raw in terms:
+        term = " ".join(str(raw or "").split())
+        folded = term.casefold()
+        if not folded or folded in seen:
+            continue
+        seen.add(folded)
+        where = next(((index, shot) for index, shot in placed
+                      if said_in(folded, (shot.narration or "").casefold())), None)
+        if where is None:
+            continue
+        index, shot = where
+        flag = _flag("rule:unexplained-term", shot,
+                     f"says \"{term}\", which a first-time reader of the narration "
+                     "alone needed and was never told",
+                     "say what it is in plain words where it is first said, or use a "
+                     "plainer word") | {"term": folded, "section": index}
+        if not lay:
+            flag |= {"tier": "minor", "severity": _SEVERITY["minor"]}
+        out.append(flag)
+    return out
 
 
 def question_findings(plan: dict, sections: list[Section],
@@ -3952,9 +4003,11 @@ class Screenwriter:
         writer in one decision, `name`: the later mention of a figure two
         sections both said (`figures`), and the question ledger's important
         flags (`question_findings`, with the cold reader's answers when
-        `cold_read` is given; AUTO-96), each on the shot where it can be
-        fixed. Under `fix` False (`--report-only`) the ledger's flags are
-        only recorded; the figures are reworded as before.
+        `cold_read` is given; AUTO-96) and, from that reading too, a lay
+        plan's terms the reader was never told (`term_findings`, AUTO-138),
+        each on the shot where it can be fixed. Under `fix` False
+        (`--report-only`) the ledger's flags are only recorded; the figures
+        are reworded as before.
 
         What a line answers is the writer's word, never that the line
         changed: one line can carry a figure flag and a question flag, and a
@@ -3966,7 +4019,10 @@ class Screenwriter:
         reader's report cannot be read again here, so a changed line that
         names its question answers the reader's flag for that line, and a
         line kept with a reason keeps its flag, with the reason, in the
-        findings. Both hold only while that line is the flag's line
+        findings. A term is no question and has no mark to name: a changed
+        line answers it, since a definition keeps the word and the stale
+        reading would find it again. These hold only while that line is the
+        flag's line
         (`_ledger_held`): a section written again in its place is measured
         afresh. Returns the `flags` still standing, the rewrites `applied`
         and the lines `kept`."""
@@ -3979,7 +4035,7 @@ class Screenwriter:
                       "fix": "refer back without the figure, or cut it"} for r in rows]
             if rows:
                 self._say(f"[ledger] {len(rows)} repeated figure(s)")
-        asked = [f for f in question_findings(plan, sections, cold_read)
+        asked = [f for f in self._ledger_measure(plan, sections, cold_read)
                  if f["severity"] in REVISABLE and f["n"]
                  and not self._ledger_held(self._ledger_kept, f, sections)
                  and not self._ledger_held(self._ledger_answered, f, sections)] if fix else []
@@ -3994,6 +4050,15 @@ class Screenwriter:
         by_n = {s.n: s for s in shots}
         for f in asked:
             shot, qid, named = by_n.get(f["n"]), f.get("question"), said.get(f["n"])
+            if shot is not None and f["rule"] == "rule:unexplained-term":
+                # A term is answered by the line changing: the cold read is
+                # not asked again, and a definition keeps the word, so the
+                # line itself is what holds the answer (AUTO-138).
+                if f["n"] in changed:
+                    self._ledger_answered[_ledger_key(f)] = (shot,)
+                elif f["n"] in why:
+                    self._ledger_kept[_ledger_key(f)] = (shot, why[f["n"]])
+                continue
             if shot is None or not qid:
                 continue
             if named is not None:
@@ -4012,22 +4077,33 @@ class Screenwriter:
     def _ledger_held(self, store: dict, flag: dict, sections: list[Section]) -> tuple | None:
         """What `store` holds for `flag` (the line it was answered or kept
         on, first), while that line is still the one the flag falls on and,
-        for an answer, still carries the question's mark; else None."""
+        for a question's answer, still carries the question's mark; else
+        None."""
         entry = store.get(_ledger_key(flag))
         if entry is None:
             return None
         here = next((s for sec in sections for s in sec.shots if s.n == flag["n"]), None)
         if here is not entry[0]:
             return None
-        if store is self._ledger_answered and flag.get("question") not in here.closes:
+        # A term's answer is the changed line itself; it carries no mark.
+        if store is self._ledger_answered and not flag.get("term") \
+                and flag.get("question") not in here.closes:
             return None
         return entry
+
+    @staticmethod
+    def _ledger_measure(plan: dict, sections: list[Section],
+                        cold_read: dict | None = None) -> list[dict]:
+        """The ledger's flags as measured: the questions' and the cold
+        reader's unexplained terms (AUTO-138)."""
+        return question_findings(plan, sections, cold_read) + \
+            term_findings(plan, sections, cold_read)
 
     def ledger_flags(self, plan: dict, sections: list[Section],
                      cold_read: dict | None = None) -> list[dict]:
         """The ledger's flags on the draft as it stands, less those a
         revision answered on the line they still fall on."""
-        return [f for f in question_findings(plan, sections, cold_read)
+        return [f for f in self._ledger_measure(plan, sections, cold_read)
                 if not self._ledger_held(self._ledger_answered, f, sections)]
 
     def ledger_lines(self, plan: dict, sections: list[Section],
@@ -4281,7 +4357,8 @@ class Screenwriter:
             self.findings += self.story_findings(story)
         # The cold reader's answers measure the ledger too: a question the
         # writer says it answered and the reader did not hear answered goes
-        # back once (`revise-ledger-2`), on the draft the review left.
+        # back once (`revise-ledger-2`), on the draft the review left, with
+        # a lay plan's terms the reader was never told (AUTO-138).
         cold = (story or {}).get("cold_read")
         if cold and fix and written:
             self.revise_ledger(sections, written, plan, cold_read=cold,
@@ -4621,6 +4698,16 @@ BOUNDS: dict[str, dict] = {
         "corpus": ("structure 8", "judging 14"), "strength": "practitioner",
         "note": "the writer's mark is its own report; the reader's is a reader's, "
                 "and only one exists when the story review ran"},
+    # AUTO-138: the cold reader's other list, which was only printed
+    "unexplained_term": {
+        "value": 0, "unit": "terms the cold reader needed and was never told",
+        "corpus": ("attention 24", "judging 14"), "strength": "peer-reviewed",
+        "note": "pre-training is attention 24's; the reader is judging 14's and knows "
+                "only the narration, so it also lists the common field terms an "
+                "enthusiast plan leaves undefined on purpose: only a lay plan's flag "
+                "is important until calibration says otherwise; a term is matched to "
+                "a line by its whole words, case folded, so a reader's paraphrase or "
+                "abbreviation names no line"},
 }
 
 
@@ -4667,12 +4754,16 @@ RULES: tuple[Rule, ...] = (
 #: The question ledger's rules (AUTO-96, `question_findings`), apart from
 #: RULES: they read the plan, the writers' marks and the cold reader, not
 #: the narration, so `rule_findings` does not run them and no language takes
-#: them out. Their flags go to `revise-ledger` with the figures said twice.
+#: them out. Their flags go to `revise-ledger` with the figures said twice,
+#: and the cold reader's (unanswered-by-reader, unexplained-term) to
+#: `revise-ledger-2`. `term_findings` lowers an unexplained term to minor on
+#: a plan that is not lay.
 LEDGER_RULES: tuple[Rule, ...] = (
     Rule("rule:open-loop", "important", (), "open_loop"),
     Rule("rule:closed-unopened", "important", (), "closed_unopened"),
     Rule("rule:raises-nothing", "minor", (), "raises_nothing"),
     Rule("rule:unanswered-by-reader", "important", (), "unanswered_by_reader"),
+    Rule("rule:unexplained-term", "important", (), "unexplained_term"),
 )
 _RULE = {r.id: r for r in RULES + LEDGER_RULES}
 

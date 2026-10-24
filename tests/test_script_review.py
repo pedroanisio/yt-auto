@@ -978,6 +978,251 @@ class QuestionLedger(unittest.TestCase):
                          if "rule:unanswered-by-reader" in f and "--report-only" in f])
 
 
+#: A cold read that needed one term the narration never explains.
+COLD_TERMS = {"premise": "The Sun is made of plasma.", "unexplained_terms": ["plasma"],
+              "claims": [], "answered": []}
+
+
+def termed(lines, audience="lay", questions=False):
+    """A plan and its sections, one shot a section, numbered as run() does.
+    A plan written before AUTO-90 has no `questions`, and its terms are
+    still measured."""
+    plan = {"sections": [{"heading": f"S{i}", "seconds": 5} for i in range(1, len(lines) + 1)]}
+    if audience is not None:
+        plan["audience"] = audience
+    if questions:
+        plan["questions"] = []
+    sections = script.sections_of({"sections": [
+        {"heading": f"S{i}", "shots": [{"visual": "v", "narration": line, "seconds": 5,
+                                        "asset": "make", "style": "s",
+                                        "function": "context", "shows": "s"}]}
+        for i, line in enumerate(lines, 1)]})
+    shots = writer()._renumber(sections)
+    return plan, sections, shots
+
+
+PLASMA = ["The Sun is hot.", "Plasma is what the Sun is made of.", "The plasma streams out."]
+
+
+def term_rules(flags):
+    return [f for f in flags if f["rule"] == "rule:unexplained-term"]
+
+
+class UnexplainedTerms(unittest.TestCase):
+    """AUTO-138: a term the cold reader needed and was never told is a flag
+    for revise-ledger-2 on a lay plan, and a warning on any other."""
+
+    def test_a_term_the_narration_says_is_an_important_flag_on_its_first_shot(self):
+        plan, sections, _ = termed(PLASMA)
+        self.assertNotIn("questions", plan)
+        flags = script.term_findings(plan, sections, COLD_TERMS)
+        self.assertEqual(len(flags), 1, flags)
+        f = flags[0]
+        self.assertEqual((f["rule"], f["n"], f["term"], f["section"]),
+                         ("rule:unexplained-term", 2, "plasma", 2))
+        self.assertEqual((f["tier"], f["severity"]), ("important", "important"))
+        self.assertIn("plasma", f["problem"])
+        self.assertTrue(f["problem"].startswith("rule:unexplained-term: shot 2.1: "),
+                        f["problem"])
+        required = script.CHECK_SCHEMA["properties"]["flags"]["items"]["required"]
+        for key in required:
+            self.assertIn(key, f)
+        # a plan with an empty ledger is measured the same
+        plan, sections, _ = termed(PLASMA, questions=True)
+        self.assertEqual(len(script.term_findings(plan, sections, COLD_TERMS)), 1)
+
+    def test_on_any_other_audience_the_flag_is_minor_and_never_sent(self):
+        # enthusiasts keep the field's common terms undefined (AUDIENCE_BRIEF),
+        # and the cold reader knows none of them; a plan with no audience was
+        # given no brief to define its terms
+        for audience in ("enthusiast", "expert", None):
+            with self.subTest(audience=audience):
+                plan, sections, shots = termed(PLASMA, audience=audience)
+                flags = script.term_findings(plan, sections, COLD_TERMS)
+                self.assertEqual([(f["tier"], f["severity"]) for f in flags],
+                                 [("minor", "minor")])
+                w = writer()
+
+                def ask(name, prompt, schema):
+                    raise AssertionError(f"{name} was asked")
+                w._ask = ask
+                done = w.revise_ledger(sections, shots, plan, cold_read=COLD_TERMS,
+                                       name="revise-ledger-2", figures=False)
+                self.assertEqual(len(term_rules(done["flags"])), 1)
+                lines = w.ledger_lines(plan, sections, COLD_TERMS)
+                self.assertEqual(len(lines), 1, lines)
+                self.assertTrue(lines[0].startswith("warning: rule:unexplained-term: "),
+                                lines[0])
+
+    def test_no_flag_for_an_unsaid_term_a_failed_read_or_no_read(self):
+        plan, sections, _ = termed(PLASMA)
+        for cold in (None, "plasma", {}, {"unexplained_terms": "plasma"},
+                     dict(COLD_TERMS, failed="timed out"),
+                     dict(COLD_TERMS, unexplained_terms=["gusset"]),
+                     # a whole word only: "plasm" is inside "plasma"
+                     dict(COLD_TERMS, unexplained_terms=["plasm"])):
+            with self.subTest(cold=cold):
+                self.assertEqual(script.term_findings(plan, sections, cold), [])
+
+    def test_terms_that_fold_to_one_give_one_flag_and_case_does_not_matter(self):
+        plan, sections, _ = termed(PLASMA)
+        flags = script.term_findings(
+            plan, sections, dict(COLD_TERMS, unexplained_terms=["PLASMA", "plasma", " Plasma "]))
+        self.assertEqual(len(flags), 1, flags)
+        self.assertEqual(flags[0]["n"], 2)
+
+    def test_the_ledger_keys_a_term_flag_on_its_term(self):
+        self.assertEqual(script._ledger_key({"rule": "rule:unexplained-term", "term": "plasma",
+                                             "section": 2}),
+                         ("rule:unexplained-term", "plasma"))
+        self.assertEqual(script._ledger_key({"rule": "rule:open-loop", "question": "Q1",
+                                             "section": 3}), ("rule:open-loop", "Q1"))
+        self.assertEqual(script._ledger_key({"rule": "rule:raises-nothing", "section": 3}),
+                         ("rule:raises-nothing", 3))
+
+    def test_the_bound_cites_attention_24_and_judging_14(self):
+        bound = script.BOUNDS["unexplained_term"]
+        self.assertEqual(bound["value"], 0)
+        self.assertEqual(bound["corpus"], ("attention 24", "judging 14"))
+        self.assertEqual(bound["strength"], "peer-reviewed")
+        rule = next(r for r in script.LEDGER_RULES if r.id == "rule:unexplained-term")
+        self.assertEqual((rule.tier, rule.langs, rule.bound),
+                         ("important", (), "unexplained_term"))
+
+    def fixing(self, answer):
+        w = writer()
+        asked = []
+
+        def ask(name, prompt, schema):
+            asked.append((name, prompt))
+            return copy.deepcopy(answer)
+        w._ask = ask
+        return w, asked
+
+    def test_a_changed_line_that_still_says_the_term_is_answered(self):
+        plan, sections, shots = termed(PLASMA)
+        w, asked = self.fixing({"fixes": [{
+            "n": 2, "action": "fix", "why": "defined where it is first said",
+            "narration": "Plasma, gas so hot its atoms come apart, is what the Sun is made of."}]})
+        done = w.revise_ledger(sections, shots, plan, cold_read=COLD_TERMS,
+                               name="revise-ledger-2", figures=False)
+        self.assertEqual([n for n, _ in asked], ["revise-ledger-2"])
+        self.assertIn("rule:unexplained-term", asked[0][1])
+        self.assertIn("plasma", asked[0][1])
+        # the cold read is not repeated: the defined line still says the word
+        self.assertEqual(len(script.term_findings(plan, sections, COLD_TERMS)), 1)
+        self.assertEqual(term_rules(done["flags"]), [])
+        self.assertEqual(w.ledger_lines(plan, sections, COLD_TERMS), [])
+        # a section written again in that line's place is measured afresh
+        _, fresh, _ = termed(PLASMA)
+        sections[1].shots = fresh[1].shots
+        self.assertEqual([f["n"] for f in term_rules(w.ledger_flags(plan, sections,
+                                                                    COLD_TERMS))], [2])
+
+    def test_a_line_kept_with_a_reason_stays_a_warning_with_it(self):
+        plan, sections, shots = termed(PLASMA)
+        w, asked = self.fixing({"fixes": [{"n": 2, "action": "keep",
+                                           "why": "the picture labels it"}]})
+        w.revise_ledger(sections, shots, plan, cold_read=COLD_TERMS,
+                        name="revise-ledger-2", figures=False)
+        lines = w.ledger_lines(plan, sections, COLD_TERMS)
+        self.assertEqual(len(lines), 1, lines)
+        self.assertTrue(lines[0].startswith("warning: rule:unexplained-term: shot 2.1: "))
+        self.assertIn("kept: the picture labels it", lines[0])
+        # and it is not asked about again
+        w.revise_ledger(sections, shots, plan, cold_read=COLD_TERMS,
+                        name="revise-ledger-3", figures=False)
+        self.assertEqual([n for n, _ in asked], ["revise-ledger-2"])
+
+    def test_the_stage_sends_term_and_reader_flags_in_one_revise_ledger_2(self):
+        def marked(n, **marks):
+            return dict(shots_for(n, ("context", "payoff")), **marks)
+        two = marked(2, opens=[{"id": "Q2", "opens_at": 1}])
+        two["shots"][0]["narration"] = "The gusset plate hid the flaw."
+        w = writer()
+        calls = faked(w, {
+            "write-01": marked(1, opens=[{"id": "Q1", "opens_at": 1}]),
+            "write-02": two,
+            "write-03": marked(3, closes=[{"id": "Q1", "closes_at": 1},
+                                          {"id": "Q2", "closes_at": 2}])})
+        data = w.run(review=True)
+        order = names(calls)
+        self.assertNotIn("revise-ledger", order)          # no cold read before the review
+        self.assertEqual(order.count("revise-ledger-2"), 1)
+        prompt = next(c["prompt"] for c in calls if c["name"] == "revise-ledger-2")
+        flagged = prompt.split("flagged by", 1)[1]
+        self.assertIn("rule:unanswered-by-reader", flagged)
+        self.assertIn("rule:unexplained-term", flagged)
+        self.assertIn("gusset", flagged)
+        # the writer changed nothing: the term stands as a warning, and
+        # script.md still lists it under the cold read's terms
+        lines = [f for f in data["findings"] if "rule:unexplained-term" in f]
+        self.assertEqual(len(lines), 1, data["findings"])
+        self.assertTrue(lines[0].startswith("warning: rule:unexplained-term: shot 2.1: "),
+                        lines[0])
+        self.assertIn("Unexplained terms: gusset.",
+                      "\n".join(script.story_review_lines(data["review"])))
+
+    def test_no_revise_ledger_2_when_nothing_is_flagged(self):
+        def marked(n, **marks):
+            return dict(shots_for(n, ("context", "payoff")), **marks)
+        both = {"answered": [{"question_id": "Q1", "shot_index": 5},
+                             {"question_id": "Q2", "shot_index": 6}]}
+        balanced = {
+            "write-01": marked(1, opens=[{"id": "Q1", "opens_at": 1}]),
+            "write-02": marked(2, opens=[{"id": "Q2", "opens_at": 1}]),
+            "write-03": marked(3, closes=[{"id": "Q1", "closes_at": 1},
+                                          {"id": "Q2", "closes_at": 2}]),
+            "cold-read-answers": both}
+        w = writer()
+        calls = faked(w, balanced)       # the reader's "gusset" is never said
+        data = w.run(review=True)
+        self.assertFalse([n for n in names(calls) if n.startswith("revise-ledger")])
+        self.assertFalse([f for f in data["findings"] if "rule:unexplained-term" in f])
+        # said on an enthusiast plan: a warning, and still no decision
+        said = copy.deepcopy(balanced)
+        said["write-02"]["shots"][0]["narration"] = "The gusset plate hid the flaw."
+        said["plan"] = dict(PLAN, audience="enthusiast")
+        w = writer()
+        calls = faked(w, said)
+        data = w.run(review=True)
+        self.assertFalse([n for n in names(calls) if n.startswith("revise-ledger")])
+        lines = [f for f in data["findings"] if "rule:unexplained-term" in f]
+        self.assertEqual(len(lines), 1, data["findings"])
+        self.assertTrue(lines[0].startswith("warning: rule:unexplained-term: "), lines[0])
+
+
+class VoiceRow(unittest.TestCase):
+    def test_a_voice_flag_on_a_shot_reaches_revise_story_like_any_other(self):
+        # AUTO-138: the quote is the "confused here" mark direction 24 asks for
+        w = writer()
+        lecture = flag(n=3, section=2, criterion="voice",
+                       problem="this line reads as a lecture", fix="ask it as a question")
+        first = sample("consider", {"voice": "Fair"}, flags=[lecture])
+        answers = consider_then(("recommend", "better"), flags=[lecture], first=first)
+        calls = faked(w, answers)
+        data = w.run(review=True)
+        self.assertEqual(data["review"]["rounds"][0]["grades"]["voice"], "Fair")
+        self.assertEqual(data["review"]["rounds"][0]["verdict"], "consider")
+        prompt = next(c for c in calls if c["name"] == "revise-story-1")["prompt"]
+        self.assertIn("this line reads as a lecture", prompt)
+        self.assertIn(line_of(3), prompt)
+        self.assertEqual(data["review"]["unresolved"], [])
+
+    def test_a_voice_flag_on_shot_0_is_asked_again_never_replanned(self):
+        w = writer()
+        stray = flag(n=0, section=2, criterion="voice", problem="section 2 lectures")
+        calls = faked(w, {"review-r1-s1": sample("consider", {"voice": "Fair"}, flags=[stray]),
+                          "review-r1-s1-again": sample("recommend")})
+        record = w.run(review=True)["review"]
+        order = names(calls)
+        self.assertIn("review-r1-s1-again", order)
+        again = next(c for c in calls if c["name"] == "review-r1-s1-again")
+        self.assertIn("shot 0", again["prompt"])
+        self.assertFalse([n for n in order if n.startswith(("redraft-", "revise-story"))])
+        self.assertEqual(record["unresolved"], [])
+
+
 class Command(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
