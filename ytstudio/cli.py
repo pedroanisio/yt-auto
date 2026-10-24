@@ -191,8 +191,8 @@ def run_extras(args, *, redo: set) -> dict[str, list[str]]:
     if getattr(args, "review_budget_usd", None) is not None:
         cap = ["--review-budget-usd", f"{args.review_budget_usd:g}"]
     script_reviewer = named + cap
-    reviewer = ([] if reviewers.is_gateway(getattr(args, "reviewer_model", None))
-                else named) + cap
+    named_cli = [] if reviewers.is_gateway(getattr(args, "reviewer_model", None)) else named
+    reviewer = named_cli + cap
     # The paper (AUTO-131) is planted in idea.json too; handed to research,
     # the estimate prices its read and digest.
     paper = ["--paper", str(args.paper)] if getattr(args, "paper", None) else []
@@ -205,7 +205,9 @@ def run_extras(args, *, redo: set) -> dict[str, list[str]]:
         "research": ["--download"]
                     + (["--fresh"] if redo & {"research", "all"} and not quick else [])
                     + paper,
-        "styles": ["--rich"] + ([] if quick else ["--deliberate", "critique"]),
+        # The critique swap-tests the identity with the run's reviewer
+        # (AUTO-146); styles takes no review budget, and --quick runs no review.
+        "styles": ["--rich"] + ([] if quick else ["--deliberate", "critique"] + named_cli),
         "script": ["--minutes", str(args.minutes)]
                   + ([] if quick else ["--polish", "--verify", "--review"] + script_reviewer),
         "props": [],
@@ -416,14 +418,16 @@ def _run_pipeline(args) -> int:
     if getattr(args, "paper", None) and (why := research.paper_refusal()):
         print(f"error: {why}", file=sys.stderr)
         return 2
-    # keyframe and vfx review, and the script's plan review unless --quick: a
-    # model never grades its own work, so a run that would reach them is
-    # refused here, before any stage spends.
-    reviews = ({"keyframe", "vfx"} | (set() if args.quick else {"script"})) - skip
+    # keyframe and vfx review, and unless --quick the script's plan review and
+    # styles' swap test of the identity (AUTO-146): a model never grades its
+    # own work, so a run that would reach them is refused here, before any
+    # stage spends.
+    reviews = ({"keyframe", "vfx"} | (set() if args.quick else {"script", "styles"})) - skip
     asked = getattr(args, "reviewer_model", None)
     if reviewers.is_gateway(asked):
-        # A pool reviewer (AUTO-125) reads the script only; keyframe and vfx
-        # keep vfx.REVIEWER_MODEL, checked by family as before. It is
+        # A pool reviewer (AUTO-125) reads the script only; keyframe, vfx and
+        # styles keep their default, vfx.REVIEWER_MODEL (styles.REVIEWER_MODEL
+        # is the same), checked by family as before. It is
         # resolved once here and handed to the script as its gateway id. A
         # dry run checks what this machine can (the switch, the engine's
         # readiness, the maker rule) and fetches nothing: the providers are
@@ -433,12 +437,12 @@ def _run_pipeline(args) -> int:
                   f"makes no script review ({'--quick' if args.quick else '--skip script'}); "
                   "pass a claude or codex model, or leave the flag out", file=sys.stderr)
             return 2
-        inspected = sorted(reviews & {"keyframe", "vfx"})
+        inspected = sorted(reviews & {"keyframe", "vfx", "styles"})
         if inspected and (own := flags.own_reviewer(args.model, vfx.REVIEWER_MODEL)):
             print(f"{own}\n  --reviewer-model {asked} reaches the script's review only; "
-                  f"{' and '.join(inspected)} keep their default reviewer, "
-                  f"{vfx.REVIEWER_MODEL}: skip them (--skip keyframe,vfx) or pass another "
-                  "--model", file=sys.stderr)
+                  f"{', '.join(inspected)} keep their default reviewer, "
+                  f"{vfx.REVIEWER_MODEL}: skip them (--skip {','.join(inspected)}) or "
+                  "pass another --model", file=sys.stderr)
             return 2
         try:
             pooled = (reviewers.admit(args.model, asked)["model"] if args.dry_run

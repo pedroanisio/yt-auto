@@ -798,11 +798,12 @@ class Run(Offline):
         self.assertIn("--quick", said)
 
     def test_run_resolves_pool_once_and_hands_the_id(self):
+        # styles swap-tests with its default, opus, too (AUTO-146): skipped here
         self.ready()
         with mock.patch.dict(os.environ, GATEWAY_ON), \
                 mock.patch.object(reviewers, "_get_json", side_effect=OSError("offline")):
             code, said, args = self.walk("--model", "opus", "--reviewer-model", "pool",
-                                         "--skip", "keyframe,vfx")
+                                         "--skip", "keyframe,vfx,styles")
             self.assertIsNone(code, said)
             self.assertEqual(args.reviewer_model, "sdk:google/gemini-3.6-flash")
             code, said, args = self.walk("--model", "sonnet", "--reviewer-model", "pool")
@@ -824,7 +825,7 @@ class Run(Offline):
         with mock.patch.dict(os.environ, GATEWAY_ON), \
                 mock.patch.object(reviewers, "_get_json", fetch):
             code, said, args = self.walk("--model", "opus", "--reviewer-model", "pool",
-                                         "--skip", "keyframe,vfx", "--dry-run")
+                                         "--skip", "keyframe,vfx,styles", "--dry-run")
         self.assertIsNone(code, said)
         self.assertEqual(args.reviewer_model, "sdk:google/gemini-3.6-flash")
         fetch.assert_not_called()
