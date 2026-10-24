@@ -343,5 +343,53 @@ class Repeats(unittest.TestCase):
                                          ("palette",)), [])
 
 
+# --------------------------------------------------------------------------- #
+# the form (AUTO-157)
+# --------------------------------------------------------------------------- #
+
+def with_form(name, other=""):
+    return dict(SCRIPT, form={"name": name, "other": other, "why_this_subject": "w",
+                              "shape": "s", "rejected": "r"})
+
+
+class Form(Work):
+    """The film's form is recorded and a shared one is an advisory line:
+    a form may recur when it fits the subject, and no rotation is asked."""
+
+    def test_the_record_spells_the_script_stages_forms(self):
+        from ytstudio import script
+        self.assertEqual(channel.FORMS, script.FORMS)
+        self.assertEqual(channel.FORM_KEY, ("form", "name"))
+        self.assertIn("form", channel.DIMENSIONS)
+        self.assertIn("form", channel.PLAN_DIMENSIONS)
+
+    def test_the_fingerprint_reads_the_form(self):
+        print_ = channel.fingerprint(self.film("bridge", script=with_form("investigation")))
+        self.assertEqual(print_["form"], "investigation")
+        # an older script.json, an off-list name and an `other` with no name
+        # are no form; an `other` is keyed by the name it gives
+        self.assertEqual(channel.fingerprint(self.film("old", script=SCRIPT))["form"], "")
+        self.assertEqual(channel.form(with_form("heist")), "")
+        self.assertEqual(channel.form(with_form("other")), "")
+        self.assertEqual(channel.form(with_form("other", "A  Heist")),
+                         channel.form(with_form("other", "a heist")))
+        self.assertTrue(channel.form(with_form("other", "a heist")).startswith("other:"))
+
+    def test_two_ready_films_sharing_a_form_give_one_advisory_line(self):
+        new =channel.fingerprint(self.film("new", script=with_form("countdown")))
+        before = [counted("a", form="countdown"), counted("b", form="countdown"),
+                  counted("c", form="journey")]
+        lines = channel.repeats(new, before, ("form",))
+        self.assertEqual(lines, ["channel: form: 'countdown' is shared by 2 of the last 3 "
+                                 "counted films (a, b) (advisory: a form may recur when it "
+                                 "fits the subject)"])
+        self.assertEqual(channel.repeats(counted("n", form="debate"), before, ("form",)), [])
+        # a film either side without a form is not evidenced
+        self.assertEqual(channel.repeats(counted("n", form=""), [counted("a", form="")],
+                                         ("form",)), [])
+        self.assertEqual(channel.repeats(counted("n", form="countdown"), [counted("a")],
+                                         ("form",)), [])
+
+
 if __name__ == "__main__":
     unittest.main()

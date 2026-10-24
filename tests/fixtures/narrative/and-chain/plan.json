@@ -31,6 +31,13 @@
     "next_film": "How the solar wind shaped the planets' atmospheres",
     "device": "callback"
   },
+  "form": {
+    "name": "investigation",
+    "other": "",
+    "why_this_subject": "Biermann found the solar wind by reading comet tails that pointed away from the Sun faster than sunlight could push them: the subject is a trail of evidence read in the order he had it.",
+    "shape": "the clue (a tail in front), the suspect that fails (sunlight is too weak), the culprit (a wind from the Sun), the clue read again",
+    "rejected": "mystery: the film follows how the evidence was found, not an answer kept back for effect."
+  },
   "sections": [
     {
       "heading": "Tail first",

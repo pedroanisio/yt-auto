@@ -214,6 +214,10 @@ class ScriptTest(DecisionCase):
                                        "opened_in": 1, "closed_in": 1}],
                         "ending": {"payoff_line": "It moves.", "callback": "c",
                                    "next_film": "n", "device": "callback"},
+                        # AUTO-157: the film's form
+                        "form": {"name": "experiment", "other": "",
+                                 "why_this_subject": "whether it moves is tested once",
+                                 "shape": "the test, the result"},
                         "sections": [{"heading": "One", "purpose": "p", "seconds": 10,
                                       "beats": ["b"], "opens": ["Q1"], "closes": ["Q1"],
                                       "connective": "open", "rehook": "", "escalation": "",

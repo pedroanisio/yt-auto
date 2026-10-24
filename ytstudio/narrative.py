@@ -355,13 +355,45 @@ RUBRIC: tuple[Criterion, ...] = (
 #: The criteria's keys, in rubric order.
 KEYS = tuple(c.key for c in RUBRIC)
 
+#: Rows only the plan review reads (AUTO-157). The film's form, its macro
+#: shape (a mystery, a journey, a debate ...), is chosen per film: structure
+#: 20 quotes Fong's "no fixed template because every story has its own
+#: needs", and the corpus names no list of forms, so the vocabulary is a
+#: house prior (script.FORMS). It is kept out of RUBRIC on purpose: the
+#: story review does not grade it, its three-sample medians, the level
+#: permutations, REVIEW_SCHEMA, qa.STORY_RUBRIC and improve's router are
+#: unchanged, and rubric_text() with no keys does not render it. The plan
+#: review reads it through rubric_text(keys=script.PLAN_CRITERIA), and a
+#: form that does not fit is a ground to revise only (FORM_GROUND).
+PLAN_ONLY: tuple[Criterion, ...] = (
+    Criterion(
+        "form",
+        "Does the film's declared form, its shape as a whole, follow from something "
+        "this subject has, and do the sections carry it, or is it a label any topic "
+        "could wear?",
+        {"Excellent": "The form follows from something this subject has (a deadline, a "
+                      "dispute, a trail of evidence), the sections carry it, and the "
+                      "obvious form passed over is named with why.",
+         "Good": "The form fits; one section breaks from it without reason.",
+         "Fair": "The form fits, but its reason would fit most subjects, or the middle "
+                 "drifts from it.",
+         "Poor": "The form is a label any topic could wear, or the sections ignore it."},
+        "Poor: \"mystery: mysteries are engaging\". Excellent: \"investigation: Biermann "
+        "found the wind by reading comet photographs; the film follows his evidence in "
+        "the order he had it\".",
+        "practitioner",
+        ("structure 20",)),
+)
+
 
 def criterion(key: str) -> Criterion:
-    """The criterion called `key`; an unknown key is a KeyError naming the rubric."""
-    for c in RUBRIC:
+    """The criterion called `key`, from RUBRIC or PLAN_ONLY; an unknown key
+    is a KeyError naming the rubric."""
+    for c in (*RUBRIC, *PLAN_ONLY):
         if c.key == key:
             return c
-    raise KeyError(f"{key!r} is no rubric criterion (the rubric has {', '.join(KEYS)})")
+    raise KeyError(f"{key!r} is no rubric criterion (the rubric has {', '.join(KEYS)}; "
+                   f"the plan review also reads {', '.join(c.key for c in PLAN_ONLY)})")
 
 
 def grade_levels(seed: int) -> tuple[str, ...]:
@@ -440,6 +472,14 @@ def rubric_text(audience: str, *, keys: Iterable[str] | None = None,
 CHANNEL_GROUND = (", and so is a repeat of an earlier channel film that a returning "
                   "viewer would notice, which is never a ground to reject")
 
+#: The plan review's form ground (AUTO-157), in the role and in the attack
+#: alike (script.PLAN_ATTACK ends its grounds sentence on it): a form that
+#: does not follow from the subject sends the plan back once, and a second
+#: reading that objects to the form alone drafts on with an advisory
+#: (script.Screenwriter.gate_plan), so it never stops the stage by itself.
+FORM_GROUND = (", and a form that does not follow from the subject is a ground to "
+               "revise only, never to reject")
+
 
 def reviewer_role(*, window: str = OPENING_WINDOW, seed: int = 0, plan: bool = False,
                   channel: bool = False) -> str:
@@ -460,11 +500,15 @@ def reviewer_role(*, window: str = OPENING_WINDOW, seed: int = 0, plan: bool = F
 
     `channel` (the plan review with counted earlier films, AUTO-137) adds
     one ground to revise after the four and stakes: a repeat a returning
-    viewer would notice, never a ground to reject. Without it the role is today's, byte for byte."""
+    viewer would notice, never a ground to reject. Without it the role is today's, byte for byte.
+
+    Both variants end the grounds sentence on the form (AUTO-157,
+    FORM_GROUND): a declared form that does not follow from the subject is a
+    ground to revise only."""
     if plan:
         grounds = ("Only the train, the order, a section that moves nothing and the "
                    "payoff are grounds to reject. Those four, and stakes, are grounds to "
-                   "revise" + (CHANNEL_GROUND if channel else "") + ".")
+                   "revise" + (CHANNEL_GROUND if channel else "") + FORM_GROUND + ".")
         return "\n\n".join([
             "You are the film's story reviewer, reading its plan (the beat sheet) before "
             "any line of it is written, the way a coverage reader reads a treatment "
@@ -483,8 +527,9 @@ def reviewer_role(*, window: str = OPENING_WINDOW, seed: int = 0, plan: bool = F
             "to name with its fix, never on its own a reason to send the plan back.",
             "Your fields say the same as your verdict: an accept has a train that holds, "
             "an order that does not survive reordering, a concrete payoff and no section "
-            "that moves nothing, and an accept has stakes_concrete true; a revise or a "
-            "reject names at least one problem.",
+            "that moves nothing, and an accept has stakes_concrete true and form_fits "
+            "true; a revise or a reject names at least one problem, and form_fits false "
+            "says what does not fit in form_problem.",
             LONGER,
         ])
     return "\n\n".join([
@@ -685,6 +730,12 @@ PLAN_REVIEW_SCHEMA = {
             "twist")},
         "questions_unanswered": {"type": "array", "items": {"type": "string"},
                                  "description": "ledger ids opened and never closed nor left on purpose"},
+        # AUTO-157: two named fields, not a grade, so "give no grade" holds
+        "form_fits": {"type": "boolean", "description": (
+            "the declared form follows from this subject and the sections carry it; true "
+            "when the plan names no form")},
+        "form_problem": {"type": "string",
+                         "description": "what in the form does not fit, or empty"},
         "problems": {
             "type": "array",
             "items": {
@@ -699,7 +750,8 @@ PLAN_REVIEW_SCHEMA = {
         },
     },
     "required": ["verdict", "train_ok", "reorder_survives", "sections_advancing_none",
-                 "payoff_concrete", "stakes_concrete", "questions_unanswered", "problems"],
+                 "payoff_concrete", "stakes_concrete", "questions_unanswered", "form_fits",
+                 "form_problem", "problems"],
 }
 
 
@@ -782,7 +834,8 @@ def check_plan_review(review: Any, earlier_slugs: Sequence[str] = ()) -> list[st
     named = verdict == "revise" and (
         review.get("train_ok") is False or review.get("reorder_survives") is True
         or review.get("payoff_concrete") is False or review.get("stakes_concrete") is False
-        or bool(review.get("sections_advancing_none")))
+        or bool(review.get("sections_advancing_none"))
+        or (review.get("form_fits") is False and bool(_text(review.get("form_problem")))))
     if verdict in ("revise", "reject") and not problems and not named:
         found.append(f"a {verdict} names the problems that send the plan back, and this "
                      "one carries none: name each with its section and fix, or accept")
@@ -799,21 +852,34 @@ def check_plan_review(review: Any, earlier_slugs: Sequence[str] = ()) -> list[st
         if review.get("stakes_concrete") is False:
             found.append("an accept gives a reason to care before the mechanism, and this "
                          "one says stakes_concrete is false: change the verdict or the field")
+        if review.get("form_fits") is False:
+            found.append("an accept holds the form, and this one says form_fits is false: "
+                         "change the verdict or the field")
         idle = [str(n) for n in review.get("sections_advancing_none") or []]
         if idle:
             found.append(f"an accept has every section move the train, and this one names "
                          f"section {', '.join(idle)} under sections_advancing_none: change "
                          "the verdict or the list")
-    if verdict == "reject" and review.get("stakes_concrete") is False:
-        # "Alone" only when each of the four reject grounds is there and
-        # clean: a reading that leaves one out has not said it is clean.
-        clean = (review.get("train_ok") is True, review.get("reorder_survives") is False,
+    # "Alone" only when each of the four reject grounds is there and clean:
+    # a reading that leaves one out has not said it is clean.
+    clean = all((review.get("train_ok") is True, review.get("reorder_survives") is False,
                  review.get("payoff_concrete") is True,
-                 review.get("sections_advancing_none") == [])
-        if all(clean):
-            found.append("a reject needs the train, the order, an idle section or the "
-                         "payoff; stakes alone is grounds to revise: revise, or name the "
-                         "reject ground")
+                 review.get("sections_advancing_none") == []))
+    if verdict == "reject" and review.get("stakes_concrete") is False and clean:
+        found.append("a reject needs the train, the order, an idle section or the "
+                     "payoff; stakes alone is grounds to revise: revise, or name the "
+                     "reject ground")
+    # AUTO-157: the form is a ground to revise only (the stakes line above
+    # already covers a reject on stakes and form), and form_fits false
+    # tells the second plan what to change only through form_problem.
+    if (verdict == "reject" and review.get("form_fits") is False and clean
+            and review.get("stakes_concrete") is not False):
+        found.append("a reject needs the train, the order, an idle section or the "
+                     "payoff; the form alone is grounds to revise: revise, or name the "
+                     "reject ground")
+    if review.get("form_fits") is False and not _text(review.get("form_problem")):
+        found.append("form_fits is false and form_problem is empty: say what in the form "
+                     "does not follow from the subject, or set form_fits true")
     # AUTO-137: the repeats of earlier channel films, only in a review that
     # was asked for them. A repeat is a ground to revise, so an accept that
     # lists one contradicts it; each names a film the prompt listed and is
@@ -854,6 +920,29 @@ def check_plan_review(review: Any, earlier_slugs: Sequence[str] = ()) -> list[st
             found.append(f"the repeat of {film} has no matching entry in problems: add a "
                          f"section 0 problem naming {film}, with its fix")
     return found
+
+
+def _text(value: Any) -> str:
+    return " ".join(str(value or "").split())
+
+
+def form_only_revise(review: Any) -> bool:
+    """Whether a plan review is a revise on the form alone (AUTO-157):
+    form_fits false and every other ground its fields hold clean (the
+    train, the order, no idle section, no unanswered question, a concrete
+    payoff, stakes and, with earlier channel films, no repeat). The stage
+    drafts on after a second such reading, since the form is a ground to
+    revise only; any other second revise stops it as before. A field the
+    reading leaves out is not clean."""
+    if not isinstance(review, dict):
+        return False
+    return (review.get("verdict") == "revise" and review.get("form_fits") is False
+            and review.get("train_ok") is True and review.get("reorder_survives") is False
+            and review.get("sections_advancing_none") == []
+            and review.get("questions_unanswered") == []
+            and not review.get("repeats")
+            and review.get("payoff_concrete") is True
+            and review.get("stakes_concrete") is True)
 
 
 def _shot_of(flag: Mapping) -> int | None:

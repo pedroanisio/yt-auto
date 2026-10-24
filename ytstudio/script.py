@@ -91,6 +91,28 @@ CLOSINGS = ("callback", "reversal", "open_question", "scale", "image", "other")
 #: payoff shot; any other value is body.
 FUNCTIONS = ("hook", "context", "setup", "reveal", "rehook", "payoff", "handoff")
 
+#: The film's form, its macro shape as a whole (AUTO-157). NO STANDARD: a
+#: house prior. Corpus structure 20 quotes Fong's "no fixed template because
+#: every story has its own needs" and gives no list, so this list only names
+#: shapes for the plan to choose from per subject, `other` naming one it
+#: lacks. It classifies neither the hook's trigger (AUTO-136) nor the
+#: closing device (CLOSINGS), so a countdown film may open on a question
+#: and close on a callback, and "reversal" is not a form here.
+FORMS = ("mystery", "investigation", "journey", "debate", "countdown", "experiment",
+         "biography", "other")
+
+#: One clause per form, rendered into the schema description and STORY_BRIEF.
+FORM_GLOSS = {
+    "mystery": "an unknown withheld until late",
+    "investigation": "following the evidence in the order someone found it",
+    "journey": "a path through places or scales",
+    "debate": "rival answers tested against each other",
+    "countdown": "a deadline or sequence closing in",
+    "experiment": "a test set up, run and read",
+    "biography": "one life or object across time",
+    "other": "named in `other`",
+}
+
 #: How a value outside one of these lists is treated: the harness asks again
 #: once, then the stage records it (a `note:` in script.json's `findings`)
 #: and reads it as no role at all. Stated in the schema, so the model is told.
@@ -209,6 +231,27 @@ STORY_PROPERTIES = {
             "required": ["id", "text", "opened_in", "closed_in"],
         },
     },
+    # AUTO-157: the film's form, chosen for this subject. other and rejected
+    # are asked for but not required, so they are never asked again.
+    "form": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "enum": list(FORMS), "description": (
+                "the film's shape as a whole: "
+                + "; ".join(f"{k} ({v})" for k, v in FORM_GLOSS.items()) + ". "
+                + _ENUM_DRIFT)},
+            "other": {"type": "string", "description": (
+                "the form's name when name is other; empty otherwise")},
+            "why_this_subject": {"type": "string", "description": (
+                "what in this subject (a fact, a deadline, a dispute, a trail) calls for "
+                "this form, in words of the subject, not of the form. " + _NOT_EMPTY)},
+            "shape": {"type": "string", "description": (
+                "one line: how the sections realise the form")},
+            "rejected": {"type": "string", "description": (
+                "the obvious form you did not choose, and why")},
+        },
+        "required": ["name", "why_this_subject", "shape"],
+    },
     "ending": {
         "type": "object",
         "properties": {
@@ -228,7 +271,7 @@ STORY_PROPERTIES = {
     },
 }
 STORY_REQUIRED = ["promise", "payoff", "train", "stakes", "viewer_stake", "audience",
-                  "reveal", "questions", "ending", "hook"]
+                  "reveal", "questions", "ending", "hook", "form"]
 
 #: The ways in a section may use for a mechanism the viewer cannot picture
 #: (AUTO-135): an analogy, a visual metaphor, a guess asked before the
@@ -1884,6 +1927,12 @@ STORY_BRIEF = (
     "- ending: payoff_line, the last narrated line, which pays the promise in "
     "resolved form; callback, how it mirrors the opening; next_film, one "
     "named film that continues the question.\n"
+    "- form: the film's shape as a whole, one of "
+    + "; ".join(f"{k} ({v})" for k, v in FORM_GLOSS.items()) + ". "
+    "Choose it from this subject and the research, never by habit. "
+    "why_this_subject names what in the subject calls for it. shape says how "
+    "the sections carry it. rejected names the obvious form you passed over and "
+    "why. When the house names a form, use it.\n"
     "For each section also give: opens and closes (question ids); connective, "
     "how it joins the section before it: open for section 1 only, then BUT "
     "(it turns against what came before) or THEREFORE (it follows from it), "
@@ -1969,18 +2018,35 @@ def persona_of(plan: dict) -> tuple[str, str]:
     return _said(persona.get("temperament")), _said(persona.get("why"))
 
 
+def form_name(plan) -> str:
+    """The plan's form as a name the film can be told (AUTO-157): the listed
+    name, or for `other` the name it gives (else "other"); "" when the plan
+    names no form or one off FORMS, which _record_drift files as a note and
+    every reader takes as no form."""
+    form = plan.get("form") if isinstance(plan, dict) else None
+    name = form.get("name") if isinstance(form, dict) else None
+    if name not in FORMS:
+        return ""
+    return (_said(form.get("other")) or "other") if name == "other" else name
+
+
 def story_lines(plan: dict) -> list[str]:
     """The film's story, as every section's writer is handed it: the train,
-    the stakes, the belief it breaks, who it is pitched at and, when the plan
-    names one, the narrator's temperament for this film (AUTO-158). With no
-    temperament the lines are what they were before it, so a plan without
-    one asks every write-NN exactly what it did."""
+    the stakes, the belief it breaks, the film's form and how the sections
+    carry it (AUTO-157), who it is pitched at and, when the plan names one,
+    the narrator's temperament for this film (AUTO-158). With no form and no
+    temperament the lines are what they were before them, so an older plan
+    asks every write-NN exactly what it did."""
     rows = [(label, " ".join(str(plan.get(key) or "").split()))
             for key, label in (("train", "The film's train"),
                                ("stakes", "What is at stake"),
                                ("viewer_stake", "Why the viewer cares"),
                                ("misconception", "The belief the film breaks"))]
     out = ["\n".join(f"{label}: {text}" for label, text in rows if text)]
+    form = form_name(plan)
+    if form:
+        shape = _said(plan["form"].get("shape"))
+        out.append(f"The film's form: {form}" + (f" — {shape}" if shape else ""))
     out.append(AUDIENCE_BRIEF.get(str(plan.get("audience") or ""), ""))
     temperament, why = persona_of(plan)
     if temperament:
@@ -2130,7 +2196,10 @@ PLAN_REVIEW_FILE = "plan_review.json"
 #: hook and honesty are read in the narration, so they wait for it. A
 #: plan's declared devices can be read for their mapping (AUTO-135); a wrong
 #: one comes back as a problem, never alone a reason to send the plan back.
-PLAN_CRITERIA = ("train", "stakes", "open_loops", "reveal_setup", "ending", "devices")
+#: The form (AUTO-157) is narrative.PLAN_ONLY's: the plan review reads it,
+#: the story review never grades it, and a misfit is a ground to revise only.
+PLAN_CRITERIA = ("train", "stakes", "open_loops", "reveal_setup", "ending", "devices",
+                 "form")
 
 #: A film longer than this is held to at least one planned re-hook. The
 #: number is judging 5's "films over seven minutes", from one leaked
@@ -2153,24 +2222,28 @@ _ASKS = ("why", "how", "whether")
 #: the train, the order, the sections that move nothing and the payoff are
 #: grounds to reject it (judging 13; structure 3, 4); those four and stakes
 #: are grounds to revise it (AUTO-161: a plan that explains before it gives
-#: a reason to care is planned again, attention 8). The sentence matches
-#: narrative.reviewer_role(plan=True), the same call's system prompt.
+#: a reason to care is planned again, attention 8), and so is a form that
+#: does not follow from the subject (AUTO-157, structure 20), to revise only.
+#: The sentence matches narrative.reviewer_role(plan=True), the same call's
+#: system prompt.
 PLAN_ATTACK = (
     "Attack this plan before any line of it is written. Name the single strongest "
     "objection to each of: its train (one sentence with a pursuer, a question and a "
     "named obstacle, or only a topic?), its order (could the sections be reordered "
     "without loss, a list rather than a chain?), each section's move (which sections "
     "advance the train not at all?), its payoff (does it pay the promise with "
-    "something the viewer can picture, or is it empty or generic?) and its stakes "
+    "something the viewer can picture, or is it empty or generic?), its stakes "
     "(before the first section that explains a mechanism, does the viewer hear a "
     "concrete consequence they can picture, or does the plan say the danger is "
-    "withheld as its twist?). Then say whether "
+    "withheld as its twist?) and its form (does the declared form follow from "
+    "something in this subject, and do the sections carry it, or is it a label any "
+    "topic could wear?). Then say whether "
     "the plan still holds. accept: it does. revise: it is a story with concrete "
     "problems that planning again can fix; give each problem with its section (0 for "
     "the whole plan) and the fix. reject: it is not a story: the train names a "
     "topic, the sections are a list, or the payoff is empty. Only the train, the "
     "order, a section that moves nothing and the payoff are grounds to reject. Those "
-    "four, and stakes, are grounds to revise. "
+    "four, and stakes, are grounds to revise" + narrative.FORM_GROUND + ". "
     "Leave the plan alone where an objection is weak, and do not send "
     "everything back to look rigorous.")
 
@@ -2181,9 +2254,10 @@ PAPER_STAKES_NOTE = (
     "In this plan the consequence is read from framing's significance, implications "
     "and consequences items and the sections they are placed in.")
 
-#: The sixth objection (AUTO-137, after AUTO-161's stakes), asked only when
-#: the channel has counted earlier films, and the sentence that makes a
-#: noticeable repeat a ground to revise and never to reject.
+#: The last objection (AUTO-137, after AUTO-161's stakes and AUTO-157's
+#: form), asked only when the channel has counted earlier films, and the
+#: clause that makes a noticeable repeat a ground to revise and never to
+#: reject, with the sentence asking for each under repeats.
 SAMENESS_OBJECTION = (
     " and its sameness (could a returning viewer predict how it opens, unfolds or "
     "closes from one of the earlier films listed?)")
@@ -2191,23 +2265,27 @@ SAMENESS_OBJECTION = (
 #: never lists the grounds and then names another after them.
 SAMENESS_GROUND = (
     ", and a repeat of an earlier film that a returning viewer would notice is a "
-    "ground to revise, never to reject. List each such repeat under repeats, with a "
-    "section 0 problem naming the film and its fix.")
+    "ground to revise, never to reject")
+SAMENESS_LIST = ("List each such repeat under repeats, with a section 0 problem naming "
+                 "the film and its fix.")
 
 
 def plan_attack(channel: bool) -> str:
     """The attack the plan reviewer is asked: PLAN_ATTACK itself, or with
-    counted earlier films (AUTO-137) the same text with a sixth objection,
-    its sameness, and a repeat named as a ground to revise only. Each
-    replacement must find its text: an attack reworded under it would
+    counted earlier films (AUTO-137) the same text with one more objection,
+    its sameness, after the form (AUTO-157), and a repeat named as a ground
+    to revise only, inside the one sentence naming the grounds to revise.
+    Each replacement must find its text: an attack reworded under it would
     otherwise drop the objection without a word, so a miss raises."""
     if not channel:
         return PLAN_ATTACK
     out = PLAN_ATTACK
-    for old, new in (("?) and its stakes (", "?), its stakes ("),
-                     ("withheld as its twist?)", "withheld as its twist?)" + SAMENESS_OBJECTION),
-                     ("Those four, and stakes, are grounds to revise.",
-                      "Those four, and stakes, are grounds to revise" + SAMENESS_GROUND)):
+    grounds = "Those four, and stakes, are grounds to revise"
+    for old, new in (("?) and its form (", "?), its form ("),
+                     ("any topic could wear?)", "any topic could wear?)" + SAMENESS_OBJECTION),
+                     (grounds + narrative.FORM_GROUND + ". ",
+                      grounds + SAMENESS_GROUND + narrative.FORM_GROUND + ". "
+                      + SAMENESS_LIST + " ")):
         if old not in out:
             raise ValueError(f"plan_attack: PLAN_ATTACK no longer says {old!r}")
         out = out.replace(old, new, 1)
@@ -2233,7 +2311,7 @@ CHANNEL_PRECHECK_NOTE = (
 CHANNEL_WRITER = (
     "How the channel's earlier films opened, unfolded and closed. Choose this film's "
     "devices for its own subject, and avoid the devices of these films unless the house "
-    "names one as recurring.")
+    "names one as recurring. A form may recur when this subject calls for it.")
 CHANNEL_REVIEWER = (
     "How the channel's earlier films opened, unfolded and closed, newest first, each by "
     "its slug. A repeat names one of these films by that slug.")
@@ -2250,7 +2328,8 @@ def channel_block(earlier, *, reviewer: bool = False) -> str:
         shape = e.get("shape") if isinstance(e.get("shape"), dict) else {}
         tokens = ", ".join(shape.get("tokens") or []) or "not recorded"
         lines.append(f"- {e['slug']}: opened on {e.get('opening') or 'not recorded'}; "
-                     f"closed on {e.get('closing') or 'not recorded'}; sections: {tokens}")
+                     f"closed on {e.get('closing') or 'not recorded'}; "
+                     f"form: {e.get('form') or 'not recorded'}; sections: {tokens}")
     return (CHANNEL_REVIEWER if reviewer else CHANNEL_WRITER) + "\n" + "\n".join(lines)
 
 
@@ -2370,6 +2449,60 @@ def _device_checks(plan: dict, sections: list[dict]) -> list[str]:
     return out
 
 
+#: A house `## format` line that fixes the film's form (AUTO-157), as
+#: "- Form: countdown". Read at a line's start only, so the shipped
+#: default's own example inside its line ("- Form: countdown" in quotes)
+#: names nothing.
+_HOUSE_FORM = re.compile(r"^[ \t]*-[ \t]*Form:[ \t]*([A-Za-z_]+)", re.M | re.I)
+
+
+def house_form(house_text: str) -> str:
+    """The form the channel's house fixes: the first word after a "- Form:"
+    line, when it is one of FORMS and not `other`; "" otherwise, which is
+    the shipped default's case ("- Form: a form recurs only when ...")."""
+    found = _HOUSE_FORM.search(str(house_text or ""))
+    word = found.group(1).lower() if found else ""
+    return word if word in FORMS and word != "other" else ""
+
+
+def _form_checks(plan: dict, title: str, house: str) -> list[str]:
+    """What a plan's form shows before anyone reads it (AUTO-157), all
+    `house:` lines, since FORMS is a house prior and structure 20 gives no
+    list: an empty why_this_subject, an `other` that names none, a reason
+    that names only the form or nothing the plan names (the payoff line's
+    genericity check, applied to the reason: a reason any topic could
+    wear), and a form other than the one the channel's house fixes. A plan
+    with no `form` has no line: an older plan is not evidenced. An off-list
+    name is read as no form, so only the house's fixed form is held to it."""
+    form = plan.get("form")
+    if not isinstance(form, dict):
+        return []
+    name, other = form.get("name"), _said(form.get("other"))
+    out: list[str] = []
+    if name in FORMS:
+        why = _said(form.get("why_this_subject"))
+        if not why:
+            out.append("house: the form has no why_this_subject (structure 20)")
+        if name == "other" and not other:
+            out.append("house: the form is other and names none")
+        if why:
+            lex = LEXICON["en"]
+            words = _content(why, lex)
+            said = set(_found(words, f"{name} {other}"))
+            words = [w for w in words if w not in said]
+            named = " ".join([str(plan.get(k) or "") for k in ("train", "promise")]
+                             + [title] + [str(s.get("heading") or "")
+                                          for s in plan.get("sections") or []
+                                          if isinstance(s, dict)])
+            if not words or not _found(words, named):
+                out.append(f"house: the form's reason names only the form, so any topic "
+                           f"could wear it (\"{why}\")")
+    if house and name != house:
+        out.append(f"house: the channel's house fixes the form as {house}; this plan uses "
+                   f"{name if isinstance(name, str) and name.strip() else 'none'}")
+    return out
+
+
 def plan_view(plan: dict) -> dict:
     """The plan as the reviewer and a second plan read it: the story fields
     and each numbered section with its beats and story fields."""
@@ -2383,7 +2516,7 @@ def plan_view(plan: dict) -> dict:
 
 
 def plan_prechecks(plan: dict, seconds: int, title: str = "",
-                   earlier: Sequence[dict] = ()) -> list[str]:
+                   earlier: Sequence[dict] = (), house_form: str = "") -> list[str]:
     """What a plan's own fields show before anyone reads it, one line each:
     `rule:` for a corpus rule the fields break (an empty story field or
     hook gap, an empty payoff line or one that names nothing the plan names,
@@ -2394,9 +2527,11 @@ def plan_prechecks(plan: dict, seconds: int, title: str = "",
     its constraint) and `house:` for the house's priors (a long film with no
     re-hook, section 2 with none, a stretch longer than REHOOK_EVERY_SECONDS
     without one, a prediction no reveal scores, a train with no question, a
-    persona with no temperament or no reason). With the channel's counted
-    `earlier` films (AUTO-137), `channel:` lines last: an opening, a section
-    shape or a closing the same as one of theirs (channel.repeats).
+    persona with no temperament or no reason; and AUTO-157's form lines,
+    _form_checks, with `house_form` the form the channel's house fixes, or
+    ""). With the channel's counted `earlier` films (AUTO-137), `channel:`
+    lines last: an opening, a section shape, a closing or a form the same as
+    one of theirs (channel.repeats; a shared form is advisory).
     They go to the reviewer to confirm, never decide.
 
     The plan fields are crew-facing English (STORY_BRIEF), so the English
@@ -2491,6 +2626,7 @@ def plan_prechecks(plan: dict, seconds: int, title: str = "",
     if "persona" in plan and not all(persona_of(plan)):
         out.append("house: the persona names no temperament or no reason: the "
                    "narrator's temperament is chosen from the subject and said why")
+    out += _form_checks(plan, title, house_form)
     if earlier:
         out += channel.repeats(channel.story(plan), earlier, channel.PLAN_DIMENSIONS)
     return out
@@ -2557,8 +2693,8 @@ def review_field_lines(review) -> list[str]:
     """What a plan review's own fields found against the plan, one line
     each, so a second plan is told them even when the problems list is
     thin: the train, the order, the sections that move nothing, the payoff,
-    the stakes (AUTO-161) and the questions left unanswered. A field the
-    review leaves out says nothing."""
+    the stakes (AUTO-161), the questions left unanswered and the form
+    (AUTO-157). A field the review leaves out says nothing."""
     if not isinstance(review, dict):
         return []
     out = []
@@ -2580,6 +2716,10 @@ def review_field_lines(review) -> list[str]:
     if unanswered:
         out.append(f"the whole plan: question {', '.join(unanswered)} is opened and never "
                    "closed nor left open on purpose")
+    # AUTO-157: the form, a ground to revise only
+    if review.get("form_fits") is False:
+        out.append("the whole plan: the form does not follow from the subject: "
+                   + _said(review.get("form_problem")))
     # AUTO-137: each repeat of an earlier channel film the reviewer listed
     for r in review.get("repeats") or []:
         if isinstance(r, dict):
@@ -3545,6 +3685,10 @@ class Screenwriter:
         if closing is not None and closing not in CLOSINGS:
             self.findings.append(f"note: ending device {closing!r} not in the schema; it "
                                  "is not compared with the channel's earlier films")
+        form = plan.get("form") if isinstance(plan.get("form"), dict) else {}
+        name = form.get("name")
+        if name is not None and name not in FORMS:
+            self.findings.append(f"note: form {name!r} not in the schema; read as no form")
         for n, section in enumerate(plan.get("sections") or [], 1):
             connective = section.get("connective")
             if connective is not None and connective not in CONNECTIVES:
@@ -3569,7 +3713,8 @@ class Screenwriter:
         Returns the review, the pre-checks and what the again ask found
         (`again`, and the `unsettled` lines still standing). A failed call
         raises: the gate is never skipped in silence."""
-        checks = (plan_prechecks(plan, self.seconds, self.idea.title, earlier=self.earlier)
+        checks = (plan_prechecks(plan, self.seconds, self.idea.title, earlier=self.earlier,
+                                 house_form=house_form(self.house or ""))
                   + self.paper_checks(plan))
         # AUTO-137: with counted earlier films the reviewer is shown them, a
         # sixth objection (after AUTO-161's stakes) and the repeats to list; with none, today's prompt.
@@ -3611,7 +3756,10 @@ class Screenwriter:
         (`plan-2`) and reads it again (`plan-review-2`); under report-only
         (`fix` false) nothing is asked again and the plan goes on as it is.
         reject, or a second revise, raises before any write-NN, leaving the
-        record on `plan_review_stop`. Only the reviewer's verdict decides:
+        record on `plan_review_stop`, except a second revise on the form alone
+        (narrative.form_only_revise, AUTO-157): the form is a ground to revise
+        only, so the second plan is drafted, the record carries `advisory`
+        ["form"] and the findings a note. Only the reviewer's verdict decides:
         the pre-checks are for it to confirm, and a reading whose fields
         contradict its verdict is asked once more (`plan-review-again`),
         what still contradicts kept under `unsettled`. Returns the plan to
@@ -3651,11 +3799,17 @@ class Screenwriter:
                   "retried": previous is not None, "model": self.reviewer.model,
                   "prechecks": checks, "unsettled": rounds[-1]["unsettled"],
                   **_channel_reading(review), "rounds": rounds}
+        # AUTO-157: a form that still does not fit after planning once more is
+        # an advisory, never a stop, since form is a ground to revise only.
+        advisory = (verdict == "revise" and fix and previous is not None
+                    and narrative.form_only_revise(review))
+        if advisory:
+            record["advisory"] = ["form"]
         if self.pool_reviewer is not None:
             # On the record a stop writes to plan_review.json too: which pool
             # reviewer read it, served by whom, priced from where.
             record["reviewer"] = self.pool_reviewer.record()
-        if verdict == "reject" or (verdict == "revise" and fix):
+        if verdict == "reject" or (verdict == "revise" and fix and not advisory):
             # script.json is not written on a stop (its existence marks the
             # stage done for `yt run`), so the command keeps this elsewhere.
             self.plan_review_stop = record
@@ -3667,7 +3821,12 @@ class Screenwriter:
                 + f"): {said}. No section was drafted. Run `yt script` again with "
                 "--notes saying what the plan must change; the reviews are kept in "
                 f"{PLAN_REVIEW_FILE} and under decisions/script/")
-        self._say(f"[plan] review: {verdict}")
+        if advisory:
+            self.findings.append(
+                "note: plan review: the form still does not fit after planning once more ("
+                + (_said(review.get("form_problem")) or "no problem named")
+                + "); drafted on, since form is a revise-only ground")
+        self._say(f"[plan] review: {verdict}" + (" (advisory: form)" if advisory else ""))
         return plan, record
 
     # -- stage two: write it -----------------------------------------------
@@ -6745,6 +6904,9 @@ def plan_review_lines(record) -> list[str]:
            for r in record.get("dismissed") or [] if isinstance(r, dict)]
     # what the reading still contradicted after it was asked again
     md += [f"- unsettled: {line}" for line in record.get("unsettled") or []]
+    # AUTO-157: a ground the second reading still held, drafted on
+    md += [f"- advisory: {a} (a ground to revise only; drafted on after planning once "
+           "more)" for a in record.get("advisory") or []]
     return md + [""]
 
 
@@ -6765,6 +6927,10 @@ def write_md(path: str, idea: Idea, data: dict, sections: list[Section]) -> None
     temperament, why = persona_of(data)
     if temperament:
         md += [f"**Narrator.** {temperament}" + (f": {why}" if why else ""), ""]
+    form = form_name(data)
+    if form:
+        reason = _said(data["form"].get("why_this_subject"))
+        md += [f"**Form.** {form}" + (f": {reason}" if reason else ""), ""]
     reveal = data.get("reveal") if isinstance(data.get("reveal"), dict) else {}
     if reveal.get("section"):
         md += [f"**Reveal.** section {reveal['section']}, after the constraint in "

@@ -387,10 +387,12 @@ class TheShippedText(unittest.TestCase):
         # AUTO-157: FORMS is a house prior; structure 20 gives no list and
         # no template, so the default fixes no form and names how a channel
         # does. Its own example sits inside the line, so it fixes nothing.
+        from ytstudio import script
         form = self.line("format", "- Form:")
         self.assertIn("none", form)
         self.assertIn('("- Form: countdown")', form)
         self.assertIn("choose this film's form from its subject", form)
+        self.assertEqual(script.house_form(self.parsed["format"]), "")
         self.assertIn(("structure", 20), cited(COMMENT.search(self.raw["format"]).group(1)))
         self.assertLess(len(self.raw["format"]), 1500)
 
