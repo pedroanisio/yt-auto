@@ -56,6 +56,26 @@ class Note(unittest.TestCase):
         self.assertEqual([f.level for f in found], ["note"])
         self.assertIn("--fresh", found[0].fix)
 
+    def test_a_shallow_dossier_is_told_to_rerun_deeper(self):
+        # Below PARALLEL_MIN_DEPTH the question is never asked, so a plain
+        # --fresh would spend a research run asking the same questions again.
+        notes = [{"question": f"q{n}", "notes": "n", "visited": OPENED, "searches": 1}
+                 for n in range(1, research.PARALLEL_MIN_DEPTH)]
+        found = self.notes(parallels=[], parallels_why="", notes=notes)
+        self.assertEqual(len(found), 1)
+        self.assertTrue(found[0].fix.endswith(
+            f"--fresh --depth {research.PARALLEL_MIN_DEPTH}"), found[0].fix)
+
+    def test_a_deep_dossier_is_told_only_to_rerun(self):
+        notes = [{"question": f"q{n}", "notes": "n", "visited": OPENED, "searches": 1}
+                 for n in range(1, research.PARALLEL_MIN_DEPTH + 1)]
+        # the paper's own read is not a question, and does not count as depth
+        notes.insert(0, {"paper": True, "notes": "n", "visited": OPENED})
+        found = self.notes(parallels=[], parallels_why="", notes=notes)
+        self.assertEqual(len(found), 1)
+        self.assertTrue(found[0].fix.endswith("--fresh"), found[0].fix)
+        self.assertNotIn("--depth", found[0].fix)
+
     def test_a_reason_is_an_answer(self):
         self.assertEqual(self.notes(parallels=[], parallels_why="no precedent documented"),
                          [])
