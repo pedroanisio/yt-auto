@@ -733,7 +733,9 @@ model's "before" is a prior, not a lay viewer's. A gain under
 after hearing is one `warning: story review: viewer quiz gain ...` finding
 (AUTO-162), naming each missed question and the fact its key gives, so
 `yt doctor` warns before voice is paid for; a ceiling score (nothing missed)
-or a failed quiz says nothing. It is no flag, unresolved item or `--gate`
+or a failed quiz says nothing (a failed re-ask after a revision drops round
+1's measure too). `yt script --revise` asks no quiz, so a warning it keeps
+measured the narration the `--review` run left behind. It is no flag, unresolved item or `--gate`
 input, and no revise sees it: the quiz still gates nothing.
 It is priced from the script's words: about $0.84 for 10 minutes at opus. Every verdict is appended to
 `work/review-log.jsonl` with `label: null`, the raw material of the

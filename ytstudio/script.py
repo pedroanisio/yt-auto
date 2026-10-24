@@ -2293,7 +2293,13 @@ def quiz_findings(cold) -> list[str]:
     the quiz failed), a gain at the floor, or nothing missed: a reader right
     on every item before and after has a gain of 0 and nothing went
     untaught, the "before" being a model's prior. The gain and the first
-    fact lead, so doctor's clipped message still shows them."""
+    fact lead, so doctor's clipped message still shows them.
+
+    `cold` is the draft that stands: when a revision stood and its re-ask
+    (`quiz-after-r2`..) failed, the gain is None and this is silent, even
+    if round 1 measured a low gain; that measure is not carried over.
+    `yt script --revise` asks no quiz, so a warning it keeps measured the
+    narration the --review run left behind."""
     cold = cold if isinstance(cold, dict) else {}
     quiz = cold.get("quiz") if isinstance(cold.get("quiz"), dict) else {}
     items = [i for i in quiz.get("items") or [] if isinstance(i, dict)]
@@ -3976,7 +3982,8 @@ class Screenwriter:
         can reach a `warning:` with the command that can. Last, the viewer
         quiz's warning when its gain is under QUIZ_GAIN_FLOOR with facts
         missed (`quiz_findings`, AUTO-162), from the quiz of the draft that
-        stands; like every `warning:` it gates nothing."""
+        stands (a failed re-ask leaves no gain, so round 1's is not
+        warned); like every `warning:` it gates nothing."""
         out = []
         verdict = record.get("verdict")
         grades = record.get("grades") or {}
