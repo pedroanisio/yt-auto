@@ -21,8 +21,9 @@ of paying twice; --fresh forces the work again.
 outline (stage 09-crosscheck): a fresh web pass per claim looks for sources
 independent of the cited host, and --reviewer-model, a model of another family,
 judges what it read. A verdict that names a page the pass did not open, or
-words its notes do not hold, is asked once more and then recorded as
-unverified; it never counts as corroborated.
+words its notes do not record under that page's URL, is asked once more and
+then recorded as unverified; it never counts as corroborated. A pass or a
+verdict that fails is unverified too, and the next run asks only it again.
 
 Downloaded assets are untrusted bytes from the open web: they are written to
 <dossier>/downloads/ and never opened or executed by this script.
@@ -1054,6 +1055,12 @@ CROSSCHECK_WARNING = "cross-check"
 #: How an entry whose web pass raised says so among its problems.
 PASS_FAILED = "the web pass failed"
 
+#: How an entry whose verdict could not be had (the checker's engine
+#: failed, its answer lacked a field after its own retry, or its cap was
+#: spent) says so. A failed call, like a failed pass, is asked again on the
+#: next run; a verdict rejected twice is an answer, and is kept.
+VERDICT_FAILED = "the verdict failed"
+
 #: What dossier.json keeps of each entry; raw/09-crosscheck.json keeps the
 #: pass's notes, searches and denials too.
 CROSSCHECK_KEPT = ("claim", "source_url", "status", "sources", "correction", "note",
@@ -1128,12 +1135,23 @@ def notes_by_url(notes: str, visited: list[str]) -> list[tuple[str, str]]:
     return [(u, "\n".join(lines).strip()) for u, lines in out if u or "\n".join(lines).strip()]
 
 
+def crosscheck_failed(entry: object) -> bool:
+    """Whether an entry is unverified because a call failed (its web pass
+    or its verdict), not because its answer was rejected: the next run asks
+    it again."""
+    return (isinstance(entry, dict) and entry.get("status") == UNVERIFIED
+            and any(str(p).startswith((PASS_FAILED, VERDICT_FAILED))
+                    for p in entry.get("problems") or []))
+
+
 def crosscheck_problems(result: object, claim: dict, visited: list[str],
                         notes: str) -> list[str]:
     """What is wrong with one verdict, one line each. Every source must be a
     page this pass fetched and its `says` words the pass's notes record
-    (script.said_in); a source on the claim's own cited host is dropped
-    from the counts, not wrong in itself. Over the counted rest:
+    under that page's URL (notes_by_url, script.said_in): another page's
+    words, or the notes before any fetched URL, are not that page's. A
+    source on the claim's own cited host is dropped from the counts, not
+    wrong in itself. Over the counted rest:
     corroborated needs an agreeing source and none disagreeing,
     contradicted a disagreeing one and a correction, disputed one of each,
     not_found nothing. Nothing is repaired on the model's behalf."""
@@ -1145,6 +1163,10 @@ def crosscheck_problems(result: object, claim: dict, visited: list[str],
     if status not in CROSSCHECK_STATUSES:
         problems.append(f"status {status!r} is not one of {', '.join(CROSSCHECK_STATUSES)}")
     fetched = {crosscheck_url_key(u) for u in visited or []}
+    pages: dict[str, list[str]] = {}
+    for url, text in notes_by_url(notes, visited):
+        if url:                 # "" is the notes under no fetched URL
+            pages.setdefault(crosscheck_url_key(url), []).append(text)
     cited = crosscheck_host((claim or {}).get("source_url"))
     counted: list[dict] = []
     for src in result.get("sources") or []:
@@ -1155,9 +1177,9 @@ def crosscheck_problems(result: object, claim: dict, visited: list[str],
         if crosscheck_url_key(url) not in fetched:
             problems.append(f"{url or '(no url)'} is not a page this pass fetched")
         says = str(src.get("says") or "")
-        if not said_in(says, notes):
+        if not any(said_in(says, text) for text in pages.get(crosscheck_url_key(url), [])):
             problems.append(f"what {url or '(no url)'} says (\"{' '.join(says.split())}\") "
-                            "is not words the pass's notes record")
+                            "is not words the pass's notes record under that page's URL")
         if src.get("agrees") not in ("yes", "no", "partly"):
             problems.append(f"{url or '(no url)'}: agrees is {src.get('agrees')!r}, not yes, "
                             "no or partly")
@@ -1872,13 +1894,38 @@ class Researcher:
         keys = sorted(claim_key(c.get("claim", "")) for c in targets)
         redo = self.dossier.load("09-crosscheck-targets") not in (None, keys)
 
+        ran: list[bool] = []
+
         def work() -> list[dict]:
+            ran.append(True)
             self._say(f"  {len(targets)} claim(s) cross-checked, {self.jobs} at a time")
             with ThreadPoolExecutor(max_workers=self.jobs) as pool:
                 return list(pool.map(lambda job: self._crosscheck_entry(*job),
                                      enumerate(targets, 1)))
         entries = self._stage("09-crosscheck", work, redo=redo)
         self.dossier.save("09-crosscheck-targets", keys)
+        if not ran:
+            entries = self._crosscheck_retry(list(entries or []), targets)
+        return entries
+
+    def _crosscheck_retry(self, entries: list, targets: list[dict]) -> list:
+        """A replayed 09-crosscheck with the entries whose call failed asked
+        again (crosscheck_failed): a failed pass runs again, a failed verdict
+        is asked again on the pass it kept. Nothing else is redone, so a
+        re-run retries an outage for the price of what failed."""
+        at = {claim_key(c.get("claim", "")): (i, c) for i, c in enumerate(targets, 1)}
+        retry = [(n, *at[claim_key(e.get("claim", ""))]) for n, e in enumerate(entries)
+                 if crosscheck_failed(e) and claim_key(e.get("claim", "")) in at]
+        if not retry:
+            return entries
+        self._say(f"  {len(retry)} cross-check(s) failed last time; asking again")
+        with ThreadPoolExecutor(max_workers=self.jobs) as pool:
+            redone = list(pool.map(
+                lambda job: self._crosscheck_entry(job[1], job[2], previous=entries[job[0]]),
+                retry))
+        for (n, _, _), entry in zip(retry, redone):
+            entries[n] = entry
+        self.dossier.save("09-crosscheck", entries)
         return entries
 
     def _crosscheck_one(self, i: int, claim: dict) -> dict:
@@ -1930,21 +1977,29 @@ class Researcher:
         return {"visited": visited, "searches": searches, "denied": denied,
                 "notes": "\n".join(notes).strip()}
 
-    def _crosscheck_entry(self, i: int, claim: dict) -> dict:
+    def _crosscheck_entry(self, i: int, claim: dict, previous: dict | None = None) -> dict:
         """One target's entry: its web pass, then the checker's verdict on
         it (`09-crosscheck-<i>`), validated (crosscheck_problems) and asked
-        once more (`-again`) with what was wrong. A pass that failed, or a
-        verdict still invalid, is `unverified` with its problems: never
-        counted, and nothing repaired on the checker's behalf."""
+        once more (`-again`) with what was wrong. A pass or a verdict that
+        failed, or a verdict still invalid, is `unverified` with its
+        problems: never counted, and nothing repaired on the checker's
+        behalf. A failure stays this entry's: the other targets finish and
+        the research is written. `previous`, an entry whose verdict failed
+        after its pass ran, lends its pass, so only the verdict is asked."""
         entry = {"claim": claim.get("claim", ""), "source_url": claim.get("source_url", ""),
                  "status": UNVERIFIED, "sources": [], "correction": "", "note": "",
                  "visited": [], "searches": 0, "denied": [], "notes": "", "problems": []}
-        try:
-            found = self._crosscheck_one(i, claim)
-        except ClaudeError as exc:
-            self._say(f"  cross-check {i} failed: {exc}")
-            entry["problems"] = [f"{PASS_FAILED}: {exc}"]
-            return entry
+        kept = previous if (isinstance(previous, dict) and not any(
+            str(p).startswith(PASS_FAILED) for p in previous.get("problems") or [])) else None
+        if kept is not None:
+            found = {k: kept.get(k, entry[k]) for k in ("visited", "searches", "denied", "notes")}
+        else:
+            try:
+                found = self._crosscheck_one(i, claim)
+            except ClaudeError as exc:
+                self._say(f"  cross-check {i} failed: {exc}")
+                entry["problems"] = [f"{PASS_FAILED}: {exc}"]
+                return entry
         entry.update(found)
         pages = "\n\n".join(f"### {url}\n{text or '(the notes record nothing under this URL)'}"
                             if url else f"### notes under no fetched URL\n{text}"
@@ -1963,17 +2018,30 @@ class Researcher:
             "states otherwise; give what it states instead as the correction. disputed: "
             "independent pages disagree with each other about it. not_found: no page says "
             "anything either way. List each page you rest on with its URL exactly as above, "
-            "the words its notes record (quoted exactly from the notes, never "
-            "paraphrased) and whether it agrees (yes, no or partly).")
-        verdict = self.checker.decide(f"09-crosscheck-{i}", prompt, CROSSCHECK_SCHEMA)
+            "the words its notes record under that URL (quoted exactly from them, never "
+            "paraphrased, never another page's words or the notes under no fetched URL) "
+            "and whether it agrees (yes, no or partly).")
+        try:
+            verdict = self.checker.decide(f"09-crosscheck-{i}", prompt, CROSSCHECK_SCHEMA)
+        except ClaudeError as exc:          # HarnessError is one
+            self._say(f"  [09-crosscheck-{i}] failed: {exc}")
+            entry["problems"] = [f"{VERDICT_FAILED}: {exc}"]
+            return entry
         problems = crosscheck_problems(verdict, claim, found["visited"], found["notes"])
         if problems:
             self._say(f"  [09-crosscheck-{i}] asking again ({'; '.join(problems)})")
-            verdict = self.checker.decide(
-                f"09-crosscheck-{i}-again", prompt + "\n\nYour previous answer was rejected:\n"
-                + "\n".join(f"- {p}" for p in problems)
-                + "\nAnswer again, citing only the URLs above and words their notes record.",
-                CROSSCHECK_SCHEMA)
+            try:
+                verdict = self.checker.decide(
+                    f"09-crosscheck-{i}-again",
+                    prompt + "\n\nYour previous answer was rejected:\n"
+                    + "\n".join(f"- {p}" for p in problems)
+                    + "\nAnswer again, citing only the URLs above and the words recorded "
+                    "under each.",
+                    CROSSCHECK_SCHEMA)
+            except ClaudeError as exc:
+                self._say(f"  [09-crosscheck-{i}-again] failed: {exc}")
+                entry["problems"] = problems + [f"{VERDICT_FAILED}: {exc}"]
+                return entry
             problems = crosscheck_problems(verdict, claim, found["visited"], found["notes"])
         verdict = verdict if isinstance(verdict, dict) else {}
         if problems:
@@ -2665,7 +2733,8 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                    help="questions researched, then decisions made, in "
                         "parallel (default 3)")
     flags.budget(p, default=None, dest="budget", metavar="USD", old=("--budget",),
-                 help="hard spend cap in dollars per engine call")
+                 help="hard spend cap in dollars per engine call, the "
+                      "cross-check's passes and verdicts included")
     p.add_argument("--download", action="store_true",
                    help="fetch freely licensed assets into the project")
     p.add_argument("--shots", type=int, default=None, metavar="N",

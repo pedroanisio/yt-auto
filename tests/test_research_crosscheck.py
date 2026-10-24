@@ -305,6 +305,71 @@ class Passes(_Case):
         self.assertEqual(by[CLAIMS[0]["claim"]]["status"], "corroborated")
         self.assertEqual(by[CLAIMS[4]["claim"]]["status"], "corroborated")
 
+    def test_a_failed_verdict_is_unverified_and_the_others_finish(self):
+        def down(prompt):
+            raise harness.HarnessError("[research] 09-crosscheck-1: the reviewer is down")
+        checks = {f"09-crosscheck-{i}": corroborated() for i in range(1, 4)}
+        checks["09-crosscheck-1"] = down
+        data = self.researcher(checks=checks).run()
+        by = {e["claim"]: e for e in data["crosscheck"]}
+        failed = by[CLAIMS[0]["claim"]]
+        self.assertEqual(failed["status"], "unverified")
+        self.assertTrue(any(p.startswith(research.VERDICT_FAILED) and "reviewer is down" in p
+                            for p in failed["problems"]), failed)
+        self.assertEqual(by[CLAIMS[1]["claim"]]["status"], "corroborated")
+        self.assertEqual(by[CLAIMS[4]["claim"]]["status"], "corroborated")
+        self.assertTrue((self.root / "raw" / "09-crosscheck.json").is_file())
+
+    def test_a_failed_second_ask_is_unverified_with_both_problems(self):
+        def down(prompt):
+            raise ClaudeError("budget spent")
+        data = self.researcher(crosscheck=1, checks={
+            "09-crosscheck-1": corroborated(url="https://never-fetched.org/x"),
+            "09-crosscheck-1-again": down}).run()
+        entry = data["crosscheck"][0]
+        self.assertEqual(entry["status"], "unverified")
+        text = " ".join(entry["problems"])
+        self.assertIn("https://never-fetched.org/x", text)
+        self.assertIn("budget spent", text)
+
+    def test_a_rerun_asks_again_only_what_failed(self):
+        def script(prompt):
+            if "always point away" in prompt:
+                raise ClaudeError("the web pass timed out")
+            return default_pass(prompt)
+        FakeEngine.script = staticmethod(script)
+
+        def down(prompt):
+            raise harness.HarnessError("the reviewer is down")
+        checks = {f"09-crosscheck-{i}": corroborated() for i in range(1, 4)}
+        checks["09-crosscheck-1"] = down
+        self.researcher(checks=checks).run()
+        FakeEngine.script = staticmethod(default_pass)
+        FakeEngine.calls = []
+        self.events.clear()
+        data = self.researcher().run()
+        # claim 2's pass is run again; claim 1's verdict is asked again on
+        # the pass it kept; claim 3 replays
+        passes = self.crosscheck_passes()
+        self.assertEqual(len(passes), 1)
+        self.assertIn("always point away", passes[0])
+        asked = sorted(n for w, n in self.events if w == "start" and n.startswith("09-"))
+        self.assertEqual(asked, ["09-crosscheck-1", "09-crosscheck-2"])
+        self.assertEqual([e["status"] for e in data["crosscheck"]], ["corroborated"] * 3)
+        saved = json.loads((self.root / "raw" / "09-crosscheck.json").read_text())
+        self.assertEqual([e["status"] for e in saved], ["corroborated"] * 3)
+
+    def test_a_verdict_rejected_twice_is_not_asked_again_on_a_rerun(self):
+        bad = corroborated(url="https://never-fetched.org/x")
+        self.researcher(crosscheck=1, checks={"09-crosscheck-1": bad,
+                                              "09-crosscheck-1-again": bad}).run()
+        FakeEngine.calls = []
+        self.events.clear()
+        data = self.researcher(crosscheck=1).run()
+        self.assertEqual(self.crosscheck_passes(), [])
+        self.assertFalse(any(n.startswith("09-") for _, n in self.events))
+        self.assertEqual(data["crosscheck"][0]["status"], "unverified")
+
     def test_the_pass_names_the_cited_host_and_asks_for_independent_pages(self):
         self.researcher(crosscheck=1).run()
         prompt = self.crosscheck_passes()[0]
@@ -414,6 +479,28 @@ class Validator(unittest.TestCase):
     def test_words_not_in_the_notes_are_a_problem(self):
         found = self.problems(result("corroborated", src(OTHER, "It is 100 million km.", "yes")))
         self.assertTrue(any("notes" in p for p in found), found)
+
+    def test_another_pages_words_under_this_pages_url_are_a_problem(self):
+        # "closer to 90 million km" is in the notes, but under the second page
+        found = self.problems(result("corroborated",
+                                     src(OTHER, "It is closer to 90 million km.", "yes")))
+        self.assertTrue(any(OTHER in p and "under" in p for p in found), found)
+
+    def test_words_found_only_before_any_fetched_url_are_a_problem(self):
+        notes = "I searched for the tail length and found two pages.\n" + NOTES
+        preamble = src(OTHER, "I searched for the tail length", "yes")
+        found = research.crosscheck_problems(result("corroborated", preamble), CLAIMS[0],
+                                             VISITED, notes)
+        self.assertTrue(found)
+        self.assertEqual(research.crosscheck_problems(
+            result("corroborated", src(OTHER, SAYS, "yes")), CLAIMS[0], VISITED, notes), [])
+
+    def test_a_page_the_notes_name_twice_keeps_both_parts(self):
+        notes = f"{OTHER}\n{SAYS}\n\n{CITED}\nx\n\n{OTHER}/#more\nIt also gives 100 million km."
+        found = research.crosscheck_problems(
+            result("corroborated", src(OTHER, "It also gives 100 million km.", "yes")),
+            CLAIMS[0], VISITED, notes)
+        self.assertEqual(found, [])
 
     def test_the_cited_host_is_dropped_with_or_without_www(self):
         for url in (CITED, CITED.replace("www.", "")):
