@@ -424,7 +424,12 @@ priced at `spend.PAPER_USD` ($1.00, assumed until a record measures it).
 film's `promise` and `payoff`, its `train` (who wants what, what is in the
 way), the `stakes` and `viewer_stake`, the `misconception` it breaks (cited
 as `[M1]` from the research block, which numbers the dossier's sourced
-misconceptions and names its identifiable case), the `audience` (lay,
+misconceptions and names its identifiable case and, as `P1`.., its
+`human_stories`: AUTO-149, up to three people the subject affected, what
+happened to them and what followed, each kept by `research.human_stories_of`
+only when its claim is a dossier claim and its source that claim's or a page
+the research opened, a dropped one a `human story dropped:` warning in
+dossier.json and none never a failure), the `audience` (lay,
 enthusiast, expert), an optional `persona` (AUTO-158: the narrator's
 `temperament` for this film, free text, and `why` the subject calls for it;
 the house format's temperament when it names one), told to every section

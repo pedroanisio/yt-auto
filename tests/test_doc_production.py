@@ -123,6 +123,13 @@ class ProductionDoc(unittest.TestCase):
                     "`unmatched`", "`recorded_only`"):
             self.assertIn(key, row, key)
 
+    def test_the_dossier_row_names_the_human_stories(self):
+        # AUTO-149
+        row = next(l for l in DOC.read_text().splitlines() if l.startswith("| `dossier.json`"))
+        self.assertIn("`human_stories`", row)
+        for key in ("`who`", "`what_happened`", "`consequence`", "`source`", "`claim`"):
+            self.assertIn(key, row.split("`human_stories`", 1)[1], key)
+
     def test_captions_are_a_sidecar_unless_burned(self):
         text = _section("### The frame, in bands")
         self.assertIn("sidecar", text)

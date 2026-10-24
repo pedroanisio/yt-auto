@@ -1453,6 +1453,20 @@ def identifiable_case(data: dict) -> str:
     return f"{who} (source: {source})" if source else f"{who} (no source)"
 
 
+def human_story_lines(data: dict) -> list[str]:
+    """The dossier's kept human stories (AUTO-149) as brief lines, `P<k>` for
+    their place in the dossier; [] for a dossier written before them."""
+    out = []
+    for k, s in enumerate([s for s in (data or {}).get("human_stories") or []
+                           if isinstance(s, dict)], 1):
+        text = {key: " ".join(str(s.get(key) or "").split())
+                for key in ("who", "what_happened", "consequence", "source")}
+        consequence = f"; consequence: {text['consequence']}" if text["consequence"] else ""
+        out.append(f"- P{k}: {text['who']}: {text['what_happened']}{consequence} "
+                   f"(source: {text['source'] or 'no source'})")
+    return out
+
+
 def research_block(data: dict, *, limit: int = 60, ids: bool = True) -> str:
     """Claims with their sources, licensed assets, and what to correct.
 
@@ -1522,6 +1536,12 @@ def research_block(data: dict, *, limit: int = 60, ids: bool = True) -> str:
     case = identifiable_case(data)
     if case:
         parts.append(f"An identifiable case the film can follow: {case}")
+    stories = human_story_lines(data) if ids else []
+    if stories:
+        # AUTO-149: numbered like the misconceptions, so the plan cites a
+        # person the research traced ("[P1] ...") rather than invents one.
+        parts.append("People the subject affected and what followed, each traced to "
+                     "a claim and a page the research opened:\n" + "\n".join(stories))
     gaps = [f"- {g.get('severity', '?')}: {g.get('issue', '')}"
             for g in data.get("gaps", [])
             if g.get("severity") in ("blocker", "important")]

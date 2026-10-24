@@ -191,5 +191,39 @@ class Cap(unittest.TestCase):
                          ("c7", "established", ""))
 
 
+# --------------------------------------------------------------------------- #
+# AUTO-149: the people the subject affected, by P id
+# --------------------------------------------------------------------------- #
+
+STORY = {"who": "Families of the 43 victims, Genoa",
+         "what_happened": "lost relatives when the deck fell",
+         "consequence": "Italy revoked the concession in 2020",
+         "source": "https://example.org/morandi", "claim": "x"}
+
+
+class HumanStories(unittest.TestCase):
+    def block(self, data, **kw):
+        with contextlib.redirect_stderr(io.StringIO()):
+            return script.research_block(data, **kw)
+
+    def test_the_kept_stories_are_numbered_beside_the_case(self):
+        data = {"claims": [claim("one fact")],
+                "identifiable_case": {"who": "The Morandi bridge", "source": "u"},
+                "human_stories": [STORY, dict(STORY, who="Truck drivers on the A10",
+                                              consequence="")]}
+        text = self.block(data)
+        self.assertIn("- P1: Families of the 43 victims, Genoa: lost relatives when the "
+                      "deck fell; consequence: Italy revoked the concession in 2020 "
+                      "(source: https://example.org/morandi)", text)
+        self.assertIn("- P2: Truck drivers on the A10: lost relatives when the deck fell "
+                      "(source: https://example.org/morandi)", text)
+        # next to the identifiable case
+        self.assertLess(text.index("An identifiable case"), text.index("- P1:"))
+
+    def test_no_stories_no_block(self):
+        self.assertNotIn("P1", self.block({"claims": [claim("one fact")],
+                                           "human_stories": []}))
+
+
 if __name__ == "__main__":
     unittest.main()
