@@ -132,7 +132,7 @@ one-line note.
 | the review score under which work goes back | `--bar` | `keyframe` (with `--sheet`), `vfx`, `probe`; not `script`, whose plan review and story review have no score: the verdict (accept, revise, reject; recommend, consider, reject) is the bar | `--author-bar` (`vfx`) |
 | a spend cap in dollars | `--budget-usd` (`--stage-budget-usd`, `--synth-budget-usd`, `--review-budget-usd` cap the whole stage, the synthesis, a review) | `research`, `keyframe`, `vfx`, `probe`, `assess`, `improve`, `sound`, `run` (the whole run); `--review-budget-usd` on `script` too (each plan or story review decision) | `--budget` (`research`) |
 | the model that reviews, never the author's own: it must differ from `--model` by family (a gateway id is its direct name's family, `openai/gpt-5` is `gpt-5`'s; a gateway virtual model, `vmc/<slug>`, is refused on either side), or the stage is refused before anything is paid. `pool` or `sdk:<provider/model>` (script and `narrative calibrate` only; AUTO-125, `ytstudio/reviewers.py`) is a reviewer from another maker on the gateway engine: `pool` takes the first pinned row of `reviewers.POOL` whose maker (the gateway id's prefix) is not the author's, `sdk:` names one row; it needs `YT_GATEWAY=vercel` and the gateway engine's prerequisites, is judged by maker (an unknown maker on either side is refused), and keyframe, vfx and probe refuse it, since their reviewers open images, as styles does in this round | `--reviewer-model` (default `opus`; `--review-budget-usd` is what one review may cost, 2) | `keyframe`, `vfx`, `probe`, `script` (with `--review`), `styles` (with `--rich --deliberate critique`, the identity's swap test, AUTO-146; checked only when that review runs), `run` (handed to script, keyframe, vfx and styles; `pool` is resolved once and handed to script alone as `sdk:<id>`, while keyframe, vfx and styles keep `opus`, so `--model opus` with `pool` is refused unless they are skipped) | |
-| ignore what is cached and do the stage again | `--fresh` | `research`, `styles` (the fix doctor names for a palette with no hex code), `keyframe`, `vfx`, `props`, `script` (every decision asked again: what a story review's plan flag names), `voice`, `sound`, `build`, `retime`, `review`, `qa`, `gate`, `pilot` | |
+| ignore what is cached and do the stage again | `--fresh` | `research`, `styles` (the fix doctor names for a palette with no hex code, a styles.json with no treatment, or a weak identity swap test), `keyframe`, `vfx`, `props`, `script` (every decision asked again: what a story review's plan flag names), `voice`, `sound`, `build`, `retime`, `review`, `qa`, `gate`, `pilot` | |
 | the model, its reasoning effort, its fallbacks | `--model`, `--effort`, `--fallback-model` | every stage that calls a model, `props` included; not `render` | |
 | how many of the stage's independent pieces run at once | `--jobs` | `ideas`, `research`, `styles`, `script`, `keyframe`, `vfx`, `probe`, `sound` (with `--fetch`: cues searched, downloaded and judged at once, default 4) | |
 | the shots sent back to the screenplay for one revision, by label, `retime` or `feedback` | `--revise` (`--why` the reason) | `script` | |
@@ -922,11 +922,13 @@ blocking editorial note. It is not a delivery verdict. The order is:
    engine's report (what `--strict` refuses), a render short of the whole
    programme, a programme with no audio track, a film in `design.py`'s house
    fallback palette (the fix `yt styles --rich`, then `yt build`, or with a
-   `styles.json` whose palette names no hex code `yt styles --rich --fresh`,
-   then `yt build`, AUTO-146; before a render it is a `styles` warning; a
-   rich `styles.json` with no identity, or one whose swap test was weak, not
-   evidenced or never run, is a `styles` warning naming
-   `yt styles --rich --deliberate critique`), no technical `gate.json` or
+   `styles.json` that lists no treatment or whose palette names no hex code
+   `yt styles --rich --fresh`, then `yt build`, AUTO-146; before a render it
+   is a `styles` warning; a rich `styles.json` with no identity, or one
+   whose swap test was not evidenced, is a `styles` warning naming
+   `yt styles --rich --deliberate critique`, a weak one names it with
+   `--fresh`, and an identity no critique was asked for is a `styles`
+   note), no technical `gate.json` or
    one not `deliverable`, no `qa.json` at READY TO PUBLISH, or a gate or QA
    pass older than the newer of `video.mp4` and `scene.xml` (QA records the
    digest of the scene it judged, and the gate, like QA, the byte digests of

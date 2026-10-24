@@ -854,50 +854,67 @@ def fallback_palette(project: workspace.Project, build: dict | None
         return None
     why = design.get("fallback") or "source fallback"
     problem = f"the film is in design.py's house fallback palette ({why}), not its own"
-    # The fix follows the cause (AUTO-146): with no styles.json the stage has
-    # not run; with one, its palette named no hex code, and a rerun on the
-    # same inputs would serve that cached choice again, so it asks afresh.
-    # A build.json from before build said why is told apart by the file.
+    # The fix follows the cause build.design_fallback named (AUTO-146): with
+    # no styles.json the stage has not run; with one that lists no treatment
+    # or whose palette named no hex code, a rerun on the same inputs would
+    # serve that cached choice again, so it asks afresh. A build.json from
+    # before build said why is told apart by the file.
     absent = (why == "no styles.json" if design.get("fallback")
               else not project.has("styles"))
+    then = ", then " + _cmd("build", project)
     if absent:
-        return problem, _cmd("styles", project, "--rich") + ", then " + _cmd("build", project)
-    return (f"{problem}; add hex codes to the palette",
-            _cmd("styles", project, "--rich", "--fresh") + ", then " + _cmd("build", project))
+        return problem, _cmd("styles", project, "--rich") + then
+    fresh = _cmd("styles", project, "--rich", "--fresh") + then
+    if why == "styles.json lists no treatment":
+        return f"{problem}; the styles run returned no treatment", fresh
+    return f"{problem}; add hex codes to the palette", fresh
 
 
 #: A styles row with any of these was written under --rich (styles.py).
 RICH_STYLE_FIELDS = ("palette", "typography", "motion", "sound")
 
 
-def identity_problem(styles: dict | None) -> str:
-    """Why styles.json's identity (AUTO-146) is not shown to be the film's own,
-    or "": a rich styles.json with no identity, or one whose swap test was
-    weak, not evidenced or never run. A warning, not a fail: the look is
-    still the operator's call at the keyframe's approval, and QA scores the
-    film's identity on its frames. A styles.json written without --rich has
-    no identity to ask about; its palette is the fallback check's."""
+def identity_problem(styles: dict | None) -> tuple[str, str, tuple[str, ...]] | None:
+    """(level, problem, styles flags for the fix) when styles.json's identity
+    (AUTO-146) is not shown to be the film's own, else None: a rich
+    styles.json with no identity, or one whose swap test was weak, not
+    evidenced or never run. A warning, not a fail: the look is still the
+    operator's call at the keyframe's approval, and QA scores the film's
+    identity on its frames. An identity no critique was asked for (`yt run
+    --quick` gives styles --rich alone) is a note, since the operator chose
+    no review. A styles.json written without --rich has no identity to ask
+    about; its palette is the fallback check's."""
     if not isinstance(styles, dict):
-        return ""
+        return None
+    critique = ("--rich", "--deliberate", "critique")
     ident = styles.get("identity")
     if not isinstance(ident, dict):
         rich = styles.get("thumbnail") or any(
             isinstance(row, dict) and any(row.get(k) for k in RICH_STYLE_FIELDS)
             for row in styles.get("styles") or [])
-        return ("styles.json has the rich fields but no identity (atmosphere, personality, "
-                "motif, signature), so nothing says what makes this film's look its own"
-                if rich else "")
+        return (("warn", "styles.json has the rich fields but no identity (atmosphere, "
+                 "personality, motif, signature), so nothing says what makes this "
+                 "film's look its own", critique) if rich else None)
     review = ident.get("review") if isinstance(ident.get("review"), dict) else {}
     verdict = review.get("verdict")
     if verdict == "pass":
-        return ""
+        return None
     if verdict == "weak":
-        return ("the identity's swap test was weak: "
-                + str(review.get("objection") or "no objection recorded"))
+        # The same inputs would serve the cached choice and judgements and
+        # give the same weak verdict back, so the fix asks afresh. A
+        # reviewer failure saves nothing, so not_evidenced needs no --fresh.
+        return ("warn", "the identity's swap test was weak: "
+                + str(review.get("objection") or "no objection recorded"),
+                critique + ("--fresh",))
     if verdict == "not_evidenced":
-        return ("the identity's swap test is not_evidenced: "
-                + str(review.get("error") or "the reviewer did not answer"))
-    return "the identity was never swap-tested by a reviewer of another family"
+        return ("warn", "the identity's swap test is not_evidenced: "
+                + str(review.get("error") or "the reviewer did not answer"), critique)
+    stages = (styles.get("deliberation") or {}).get("stages") or []
+    if "critique" not in stages:          # `full` is recorded as its stages
+        return ("note", "the identity was not swap-tested: no `--deliberate critique` "
+                "was asked for", critique)
+    return ("warn", "the identity was never swap-tested by a reviewer of another family",
+            critique)
 
 
 def delivery_evidence(project: workspace.Project, build: dict | None
@@ -1241,9 +1258,9 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
                            _cmd("styles", project, "--rich", "--deliberate", "full"))
         except (TypeError, ValueError):
             pass
-        if problem := identity_problem(styles):
-            report.add("warn", "styles", problem,
-                       _cmd("styles", project, "--rich", "--deliberate", "critique"))
+        if found := identity_problem(styles):
+            level, problem, flags = found
+            report.add(level, "styles", problem, _cmd("styles", project, *flags))
 
     # -- script ------------------------------------------------------------
     script = read_json(project.source("script"), warn=False) if "script" in done else None

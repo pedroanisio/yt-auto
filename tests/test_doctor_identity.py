@@ -99,6 +99,15 @@ class FallbackFix(Case):
         self.assertIn("add hex codes to the palette", fails[0].message)
         self.assertIn("--rich --fresh", fails[0].fix)
 
+    def test_a_styles_json_with_no_treatment_says_so_not_hex_codes(self):
+        self.write("styles.json", {"styles": []})
+        self.built(why="styles.json lists no treatment")
+        rows = self.about("fallback palette", "warn", "styles")
+        self.assertEqual(len(rows), 1, rows)
+        self.assertNotIn("hex code", rows[0].message)
+        self.assertIn("returned no treatment", rows[0].message)
+        self.assertIn(f"yt styles --project {self.root} --rich --fresh", rows[0].fix)
+
     def test_an_older_build_json_is_told_apart_by_the_file(self):
         # written before build.json said why: styles.json on disk or not
         self.built()
@@ -133,18 +142,40 @@ class Identity(Case):
         self.write("styles.json", {"styles": [{"name": "Diagram", "fit": 8}]})
         self.assertEqual(self.identity_rows(), [])
 
-    def test_a_weak_or_unevidenced_review_warns_naming_the_critique(self):
-        for review in ({"verdict": "weak", "objection": "any bridge", "scores": {}},
-                       {"verdict": "not_evidenced", "error": "the reviewer is down"},
-                       None):
-            ident = dict(IDENTITY) | ({"review": review} if review else {})
-            self.styles(identity=ident)
+    def critique(self, review):
+        self.styles(identity=dict(IDENTITY, review=review))
+        rows = self.identity_rows()
+        self.assertEqual([r.level for r in rows], ["warn"], (review, rows))
+        self.assertIn(review["verdict"], rows[0].message)
+        return rows[0]
+
+    def test_a_weak_review_names_the_critique_asked_afresh(self):
+        # the same inputs would serve the cached choice and judgements, and
+        # give the same weak verdict back
+        row = self.critique({"verdict": "weak", "objection": "any bridge", "scores": {}})
+        self.assertIn(f"yt styles --project {self.root} --rich --deliberate critique --fresh",
+                      row.fix)
+
+    def test_an_unevidenced_review_names_the_critique_without_fresh(self):
+        # a reviewer failure is never cached, so the plain command asks again
+        row = self.critique({"verdict": "not_evidenced", "error": "the reviewer is down"})
+        self.assertIn(f"yt styles --project {self.root} --rich --deliberate critique",
+                      row.fix)
+        self.assertNotIn("--fresh", row.fix)
+
+    def test_an_identity_no_critique_was_asked_for_is_a_note(self):
+        # `yt run --quick` gives styles --rich alone: the operator chose no review
+        for doc in ({}, {"deliberation": {"stages": ["pool"]}}):
+            self.styles(identity=dict(IDENTITY), **doc)
             rows = self.identity_rows()
-            self.assertEqual([r.level for r in rows], ["warn"], (review, rows))
-            self.assertIn(f"yt styles --project {self.root} --rich --deliberate critique",
-                          rows[0].fix)
-            if review:
-                self.assertIn(review["verdict"], rows[0].message)
+            self.assertEqual([r.level for r in rows], ["note"], (doc, rows))
+            self.assertIn("--deliberate critique", rows[0].fix)
+
+    def test_an_identity_left_unjudged_under_critique_warns(self):
+        self.styles(identity=dict(IDENTITY), deliberation={"stages": ["critique"]})
+        rows = self.identity_rows()
+        self.assertEqual([r.level for r in rows], ["warn"], rows)
+        self.assertIn("--deliberate critique", rows[0].fix)
 
     def test_a_passing_review_is_quiet(self):
         self.styles(identity=dict(IDENTITY, review={"verdict": "pass", "scores": {}}))

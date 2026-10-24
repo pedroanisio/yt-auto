@@ -1080,12 +1080,15 @@ runs without a look). `yt build` and `yt render` still run on such a film,
 but `yt qa` blocks READY and `yt doctor` refuses delivery (AUTO-155).
 `yt doctor` names the fix for the cause `build.json` recorded: with no
 `styles.json` it is `yt styles --rich`, then `yt build`; with a
-`styles.json` whose primary palette names no hex code it says to add hex
-codes, and the fix is `yt styles --rich --fresh`, then `yt build`, since a
-cached choice would give the same palette back (AUTO-146). A rich
-`styles.json` with no identity, or one whose swap test was weak, not
-evidenced or never run, is a `styles` warning naming
-`yt styles --rich --deliberate critique`.
+`styles.json` that lists no treatment it says the styles run returned
+none, and with one whose primary palette names no hex code it says to add
+hex codes; for both the fix is `yt styles --rich --fresh`, then `yt build`,
+since a cached choice would give the same palette back (AUTO-146). A rich
+`styles.json` with no identity, or one whose swap test was not evidenced,
+is a `styles` warning naming `yt styles --rich --deliberate critique`; a
+weak swap test names the same with `--fresh`, since the cached choice and
+judgements would give the same verdict back. An identity no critique was
+asked for (`yt run --quick`) is a `styles` note naming the same command.
 
 `--section` · `--jobs` · `--budget-usd` · `--fresh` · `--approve` ·
 `--reject` · `--sheet` · `--inspo` · `--per-section` · `--width` · `--height`
