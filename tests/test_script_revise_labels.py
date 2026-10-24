@@ -169,6 +169,13 @@ class ReviseLabels(unittest.TestCase):
             self.assertIn(line, prompt, label)
         self.assertEqual(shots_of(self.record())["1.1"]["narration"], LINES[0][1][0][1])
 
+    def test_the_revised_screenplay_is_recorded_in_the_channel(self):
+        # AUTO-137: channel.json follows every script.json write
+        self.assertEqual(self.run_stage("--revise", "1.3"), 0, self.said)
+        rows = json.loads((self.work / "channel.json").read_text())["films"]
+        self.assertEqual([(r["slug"], r["counted"]) for r in rows], [("the-bridge", False)])
+        self.assertEqual(rows[0]["shape"]["count"], 2)
+
     def test_the_fix_is_applied_and_every_other_shot_is_unchanged(self):
         self.run_stage("--revise", "1.3,2.1", "--why", "it runs out of breath")
         old, new = shots_of(json.loads(self.before)), shots_of(self.record())

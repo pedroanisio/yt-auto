@@ -1075,5 +1075,191 @@ class PaperReview(unittest.TestCase):
         self.assertFalse([f for f in data["findings"] if "paper framing" in f])
 
 
+# --------------------------------------------------------------------------- #
+# the channel: a plan compared with the channel's earlier films (AUTO-137)
+# --------------------------------------------------------------------------- #
+
+def _sha(text: str) -> str:
+    import hashlib
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+#: The plan as develop's fixture held it before AUTO-137 added ending.device,
+#: and the digests of what develop asked over it: the plan prompt, the
+#: plan-review prompt, the reviewer's system and PLAN_ATTACK. A film with no
+#: counted earlier film is asked exactly this.
+OLD_PLAN = {**copy.deepcopy(PLAN),
+            "ending": {k: v for k, v in PLAN["ending"].items() if k != "device"}}
+BEFORE_AUTO_137 = {
+    "plan": "a82bf4df71e355bba5ddd20aad808d258a956842e88020b86e9c3468e7ff7cf7",
+    "plan-review": "2f315dd21c627871fd696bf28367b8ed9c9494782552ed24b4d0edbb9e89c610",
+    "system": "de2b01628349558cba37a5818118d151a024d9f77b83f1572b016eeea8e86380",
+    "attack": "93fb9b86561b55b46503cfa367caa98b03ebca8ffdff67ccb15feee36b4c0791",
+}
+
+#: One counted earlier film that opened, unfolded and closed as PLAN does.
+EARLIER = [{"slug": "old-bridge", "title": "The old bridge", "counted": True,
+            "at": "2026-10-01T00:00:00", "opening": "unexpected_observation",
+            "closing": "callback",
+            "shape": {"count": 3, "tokens": ["open", "constraint", "reveal"],
+                      "functions": [["context"], ["context"], ["payoff"]]},
+            "treatment": "", "palette": {}, "typography": []}]
+
+REPEAT = {"film": "old-bridge", "dimension": "closing",
+          "problem": "it closes on the same callback as the film before"}
+MIRRORED = (0, "it closes as old-bridge did", "end on the sheared bolt, not the river")
+
+
+def channel_faked(w, verdicts, plan=PLAN):
+    """faked(), keeping each decision's schema too."""
+    calls = faked(w, verdicts, plan=plan)
+    ask = w._ask
+
+    def keep(name, prompt, schema):
+        out = ask(name, prompt, schema)
+        calls[-1]["schema"] = schema
+        return out
+    w._ask = keep
+    return calls
+
+
+class Channel(unittest.TestCase):
+    def test_the_plan_names_its_closing_device(self):
+        self.assertEqual(PLAN["ending"]["device"], "callback")
+
+    def test_prechecks_carry_the_channel_lines_only_with_earlier_films(self):
+        today = script.plan_prechecks(PLAN, 60, "t")
+        self.assertFalse([c for c in today if c.startswith("channel:")])
+        with_channel = script.plan_prechecks(PLAN, 60, "t", earlier=EARLIER)
+        self.assertEqual(with_channel[:len(today)], today)
+        added = with_channel[len(today):]
+        self.assertEqual([line.split(":")[1].strip() for line in added],
+                         ["opening", "structure", "closing"])
+        self.assertTrue(all("old-bridge" in line for line in added))
+
+    def test_with_no_earlier_film_every_prompt_role_and_schema_is_todays(self):
+        self.assertIs(script.plan_attack(False), script.PLAN_ATTACK)
+        self.assertEqual(_sha(script.PLAN_ATTACK), BEFORE_AUTO_137["attack"])
+        w = writer()
+        calls = channel_faked(w, [verdict("accept")], plan=OLD_PLAN)
+        w.run(review=True)
+        asked = {c["name"]: c for c in calls}
+        self.assertEqual(_sha(asked["plan"]["prompt"]), BEFORE_AUTO_137["plan"])
+        self.assertEqual(_sha(asked["plan-review"]["prompt"]), BEFORE_AUTO_137["plan-review"])
+        self.assertIs(asked["plan-review"]["schema"], narrative.PLAN_REVIEW_SCHEMA)
+        self.assertEqual(_sha(w.reviewer.system), BEFORE_AUTO_137["system"])
+
+    def test_with_earlier_films_the_plan_and_its_review_are_told_of_them(self):
+        w = writer(earlier=EARLIER)
+        calls = channel_faked(w, [verdict("accept")])
+        w.run(review=True)
+        asked = {c["name"]: c for c in calls}
+        plan = asked["plan"]["prompt"]
+        self.assertIn("How the channel's earlier films opened, unfolded and closed", plan)
+        self.assertIn("old-bridge", plan)
+        self.assertIn("unless the house names one as recurring", plan)
+        review = asked["plan-review"]["prompt"]
+        self.assertIn("its sameness", review)
+        self.assertIn("could a returning viewer predict", review)
+        self.assertIn("a ground to revise, never to reject", review)
+        self.assertIn("channel: closing:", review)
+        self.assertIn("old-bridge", review)
+        self.assertIs(asked["plan-review"]["schema"], narrative.plan_review_schema(True))
+        self.assertIn("a repeat of an earlier channel film", w.reviewer.system)
+        # the drafting writers are not handed the channel
+        writes = [c["prompt"] for c in calls if c["name"].startswith("write-")]
+        self.assertTrue(writes)
+        self.assertFalse([p for p in writes if "old-bridge" in p])
+
+    def test_a_revise_with_repeats_sends_plan_2_the_repeat(self):
+        w = writer(earlier=EARLIER)
+        sent = dict(verdict("revise", [MIRRORED]), repeats=[REPEAT])
+        calls = channel_faked(w, [sent, dict(verdict("accept"), repeats=[])])
+        data = w.run(review=True)
+        order = names(calls)
+        self.assertEqual(order[:4], ["plan", "plan-review", "plan-2", "plan-review-2"])
+        again = calls[2]["prompt"]
+        self.assertIn(REPEAT["problem"], again)
+        self.assertIn("end on the sheared bolt", again)
+        first = data["plan_review"]["rounds"][0]
+        self.assertEqual(first["repeats"], [REPEAT])
+
+    def test_each_contradicting_repeat_is_asked_again(self):
+        cases = {
+            "an accept": dict(verdict("accept", [MIRRORED]), repeats=[REPEAT]),
+            "an unknown film": dict(verdict("revise", [(0, "like nowhere", "change it")]),
+                                    repeats=[dict(REPEAT, film="nowhere")]),
+            "no matching problem": dict(verdict("revise", [SWAPPABLE]), repeats=[REPEAT]),
+        }
+        for case, first in cases.items():
+            with self.subTest(case=case):
+                w = writer(earlier=EARLIER)
+                calls = channel_faked(w, [first, dict(verdict("accept"), repeats=[])])
+                w.run(review=True)
+                self.assertEqual(names(calls)[:3], ["plan", "plan-review",
+                                                    "plan-review-again"])
+
+    def test_without_review_the_channel_lines_are_notes(self):
+        w = writer(earlier=EARLIER, reviewer_model=None)
+        calls = faked(w, [])
+        data = w.run()
+        self.assertNotIn("plan-review", names(calls))
+        notes = [f for f in data["findings"] if f.startswith("note: channel:")]
+        self.assertEqual(len(notes), 3, data["findings"])
+        w = writer(reviewer_model=None)
+        faked(w, [])
+        self.assertFalse([f for f in w.run()["findings"] if "channel:" in f])
+
+    def test_script_md_shows_the_repeats_or_their_dismissal(self):
+        record = {"verdict": "revise", "model": "opus", "problems": [], "rounds": [],
+                  "prechecks": ["channel: closing: this film closes on callback, as "
+                                "old-bridge did (1 of the last 1 counted films close on it)"],
+                  "repeats": [REPEAT],
+                  "dismissed": [{"film": "old-bridge", "dimension": "opening",
+                                 "why": "a paradox opening is the subject's own"}]}
+        md = "\n".join(script.plan_review_lines(record))
+        self.assertIn("- repeat of old-bridge (closing): it closes on the same callback", md)
+        self.assertIn("- dismissed: old-bridge (opening): a paradox opening is the "
+                      "subject's own", md)
+        self.assertIn("pre-check: `channel`", md)
+
+
+class ChannelCommand(unittest.TestCase):
+    """`yt script` reads the channel from the work root and records the film."""
+
+    run_stage = Command.run_stage
+
+    def setUp(self):
+        Command.setUp(self)
+        old = self.root / "work" / "old-bridge"
+        old.mkdir()
+        drafted = copy.deepcopy(PLAN)
+        for section, fn in zip(drafted["sections"], ("context", "context", "payoff")):
+            section["shots"] = [{"n": 1, "function": fn}]
+        (old / "script.json").write_text(json.dumps(drafted))
+        (old / "qa.json").write_text(json.dumps({"verdict": "READY TO PUBLISH"}))
+
+    def test_a_run_reads_the_earlier_films_and_records_this_one(self):
+        code, asked, said = self.run_stage("--model", "sonnet")
+        self.assertEqual(code, 0, said)
+        record = json.loads((self.film / "script.json").read_text())
+        notes = [f for f in record["findings"] if f.startswith("note: channel:")]
+        self.assertEqual(len(notes), 3, record["findings"])
+        rows = json.loads((self.root / "work" / "channel.json").read_text())["films"]
+        self.assertEqual({r["slug"]: r["counted"] for r in rows},
+                         {"old-bridge": True, "a-film": False})
+
+    def test_a_reviewed_run_shows_the_reviewer_the_channel(self):
+        code, asked, said = self.run_stage(
+            "--review", "--model", "sonnet",
+            verdicts=[dict(verdict("accept"), repeats=[],
+                           dismissed=[{"film": "old-bridge", "dimension": "closing",
+                                       "why": "w"}])])
+        self.assertEqual(code, 0, said)
+        md = (self.film / "script.md").read_text()
+        self.assertIn("pre-check: `channel`", md)
+        self.assertIn("- dismissed: old-bridge (closing): w", md)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -73,7 +73,8 @@ PLAN = {
     ],
     "ending": {"payoff_line": "One bolt, painted over, held up four lanes.",
                "callback": "Back to the empty river from the first shot.",
-               "next_film": "The bolt that saved the Golden Gate"},
+               "next_film": "The bolt that saved the Golden Gate",
+               "device": "callback"},
     "sections": [
         {"heading": "The fall", "purpose": "open", "seconds": 20, "beats": ["it falls"],
          "opens": ["Q1"], "closes": [], "connective": "open", "rehook": "",
@@ -212,7 +213,14 @@ class Schema(unittest.TestCase):
         self.assertEqual(set(props["questions"]["items"]["required"]),
                          {"id", "text", "opened_in", "closed_in"})
         self.assertEqual(set(props["ending"]["required"]),
-                         {"payoff_line", "callback", "next_film"})
+                         {"payoff_line", "callback", "next_film", "device"})
+        # AUTO-137: how the film closes, as a device the channel compares
+        self.assertEqual(props["ending"]["properties"]["device"]["enum"],
+                         list(script.CLOSINGS))
+        self.assertEqual(script.CLOSINGS, ("callback", "reversal", "open_question",
+                                           "scale", "image", "other"))
+        self.assertTrue(props["ending"]["properties"]["device"]["description"].endswith(
+            script._ENUM_DRIFT))
         self.assertNotIn("tail_seconds", json.dumps(script.PLAN_SCHEMA))
 
     def test_the_plan_declares_its_hooks_trigger_and_gap(self):
@@ -397,6 +405,17 @@ class ThroughTheHarness(unittest.TestCase):
         self.assertEqual(script.planned_trigger(answer), None)
         self.assertEqual(script.planned_trigger(PLAN), "unexpected_observation")
         self.assertEqual(script.planned_trigger({}), None)
+
+    def test_a_closing_device_off_the_list_is_asked_again_then_recorded(self):
+        answer = copy.deepcopy(PLAN)
+        answer["ending"]["device"] = "twist"
+        FakeEngine.answer = answer
+        w = self.writer()
+        w.plan()
+        self.assertEqual(len(FakeEngine.json_calls), 2)
+        self.assertIn("device", FakeEngine.json_calls[1]["prompt"])
+        self.assertIn("note: ending device 'twist' not in the schema; it is not compared "
+                      "with the channel's earlier films", w.findings)
 
     def test_a_connective_off_the_list_is_asked_again_then_recorded(self):
         answer = copy.deepcopy(PLAN)
@@ -1241,32 +1260,37 @@ def plan_prompts() -> dict[str, str]:
 #: devices row of the rubric in the plan review), and AUTO-158 did (the
 #: plan's optional persona, in STORY_BRIEF and the two plan schemas; the
 #: plan review's prompt is unchanged for a plan without one).
-#: PLAN_REVIEW_SCHEMA is unchanged by all three.
+#: PLAN_REVIEW_SCHEMA is unchanged by all three. AUTO-137 did too: the
+#: plan's required `ending.device` is in the two plan schemas, and PLAN now
+#: names one, which the plan-2, plan-fields-2 and plan-review prompts show
+#: in the plan they quote; over the plan without it those three prompts are
+#: develop's (tests/test_script_plan_review.py Channel pins them), and
+#: PLAN_REVIEW_SCHEMA is unchanged again.
 PLAN_PROMPTS = {
     "plan":
         "3878df073210e90fc0fda6d366107d0d72c14b7f11f7d802e44a96c43bc0260e",
     "plan-2":
-        "1b5395c9fe872794a6d72f21013a57e4b49853ec302f79a5989b1b39d1fa012f",
+        "35a5927f188a0a223922c711c4d7362a7d06264029acdf2636892e82782a41cc",
     "plan-2:schema":
-        "236f0d4b71ec8b56f7594abca16d6a59af4e5297d734ee3efc085515194215e6",
+        "e48723b9e59d200daf6d53c35f2c82af7a1aef7368b4359337f446b022ccef77",
     "plan-fields":
         "a12b86cd957ee7d0f49f349ad657dcb9483df7023830ab404d16803f9c31962d",
     "plan-fields-2":
-        "8c7a6ed71257c05ed603eaf925b3ead6c21b601d6ca6488a81e2f38145ce805d",
+        "3244d156c8bd2f8b84fca6b697b94519aeb8a7b26dec523e3705998082a1da1c",
     "plan-fields-2:schema":
-        "77508224eb2a27046c7408b44a54e422ddf631c4a207a9f20ad9aa1ead7ce4f8",
+        "3722088e179fa8828dc7af568dc0f7608197d2f2749cc01ae4be25e69b447858",
     "plan-fields-retry":
         "1cd23624d935136be97611de561b685543d44eeb159c29f083e16bb625056c8a",
     "plan-fields-retry:schema":
-        "77508224eb2a27046c7408b44a54e422ddf631c4a207a9f20ad9aa1ead7ce4f8",
+        "3722088e179fa8828dc7af568dc0f7608197d2f2749cc01ae4be25e69b447858",
     "plan-fields:schema":
-        "77508224eb2a27046c7408b44a54e422ddf631c4a207a9f20ad9aa1ead7ce4f8",
+        "3722088e179fa8828dc7af568dc0f7608197d2f2749cc01ae4be25e69b447858",
     "plan-review":
-        "2f315dd21c627871fd696bf28367b8ed9c9494782552ed24b4d0edbb9e89c610",
+        "e212400f0b3f0fa1b5bef7c98f81786fe70fa660c941c7c15e01a16e688acf7c",
     "plan-review:schema":
         "54df6d553271e47a5d258ee979450bc3def63951c4b93833663c964c5a284c5f",
     "plan:schema":
-        "236f0d4b71ec8b56f7594abca16d6a59af4e5297d734ee3efc085515194215e6",
+        "e48723b9e59d200daf6d53c35f2c82af7a1aef7368b4359337f446b022ccef77",
 }
 
 

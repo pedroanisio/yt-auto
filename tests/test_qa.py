@@ -346,7 +346,7 @@ def _script():
                       {"id": "Q2", "text": "Where does the wind end?", "opened_in": 2,
                        "closed_in": 0, "left_open_why": "the next film"}],
         "ending": {"payoff_line": "It is showing you the wind.", "callback": "the tail",
-                   "next_film": "the heliopause"},
+                   "next_film": "the heliopause", "device": "scale"},
         "sections": [
             {"heading": "Open", "opens": ["Q1"], "closes": [], "rehook": "",
              "escalation": "the tail is in front",

@@ -213,7 +213,7 @@ class ScriptTest(DecisionCase):
                         "questions": [{"id": "Q1", "text": "Does it move?",
                                        "opened_in": 1, "closed_in": 1}],
                         "ending": {"payoff_line": "It moves.", "callback": "c",
-                                   "next_film": "n"},
+                                   "next_film": "n", "device": "callback"},
                         "sections": [{"heading": "One", "purpose": "p", "seconds": 10,
                                       "beats": ["b"], "opens": ["Q1"], "closes": ["Q1"],
                                       "connective": "open", "rehook": "", "escalation": "",
