@@ -501,7 +501,10 @@ Under all of them sits the shipped default, `ytstudio/house/default.md`: the
 craft corpus in `docs/narrative/` distilled by hand into `## all`, `## script`,
 `## styles`, `## vfx`, `## sound`, `## voice` and `## format` (the narrator,
 opening, ending, hand-off and series the channel repeats, which the script stage reads
-before its own section). Each section opens with a comment naming the corpus
+before its own section). The narrator is one proxy across films; its
+temperament is a device of its own (AUTO-158): the same every film when the
+channel's `## format` sets one, otherwise each film's own, chosen from its
+subject and named in the plan's `persona`. Each section opens with a comment naming the corpus
 rules it states; comments never reach a prompt, and a test holds the ids to the
 corpus. The channel's file replaces a section by writing one of the same name.
 The keyframe, which has no section of its own, reads `## vfx` until a house

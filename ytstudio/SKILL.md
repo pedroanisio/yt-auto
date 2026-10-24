@@ -423,7 +423,12 @@ film's `promise` and `payoff`, its `train` (who wants what, what is in the
 way), the `stakes` and `viewer_stake`, the `misconception` it breaks (cited
 as `[M1]` from the research block, which numbers the dossier's sourced
 misconceptions and names its identifiable case), the `audience` (lay,
-enthusiast, expert), the `reveal` and the section that constrains it, a
+enthusiast, expert), an optional `persona` (AUTO-158: the narrator's
+`temperament` for this film, free text, and `why` the subject calls for it;
+the house format's temperament when it names one), told to every section
+writer as one line beside the audience and to `yt voice`'s casting in its
+Film brief (absent, both prompts are as before; one given but left empty is
+a `house:` pre-check for the plan reviewer), the `reveal` and the section that constrains it, a
 question ledger (`questions`, each opened in one section and answered in
 the same section or a later one, or marked left open, `closed_in` 0, with
 `left_open_why`) and the `ending` (`payoff_line`, `callback`, `next_film`). Each
