@@ -909,8 +909,12 @@ PICTURE_SCHEMA = {
 # judging 10: known-bad scripts it must fail are what make leniency
 # observable. tests/fixtures/narrative/ is that floor: one case per seeded
 # fault, each `expected.json` naming the criterion the fault is graded on
-# and the best verdict a correct reviewer may give, and one good plan and
-# script. The good script and the recap ending each have a padded copy for
+# and the best verdict a correct reviewer may give (an aside that serves no
+# claim, aside-joke, is graded on voice), a good plan and script, and a
+# second good script whose one joke makes the point (claim-joke), which
+# must not be graded down for it: its `at_least` holds voice to Good or
+# better, since a recommend may carry a Fair (AUTO-159). The good script and
+# the recap ending each have a padded copy for
 # the length audit: the good pair may be read at the ceiling, where the
 # longer copy cannot win, and the consider-level one leaves it room. Two
 # faults are not the story review's: a premise the narration never voices
@@ -1029,8 +1033,18 @@ def judge_case(expected: Mapping, got: Mapping) -> list[str]:
     (`cold_read`). A seeded case fails the
     reviewer when the verdict is better than the case allows, the named
     criterion is graded above Fair, or no flag names it (judging 10 and the
-    case's `judging_10`); the good case when it is not recommended; a case
-    with `"story": false` holds the story review to nothing. A plan
+    case's `judging_10`); a good case when it is not recommended; a case
+    with `"story": false` holds the story review to nothing. A case naming
+    `at_least` (criterion -> level, AUTO-159) also fails a reviewer that
+    grades that criterion below the level, or not at all, or flags it: the
+    good script whose one joke makes the point must not be marked down for
+    it, which its verdict alone cannot show, since a recommend may carry a
+    Fair; a level that is no LEVELS label fails the case. The failure line
+    names the floor and adds the case's `at_least_why` when it sets one, so
+    the humour reason is the humour case's and a floor on another criterion
+    never prints it. The floor is read only when the story review gave a
+    verdict: a reading without one already fails on that alone. A case
+    without `at_least` is judged as before. A plan
     case's plan review must send a bad plan back and accept the good one; a
     cold-read case's reader must find the mismatch or the terms it hides. A
     case naming a `trigger` (AUTO-136) fails a round that heard another, or
@@ -1059,6 +1073,24 @@ def judge_case(expected: Mapping, got: Mapping) -> list[str]:
         if not any(isinstance(f, dict) and f.get("criterion") == key
                    for f in got.get("flags") or []):
             failed.append(f"no flag on {key}, where the fault is")
+    if story_judged(expected) and verdict in rank:
+        # AUTO-159: check_review lets a recommend carry a Fair, so a good
+        # case judged on its verdict alone would pass a reviewer that grades
+        # down a joke that makes the point; the case's floor catches it
+        level = {v: i for i, v in enumerate(LEVELS)}           # best first
+        flags = [f for f in got.get("flags") or [] if isinstance(f, dict)]
+        for floor_key, floor in (expected.get("at_least") or {}).items():
+            grade = (got.get("grades") or {}).get(floor_key)
+            if floor not in level:
+                # a typo would otherwise pass every grade; fail the row closed
+                failed.append(f"{floor_key}: at_least names no level ({floor})")
+            elif grade not in level or level[grade] > level[floor]:
+                why = expected.get("at_least_why")
+                failed.append(f"{floor_key} graded {grade or 'nothing'}; this case holds "
+                              f"{floor_key} no lower than {floor}"
+                              + (f": {why}" if why else ""))
+            if any(f.get("criterion") == floor_key for f in flags):
+                failed.append(f"a flag on {floor_key}, where this case has nothing to fix")
     trigger = expected.get("trigger")
     if trigger and got.get("trigger") != trigger:
         failed.append(f"the story review heard the opening's trigger as "
@@ -1319,8 +1351,8 @@ def calibration_lines(report: Mapping) -> list[str]:
         why.append(f"{count} labelled verdicts in work/review-log.jsonl, "
                    f"{GATE_LABELLED} needed")
     out.append(("--gate: not yet: " + "; ".join(why) if why else
-                "--gate may be turned on: the seeded-bad fixtures all fail, the good one "
-                f"passes, the length audit passes and {count} labelled verdicts are in "
+                "--gate may be turned on: the seeded-bad fixtures all fail, the good ones "
+                f"pass, the length audit passes and {count} labelled verdicts are in "
                 "work/review-log.jsonl") + agreed)
     return out
 

@@ -10,7 +10,10 @@ the schema (a recommend carrying a Poor, a consider with nothing to fix, a
 flag on no criterion).
 
 tests/fixtures/narrative/ starts the calibration set (judging 10): plans and
-scripts seeded with one known fault each, and one good pair. Each case's
+scripts seeded with one known fault each (among them an aside that serves no
+claim, graded on voice), the good pair, and the good script with one joke
+that makes the point (claim-joke), which expects recommend with voice no
+lower than Good. Each case's
 `expected.json` names the criterion it fails, the best verdict a correct
 reviewer may give it, where the fault sits, and a review the schema can
 express that says so.
@@ -686,7 +689,11 @@ SEEDED = {"list-plan": "train", "topic-train": "train", "empty-payoff": "ending"
           "and-chain": "train", "reveal-first": "reveal_setup",
           "recap-ending": "ending", "hook-enumerates": "hook",
           "flat-tension": "tension", "no-trigger": "hook", "lecture-voice": "voice",
-          "bad-metaphor": "devices"}
+          "bad-metaphor": "devices", "aside-joke": "voice"}
+
+#: The cases that expect recommend: the good pair, and the good script whose
+#: one joke makes the point (AUTO-159), which must not be graded down for it.
+GOOD = ("good", "claim-joke")
 
 #: The faults only the cold read catches: a premise a first-time viewer
 #: could not restate, and terms a lay audience is never given. judging 14
@@ -700,11 +707,17 @@ PLAN_ONLY = ("list-plan", "topic-train", "empty-payoff", "and-chain")
 
 
 class Fixtures(unittest.TestCase):
-    def test_the_set_holds_every_seeded_fault_and_one_good_pair(self):
+    def test_the_set_holds_every_seeded_fault_and_the_good_cases(self):
         names = cases()
-        self.assertEqual(sorted(names), sorted([*SEEDED, *COLD_READ, "good"]))
-        good = names["good"]
-        self.assertTrue((good / "plan.json").is_file() and (good / "script.json").is_file())
+        self.assertEqual(sorted(names), sorted([*SEEDED, *COLD_READ, *GOOD]))
+        for name in GOOD:
+            with self.subTest(case=name):
+                good = names[name]
+                self.assertTrue((good / "plan.json").is_file()
+                                and (good / "script.json").is_file())
+                expected = load(good / "expected.json")
+                self.assertEqual(expected["verdict"], "recommend")
+                self.assertNotIn("criterion", expected)
         for name, criterion in SEEDED.items():
             with self.subTest(case=name):
                 expected = load(names[name] / "expected.json")
@@ -745,7 +758,7 @@ class Fixtures(unittest.TestCase):
                 "script": load(FIXTURES / "good" / "script.json")}
         for name, path in cases().items():
             expected = load(path / "expected.json")
-            if name == "good":
+            if name in GOOD:
                 self.assertNotIn("evidence", expected)
                 continue
             docs = {"plan": load(path / "plan.json")}
@@ -969,6 +982,73 @@ class Fixtures(unittest.TestCase):
         self.assertIn(expected["review"]["grades"]["voice"], ("Fair", "Poor"))
         self.assertNotIn("Poor", [v for k, v in expected["review"]["grades"].items()
                                   if k != "voice"])
+
+    def test_the_two_humour_cases_differ_from_good_in_one_shot(self):
+        # AUTO-159: no other fixture holds a joke, so the voice row's humour
+        # clause could fail either way unnoticed. Each case is the good film
+        # with one shot's narration changed, so voice is the only row the
+        # joke can fairly move.
+        good = {n: load(FIXTURES / "good" / n) for n in ("plan.json", "script.json")}
+
+        def shots(doc):
+            return [s for sec in doc["sections"] for s in sec["shots"]]
+        for name, n in (("aside-joke", 4), ("claim-joke", 5)):
+            case = {f: load(FIXTURES / name / f) for f in ("plan.json", "script.json")}
+            with self.subTest(case=name):
+                self.assertFalse((FIXTURES / name / "padded.json").exists())
+                self.assertEqual(case["plan.json"], good["plan.json"])
+                self.assertEqual({k: v for k, v in case["script.json"].items()
+                                  if k != "sections"},
+                                 {k: v for k, v in good["script.json"].items()
+                                  if k != "sections"})
+                self.assertEqual([s["heading"] for s in case["script.json"]["sections"]],
+                                 [s["heading"] for s in good["script.json"]["sections"]])
+                for x, y in zip(shots(good["script.json"]), shots(case["script.json"]),
+                                strict=True):
+                    self.assertEqual({k: v for k, v in y.items() if k != "narration"},
+                                     {k: v for k, v in x.items() if k != "narration"})
+                    if x["n"] == n:
+                        self.assertNotEqual(y["narration"], x["narration"])
+                    else:
+                        self.assertEqual(y["narration"], x["narration"], x["n"])
+        good_said = load(FIXTURES / "good" / "expected.json")["review"]
+        # the aside is added to shot 4, never in place of what it says
+        before = shots(good["script.json"])[3]["narration"]
+        after = shots(load(FIXTURES / "aside-joke" / "script.json"))[3]["narration"]
+        self.assertIn(before, after)
+        self.assertIn("alarm clock", after)
+        aside = load(FIXTURES / "aside-joke" / "expected.json")
+        self.assertEqual((aside["criterion"], aside["verdict"]), ("voice", "consider"))
+        self.assertNotIn("at_least", aside)
+        self.assertEqual(aside["review"]["grades"], dict(good_said["grades"], voice="Fair"))
+        self.assertIn("attention 21", aside["why"])
+        self.assertEqual(aside["evidence"], {"in": "script.sections.1.shots.0.narration",
+                                             "says": "alarm clock"})
+        [flag] = aside["review"]["flags"]
+        self.assertEqual((flag["n"], flag["section"], flag["criterion"], flag["severity"]),
+                         (4, 2, "voice", "important"))
+        self.assertIn(flag["quote"], after)
+        # the punchline is the shot's claim: sunlight is far too weak for the
+        # gas tail, so the joke is kept and voice stays where good has it
+        joke = load(FIXTURES / "claim-joke" / "expected.json")
+        self.assertEqual(joke["at_least"], {"voice": "Good"})
+        self.assertIn("attention 21", joke["why"])
+        self.assertEqual(joke["review"]["grades"], good_said["grades"])
+        self.assertEqual(joke["review"]["grades"]["voice"], "Excellent")
+        self.assertEqual(joke["review"]["flags"], [])
+        self.assertEqual(problems(joke["review"], narrative.REVIEW_SCHEMA), [])
+        self.assertEqual(narrative.check_review(joke["review"]), [])
+        punchline = shots(load(FIXTURES / "claim-joke" / "script.json"))[4]["narration"]
+        self.assertIn("Far too fast for sunlight alone.", punchline)
+        # the joke itself is in shot 5, and good's shot 5 has none
+        joke_line = "blowing out a candle from the next town"
+        self.assertIn(joke_line, punchline)
+        self.assertNotIn(joke_line, shots(good["script.json"])[4]["narration"])
+        # the canned synopsis is good's, with only the candle comparison added
+        step = "sunlight is too weak to explain the gas tail"
+        self.assertIn(step, good_said["synopsis"])
+        self.assertEqual(joke["review"]["synopsis"].replace(
+            ", like blowing out a candle from the next town", ""), good_said["synopsis"])
 
     def test_the_good_pair_can_be_recommended(self):
         expected = load(FIXTURES / "good" / "expected.json")

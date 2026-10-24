@@ -81,14 +81,19 @@ judging 13; Zeigarnik → attention Contested.
    enumerates its conclusions, a middle whose stakes stay flat, an opening
    with no curiosity trigger, a premise a cold reader could not restate,
    terms a lay audience is never given, the good film read as a lecture,
-   an analogy that maps a comet's tail onto its path), and one good pair;
-   the good
+   an analogy that maps a comet's tail onto its path, an aside that serves
+   no claim), the good pair, and a joke that makes the point: the good
+   script with one joke whose punchline is the shot's claim, which expects
+   recommend with voice no lower than Good (its `at_least`, AUTO-159,
+   with the reason a failing row prints in `at_least_why`),
+   since a recommend may carry a Fair and its verdict alone would pass a
+   reviewer that marks the joke down; the good
    script and the recap ending each have a padded copy. judging 10 asks
    the calibration run for reject on every seeded case; the cases whose
    one fault is a Fair, or a Poor on a criterion that does not decide a
    film (a hook that lists its conclusions, a recap ending, a reveal
    before its constraint, an AND chain, flat tension, an opening with no
-   trigger, a lecture voice, a device that maps onto the wrong thing), are held to consider instead, because judging 11 and 12 make a fixable fault a
+   trigger, a lecture voice, an aside that serves no claim, a device that maps onto the wrong thing), are held to consider instead, because judging 11 and 12 make a fixable fault a
    consider, and a gate that rejects them would regenerate a film one
    flag would mend. Their `expected.json` says so in `judging_10`: the
    calibration fails a reviewer that recommends them, grades the named
@@ -111,7 +116,7 @@ judging 13; Zeigarnik → attention Contested.
    reject stops voice only under `--gate`, and `--gate` may be turned on
    only when `python -m ytstudio.narrative calibrate tests/fixtures/narrative`
    (AUTO-97) shows the condition judging 9 and 10 set: the seeded-bad
-   fixtures all fail, the good one passes, the length audit passes (the
+   fixtures all fail, the good ones pass, the length audit passes (the
    padded copies, the same content at about twice the words, may not win
    more than 60% of their sample pairs, and an audit whose every pair was
    read at the ceiling, recommend with every grade Excellent, fails), and
@@ -121,7 +126,7 @@ judging 13; Zeigarnik → attention Contested.
    reviewer's own verdict. A live run reads the cases on the real models
    with the plan review where the case names a plan verdict, the three
    samples on every case, and the cold read where there is narration, at
-   about $1 a case at opus, about $16 for the shipped set with its two
+   about $1 a case at opus, about $18 for the shipped set with its two
    padded reads, capped by `--budget-usd`; `yt
    doctor` warns `gate on with N labelled verdicts (20 needed)` for a
    script written under `--gate` below that count. The plan review before

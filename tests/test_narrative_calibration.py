@@ -9,8 +9,11 @@ that had been done. This is the check:
 - tests/fixtures/narrative/ is the floor of the calibration set: one case
   per seeded fault the card names, each `expected.json` naming the rubric
   criterion the fault is graded on and the best verdict a correct reviewer
-  may give it, and one good plan and script that expects recommend (with a
-  padded copy of the same script for the length audit);
+  may give it (an aside that serves no claim is graded on voice), a good
+  plan and script that expects recommend (with a padded copy of the same
+  script for the length audit), and the good script with one joke that
+  makes the point (claim-joke), which expects recommend with voice no
+  lower than Good (`at_least`, AUTO-159);
 - `python -m ytstudio.narrative calibrate <dir>` runs the plan review, the
   three-sample story review and the cold read over each case and prints a
   table (fixture, expected, got, pass/fail) and the length audit;
@@ -50,7 +53,11 @@ SEEDED = {"list-plan": "train", "topic-train": "train", "empty-payoff": "ending"
           "and-chain": "train", "reveal-first": "reveal_setup",
           "recap-ending": "ending", "hook-enumerates": "hook",
           "flat-tension": "tension", "no-trigger": "hook", "lecture-voice": "voice",
-          "bad-metaphor": "devices"}
+          "bad-metaphor": "devices", "aside-joke": "voice"}
+
+#: The cases that expect recommend: the good pair, and the good script whose
+#: one joke makes the point (AUTO-159).
+GOOD = ("good", "claim-joke")
 
 #: The seeded faults only the cold read catches (judging 14): the story
 #: review is read on them and not judged.
@@ -139,18 +146,27 @@ class Hermetic(unittest.TestCase):
 # --------------------------------------------------------------------------- #
 
 class TheSet(unittest.TestCase):
-    def test_every_seeded_fault_and_one_good_pair(self):
+    def test_every_seeded_fault_and_the_good_cases(self):
         names = cases()
-        self.assertEqual(sorted(names), sorted([*SEEDED, *COLD_READ, "good"]))
+        self.assertEqual(sorted(names), sorted([*SEEDED, *COLD_READ, *GOOD]))
         for name, path in names.items():
             with self.subTest(case=name):
                 expected = load(path / "expected.json")
+                # a floor a case sets under a grade names rows and labels only
+                floor = expected.get("at_least", {})
+                self.assertIsInstance(floor, dict)
+                self.assertFalse(set(floor) - set(narrative.KEYS), floor)
+                self.assertFalse(set(floor.values()) - set(narrative.LEVELS), floor)
+                # the reason a failure line gives for the floor, only beside one
+                if "at_least_why" in expected:
+                    self.assertTrue(floor, name)
+                    self.assertIsInstance(expected["at_least_why"], str)
                 if name in COLD_READ:
                     self.assertIs(expected["story"], False)
                     self.assertNotIn("criterion", expected)
                     continue
                 self.assertIn(expected["verdict"], narrative.VERDICTS)
-                if name == "good":
+                if name in GOOD:
                     self.assertEqual(expected["verdict"], "recommend")
                     self.assertNotIn("criterion", expected)
                     continue
@@ -202,7 +218,7 @@ class TheSet(unittest.TestCase):
                             self.assertTrue(f["quote"].strip(), f)
 
     def test_a_new_case_is_held_below_reject_only_with_its_reason(self):
-        for name in ("and-chain", "no-premise", "jargon"):
+        for name in ("and-chain", "no-premise", "jargon", "aside-joke"):
             expected = load(FIXTURES / name / "expected.json")
             with self.subTest(case=name):
                 self.assertTrue(expected["why"].strip())
@@ -275,6 +291,15 @@ def got_for(name: str, **change) -> dict:
     return out
 
 
+def read_of(name: str, **change) -> dict:
+    """got_for with the plan review and the cold read the case expects, so
+    a judgement names only what the story review got wrong."""
+    expected = load(FIXTURES / name / "expected.json")
+    return got_for(name, plan_review=expected["plan_review"]["verdict"],
+                   cold_read={"match": expected["cold_read"]["match"],
+                              "unexplained_terms": []}, **change)
+
+
 class JudgeCase(unittest.TestCase):
     def test_a_cold_read_case_does_not_judge_the_story_review(self):
         # The rubric has no criterion for a premise the narration never
@@ -342,6 +367,88 @@ class JudgeCase(unittest.TestCase):
         failed = narrative.judge_case(expected, dict(got_for("good"), verdict="consider",
                                                      plan_review="accept"))
         self.assertTrue(failed)
+
+    def test_a_joke_that_makes_the_point_must_not_be_graded_down(self):
+        # AUTO-159: a good case is judged on its verdict alone, and
+        # check_review lets a recommend carry a Fair, so without `at_least` a
+        # reviewer that marks down a joke that makes the point would pass
+        expected = load(FIXTURES / "claim-joke" / "expected.json")
+        for grade in ("Excellent", "Good"):
+            with self.subTest(voice=grade):
+                grades = dict(read_of("claim-joke")["grades"], voice=grade)
+                self.assertEqual(narrative.judge_case(
+                    expected, read_of("claim-joke", grades=grades)), [])
+        grades = dict(read_of("claim-joke")["grades"], voice="Fair")
+        failed = narrative.judge_case(expected, read_of("claim-joke", grades=grades))
+        self.assertEqual(len(failed), 1, failed)
+        self.assertIn("voice graded Fair", failed[0])
+        self.assertIn("no lower than Good", failed[0])
+        self.assertIn("humour", failed[0])          # the case's own at_least_why
+        flag = {"n": 5, "section": 2, "criterion": "voice", "severity": "minor",
+                "problem": "a joke", "fix": "cut it",
+                "quote": "like blowing out a candle from the next town"}
+        failed = narrative.judge_case(expected, read_of("claim-joke", flags=[flag]))
+        self.assertEqual(len(failed), 1, failed)
+        self.assertIn("voice", failed[0])
+        self.assertIn("flag", failed[0])
+        grades = {k: v for k, v in read_of("claim-joke")["grades"].items() if k != "voice"}
+        failed = narrative.judge_case(expected, read_of("claim-joke", grades=grades))
+        self.assertEqual(len(failed), 1, failed)
+        self.assertIn("voice graded nothing", failed[0])
+        # the verdict is still held: a consider fails the case as before
+        failed = narrative.judge_case(expected, read_of("claim-joke", verdict="consider"))
+        self.assertTrue(any("consider" in line for line in failed), failed)
+
+    def test_an_aside_that_serves_no_claim_must_be_caught(self):
+        expected = load(FIXTURES / "aside-joke" / "expected.json")
+        self.assertEqual(narrative.judge_case(expected, read_of("aside-joke")), [])
+        failed = narrative.judge_case(expected, read_of("aside-joke", verdict="recommend"))
+        self.assertTrue(any("recommend" in line for line in failed), failed)
+        grades = dict(read_of("aside-joke")["grades"], voice="Good")
+        failed = narrative.judge_case(expected, read_of("aside-joke", grades=grades))
+        self.assertTrue(any("voice graded Good" in line for line in failed), failed)
+        failed = narrative.judge_case(expected, read_of("aside-joke", flags=[]))
+        self.assertTrue(any("no flag on voice" in line for line in failed), failed)
+        # voice does not decide a film, so the case is a consider, not a reject
+        self.assertIn("decide", expected["judging_10"])
+
+    def test_a_floor_that_names_no_level_fails_the_row(self):
+        # a typo such as "good" is no LEVELS label; the floor must fail the
+        # case rather than pass every grade, since a hand-added case run
+        # through calibrate on its own has no fixture test to catch it
+        expected = dict(load(FIXTURES / "claim-joke" / "expected.json"),
+                        at_least={"voice": "good"})
+        failed = narrative.judge_case(expected, read_of("claim-joke"))
+        self.assertEqual(len(failed), 1, failed)
+        self.assertIn("voice: at_least names no level (good)", failed[0])
+
+    def test_a_floor_without_a_reason_gives_no_humour_reason(self):
+        # the humour reason is the claim-joke case's own (`at_least_why`); a
+        # floor on another criterion must not print it
+        expected = dict(load(FIXTURES / "good" / "expected.json"),
+                        at_least={"honesty": "Excellent"})
+        grades = dict(read_of("good")["grades"], honesty="Good")
+        failed = narrative.judge_case(expected, read_of("good", grades=grades))
+        self.assertEqual(failed, ["honesty graded Good; this case holds honesty "
+                                  "no lower than Excellent"])
+
+    def test_a_reading_with_no_verdict_fails_without_a_floor_line(self):
+        # the floor is read only when the story review gave a verdict: the
+        # missing verdict already fails the row, and is the one reason given
+        expected = load(FIXTURES / "claim-joke" / "expected.json")
+        grades = dict(read_of("claim-joke")["grades"], voice="Poor")
+        failed = narrative.judge_case(expected, read_of("claim-joke", verdict=None,
+                                                        grades=grades))
+        self.assertEqual(len(failed), 1, failed)
+        self.assertIn("gave no verdict", failed[0])
+
+    def test_a_case_without_at_least_is_judged_as_before(self):
+        # `at_least` is opt-in: the good case sets none, so a Fair voice under
+        # a recommend still passes it, as it did before AUTO-159
+        expected = load(FIXTURES / "good" / "expected.json")
+        self.assertNotIn("at_least", expected)
+        grades = dict(read_of("good")["grades"], voice="Fair")
+        self.assertEqual(narrative.judge_case(expected, read_of("good", grades=grades)), [])
 
     def test_the_plan_review_must_send_a_bad_plan_back_and_accept_the_good(self):
         expected = load(FIXTURES / "list-plan" / "expected.json")
@@ -556,7 +663,7 @@ class Calibrate(Hermetic):
     def test_a_reviewer_that_says_what_each_case_expects_passes_every_row(self):
         report, asked = self.calibrate()
         rows = {r["name"]: r for r in report["cases"]}
-        self.assertEqual(sorted(rows), sorted([*SEEDED, *COLD_READ, "good"]))
+        self.assertEqual(sorted(rows), sorted([*SEEDED, *COLD_READ, *GOOD]))
         for name, row in rows.items():
             with self.subTest(case=name):
                 self.assertTrue(row["passed"], row)
@@ -709,15 +816,76 @@ class Entry(Hermetic):
         header = next(line for line in lines if line.startswith("fixture"))
         for column in ("expected", "got", "result"):
             self.assertIn(column, header)
-        for name in [*SEEDED, *COLD_READ, "good"]:
+        for name in [*SEEDED, *COLD_READ, *GOOD]:
             row = next((line for line in lines if line.split() and line.split()[0] == name),
                        None)
             self.assertIsNotNone(row, name)
             self.assertIn("pass", row.split())
+        row = lambda name: next(line.split() for line in lines  # noqa: E731
+                                if line.split() and line.split()[0] == name)
+        self.assertEqual(row("aside-joke")[1:3], ["voice", "consider"])
+        self.assertEqual(row("claim-joke")[1:3], ["-", "recommend"])
         audit = next(line for line in lines if line.startswith("length audit:"))
         self.assertIn("pass", audit)
         self.assertIn("60%", audit)
+        # neither humour case has a padded copy: the audit reads the same pairs
+        self.assertIn("won 0 of 6 pairs", audit)
+        summary = next(line for line in lines if line.startswith("seeded-bad caught:"))
+        self.assertIn("good recommended: 2 of 2", summary)
         self.assertTrue(any(line.startswith("--gate") for line in lines), out)
+
+    def test_a_reviewer_that_grades_down_the_joke_that_makes_the_point_exits_1(self):
+        def marks_down(case, kind):
+            if kind == "review" and case == "claim-joke":
+                said = copy.deepcopy(load(FIXTURES / case / "expected.json")["review"])
+                said["grades"]["voice"] = "Fair"         # a recommend may carry a Fair
+                return said
+            return None
+        code, out, err = self.main(override=marks_down)
+        self.assertEqual(code, 1, out)
+        lines = out.splitlines()
+        at = next(i for i, line in enumerate(lines) if line.startswith("claim-joke"))
+        self.assertIn("fail", lines[at].split())
+        self.assertIn("recommend", lines[at].split())
+        self.assertIn("voice", lines[at + 1])
+        self.assertIn("Good", lines[at + 1])
+        # every other row is as the faithful reviewer left it
+        others = [line for line in lines[:at] + lines[at + 2:]
+                  if line.split() and line.split()[0] in [*SEEDED, *COLD_READ, "good"]]
+        self.assertEqual(len(others), len(SEEDED) + len(COLD_READ) + 1)
+        self.assertFalse([line for line in others if "fail" in line.split()], others)
+
+    def test_a_reviewer_that_lets_the_aside_through_exits_1(self):
+        def lets_through(case, kind):
+            if kind == "review" and case == "aside-joke":
+                said = copy.deepcopy(load(FIXTURES / case / "expected.json")["review"])
+                said.update(verdict="recommend", flags=[])
+                said["grades"]["voice"] = "Good"
+                return said
+            return None
+        code, out, err = self.main(override=lets_through)
+        self.assertEqual(code, 1, out)
+        lines = out.splitlines()
+        at = next(i for i, line in enumerate(lines) if line.startswith("aside-joke"))
+        self.assertIn("fail", lines[at].split())
+        self.assertIn("recommend", lines[at].split())
+        # what the reviewer missed is printed under the row, each on voice
+        missed = []
+        for line in lines[at + 1:]:
+            if line.split() and line.split()[0] in [*SEEDED, *COLD_READ, *GOOD]:
+                break
+            missed.append(line)
+        said = "\n".join(missed)
+        self.assertIn("recommend", said)
+        self.assertIn("consider", said)
+        self.assertIn("voice graded Good", said)
+        self.assertIn("no flag on voice", said)
+        # every other row is as the faithful reviewer left it
+        others = [line for line in lines[:at] + lines[at + 1 + len(missed):]
+                  if line.split() and line.split()[0] in [*SEEDED, *COLD_READ, *GOOD]
+                  and line.split()[0] != "aside-joke"]
+        self.assertEqual(len(others), len(SEEDED) + len(COLD_READ) + len(GOOD) - 1)
+        self.assertFalse([line for line in others if "fail" in line.split()], others)
 
     def test_a_failing_reviewer_exits_1_and_says_which_rows_failed(self):
         def lenient(case, kind):
@@ -1012,10 +1180,13 @@ class Docs(unittest.TestCase):
         skill = (ROOT / "ytstudio" / "SKILL.md").read_text(encoding="utf-8")
         flat = " ".join(skill.split())
         self.assertIn("python -m ytstudio.narrative calibrate", flat)
-        self.assertIn("the seeded-bad fixtures all fail, the good one passes, the length "
+        self.assertIn("the seeded-bad fixtures all fail, the good ones pass, the length "
                       "audit passes, and work/review-log.jsonl holds at least 20 rows with "
                       "a human `label`", flat)
         self.assertIn("gate on with N labelled verdicts (20 needed)", flat)
+        # AUTO-159: the condition is stated one way everywhere, the stage
+        # table's `yt script` row included
+        self.assertNotIn("the good one passes", flat)
 
     def test_the_manuals_last_two_faults_are_the_cold_read_cases(self):
         # "The last two faults have no rubric criterion": the list must end
@@ -1027,7 +1198,10 @@ class Docs(unittest.TestCase):
         self.assertEqual(faults[-2:], ["a script whose premise a cold reader could not "
                                        "restate", "terms a lay audience is never given"])
         self.assertIn("an analogy that maps a comet's tail onto its path", faults)
-        seeded = {n: load(p / "expected.json") for n, p in cases().items() if n != "good"}
+        self.assertIn("an aside that serves no claim (`aside-joke`: voice)", faults)
+        self.assertIn("a second good script whose one joke makes the point (`claim-joke`: "
+                      "recommend, voice no lower than Good)", skill)
+        seeded = {n: load(p / "expected.json") for n, p in cases().items() if n not in GOOD}
         self.assertEqual(len(faults), len(seeded))
         self.assertEqual(sorted(n for n, e in seeded.items() if e.get("story") is False),
                          ["jargon", "no-premise"])
@@ -1041,6 +1215,11 @@ class Docs(unittest.TestCase):
         self.assertIn("20", item)
         self.assertIn("length", item)
         self.assertRegex(item, r"about \$\d+")
+        # AUTO-159: both humour cases are named, and the bar is the good ones'
+        self.assertIn("an aside that serves no claim", item)
+        self.assertIn("a joke that makes the point", item)
+        self.assertIn("the good ones pass", item)
+        self.assertNotIn("the good one passes", item)
 
     def test_the_stated_cost_of_a_live_run_is_the_shipped_set_s(self):
         # one case and one padded read each cost CALIBRATE_USD_PER_CASE; a new

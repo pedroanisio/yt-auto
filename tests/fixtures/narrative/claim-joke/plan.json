@@ -1,0 +1,132 @@
+{
+  "logline": "A comet's tail leads it away from the Sun because sunlight and a wind from the Sun push it, not because it trails behind.",
+  "promise": "Why a comet leaving the Sun flies tail first.",
+  "payoff": "The tail is pushed outward by sunlight and by the solar wind, so it always points away from the Sun, whichever way the comet moves.",
+  "train": "In 1951 Ludwig Biermann had to explain why comet tails point away from the Sun faster than the push of sunlight allows: what else is blowing?",
+  "stakes": "Without the answer, the stream that knocks out power grids on Earth stays invisible until it arrives.",
+  "viewer_stake": "The wind that bends this tail reaches you too: in March 1989 a storm in it put Quebec's grid out for nine hours.",
+  "misconception": "[M1] A comet's tail is a wake left behind as it moves.",
+  "misconception_why": "",
+  "audience": "lay",
+  "hook": {
+    "trigger": "unexpected_observation",
+    "gap": "why a comet leaving the Sun has its tail in front"
+  },
+  "reveal": {
+    "section": 3,
+    "constraint_section": 2
+  },
+  "questions": [
+    {
+      "id": "Q1",
+      "text": "Why does a comet leaving the Sun fly tail first?",
+      "opened_in": 1,
+      "closed_in": 3,
+      "left_open_why": ""
+    },
+    {
+      "id": "Q2",
+      "text": "If sunlight is too weak, what else pushes the gas tail?",
+      "opened_in": 2,
+      "closed_in": 3,
+      "left_open_why": ""
+    }
+  ],
+  "ending": {
+    "payoff_line": "That comet is not flying backwards. It is showing you the wind.",
+    "callback": "the opening comet, leaving the Sun tail first, seen again",
+    "next_film": "How the solar wind shaped the planets' atmospheres"
+  },
+  "sections": [
+    {
+      "heading": "Tail first",
+      "purpose": "the surprise and why it matters",
+      "seconds": 30,
+      "beats": [
+        "a comet leaves the Sun tail first",
+        "the same wind reaches Earth"
+      ],
+      "claims": [
+        "Comet tails point away from the Sun."
+      ],
+      "visuals": [
+        "a comet moving outward, tail ahead"
+      ],
+      "opens": [
+        "Q1"
+      ],
+      "closes": [],
+      "connective": "open",
+      "rehook": "",
+      "escalation": "the tail is not behind the comet at all",
+      "anchor_visual": "a comet leaving the Sun with its tail ahead of it"
+    },
+    {
+      "heading": "Too weak",
+      "purpose": "why the obvious answer fails",
+      "seconds": 40,
+      "beats": [
+        "sunlight pushes dust",
+        "but the gas tail is too fast for light"
+      ],
+      "claims": [
+        "Sunlight exerts a small pressure on dust.",
+        "Ion tails accelerate faster than light pressure explains."
+      ],
+      "visuals": [
+        "dust grains drifting in sunlight"
+      ],
+      "opens": [
+        "Q2"
+      ],
+      "closes": [],
+      "connective": "but",
+      "rehook": "Q1",
+      "escalation": "the known force cannot account for the speed",
+      "anchor_visual": "a straight gas tail beside a curved dust tail"
+    },
+    {
+      "heading": "The wind",
+      "purpose": "the reveal",
+      "seconds": 40,
+      "beats": [
+        "Biermann proposes a stream of particles from the Sun",
+        "Mariner 2 measures it in 1962"
+      ],
+      "claims": [
+        "Biermann proposed solar corpuscular radiation in 1951.",
+        "Mariner 2 measured the solar wind in 1962."
+      ],
+      "visuals": [
+        "particles streaming out from the Sun past a comet"
+      ],
+      "opens": [],
+      "closes": [
+        "Q1",
+        "Q2"
+      ],
+      "connective": "therefore",
+      "rehook": "Q1",
+      "escalation": "the wind is everywhere, all the time",
+      "anchor_visual": "the stream from the Sun bending the gas tail"
+    },
+    {
+      "heading": "Showing the wind",
+      "purpose": "the payoff",
+      "seconds": 20,
+      "beats": [
+        "the opening comet again, now read correctly"
+      ],
+      "claims": [],
+      "visuals": [
+        "the opening comet, tail ahead"
+      ],
+      "opens": [],
+      "closes": [],
+      "connective": "therefore",
+      "rehook": "",
+      "escalation": "",
+      "anchor_visual": "the opening comet, seen again"
+    }
+  ]
+}
