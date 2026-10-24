@@ -1418,23 +1418,27 @@ character host` are any. A shot declares its dimension through its `style`
 in `script.json` (`styles.dimension_of`, matched loosely; a name the library
 does not hold is unknown). The reach record measures which of 2D, 2.5D and
 3D each section's world is authored in, from its XML and with no model
-(`reach.dimensions`, `vfx.json` `reach.dimensions`): 3d is a 3D-stage
-element seen through a camera that is not orthographic (or none, the
-engine's default perspective), 2.5d an orthographic camera or a 2D node with
-`threeD="true"`, 2d a 2D-stage element; `layer/@z` is stacking order and a
+(`reach.dimensions`, `vfx.json` `reach.dimensions`): 3d is a 3D world (a
+viewport, object, mesh or scene, not a camera or lights alone) seen through
+a camera that is not orthographic, or a viewport with none (the engine's
+default perspective); 2.5d an orthographic camera or a 2D node with
+`threeD="true"`; 2d a 2D-stage element; `layer/@z` is stacking order and a
 `map`'s orthographic projection is a globe, so neither is depth. `vfx.md`
 gains a `## Dimensions` table (section, declared, realised, evidence), and a
 section whose shots are 3d or 2.5d while its world is flatter is a `yt
-doctor` vfx warning naming its shots and `yt vfx --sections N`, so `yt
-improve` re-authors that section; the first five such sections warn on
-their own and the rest as one, and a primary treatment (`styles.json`'s
-first) that no section realises is one more warning. The QA reviewer gets
+doctor` vfx warning naming its shots and `yt vfx --sections N`, one per
+section, so `yt improve` re-authors those sections and not the whole film;
+a primary treatment (`styles.json`'s first) that no section realises is one
+more warning, routed to the first such section, or filed under script when
+there is none (no shot takes the treatment, so re-authoring vfx would change
+nothing). The QA reviewer gets
 the same rows as context (`dimensions` in its measurements). Being flat is
 allowed: footage, any and unknown are never judged, a 2D or footage-led film
 gets no warning, nothing fails, and READY, the gate and the QA scores do not
 move. A vfx.json from before this is measured from its stored reach usage
 without running `yt vfx` again; one with no usage is a doctor note when a
-shot declares 2.5d or 3d.
+shot declares 2.5d or 3d and the reach record gives no reason of its own
+("nothing was authored" already says it).
 
 `--budget-usd` (18, what the default rounds cost at the most) is one section's
 budget for its author sessions and its reviews together, and
