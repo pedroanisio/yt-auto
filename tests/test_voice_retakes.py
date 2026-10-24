@@ -129,6 +129,86 @@ class RetakesAreDirected(unittest.TestCase):
                 self.assertNotIn("speed", call["settings"] or {})
 
 
+class SectionDeliveryOnElevenLabs(unittest.TestCase):
+    """AUTO-139 part B: the director's per-section settings are sent, one
+    tts_scenes call per distinct settings value; a film with no delivery
+    rows makes today's calls, so nothing is re-billed."""
+
+    #: What the code before AUTO-139 sent for this run, captured from it.
+    TODAY_CALLS = [
+        {"fmt": "pcm_24000", "force": False, "ids": ["001-1-1", "002-1-2", "005-1-5"],
+         "language": None, "max_chars": None, "model": "m",
+         "settings": {"stability": 0.4}, "timestamps": True},
+        {"fmt": "pcm_24000", "force": True, "ids": ["004-1-4"], "language": None,
+         "max_chars": None, "model": "m", "settings": {"stability": 0.4},
+         "timestamps": True},
+        {"fmt": "pcm_24000", "force": True, "ids": ["003-1-3"], "language": None,
+         "max_chars": None, "model": "m", "settings": {"speed": 0.88, "stability": 0.4},
+         "timestamps": True}]
+    TODAY_SCENES = [
+        [{"id": "001-1-1", "text": "Line number 1."}, {"id": "002-1-2", "text": "Line number 2."},
+         {"id": "005-1-5", "text": "Line number 5."}],
+        [{"id": "004-1-4", "text": "Line number 4."}],
+        [{"id": "003-1-3", "text": "Line number 3."}]]
+
+    def run_with(self, secs=None, **kw):
+        kit = FakeKit()
+        scenes = []
+        inner = kit.tts_scenes
+
+        def tts_scenes(client, scenes_file, voice_id, out_dir, **call):
+            scenes.append(json.loads(Path(scenes_file).read_text(encoding="utf-8")))
+            return inner(client, scenes_file, voice_id, out_dir, **call)
+        kit.tts_scenes = tts_scenes
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(voice, "pick_engine", lambda e: e), \
+                mock.patch.object(voice, "_kit", lambda: kit):
+            voice.VoiceOver(Idea(title="T", genre="g", description="d"), secs or sections(),
+                            Path(tmp), engine="elevenlabs", voice="v1", verbose=False,
+                            **kw).run()
+        return [{k: v for k, v in c.items() if k != "log"} for c in kit.calls], scenes
+
+    def test_an_old_script_with_a_named_retake_makes_todays_calls(self):
+        calls, scenes = self.run_with(
+            redo={"1.3", "1.4"}, opts={"speed": 0.9, "settings": {"stability": 0.4}},
+            directions={"1.3": {"speed": 0.88}})
+        self.assertEqual(calls, self.TODAY_CALLS)
+        self.assertEqual(scenes, self.TODAY_SCENES)
+
+    def two(self):
+        one = [Shot(narration=f"Line number {i}.", n=i, label=f"1.{i}", seconds=3)
+               for i in (1, 2)]
+        two = [Shot(narration=f"Line number {i}.", n=i, label=f"2.{i - 2}", seconds=3)
+               for i in (3, 4)]
+        return [Section(heading="One", shots=one), Section(heading="Two", shots=two)]
+
+    def test_one_call_per_distinct_settings_and_speed_only_where_a_section_gives_it(self):
+        calls, _ = self.run_with(
+            self.two(), opts={"speed": 0.9, "settings": {"stability": 0.4}},
+            delivery={"One": {"note": "slow", "settings": {"style": 0.5}},
+                      "Two": {"note": "brisk", "speed": 1.1}})
+        self.assertEqual([c["ids"] for c in calls], [["001-1-1", "002-1-2"],
+                                                     ["003-2-1", "004-2-2"]])
+        self.assertEqual(calls[0]["settings"], {"stability": 0.4, "style": 0.5})
+        self.assertEqual(calls[1]["settings"], {"stability": 0.4, "speed": 1.1})
+        self.assertFalse(any(c["force"] for c in calls))
+
+    def test_two_sections_with_the_same_settings_share_a_call(self):
+        calls, _ = self.run_with(
+            self.two(), opts={"speed": 0.9},
+            delivery={"One": {"note": "a", "speed": 1.05}, "Two": {"note": "b", "speed": 1.05}})
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["settings"], {"speed": 1.05})
+
+    def test_the_respelled_line_is_sent(self):
+        secs = sections(2)
+        secs[0].shots[0].narration = "Ask Schrödinger."
+        secs[0].shots[0].pronounce = [{"term": "Schrödinger", "say": "SHROH-ding-er"}]
+        _, scenes = self.run_with(secs)
+        self.assertEqual(scenes[0][0]["text"], "Ask shroh-ding-er.")
+        self.assertEqual(scenes[0][1]["text"], "Line number 2.")
+
+
 class TheTakeReviewSaysWhatItHeard(unittest.TestCase):
     """voice.json's take review carries the mark of the takes it was asked
     about (AUTO-105), so `yt qa` uses it only while the film carries them."""
@@ -187,6 +267,28 @@ class TheStageKeepsTheMark(unittest.TestCase):
         self.assertEqual(data["review"]["heard"], voice.heard(data["takes"]))
         row = {r["source"]: r for r in qa.listening_evidence(None, data)}["voice"]
         self.assertTrue(row["current"], row["why"])
+
+    def test_the_director_hears_the_marks_and_its_section_notes_reach_the_takes(self):
+        script = json.loads((self.root / "script.json").read_text(encoding="utf-8"))
+        script["sections"][0]["shots"][0] |= {"emphasis": ["number"], "note": "wry"}
+        (self.root / "script.json").write_text(json.dumps(script), encoding="utf-8")
+        test_wordless.FakeEngine.answers[0] = {
+            "voice": "", "speed": 1.0, "why": "w",
+            "delivery": [{"section": "one", "note": "slow and low", "speed": 0.9},
+                         {"section": "Coda", "note": "nowhere"}]}
+        args = test_wordless.WordlessRun.args(self)
+        args.engine = "stub"
+        self.assertEqual(voice.run(args), 0)
+        casting, retakes = test_wordless.FakeEngine.prompts
+        self.assertIn("wry", casting)              # the shot's note, in the Sections brief
+        self.assertIn('"number"', retakes)
+        self.assertIn("slow and low", retakes)
+        data = json.loads((self.root / "voice.json").read_text(encoding="utf-8"))
+        self.assertEqual(data["takes"][0]["delivery"]["section_note"], "slow and low")
+        self.assertEqual(data["casting"]["delivery"][0],
+                         {"section": "one", "note": "slow and low", "speed": 0.9})
+        self.assertEqual(data["delivery"]["unmatched"], [{"section": "Coda", "note": "nowhere"}])
+        self.assertEqual(data["delivery"]["by_kind"]["speed"], {"applied": 0, "recorded_only": 2})
 
 
 if __name__ == "__main__":

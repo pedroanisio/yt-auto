@@ -977,6 +977,16 @@ of the sent text is mapped back word for word, and where the counts differ
 the caption words are estimated from the line (`caption_mismatch` on the
 take), never the respelling.
 
+The casting director's per-section delivery notes become engine settings:
+a `delivery` row names a section by its heading (or its number) and may
+give that section its own `speed` (0.85-1.15) and, for ElevenLabs,
+`settings`. The layering is the cast's, then the section's, then a named
+retake's; a speed replaces, never multiplies (espeak scales `--wpm` by it).
+ElevenLabs makes one call per distinct settings value, in film order, and
+a film with no section settings makes today's calls. A row that names no
+section reaches no take and is listed in voice.json `delivery.unmatched`;
+`delivery` also counts what was applied and what was only recorded, by kind.
+
 Writes `voice/` (one file per shot), `voice.json`, `narration.vtt` and
 `narration.srt`, plus `voice.wav` with `--stitch`. `--layout sequential` (the
 default) places takes back to back with real gaps and gives the honest runtime;

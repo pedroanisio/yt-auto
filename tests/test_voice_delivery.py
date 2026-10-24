@@ -289,7 +289,7 @@ class AnOldScript(unittest.TestCase):
     TAKE_KEYS = {"at", "cached", "chars", "engine", "file", "label", "n", "planned_at",
                  "planned_seconds", "rms_dbfs", "seconds", "section", "text", "timing",
                  "voice", "words"}
-    NEW_KEYS = set()
+    NEW_KEYS = {"delivery"}
 
     def setUp(self):
         from tests import test_wordless
@@ -326,6 +326,111 @@ class AnOldScript(unittest.TestCase):
             self.assertEqual(set(take) - self.TAKE_KEYS, {"spoken", "spoken_chars", "delivery"})
             self.assertEqual(take["spoken"], "")
             self.assertEqual(take["spoken_chars"], take["chars"])
+
+
+def two_sections():
+    return [Section(heading="The Opening", shots=[
+                Shot(narration="Line number 1.", n=1, label="1.1", seconds=3),
+                Shot(narration="Line number 2.", n=2, label="1.2", seconds=3)]),
+            Section(heading="Second", shots=[
+                Shot(narration="Line number 3.", n=3, label="2.1", seconds=3),
+                Shot(narration="Line number 4.", n=4, label="2.2", seconds=3)])]
+
+
+class DeliveryFrom(unittest.TestCase):
+    """Part B: the director's per-section notes become settings the
+    recorder can apply, matched to the screenplay's sections."""
+
+    def test_speed_is_clamped_and_only_known_settings_are_kept(self):
+        by_heading, unmatched = voice.delivery_from({"delivery": [
+            {"section": "The Opening", "note": "slow", "speed": 0.5,
+             "settings": {"stability": 0.6, "bogus": 2, "style": "high"}}]}, two_sections())
+        self.assertEqual(by_heading["The Opening"],
+                         {"note": "slow", "speed": voice.SPEED_RANGE[0],
+                          "settings": {"stability": 0.6}})
+        self.assertEqual(unmatched, [])
+
+    def test_headings_fold_case_and_space_a_number_is_an_index_the_rest_unmatched(self):
+        by_heading, unmatched = voice.delivery_from({"delivery": [
+            {"section": "  the   opening ", "note": "warm"},
+            {"section": "2", "note": "brisk", "speed": 1.1},
+            {"section": "Coda", "note": "lost"}]}, two_sections())
+        self.assertEqual(by_heading["The Opening"], {"note": "warm"})
+        self.assertEqual(by_heading["Second"], {"note": "brisk", "speed": 1.1})
+        self.assertEqual(unmatched, [{"section": "Coda", "note": "lost"}])
+
+    def test_no_delivery_is_nothing(self):
+        self.assertEqual(voice.delivery_from({}, two_sections()), ({}, []))
+        self.assertEqual(voice.delivery_from({"delivery": "x"}, two_sections()), ({}, []))
+
+    def test_the_schema_offers_speed_and_settings_per_section(self):
+        item = voice.CAST_SCHEMA["properties"]["delivery"]["items"]
+        self.assertIn("speed", item["properties"])
+        self.assertIn("settings", item["properties"])
+        self.assertEqual(item["required"], ["section", "note"])
+        self.assertIn("speed", voice.cast_instruction("kokoro", "en"))
+
+    def test_directions_from_keeps_its_behaviour(self):
+        self.assertEqual(voice._clamped_direction({"speed": 2, "settings": {"style": 0.2}}),
+                         {"speed": voice.SPEED_RANGE[1], "settings": {"style": 0.2}})
+
+
+class Layering(unittest.TestCase):
+    def rec(self, tmp, engine="kokoro", **kw):
+        return voice.VoiceOver(Idea(title="T", genre="g", description="d"), two_sections(),
+                               Path(tmp), engine=engine, voice="v", verbose=False, **kw)
+
+    def test_base_then_section_then_retake(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rec = self.rec(tmp, engine="elevenlabs",
+                           opts={"speed": 1.0, "settings": {"stability": 0.4}},
+                           delivery={"The Opening": {"note": "n", "speed": 1.1,
+                                                     "settings": {"style": 0.3}}},
+                           redo={"1.2"}, directions={"1.2": {"speed": 0.9,
+                                                             "settings": {"stability": 0.7}}})
+            one, two, three, _ = rec.takes()
+            self.assertEqual(rec._opts_for(one)["speed"], 1.1)
+            self.assertEqual(rec._opts_for(one)["settings"], {"stability": 0.4, "style": 0.3})
+            self.assertEqual(rec._opts_for(two)["speed"], 0.9)
+            self.assertEqual(rec._opts_for(two)["settings"], {"stability": 0.7, "style": 0.3})
+            self.assertEqual(rec._opts_for(three), {"speed": 1.0,
+                                                    "settings": {"stability": 0.4}})
+
+    def test_espeak_keeps_todays_rate_unless_a_section_sets_a_speed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rec = self.rec(tmp, engine="espeak", opts={"wpm": 165, "speed": 0.9})
+            self.assertEqual(rec._opts_for(rec.takes()[0])["wpm"], 165)
+            rec = self.rec(tmp, engine="espeak", opts={"wpm": 165, "speed": 0.9},
+                           delivery={"Second": {"note": "n", "speed": 1.1}})
+            first, _, third, _ = rec.takes()
+            self.assertEqual(rec._opts_for(first)["wpm"], 165)
+            self.assertEqual(rec._opts_for(third)["wpm"], round(165 * 1.1 / 0.9))
+
+    def test_a_take_records_its_section_note_and_what_the_engine_took(self):
+        delivery = {"Second": {"note": "brisk", "speed": 1.1, "settings": {"style": 0.2}}}
+        with tempfile.TemporaryDirectory() as tmp:
+            third = self.rec(tmp, engine="kokoro", opts={"speed": 1.0},
+                             delivery=delivery).takes()[2]
+            other = self.rec(tmp, engine="chatterbox", opts={"speed": 1.0},
+                             delivery=delivery).takes()[2]
+            first = self.rec(tmp, engine="kokoro", opts={"speed": 1.0},
+                             delivery=delivery).takes()[0]
+        self.assertEqual(third.delivery["section_note"], "brisk")
+        self.assertIn({"kind": "speed", "value": 1.1}, third.delivery["applied"])
+        self.assertEqual(kinds(third.delivery["recorded_only"]), ["settings"])
+        self.assertEqual(kinds(other.delivery["recorded_only"]), ["settings", "speed"])
+        self.assertEqual(first.delivery["section_note"], "")
+        self.assertEqual(first.delivery["applied"], [])
+
+    def test_the_summary_counts_by_kind_and_lists_the_unmatched(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            takes = self.rec(tmp, engine="chatterbox", opts={"speed": 1.0},
+                             delivery={"Second": {"note": "n", "speed": 1.1}}).takes()
+        summary = voice.delivery_summary(takes, [{"section": "Coda", "note": "x"}])
+        self.assertEqual(summary["applied"], 0)
+        self.assertEqual(summary["recorded_only"], 2)
+        self.assertEqual(summary["by_kind"], {"speed": {"applied": 0, "recorded_only": 2}})
+        self.assertEqual(summary["unmatched"], [{"section": "Coda", "note": "x"}])
 
 
 if __name__ == "__main__":

@@ -122,8 +122,22 @@ CAST_SCHEMA = {
                                     "style": {"type": "number"}}},
         "delivery": {"type": "array",
                      "items": {"type": "object",
-                               "properties": {"section": {"type": "string"},
-                                              "note": {"type": "string"}},
+                               "properties": {
+                                   "section": {"type": "string",
+                                               "description": "the section's heading"},
+                                   "note": {"type": "string"},
+                                   # AUTO-139: optional, for a section whose
+                                   # tone needs a read of its own.
+                                   "speed": {"type": "number",
+                                             "description": "0.85 to 1.15, this section "
+                                                            "alone; omit to keep the cast's"},
+                                   "settings": {
+                                       "type": "object",
+                                       "description": "ElevenLabs voice settings, this "
+                                                      "section alone",
+                                       "properties": {"stability": {"type": "number"},
+                                                      "similarity_boost": {"type": "number"},
+                                                      "style": {"type": "number"}}}},
                                "required": ["section", "note"]}},
         "why": {"type": "string"},
     },
@@ -328,22 +342,84 @@ def directions_from(retakes) -> dict[str, dict]:
     for row in retakes if isinstance(retakes, list) else []:
         if not isinstance(row, dict) or not str(row.get("label") or "").strip():
             continue
-        direction: dict = {}
-        try:
-            speed = float(row["speed"])
-            direction["speed"] = round(min(SPEED_RANGE[1], max(SPEED_RANGE[0], speed)), 3)
-        except (KeyError, TypeError, ValueError):
-            pass
-        settings = row.get("settings")
-        if isinstance(settings, dict):
-            kept = {k: float(v) for k, v in settings.items()
-                    if k in ("stability", "similarity_boost", "style")
-                    and isinstance(v, (int, float))}
-            if kept:
-                direction["settings"] = kept
+        direction = _clamped_direction(row)
         if direction:
             out[str(row["label"]).strip()] = direction
     return out
+
+
+def _clamped_direction(row: dict) -> dict:
+    """A director's row as the recorder can apply it: `speed` within
+    SPEED_RANGE, `settings` the known ElevenLabs keys; either left out when
+    it is not usable."""
+    direction: dict = {}
+    try:
+        speed = float(row["speed"])
+        direction["speed"] = round(min(SPEED_RANGE[1], max(SPEED_RANGE[0], speed)), 3)
+    except (KeyError, TypeError, ValueError):
+        pass
+    settings = row.get("settings")
+    if isinstance(settings, dict):
+        kept = {k: float(v) for k, v in settings.items()
+                if k in ("stability", "similarity_boost", "style")
+                and isinstance(v, (int, float))}
+        if kept:
+            direction["settings"] = kept
+    return direction
+
+
+def _fold_heading(text) -> str:
+    return " ".join(str(text or "").split()).casefold()
+
+
+def delivery_from(cast: dict, sections: list[Section]) -> tuple[dict[str, dict], list[dict]]:
+    """The director's per-section delivery as the recorder applies it:
+    heading -> {note, speed?, settings?}, and the rows that match no section.
+    A row matches a heading after whitespace and case folding, else a number
+    is read as the 1-based section index. An unmatched row applies to no
+    take; voice.json lists it."""
+    rows = (cast or {}).get("delivery")
+    by_heading: dict[str, dict] = {}
+    unmatched: list[dict] = []
+    headings = {_fold_heading(s.heading): s.heading for s in sections}
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        asked = str(row.get("section") or "").strip()
+        heading = headings.get(_fold_heading(asked))
+        if heading is None and asked.isdigit() and 1 <= int(asked) <= len(sections):
+            heading = sections[int(asked) - 1].heading
+        if heading is None:
+            unmatched.append({"section": asked, "note": str(row.get("note") or "")})
+            continue
+        by_heading[heading] = {"note": str(row.get("note") or "").strip(),
+                               **_clamped_direction(row)}
+    return by_heading, unmatched
+
+
+def casting_delivery(cast: dict) -> list[dict]:
+    """casting.delivery as voice.json keeps it: each row's section and note
+    as the director wrote them, with its speed and settings clamped."""
+    rows = (cast or {}).get("delivery")
+    return [{"section": row.get("section", ""), "note": row.get("note", ""),
+             **_clamped_direction(row)}
+            for row in (rows if isinstance(rows, list) else []) if isinstance(row, dict)]
+
+
+def delivery_summary(takes, unmatched: list[dict]) -> dict:
+    """voice.json's `delivery`: how many controls the engine applied and
+    how many it could only record, by kind, and the unmatched rows."""
+    by_kind: dict[str, dict] = {}
+    totals = {"applied": 0, "recorded_only": 0}
+    for take in takes:
+        delivery = (take.delivery if hasattr(take, "delivery") else take.get("delivery")) or {}
+        for where in ("applied", "recorded_only"):
+            for row in delivery.get(where) or []:
+                kind = by_kind.setdefault(row.get("kind", "?"),
+                                          {"applied": 0, "recorded_only": 0})
+                kind[where] += 1
+                totals[where] += 1
+    return {**totals, "by_kind": by_kind, "unmatched": list(unmatched or [])}
 
 
 #: What the take review hears of a take: its words, the recording and how
@@ -457,7 +533,9 @@ def cast_instruction(engine: str, lang: str) -> str:
     return (f"Cast the narrator for this film and set the read. Engine: {engine}; "
             f"language: {lang or 'unspecified'}. Choose `voice` from the "
             f"candidates ({default}), `speed` within {SPEED_RANGE}, and one "
-            "delivery note per section.")
+            "delivery note per section, naming it by its heading; give a section "
+            "its own `speed` (and, for elevenlabs, `settings`) only where its tone "
+            "needs a different read from the cast's.")
 
 
 def apply_cast(cast: dict, offered: list[dict], *, engine: str,
@@ -886,6 +964,7 @@ class VoiceOver:
                  section_gap: float = SECTION_GAP, normalise: bool = True,
                  trim: bool = True, redo: set[str] | None = None,
                  directions: dict[str, dict] | None = None,
+                 delivery: dict[str, dict] | None = None,
                  verbose: bool = True) -> None:
         self.idea = idea
         self.sections = sections
@@ -904,6 +983,8 @@ class VoiceOver:
         self.trim = trim
         self.redo = redo or set()
         self.directions = dict(directions or {})
+        #: The director's per-section delivery, by heading (`delivery_from`).
+        self.delivery = dict(delivery or {})
         self.verbose = verbose
         self.cache = self.dir / ".cache"
 
@@ -923,13 +1004,22 @@ class VoiceOver:
                     continue
                 marks = shot_marks(shot)
                 spoken, applied, recorded = render_marks(text, marks, self.engine)
+                directed = self.delivery.get(section.heading) or {}
+                support = MARK_SUPPORT.get(self.engine, frozenset())
+                for kind in ("speed", "settings"):
+                    if kind in directed:
+                        row = {"kind": kind, "value": directed[kind]}
+                        if kind in support:
+                            applied.append(row)
+                        else:
+                            recorded.append(row | {"why": f"{self.engine} takes no {kind}"})
                 out.append(Take(n=shot.n, label=shot.label,
                                 section=section.heading, text=text,
                                 planned_at=shot.at,
                                 planned_seconds=shot.seconds,
                                 chars=len(text), spoken=spoken,
                                 spoken_chars=len(spoken or text),
-                                delivery={"section_note": "",
+                                delivery={"section_note": directed.get("note", ""),
                                           "performance": shot.note or "", **marks,
                                           "applied": applied,
                                           "recorded_only": recorded}))
@@ -943,13 +1033,28 @@ class VoiceOver:
         """The director's speed/settings for a named retake; nothing otherwise."""
         return self.directions.get(take.label, {}) if self._named(take) else {}
 
+    def _section(self, take: Take) -> dict:
+        """The director's speed/settings for this take's section, if any."""
+        row = self.delivery.get(take.section) or {}
+        return {k: row[k] for k in ("speed", "settings") if k in row}
+
     def _opts_for(self, take: Take) -> dict:
+        """The engine options for one take: the cast's, then its section's
+        delivery, then a named retake's direction, which wins. A section or
+        retake speed replaces the cast's speed, never multiplies it."""
         opts = dict(self.opts)
-        direction = self._direction(take)
-        if "speed" in direction:
-            opts["speed"] = direction["speed"]
-        if "settings" in direction:
-            opts["settings"] = (opts.get("settings") or {}) | direction["settings"]
+        set_speed = None
+        for layer in (self._section(take), self._direction(take)):
+            if "speed" in layer:
+                opts["speed"] = set_speed = layer["speed"]
+            if "settings" in layer:
+                opts["settings"] = (opts.get("settings") or {}) | layer["settings"]
+        if self.engine == "espeak" and set_speed is not None:
+            # espeak-ng takes a rate, not a speed: it is scaled by the asked
+            # speed over the cast's, and only when one is asked, so a film
+            # with no section or retake speed sends today's -s.
+            cast = float(self.opts.get("speed") or 1.0)
+            opts["wpm"] = round(float(self.opts.get("wpm", 165)) * set_speed / cast)
         return opts
 
     def _fingerprint(self, take: Take) -> str:
@@ -1011,8 +1116,10 @@ class VoiceOver:
     def _record_elevenlabs(self, takes: list[Take]) -> None:
         kit = _kit()
         client = kit.Client(kit.api_key())
-        scenes = [{"id": f"{t.n:03d}-{t.label.replace('.', '-')}", "text": t.text}
-                  for t in takes]
+        # The engine is sent what the marks made of the line (AUTO-139); an
+        # unmarked take sends its text, as before.
+        scenes = [{"id": f"{t.n:03d}-{t.label.replace('.', '-')}",
+                   "text": t.spoken or t.text} for t in takes]
         self.dir.mkdir(parents=True, exist_ok=True)
         fmt = self.opts.get("format") or f"pcm_{self.rate}"
         base = self.opts.get("settings") or None
@@ -1037,23 +1144,44 @@ class VoiceOver:
         # The kit takes one force flag per call, so the named takes are
         # recorded apart: the accepted ones are served from its cache (not
         # paid, not replaced) and a retake costs only itself.
-        kept = [i for i, t in enumerate(takes) if not self._named(t)]
-        plain = [i for i, t in enumerate(takes)
-                 if self._named(t) and not self._direction(t)]
-        send(kept, force=False, settings=base)
-        send(plain, force=True, settings=base)
+        # The takes not named and the named ones without a direction are
+        # grouped by the settings their section gives them (AUTO-139), one
+        # call per distinct value in film order: with no section delivery
+        # every take has the cast's settings and the calls are as before.
+        # The cast's speed is never sent; a section's or a retake's is,
+        # inside the settings of its takes alone.
+        def effective(take: Take):
+            section = self._section(take)
+            if not section:
+                return base
+            settings = (base or {}) | section.get("settings", {})
+            if "speed" in section:
+                settings = settings | {"speed": section["speed"]}
+            return settings or None
+
+        for force, members in ((False, [i for i, t in enumerate(takes) if not self._named(t)]),
+                               (True, [i for i, t in enumerate(takes)
+                                       if self._named(t) and not self._direction(t)])):
+            groups: dict[str, tuple] = {}
+            for i in members:
+                settings = effective(takes[i])
+                key = json.dumps(settings, sort_keys=True)
+                groups.setdefault(key, (settings, []))[1].append(i)
+            for settings, group in groups.values():
+                send(group, force=force, settings=settings)
         for i, take in enumerate(takes):
             direction = self._direction(take)
             if direction:
                 settings = self._opts_for(take).get("settings") or {}
-                if "speed" in direction:
-                    settings = settings | {"speed": direction["speed"]}
+                speed = direction.get("speed", self._section(take).get("speed"))
+                if speed is not None:
+                    settings = settings | {"speed": speed}
                 send([i], force=True, settings=settings or None)
         for take, scene in zip(takes, scenes):
             raw = self.dir / f"{scene['id']}.mp3"
+            align = self.dir / f"{scene['id']}.alignment.json"
             take.engine, take.voice = self.engine, self.voice
-            take.words = words_from_alignment(
-                self.dir / f"{scene['id']}.alignment.json")
+            take.words = [] if take.spoken else words_from_alignment(align)
             take.timing = "exact" if take.words else "none"
             if fmt.startswith("pcm_") and raw.exists():
                 # PCM comes back headerless, under the kit's own .mp3 name;
@@ -1075,6 +1203,16 @@ class VoiceOver:
             else:
                 take.file = raw.name
                 take.seconds = round(take.words[-1].end, 3) if take.words else 0.0
+            if take.spoken:
+                # The alignment is of what was sent: the captions take the
+                # line's own words at its timings, or estimate them.
+                aligned = _read_alignment(align)
+                if not take.seconds:
+                    folded = _fold(aligned, strip_tags=True)
+                    take.seconds = round(folded[-1].end, 3) if folded else 0.0
+                take.words, take.timing = caption_words(take, aligned)
+                if not take.words:
+                    take.timing = "none"
 
     def run(self) -> dict:
         takes = self.takes()
@@ -1397,6 +1535,12 @@ def print_voice(data: dict, takes: list[Take]) -> None:
           f"planned {timecode(data['planned_seconds'])} · "
           f"drift {data['drift_seconds']:+.1f}s · "
           f"voice ends {data['voice_end']:.1f}s")
+    told = data.get("delivery") or {}
+    if told.get("applied") or told.get("recorded_only") or told.get("unmatched"):
+        print(f"delivery: {told.get('applied', 0)} applied · "
+              f"{told.get('recorded_only', 0)} recorded only"
+              + (f" · {len(told['unmatched'])} note(s) naming no section"
+                 if told.get("unmatched") else ""))
 
     section = None
     for take in takes:
@@ -1595,7 +1739,8 @@ def run(args) -> int:
             brief("Candidates", offered),
             brief("Sections", [{"heading": sec.heading, "purpose": sec.purpose,
                                 "opening_line": next((sh.narration for sh in sec.shots
-                                                      if sh.narration.strip()), "")[:200]}
+                                                      if sh.narration.strip()), "")[:200],
+                                "notes": [sh.note for sh in sec.shots if sh.note][:8]}
                                for sec in sections])]), CAST_SCHEMA)
     except HarnessError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -1610,6 +1755,11 @@ def run(args) -> int:
     if not args.quiet:
         print(f"cast: {voice_id or 'engine default'} at {opts['speed']}x -- "
               f"{str(cast.get('why', ''))[:120]}", file=sys.stderr)
+    by_heading, unmatched = delivery_from(cast, sections)
+    if unmatched:
+        print(f"warning: {len(unmatched)} delivery note(s) name no section and "
+              f"reach no take: {', '.join(r['section'] or '?' for r in unmatched[:4])}",
+              file=sys.stderr)
     recorder = VoiceOver(
         idea, sections, project.root / "voice", engine=engine, voice=voice_id,
         lang=args.lang, rate=args.rate, opts=opts, layout=args.layout,
@@ -1619,7 +1769,7 @@ def run(args) -> int:
         directions=directions_from(
             ((read_json(project.out("voice"), warn=False) or {})
              .get("review") or {}).get("retakes")),
-        verbose=not args.quiet)
+        delivery=by_heading, verbose=not args.quiet)
 
     try:
         data = recorder.run()
@@ -1633,7 +1783,8 @@ def run(args) -> int:
              for row in data["takes"]]
     data["casting"] = {"voice": voice_id, "speed": opts["speed"],
                        "settings": opts.get("settings"),
-                       "delivery": cast.get("delivery", []), "why": cast.get("why", "")}
+                       "delivery": casting_delivery(cast), "why": cast.get("why", "")}
+    data["delivery"] = delivery_summary(takes, unmatched)
     print_voice(data, takes)
 
     # The director hears the measurements and names what to record again.
@@ -1645,7 +1796,9 @@ def run(args) -> int:
                   f"over {CPS_LIMIT:.0f})",
                   [{"label": t.label, "section": t.section, "seconds": t.seconds,
                     "planned": t.planned_seconds, "cps": round(t.cps, 1),
-                    "text": t.text[:160]} for t in takes]),
+                    "text": t.text[:160],
+                    **{k: t.delivery[k] for k in ("emphasis", "pauses", "pronounce", "section_note")
+                       if (t.delivery or {}).get(k)}} for t in takes]),
             brief("Drift by section", data["by_section"]),
             brief("Overlaps", data["overlaps"])]), RETAKE_SCHEMA)
     except HarnessError as exc:
