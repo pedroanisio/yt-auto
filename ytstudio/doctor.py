@@ -36,7 +36,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from . import env, gateway, house, keyframe, narrative, render, retention, spend, workspace
-from .assets import licence_tier
+from .assets import kind_for, licence_tier
 from .core import read_json, timecode, write_json
 
 #: Levels, in the order the report sorts them.
@@ -1095,6 +1095,17 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
 
         manifest = read_json(project.root / "raw" / "08-downloads.json",
                              warn=False, shape=list) or []
+        # Build and vfx place only files on disk (AUTO-143): vetted pictures
+        # or clips that were never fetched make a film drawn without them.
+        pictures = [a for a in usable
+                    if (a.get("kind") or kind_for(a.get("content_type", ""),
+                                                  a.get("url", ""))) in ("image", "video")]
+        fetched = any(isinstance(row, dict) and str(row.get("status", "")) == "ok"
+                      for row in manifest)
+        if pictures and not fetched:
+            report.add("warn", "assets", f"{len(pictures)} vetted picture or clip "
+                       "asset(s) were never downloaded; build and vfx place only "
+                       "files on disk", _cmd("research", project, "--download"))
         if manifest:
             by = {}
             for row in manifest:

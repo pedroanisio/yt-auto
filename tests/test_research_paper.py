@@ -698,9 +698,11 @@ class Command(unittest.TestCase):
 
     def test_run_hands_the_paper_to_research(self):
         args = cli.build_parser().parse_args(["run", "--title", "T", "--paper", ARXIV])
-        self.assertEqual(cli.run_extras(args, redo=set())["research"], ["--paper", ARXIV])
+        # AUTO-143: every run downloads beside the paper
+        self.assertEqual(cli.run_extras(args, redo=set())["research"],
+                         ["--download", "--paper", ARXIV])
         args = cli.build_parser().parse_args(["run", "--title", "T"])
-        self.assertEqual(cli.run_extras(args, redo=set())["research"], [])
+        self.assertEqual(cli.run_extras(args, redo=set())["research"], ["--download"])
 
 
 from test_run_pipeline import RunCase as _RunCase  # noqa: E402
