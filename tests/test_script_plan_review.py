@@ -1182,6 +1182,125 @@ class Command(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- #
+# AUTO-133: a fact-check blocker that stands stops the stage
+# --------------------------------------------------------------------------- #
+
+#: A dossier, so the screenplay has research to be checked against.
+DOSSIER = {"claims": [{"claim": "the bolt was painted over", "detail": "",
+                       "source_title": "NTSB", "source_url": "u",
+                       "source_kind": "primary", "confidence": "high"}]}
+
+
+def fact(n, severity="blocker", problem="the bolt count is not in the research",
+         fix="say a bolt", **kw):
+    return {"n": n, "severity": severity, "problem": problem, "fix": fix, **kw}
+
+
+class FactGate(unittest.TestCase):
+    """`yt script` with a fact-check blocker still standing after its
+    revision leaves narration.txt unwritten and exits 1, naming the shot (or
+    "script-wide") and the command that clears it; --report-only records it
+    and goes on. Every fact-check answer comes from the fake below."""
+
+    def setUp(self):
+        Command.setUp(self)
+        (self.film / "dossier.json").write_text(json.dumps(DOSSIER))
+        #: what each verify* decision answers, in order; [] once they run out
+        self.checks: list[list[dict]] = []
+        #: n -> the line the fact revision writes, and n -> why it keeps one;
+        #: a flagged line in neither is left unanswered
+        self.fixes: dict[int, str] = {}
+        self.keep: dict[int, str] = {}
+
+    def run_stage(self, *flags):
+        asked = []
+
+        def ask(self_, name, prompt, schema):
+            which = kind(schema)
+            asked.append(name)
+            if which == "plan":
+                return copy.deepcopy(PLAN)
+            if which == "shots":
+                return shots_for(int(name.split("-")[1]), ("context", "payoff"))
+            if which == "flags":
+                if name.startswith("verify-status"):
+                    return {"flags": [], "verdict": "ok"}
+                return {"flags": self.checks.pop(0) if self.checks else [],
+                        "verdict": "defensible"}
+            if which == "fixes":
+                if not name.startswith("revise-") or not name[7:].isdigit():
+                    return {"fixes": []}
+                return {"fixes": [{"n": n, "action": "fix", "narration": line, "why": "w"}
+                                  for n, line in self.fixes.items()]
+                        + [{"n": n, "action": "keep", "narration": "", "why": why}
+                           for n, why in self.keep.items()]}
+            return {}
+        args = cli.build_parser().parse_args(
+            ["script", "--project", str(self.film), "--work", str(self.root / "work"),
+             "--quiet", *flags])
+        with mock.patch.object(script.Screenwriter, "_ask", ask), \
+                contextlib.redirect_stdout(io.StringIO()) as out, \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            code = script.run(args)
+        return code, asked, out.getvalue() + err.getvalue()
+
+    def test_a_standing_blocker_writes_no_narration_and_exits_1(self):
+        (self.film / "narration.txt").write_text("an older read\n")
+        self.checks = [[fact(3)]]
+        code, asked, said = self.run_stage("--verify")
+        self.assertEqual(code, 1, said)
+        self.assertFalse((self.film / "narration.txt").exists())
+        self.assertTrue((self.film / "script.json").exists())
+        self.assertIn("error: fact-check blocker at 2.1: the bolt count is not in the "
+                      "research; narration.txt was not written", said)
+        self.assertIn("yt script --revise 2.1 --why", said)
+        self.assertIn("--report-only", said)
+
+    def test_a_script_wide_blocker_says_so_and_asks_for_the_verify_rerun(self):
+        self.checks = [[fact(0, problem="the title promises a cause", fix="retitle it")]]
+        code, asked, said = self.run_stage("--verify")
+        self.assertEqual(code, 1, said)
+        self.assertFalse((self.film / "narration.txt").exists())
+        self.assertIn("error: fact-check blocker (script-wide): the title promises a cause",
+                      said)
+        self.assertIn('yt script --verify --notes "retitle it"', said)
+        self.assertNotIn("--revise", said)
+
+    def test_report_only_records_it_and_writes_the_narration(self):
+        self.checks = [[fact(3)]]
+        code, asked, said = self.run_stage("--verify", "--report-only")
+        self.assertEqual(code, 0, said)
+        self.assertTrue((self.film / "narration.txt").exists())
+        record = json.loads((self.film / "script.json").read_text())
+        self.assertEqual([f["n"] for f in record["check"]["flags"]], [3])
+
+    def test_a_kept_blocker_still_blocks(self):
+        self.checks = [[fact(3)]]
+        self.keep = {3: "the report counts one bolt"}
+        code, asked, said = self.run_stage("--verify")
+        self.assertIn("revise-1", asked)
+        record = json.loads((self.film / "script.json").read_text())
+        self.assertTrue(record["check"]["flags"][0].get("kept"), record["check"])
+        self.assertEqual(code, 1, said)
+
+    def test_a_blocker_the_revision_clears_does_not_block(self):
+        self.checks = [[fact(3)], []]
+        self.fixes = {3: "A bolt, painted over, held it."}
+        code, asked, said = self.run_stage("--verify")
+        self.assertEqual(code, 0, said)
+        self.assertIn("verify-1", asked)
+        self.assertTrue((self.film / "narration.txt").exists())
+
+    def test_a_resolved_blocker_and_an_important_flag_do_not_block(self):
+        for flags_ in ([fact(3, resolved=True)], [fact(3, severity="important")],
+                       [fact(3, severity="minor")]):
+            self.checks = [flags_]
+            code, asked, said = self.run_stage("--verify")
+            self.assertEqual(code, 0, (flags_, said))
+            self.assertTrue((self.film / "narration.txt").exists(), flags_)
+
+
+# --------------------------------------------------------------------------- #
 # paper mode: where the framing lands (AUTO-131)
 # --------------------------------------------------------------------------- #
 

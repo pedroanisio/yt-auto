@@ -264,6 +264,37 @@ class ReviseLabels(unittest.TestCase):
         self.assertEqual(check["flags"][0]["kept"], "the inspector is the point")
         self.assertIn("years is not in the research", self.said)
 
+    # AUTO-133: a fact-check blocker the re-check leaves stops the revise
+    CRACK = {"n": 3, "problem": "the crack's age is not in the research",
+             "severity": "blocker", "fix": "say a long time"}
+
+    def test_a_blocker_left_on_a_changed_line_writes_no_narration_and_exits_1(self):
+        self.research()
+        (self.film / "narration.txt").write_text("an older read\n")
+        self.checks = [[self.CRACK]]           # the fact revision keeps the line
+        self.assertEqual(self.run_stage("--revise", "1.3,2.1"), 1, self.said)
+        self.assertFalse((self.film / "narration.txt").exists())
+        self.assertIn("error: fact-check blocker at 1.3: the crack's age is not in the "
+                      "research; narration.txt was not written", self.said)
+        self.assertIn('yt script --revise 1.3 --why "say a long time"', self.said)
+        # the record is written, so the next revise starts from it
+        self.assertEqual([f["n"] for f in self.record()["check"]["flags"]], [3])
+
+    def test_a_blocker_the_recheck_clears_lets_the_narration_through(self):
+        self.research()
+        self.checks = [[self.CRACK], []]
+        self.fact_fixes = {3: "The crack grew under the paint, out of sight."}
+        self.assertEqual(self.run_stage("--revise", "1.3,2.1"), 0, self.said)
+        self.assertTrue((self.film / "narration.txt").exists())
+        self.assertEqual(self.record()["check"]["flags"], [])
+
+    def test_report_only_records_the_blocker_and_goes_on(self):
+        self.research()
+        self.checks = [[self.CRACK]]
+        self.assertEqual(self.run_stage("--revise", "1.3,2.1", "--report-only"), 0,
+                         self.said)
+        self.assertTrue((self.film / "narration.txt").exists())
+
     def test_the_check_forgets_why_an_old_line_was_kept(self):
         data = screenplay()
         data["check"] = {"flags": [{"n": 3, "problem": "old", "severity": "important",
@@ -477,7 +508,9 @@ class ReviseStatus(unittest.TestCase):
         self.before = (self.film / "script.json").read_bytes()
 
     def test_the_revise_reads_the_claim_ids_and_the_capped_status(self):
-        self.assertEqual(self.run_stage("--revise", "1.3"), 0, self.said)
+        # the status blocker on 1.3 still stands, so the stage exits 1
+        # (AUTO-133); the record is written all the same
+        self.assertEqual(self.run_stage("--revise", "1.3"), 1, self.said)
         prompt = self.calls[0][1]
         self.assertEqual(self.calls[0][0], "revise-labels")
         self.assertIn("- c1: the bolt was painted over", prompt)
@@ -489,7 +522,10 @@ class ReviseStatus(unittest.TestCase):
                             for f in record["findings"]), record["findings"])
 
     def test_a_status_blocker_on_a_changed_line_still_binds(self):
-        self.assertEqual(self.run_stage("--revise", "1.3"), 0, self.said)
+        # it binds the gate too (AUTO-133): narration.txt waits for it
+        self.assertEqual(self.run_stage("--revise", "1.3"), 1, self.said)
+        self.assertFalse((self.film / "narration.txt").exists())
+        self.assertIn("error: fact-check blocker at 1.3: presented as proven", self.said)
         self.assertEqual([c[0] for c in self.calls], ["revise-labels", "verify-labels"])
         check = self.record()["check"]
         self.assertIn(BLOCKER, [{k: f[k] for k in BLOCKER} for f in check["flags"]])
@@ -504,7 +540,7 @@ class ReviseStatus(unittest.TestCase):
 
     def test_the_doctor_still_fails_the_blocker(self):
         from ytstudio import doctor, workspace
-        self.assertEqual(self.run_stage("--revise", "1.3"), 0, self.said)
+        self.assertEqual(self.run_stage("--revise", "1.3"), 1, self.said)
         report = doctor.check_project(workspace.Project(self.film))
         failed = [f.message for f in report.findings
                   if f.level == "fail" and f.area == "fact-check"]

@@ -37,6 +37,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from . import (env, gateway, house, keyframe, narrative, render, retention, rhythm, spend,
                workspace)
+from . import script as script_stage
 from .assets import kind_for, licence_tier
 from .core import read_json, timecode, write_json
 from .research import STORY_DROPPED
@@ -1213,7 +1214,8 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
         check = script.get("check") or {}
         flags = [f for f in check.get("flags", []) if not f.get("resolved")]
         resolved = [f for f in check.get("flags", []) if f.get("resolved")]
-        blockers = [f for f in flags if f.get("severity") == "blocker"]
+        # The one list the script gate and QA's bar read too (AUTO-133).
+        blockers = script_stage.fact_blockers(check, shots)
         important = [f for f in flags if f.get("severity") == "important"]
         if resolved:
             # Whether the edited lines were re-recorded is the stale-take
@@ -1246,10 +1248,10 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
                            f"{'over' if planned > target else 'under'} the "
                            f"{timecode(target)} target by more than 15%",
                            _cmd("script", project, "--minutes", f"{target / 60:g}"))
-        for flag in blockers:
-            where = f"shot {flag['n']}" if flag.get("n") else "script-wide"
-            report.add("fail", "fact-check", f"{where}: {_clip(flag.get('problem', ''))}",
-                       _clip(flag.get("fix", "")))
+        for row in blockers:
+            where = f"shot {row['n']}" if row["n"] else script_stage.SCRIPT_WIDE
+            report.add("fail", "fact-check", f"{where}: {_clip(row['problem'])}",
+                       _clip(row["fix"]))
         if important:
             report.add("warn", "fact-check", f"{len(important)} important flag(s) "
                        "from --verify", "read the Fact-check section of script.md")

@@ -7115,6 +7115,8 @@ def run(args) -> int:
             print(f"error: {gated}; narration.txt was not written (--gate). Run "
                   f"`{REPLAN_FIX}` with --notes saying what the review asks, or "
                   "drop --gate to record the verdict and go on.", file=sys.stderr)
+        for line in fact_gate_lines(fact_gate(args, data)):
+            print(line, file=sys.stderr)
         return 1
     verdict = (data.get("review") or {}).get("verdict")
     if verdict in ("reject", "not_evidenced"):
@@ -7140,6 +7142,75 @@ def story_gate(args, data: dict) -> str:
     return f"story review: {verdict}" if verdict in ("reject", "not_evidenced") else ""
 
 
+#: What a whole-script fact-check flag (n 0, the verify prompt's marker for a
+#: problem with the script as a whole) is called wherever a blocker is named.
+SCRIPT_WIDE = "script-wide"
+
+
+def fact_blockers(check: dict | None, shots: list[dict]) -> list[dict]:
+    """The fact-check blockers that stand (AUTO-133): every flag of
+    script.json's `check` whose severity is blocker and that nobody marked
+    `resolved`, the whole-script ones (n 0) included. Each row is {n,
+    label, problem, fix, kept}: the shot's label, or "script-wide" for n 0,
+    and whether the writer kept the line with a reason. A kept blocker is
+    still a blocker: the writer is the author, and doctor fails on it.
+
+    The one definition the script gate, doctor, QA's bar and improve read,
+    so none of them can drift from the others. Important and minor flags
+    are never here: they stay warnings and context."""
+    labels = {_number(s.get("n")): str(s.get("label") or "") for s in shots or []
+              if isinstance(s, dict)}
+    rows = []
+    for f in (check or {}).get("flags") or []:
+        if not isinstance(f, dict) or f.get("severity") != "blocker" or f.get("resolved"):
+            continue
+        n = _number(f.get("n"))
+        rows.append({"n": n,
+                     "label": (SCRIPT_WIDE if not n else labels.get(n) or f"shot {n}"),
+                     "problem": str(f.get("problem") or ""), "fix": str(f.get("fix") or ""),
+                     "kept": bool(f.get("kept"))})
+    return rows
+
+
+def fact_command(row: dict, *where: str) -> str:
+    """The command that clears one fact_blockers row: a shot's line goes
+    back on its own (`--revise`, whose fact-check reads the changed line
+    again); a whole-script blocker has no line to send, so the screenplay
+    is checked again with the fix as a note. `where` is the project flag a
+    report names (doctor's `--project <root>`)."""
+    fix = (row.get("fix") or "...").replace('"', "'")
+    if row.get("n"):
+        return " ".join(["yt script", *where, "--revise", str(row["label"]),
+                         "--why", f'"{fix}"'])
+    return " ".join(["yt script", *where, "--verify", "--notes", f'"{fix}"'])
+
+
+def fact_gate(args, data: dict) -> list[dict]:
+    """What stops narration.txt on the fact-check (AUTO-133): every blocker
+    standing in `data["check"]` (fact_blockers), or none with --report-only,
+    which records them and goes on."""
+    if getattr(args, "report_only", False):
+        return []
+    return fact_blockers(data.get("check"), [s for sec in data.get("sections") or []
+                                             for s in sec.get("shots") or []])
+
+
+def fact_gate_lines(rows: list[dict]) -> list[str]:
+    """One error line per standing blocker, naming where it is and what clears it."""
+    out = []
+    for row in rows:
+        if row["n"]:
+            out.append(f"error: fact-check blocker at {row['label']}: {row['problem']}; "
+                       "narration.txt was not written. Run "
+                       f"`{fact_command(row)}` (the fact-check reads the changed lines "
+                       "again), or --report-only to record it and go on.")
+        else:
+            out.append(f"error: fact-check blocker ({SCRIPT_WIDE}): {row['problem']}; "
+                       f"narration.txt was not written. Rerun `{fact_command(row)}`, or "
+                       "--report-only.")
+    return out
+
+
 def write_outputs(args, project, idea: Idea, data: dict, sections: list[Section],
                   *, wpm: int) -> tuple[list[str], bool]:
     """script.md, narration.txt, shotlist.csv and script.json from `data`.
@@ -7150,10 +7221,13 @@ def write_outputs(args, project, idea: Idea, data: dict, sections: list[Section]
     exits 1. --report-only records it and goes on. The story review's
     reject is an `error:` too, but it blocks only under `--gate`
     (story_gate): until the reviewer is calibrated it is evidence, not a
-    gate. Returns the standing rule errors and whether anything blocked."""
+    gate. A fact-check blocker still standing (fact_gate, AUTO-133) blocks
+    as a rule error does: a line the research does not hold is not read
+    aloud. Returns the standing rule errors and whether anything blocked."""
     errors = [f for f in data.get("findings", []) if str(f).startswith("error:")
               and not str(f).startswith("error: story review:")]
-    blocked = (bool(errors) and not args.report_only) or bool(story_gate(args, data))
+    blocked = ((bool(errors) and not args.report_only) or bool(story_gate(args, data))
+               or bool(fact_gate(args, data)))
     narration = project.out("narration", args.vo_out)
     for path, writer_fn in (
             (project.out("script_md", args.md_out),
@@ -7520,5 +7594,7 @@ def run_revise(args, idea: Idea, project) -> int:
                   "stand; narration.txt was not written. Revise those shots again "
                   "(--revise with --why), or --report-only to record them and go on.",
                   file=sys.stderr)
+        for line in fact_gate_lines(fact_gate(args, data)):
+            print(line, file=sys.stderr)
         return 1
     return 0
