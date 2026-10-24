@@ -389,6 +389,8 @@ class TheShippedText(unittest.TestCase):
         # does. Its own example sits inside the line, so it fixes nothing.
         from ytstudio import script
         form = self.line("format", "- Form:")
+        self.assertEqual(sum(1 for line in self.parsed["format"].splitlines()
+                             if line.startswith("- Form:")), 1)
         self.assertIn("none", form)
         self.assertIn('("- Form: countdown")', form)
         self.assertIn("choose this film's form from its subject", form)
