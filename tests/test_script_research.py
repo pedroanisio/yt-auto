@@ -320,10 +320,11 @@ OLD_BLOCK = (
     "the research opened:\n- P1: Families: lost relatives (source: https://example.org/m)")
 
 #: sha256 of the plan and plan-fields prompts for OLD_BLOCK, taken on
-#: develop 5405613 before the change: a dossier with no parallels keeps its
-#: digests, so its cached plan decisions are reused.
-OLD_PLAN = "2db935f4ff1c406040d0d8182c590fab08ad1023c04ee830fb828697c3ed1c48"
-OLD_PLAN_FIELDS = "e8aff6a7bd7473ae4ac4cc3eaf6ec1590179471ff3f1c8891617e9ee704f1919"
+#: develop 5405613 before the change (then re-taken after AUTO-157 added the
+#: film-wide form field, the only difference): a dossier with no parallels keeps
+#: its digests, so its cached plan decisions are reused.
+OLD_PLAN = "9611eebf4485617adb2145172b1444b99bb32fd61ca4d551d016ff288deb38fa"
+OLD_PLAN_FIELDS = "cd31937d2feef07fb03a99e249beb274892ebe82d9048e88d9026505c1bcbf11"
 
 
 class Parallels(unittest.TestCase):
