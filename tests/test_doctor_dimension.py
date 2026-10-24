@@ -20,7 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.test_delivery import DeliveryCase  # noqa: E402
-from tests.test_reach import FLAT, PERSPECTIVE, film  # noqa: E402
+from tests.test_reach import FLAT, PERSPECTIVE, THREED_GROUP, film  # noqa: E402
 from ytstudio import doctor, workspace  # noqa: E402
 
 
@@ -35,7 +35,7 @@ class DoctorDimension(DeliveryCase):
         return [f for f in doctor.check_project(project).findings
                 if f.area == "vfx" and "dimension" in f.message
                 or f.area == "vfx" and " authored world is " in f.message
-                or f.area == "vfx" and "primary treatment" in f.message
+                or f.area in ("vfx", "script") and "primary treatment" in f.message
                 or f.area == "vfx" and "not in the style library" in f.message]
 
     def test_flat_world_under_3d_shots_warns_with_section(self):
@@ -80,15 +80,20 @@ class DoctorDimension(DeliveryCase):
 
     def test_reach_without_usage_is_a_note_not_a_warn(self):
         styles, script, doc = film([("One", [("1.1", "3d animation")], FLAT)])
-        doc["reach"] = {"usage": None, "report": None, "audit": None,
-                        "reason": "nothing was authored, so there is nothing to audit"}
+        doc["reach"] = {"usage": None, "report": None, "audit": None, "reason": ""}
         found = self.found(self.project(styles, script, doc))
         self.assertEqual([f.level for f in found], ["note"])
         self.assertIn("dimension mix not measured: the reach record has no usage",
                       found[0].message)
         # a flat film has nothing to measure, so it is not told so
         styles, script, doc = film([("One", [("1.1", "2d motion graphics")], FLAT)])
-        doc["reach"] = {"usage": None, "report": None, "audit": None, "reason": "r"}
+        doc["reach"] = {"usage": None, "report": None, "audit": None, "reason": ""}
+        self.assertEqual(self.found(self.project(styles, script, doc)), [])
+
+    def test_a_reach_reason_already_says_why_there_is_no_usage(self):
+        styles, script, doc = film([("One", [("1.1", "3d animation")], FLAT)])
+        doc["reach"] = {"usage": None, "report": None, "audit": None, "dimensions": None,
+                        "reason": "nothing was authored, so there is nothing to audit"}
         self.assertEqual(self.found(self.project(styles, script, doc)), [])
 
     def test_an_older_record_is_measured_from_its_usage(self):
@@ -107,16 +112,63 @@ class DoctorDimension(DeliveryCase):
                       "(e.g. '3D cutaway'); their dimension is unknown", note.message)
         self.assertFalse([f for f in found if f.level == "warn"])
 
-    def test_six_gaps_fold_into_six_warns(self):
+    def test_every_gap_is_a_warn_improve_routes_to_its_section(self):
+        # one warn per section, so `yt improve` re-authors those sections and
+        # not the whole film with --fresh (improve reads one `--sections N`)
+        from ytstudio import improve
         rows = [(f"S{n}", [(f"{n}.1", "3d animation")], FLAT) for n in range(1, 9)]
+        rows.append(("S9", [("9.1", "2d motion graphics")], FLAT))
         project = self.project(*film(rows))
         warns = [f for f in self.found(project) if f.level == "warn"]
-        self.assertEqual(len(warns), 6)
-        for n, warn in enumerate(warns[:5], 1):
+        self.assertEqual(len(warns), 8)
+        for n, warn in enumerate(warns, 1):
             self.assertIn(f"section {n} (S{n})", warn.message)
             self.assertEqual(warn.fix, doctor._cmd("vfx", project, "--sections", str(n)))
-        self.assertIn("and 3 more", warns[5].message)
-        self.assertIn("6, 7, 8", warns[5].message)
+        found = [r for r in improve.collect({}, doctor=improve.doctor_rows(project))
+                 if r["source"] == "doctor" and " authored world is " in r["problem"]]
+        self.assertEqual([r["section_n"] for r in found], list(range(1, 9)))
+        self.assertEqual(improve.routed_sections(self.root, found), list(range(1, 9)))
+
+    def test_a_primary_treatment_no_shot_takes_is_the_scripts_not_vfx(self):
+        # no shot declares 3d, so re-authoring vfx would change nothing: the
+        # screenplay and styles.json disagree, and the warn says so under script
+        from ytstudio import improve
+        project = self.project(*film(
+            [("One", [("1.1", "2d motion graphics")], FLAT),
+             ("Two", [("2.1", "data visualisation")], FLAT)],
+            styles_first="3d animation"))
+        [warn] = [f for f in self.found(project) if f.level == "warn"]
+        self.assertEqual(warn.area, "script")
+        self.assertIn("primary treatment 3d animation", warn.message)
+        self.assertIn(doctor._cmd("script", project, "--fresh"), warn.fix)
+        rows = [r for r in improve.collect({}, doctor=improve.doctor_rows(project))
+                if r["source"] == "doctor" and "primary treatment" in r["problem"]]
+        self.assertEqual([r["owner"] for r in rows], ["script"])
+        argv = improve.stage_argvs(["vfx"], {r["owner"] for r in rows}, ["--project", "p"],
+                                   quality="final", root=self.root)[0]
+        self.assertNotIn("--fresh", argv)
+
+    def test_an_older_usage_shape_is_measured_end_to_end(self):
+        # a usage from before AUTO-154: no "flags", and threeD recorded by
+        # presence only, never as "=true"
+        def old(body):
+            styles, script, doc = film([("One", [("1.1", "isometric diagram")], body)],
+                                       styles_first="isometric diagram", stored=False)
+            usage = doc["reach"]["usage"]
+            del usage["flags"]
+            for per in [usage] + list(usage["symbols"].values()):
+                per["attributes"] = {k: n for k, n in per["attributes"].items()
+                                     if not k.endswith("=true")}
+            return styles, script, doc
+        from ytstudio import reach
+        styles, script, doc = old(THREED_GROUP)
+        self.assertEqual(self.found(self.project(styles, script, doc)), [])
+        evidence = reach.realised_dimensions(doc)["One"]["evidence"]
+        self.assertIn("group/@threeD x2 (value not recorded)", evidence)
+        warns = [f for f in self.found(self.project(*old(FLAT))) if f.level == "warn"]
+        warn = next(f for f in warns if " authored world is " in f.message)
+        self.assertIn("section 1 (One)", warn.message)
+        self.assertIn("are 2.5d (isometric diagram)", warn.message)
 
     def test_improve_routes_a_gap_to_its_section(self):
         from ytstudio import improve

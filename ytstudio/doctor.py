@@ -918,49 +918,50 @@ def identity_problem(styles: dict | None) -> tuple[str, str, tuple[str, ...]] | 
             critique)
 
 
-#: Section dimension gaps given a warn of their own; the rest are one more.
-DIMENSION_WARNS = 5
-
-
 def dimension_findings(report: Report, project: workspace.Project, styles: dict | None,
                        script: dict | None, vfx: dict) -> None:
     """AUTO-154: a section whose shots declare 3d or 2.5d (script.json
     `style`, through styles.dimension_of) and whose authored world is
-    flatter is a warn routed by `yt vfx --sections N`, the first
-    DIMENSION_WARNS each on their own and the rest as one; a primary
-    treatment no section realises is one more. Flat is allowed, so a 2D or
-    footage-led film says nothing; a record with no usage, or shots that
-    mostly name no library treatment, are notes. Measured, never asked:
-    nothing here fails, and nothing reaches READY, the gate or the lane."""
+    flatter is a warn routed by `yt vfx --sections N`, one per section so
+    `yt improve` re-authors those sections alone (it reads one N per fix). A
+    primary treatment no section realises is one more: routed to the first
+    gapped section when there is one, else filed under script, since then
+    the shots and styles.json disagree and re-authoring vfx would change
+    nothing. Flat is
+    allowed, so a 2D or footage-led film says nothing; a record with no
+    usage and no reason of its own, or shots that mostly name no library
+    treatment, are notes. Measured, never asked: nothing here fails, and
+    nothing reaches READY, the gate or the lane."""
     from . import reach
     gap = reach.dimension_gap(styles or {}, script or {}, vfx)
     # Unmeasured matters only where a shot declares depth: a flat or
     # footage-led film, or one with no script yet, has nothing to check.
+    # A reach record with a reason ("nothing was authored") has said why.
     deep = any(r["dim"] in ("2.5d", "3d") for _, _, shots in reach.declared_dimensions(script)
                for r in shots)
-    if not gap["measured"] and deep:
+    record = vfx.get("reach") if isinstance(vfx.get("reach"), dict) else {}
+    if not gap["measured"] and deep and not str(record.get("reason") or "").strip():
         report.add("note", "vfx", "dimension mix not measured: the reach record has no usage")
     rows = gap["sections"]
-    for row in rows[:DIMENSION_WARNS]:
+    for row in rows:
         report.add("warn", "vfx", f"section {row['n']} ({row['section']}): shots "
                    f"{', '.join(row['shots'])} are {row['declared']} "
                    f"({', '.join(row['styles'])}) but its authored world is "
                    f"{', '.join(row['realised'])}"
                    + (f" [{_clip(', '.join(row['evidence']), 120)}]" if row["evidence"] else ""),
                    _cmd("vfx", project, "--sections", str(row["n"])))
-    rest = rows[DIMENSION_WARNS:]
-    if rest:
-        numbers = [str(r["n"]) for r in rest]
-        report.add("warn", "vfx", f"and {len(rest)} more section(s) whose shots are 3d or 2.5d "
-                   f"but whose authored world is flatter: {', '.join(numbers)}",
-                   _cmd("vfx", project, "--sections", ",".join(numbers)))
     for row in gap["film"]:
-        report.add("warn", "vfx", f"the primary treatment {row['style']} is "
-                   f"{row['dimension']} and no section realises it",
-                   _cmd("vfx", project, "--sections", str(rows[0]["n"])) if rows else
-                   "give its shots the primary treatment (" + _cmd("script", project, "--fresh")
-                   + ") or choose the treatment the film is (" + _cmd("styles", project)
-                   + ")")
+        message = (f"the primary treatment {row['style']} is {row['dimension']} "
+                   "and no section realises it")
+        if rows:
+            report.add("warn", "vfx", message,
+                       _cmd("vfx", project, "--sections", str(rows[0]["n"])))
+        else:
+            report.add("warn", "script", message,
+                       "give its shots the primary treatment ("
+                       + _cmd("script", project, "--fresh")
+                       + ") or choose the treatment the film is ("
+                       + _cmd("styles", project) + ")")
     if gap["shots"] and gap["unmapped_shots"] > gap["shots"] / 2:
         example = next((r["style"] for _, _, shots in reach.declared_dimensions(script)
                         for r in shots if r["style"] and r["dim"] == "unknown"), "")
