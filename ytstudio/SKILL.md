@@ -1232,6 +1232,18 @@ hand-authored world showed the cost.
   the cue's name. `--fetch --synth` fetches first and synthesises the rest;
   a later `--fetch` keeps a synthesised cue. `yt doctor` warns while any
   cue has no file and names that command.
+- **Sound follows the words; cuts do not follow the beat** (AUTO-140). A
+  cue's `anchor` lets `yt build` re-place it when a take is redone
+  (`cue_anchors`: kept, moved, lost); a sheet spotted before anchors places
+  on its seconds, and re-spotting with `yt sound --fresh` is the fix. A music
+  or stinger file's `beat_grid` is measured on the render host with its
+  levels (none without a host, or for a bed with no steady beat), and
+  build.json's `beat_sync` reports how near cuts and reveals land to beats
+  and downbeats: a measure for the reviewers, never a bar, and cuts stay on
+  the narration. Nothing judges picture and sound together yet: `--listen`
+  gets a text timeline to judge timing by ear, and `--watch` sends no sound.
+  The search window, the beat tempo range, its confidence, the 4/4 downbeat,
+  the 83 ms tolerance and the host's envelope chain are TO VERIFY.
 - **The ocean is a height field.** It cannot overturn, break or pinch off a
   droplet. A liquid that must do that is a GLSL `effect type="shader"` over
   a rect, which the engine's effect pass renders with full ray intersections:
