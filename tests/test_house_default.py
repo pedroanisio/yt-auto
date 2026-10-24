@@ -162,6 +162,15 @@ class Loading(unittest.TestCase):
         self.assertNotIn("with none set here, this film's own", block)
         self.assertIn("with none set here, this film's own", self.shipped["format"])
 
+    def test_a_channel_format_that_names_a_recurring_device_reaches_the_writer(self):
+        # AUTO-137: recurrence is the channel's to name, and it still binds
+        (self.work / "house.md").write_text(
+            "## format\n- Opening: a cold open on one object, every film.\n",
+            encoding="utf-8")
+        block = house.load(self.work, self.project).for_stage("script")
+        self.assertIn("Opening: a cold open on one object, every film.", block)
+        self.assertNotIn("open on this film's question", block)
+
     def test_no_house_is_an_empty_house(self):
         loaded = house.load(self.work, self.project, enabled=False)
         self.assertEqual((loaded.sections, loaded.sources, loaded.sha256), ({}, [], ""))
@@ -373,6 +382,24 @@ class TheShippedText(unittest.TestCase):
         self.assertIn("persona", temperament)
         self.assertIn("a temperament per film is a house extension", self.raw["format"])
         self.assertNotIn("house extension", self.parsed["format"])
+
+    def test_the_format_chooses_each_film_for_its_subject(self):
+        # AUTO-137: no persona and no device recurs by default; structure
+        # 20's "no fixed template" (Fong) is the default, and structure 37's
+        # sameness is what a channel's own house file names
+        body = self.parsed["format"]
+        self.assertNotIn("The channel is a repeatable format", body)
+        self.assertNotIn("the same device every film", body)
+        self.assertNotIn("one persona across films", body)
+        self.assertIn("Each film's format is chosen for its subject; only what the "
+                      "channel's own house file names recurs.", body)
+        for device in ("Opening", "Ending"):
+            with self.subTest(device=device):
+                self.assertIn("one recurs only when set here",
+                              self.line("format", f"- {device}:"))
+        self.assertIn(("structure", 20), cited(COMMENT.search(self.raw["format"]).group(1)))
+        self.assertIn("structure 20", self.raw["format"].split("-->")[-2])
+        self.assertNotIn("structure 20", body)
 
     def test_the_strength_is_the_corpus_strength(self):
         # attention 8 says "whenever possible"; structure 19 lets a section
