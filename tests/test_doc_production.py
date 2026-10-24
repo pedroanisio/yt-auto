@@ -137,6 +137,14 @@ class ProductionDoc(unittest.TestCase):
         self.assertIn('"headline [Nk]"', row)
         self.assertIn("`source:headline`", row)
 
+    def test_the_ready_bar_names_the_fact_check(self):
+        # AUTO-133: QA and doctor keep a film off READY on a standing blocker
+        text = DOC.read_text()
+        start = text.index("**READY TO PUBLISH requires all of:**")
+        bar = text[start:text.index("\n\n", text.index("\n- ", start))]
+        self.assertIn("no fact-check blocker standing (resolved by a revision, or marked\n"
+                      "  `resolved` by hand)", bar)
+
     def test_captions_are_a_sidecar_unless_burned(self):
         text = _section("### The frame, in bands")
         self.assertIn("sidecar", text)

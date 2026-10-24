@@ -99,6 +99,8 @@ never passed.
 - no sequence that reads as a slideshow because of static composition,
   excessive text, weak motion or simplistic transitions
 - nothing left that a normal viewer would notice
+- no fact-check blocker standing (resolved by a revision, or marked
+  `resolved` by hand)
 
 A 9 is not "nothing is broken". A 9 is work that would not look out of place
 on a channel people subscribe to. Score 8 for competent and unremarkable, 6
