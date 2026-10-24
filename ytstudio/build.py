@@ -3767,7 +3767,7 @@ def run(args) -> int:
             "look", look_prompt(builder.brief()), LOOK_SCHEMA))
         builder.look, check = check_look(builder, engine, chosen)
         layout = builder.layout()
-        joins = joins_of(layout, fps_value(args.fps))
+        joins = joins_of(layout, fps_value(builder.fps))
         decided = None
         if not getattr(args, "hard_cuts", False):
             decided = joins_decision(args, project, engine, builder, joins, rules, digest)
