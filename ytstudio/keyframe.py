@@ -1258,8 +1258,10 @@ class SectionLook:
                   "rounds": rec.get("rounds") or [], "score": None,
                   "treatment": style.get("look", ""), "camera": style.get("camera_language", ""),
                   "hero": "", "elements": [], "operator_notes": self.notes,
-                  "palette_source": design.Design.from_styles(
-                      read_json(self.project.source("styles"), warn=False)).source,
+                  # the styles document the planner read, --in-styles included
+                  "palette_source": design.Design.from_styles(read_json(
+                      self.project.source("styles", workspace.override(self.args, "styles")),
+                      warn=False)).source,
                   "cost_usd": round(self.usage.cost_usd, 4),
                   "usage": spend.from_usage(self.usage, getattr(self.args, "model", "")),
                   "document_digest": document_digest(doc),

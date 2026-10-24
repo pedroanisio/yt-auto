@@ -595,5 +595,47 @@ class RunStops(Case):
         self.assertEqual(cli.look_gate("vfx", project, {"keyframe"}), "")
 
 
+class FallbackSection(Case):
+    """A section look authored with no palette of the film's own records it,
+    from the styles document its planner read (AUTO-155)."""
+
+    def run_look(self, args):
+        planner = self.planner(lead=1)
+        planner.dossier.save("09-outline", OUTLINE)
+        planner.dossier.save("10-style", STYLE)
+        planner.dossier.save("11-effects", GROUPS)
+        look = keyframe.SectionLook(args, self.idea, workspace.Project(self.root), section=1,
+                                    verbose=False)
+        with patch.object(vfx, "planner_from_args", lambda *a, **kw: planner), \
+                patch.object(vfx.render, "engine_validate", lambda data, **kw: []), \
+                patch.object(vfx.render, "engine_render_still",
+                             lambda xml, at, **kw: (varied_png(), "rendered")), \
+                patch.object(vfx, "encode_findings", lambda *a, **k: []):
+            return look.run()
+
+    def test_a_section_look_with_no_styles_json_is_fallback_and_refused(self):
+        (self.root / "styles.json").unlink()
+        record = self.run_look(argparse.Namespace(fresh=False, quiet=True))
+        self.assertEqual(record["palette_source"], "fallback")
+        self.assertEqual(record["approval"]["state"], "pending")
+        with self.assertRaises(keyframe.KeyframeError) as ctx:
+            keyframe.approve(self.root)
+        self.assertIn("yt styles --rich", str(ctx.exception))
+
+    def test_the_styles_given_with_in_styles_is_the_palette_recorded(self):
+        # the planner reads --in-styles when given; the record must too
+        given = self.root / "elsewhere.json"
+        given.write_bytes((self.root / "styles.json").read_bytes())
+        (self.root / "styles.json").unlink()
+        record = self.run_look(argparse.Namespace(fresh=False, quiet=True,
+                                                  in_styles=str(given)))
+        self.assertEqual(record["palette_source"], "styles.json")
+        (self.root / "styles.json").write_bytes(given.read_bytes())
+        given.write_text(json.dumps({"styles": [{"name": "plain", "palette": "warm greys"}]}))
+        record = self.run_look(argparse.Namespace(fresh=True, quiet=True,
+                                                  in_styles=str(given)))
+        self.assertEqual(record["palette_source"], "fallback")
+
+
 if __name__ == "__main__":
     unittest.main()
