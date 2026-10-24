@@ -1810,8 +1810,9 @@ blocking when it sits on the hook or the ending, or when the same kind is on
 more than one sampled shot. Two more are advisory, always minor and capping
 nothing until their thresholds are measured (AUTO-145). The first shot of
 each diagram effect in vfx.json (2d-diagram or data-animation, 3 s or
-more, opening its own include) gets a still just after its cut and one just
-before its end; its ink (the share of the frame that is edges) at those and
+more, not extended from another shot, even when it runs on in its section's
+world) gets a still just after its cut and one just before its end, under
+`frames/build/` and shown to no model; its ink (the share of the frame that is edges) at those and
 at its line stills is a series, and a series that never grows by 15 % of its
 last reading is `no-build`: the diagram was on screen whole from the cut and
 talked over. And the words on screen at each still are counted from the

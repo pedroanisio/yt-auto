@@ -322,20 +322,27 @@ contact sheet so the whole runtime is judged at once.
 
 Neither a midpoint nor its burst can tell a diagram built in steps from a
 finished one under a slow push-in (AUTO-145). The first shot of each
-2d-diagram or data-animation effect that vfx.json keeps, when it opens its
-own include and lasts 3 s or more, also gets a single frame a quarter
-second after its cut (`build: first`) and one a quarter second before its
-end (`build: last`): no burst, never the shot's home, beyond `--frames`, at
-most 12, the longest shots first, merged into a burst of the same shot
-that has the frame. The later shots of the effect continue its take and
-open on what it built, so they are not judged. Each still's **ink** is the
+2d-diagram or data-animation effect that vfx.json keeps, when it lasts 3 s
+or more and is not extended from another shot, also gets a single frame a
+quarter second after its cut (`build: first`) and one a quarter second
+before its end (`build: last`): no burst, never the shot's home, beyond
+`--frames`, at most 12, the longest shots first, merged into a burst of the
+same shot that has the frame. A diagram that is the second phase of its
+section's world, running on in the include of the section's first shot, is
+judged too: it is still the first shot of its effect. The later shots of
+the effect continue its take and open on what it built, so they are not
+judged. A build still of its own is written under `frames/build/` and is
+measured, never judged: it is left out of the contact sheet, the evidence
+rows and the side by side, the reviewer is told not to score it, and a
+shot it alone stands for counts as unsampled. Each still's **ink** is the
 share of a 320 px luma thumbnail whose edge magnitude exceeds 32; read at
 the first still, each line still between and the last, a series that never
 rises by 15 % of its last reading is `no-build`, the diagram on screen whole
 from the cut and talked over. Growth within the shot is judged, not a ratio
 of the first and last, so a busy ground does not hide a build; a noise-like
 ground saturates the measure, and a shot drawn on one cannot be told. A shot
-left out, or whose readings have no ink, is named under `not_evidenced`.
+left out, whose readings have no ink, or that ends on a blank frame, is
+named under `not_evidenced`.
 
 The words on screen are counted from the document QA renders (the scene and
 the includes it names), never read off a frame: at each still, the text and

@@ -681,6 +681,13 @@ PICTURE_FLAGS = {
 #: carry a comparison or a claim, but it cannot make a still picture show a
 #: change over time, so a kept one stands, with the writer's reason, and
 #: binds the picture as before.
+#: A kept `picture:spatial` (AUTO-145) answers it, as a kept bare number
+#: does: the reviewer read no narration, and attention 15 accepts the
+#: comparison at human scale said aloud in the same or the next sentence,
+#: which is the flag's corpus-backed part. Its arrangement, path and
+#: interior part is a house rule with no corpus tag, too weak to overrule
+#: the writer who read both. Whether that part should bind anyway is the
+#: card owner's call; moving the kind here is all it takes.
 PICTURE_UNKEPT = ("picture:static-process",)
 
 CHECK_SCHEMA = {
