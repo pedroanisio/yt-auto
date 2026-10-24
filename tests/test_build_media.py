@@ -270,6 +270,35 @@ class Footage(unittest.TestCase):
                          ["downloads/01-a.png", "downloads/02-launch.mp4",
                           "downloads/06-short.mp4", "downloads/07-raw.webm"])
 
+    def test_a_generic_content_type_takes_its_kind_from_the_suffix(self):
+        # The Internet Archive serves clips as application/octet-stream; with
+        # no dossier kind, the file's suffix decides, so a clip is footage.
+        files = {"08-reel.mp4": mp4(6.0), "09-reel.ogv": b"OggS", "10-ship.glb": b"glTF",
+                 "11-photo.jpg": b"\xff\xd8", "12-blob.bin": b"\x00"}
+        for name, data in files.items():
+            (self.root / "downloads" / name).write_bytes(data)
+        rows = [("an archive reel", "08-reel.mp4", "application/octet-stream"),
+                ("an ogg reel", "09-reel.ogv", "binary/octet-stream"),
+                ("a mesh", "10-ship.glb", "application/octet-stream"),
+                ("a photo", "11-photo.jpg", ""),
+                ("a blob", "12-blob.bin", "application/octet-stream"),
+                ("a typed still", "01-a.png", "image/png")]
+        (self.root / "raw" / "08-downloads.json").write_text(json.dumps([
+            {"title": t, "url": f"https://archive.example/{f}", "status": "ok",
+             "file": f"downloads/{f}", "licence": "CC0", "content_type": ct}
+            for t, f, ct in rows]))
+        media = {m.path: m for m in build.local_media(self.root, {"assets": []})}
+        self.assertEqual({p[len("downloads/"):]: (m.kind, m.seconds) for p, m in media.items()},
+                         {"08-reel.mp4": ("video", 6.0), "09-reel.ogv": ("video", None),
+                          "10-ship.glb": ("3d-model", None), "11-photo.jpg": ("image", None),
+                          "12-blob.bin": ("image", None), "01-a.png": ("image", None)})
+        self.dossier = {"assets": []}
+        data, manifest = self.builder(self.shots("an archive reel")).build()
+        root = ElementTree.fromstring(data)
+        self.assertIsNotNone(root.find(".//assets/video[@src='downloads/08-reel.mp4']"))
+        self.assertIsNone(root.find(".//assets/image[@src='downloads/08-reel.mp4']"))
+        self.assertEqual(manifest["layers"]["footage"], 1)
+
     def test_a_matched_clip_is_a_video_layer_with_its_licence_and_no_sound(self):
         data, manifest = self.builder(self.shots("a comet still",
                                                  "the 1969 launch film")).build()

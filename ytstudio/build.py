@@ -618,6 +618,31 @@ CLIP_SUFFIXES = (".mp4", ".m4v", ".mov")
 #: The kinds a shot can show as its picture; the rest (audio, a document,
 #: a mesh, a structure) only ever enter a film through an author's world.
 PICTURE_KINDS = ("image", "video")
+#: Content types that say nothing about what a file holds. The Internet
+#: Archive serves its clips as application/octet-stream, and kind_for reads
+#: any type it does not know as an image, so such a row is read by suffix.
+GENERIC_TYPES = ("", "application/octet-stream", "binary/octet-stream")
+#: A file's kind by its suffix, for a row whose content type is generic.
+SUFFIX_KINDS = {
+    **dict.fromkeys(CLIP_SUFFIXES + (".webm", ".ogv", ".avi"), "video"),
+    **dict.fromkeys((".jpg", ".jpeg", ".png", ".gif", ".tif", ".tiff", ".webp"), "image"),
+    **dict.fromkeys((".mp3", ".wav", ".flac", ".m4a", ".ogg", ".oga"), "audio"),
+    **dict.fromkeys((".glb", ".gltf", ".obj", ".stl", ".ply", ".fbx", ".usdz"), "3d-model"),
+    **dict.fromkeys((".pdb", ".cif", ".mmcif"), "structure"),
+    ".pdf": "document"}
+
+
+def row_kind(row: dict) -> str:
+    """A manifest row's kind when the dossier gives none: its content type
+    (assets.kind_for), or its file's suffix when the type is generic. A
+    suffix this does not know keeps kind_for's answer, an image."""
+    from .assets import kind_for
+    mime = str(row.get("content_type") or "")
+    if mime.split(";")[0].strip().lower() in GENERIC_TYPES:
+        suffix = Path(str(row.get("file") or "")).suffix.lower()
+        if suffix in SUFFIX_KINDS:
+            return SUFFIX_KINDS[suffix]
+    return kind_for(mime, str(row.get("url") or ""))
 
 
 def _box(f, start: int, end: int, kind: bytes) -> tuple[int, int] | None:
@@ -698,9 +723,8 @@ def clip_unknown(p, clip: Media) -> str:
 
 def local_media(project_root: Path, dossier: dict | None) -> list[Media]:
     """Assets the research downloaded, with the licence it verified. The
-    kind is the dossier asset's, else the manifest row's content type
-    (assets.kind_for); a clip carries its length when its header reads."""
-    from .assets import kind_for
+    kind is the dossier asset's, else the manifest row's (row_kind); a
+    clip carries its length when its header reads."""
     if not dossier:
         return []
     by_title = {_key(a.get("title", "")): a for a in dossier.get("assets", [])}
@@ -715,8 +739,7 @@ def local_media(project_root: Path, dossier: dict | None) -> list[Media]:
         if not (project_root / row["file"]).is_file():
             continue
         asset = by_title.get(_key(row.get("title", ""))) or {}
-        kind = asset.get("kind") or kind_for(str(row.get("content_type") or ""),
-                                             str(row.get("url") or ""))
+        kind = asset.get("kind") or row_kind(row)
         out.append(Media(path=row["file"], title=row.get("title", ""),
                          licence=row.get("licence") or asset.get("licence", ""),
                          credit=asset.get("credit_line", ""),
@@ -1794,7 +1817,7 @@ class SceneBuilder:
             if credit:
                 asset.credit = credit
             if length:
-                asset.duration = round(length, 3)
+                asset.duration =round(length, 3)
             track = mixer().add_audioTrack(id=ident(f"cue-{cue_id}"), asset=asset.id)
             track.start = round(at, 3)
             track.bus = bus
@@ -1989,7 +2012,7 @@ class SceneBuilder:
         drawn = self._drawn(placed, media, notes)
         edit = self._decisions(placed, drawn, media)
         edit["findings"][:0] = notes
-        duration =round(max(p.at + p.seconds for p in placed) + edit["tail"], 3)
+        duration = round(max(p.at + p.seconds for p in placed) + edit["tail"], 3)
 
         scene = S.Scene(version="auto")
         scene.add_project(width=self.width, height=self.height, fps=str(self.fps),
