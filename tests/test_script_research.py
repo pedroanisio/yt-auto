@@ -756,6 +756,30 @@ class FactCheckReadsTheSupers(unittest.TestCase):
             self.assertEqual(shots[0].on_screen_text, ["40%"], given)
             self.assertNotIn("on_screen_before", check["revisions"][0], given)
 
+    def test_a_silent_shot_super_is_checked_and_fixed_alone(self):
+        # A title or data card with no narration is where a figure most often
+        # sits: verify must not tell the reviewer to skip it, and the fact
+        # revise may fix its super but never give it a line to say.
+        shots = [script.Shot(narration="", n=1, label="1.1", seconds=4,
+                             on_screen_text=["40%"]),
+                 script.Shot(narration="Nobody saw it.", n=2, label="1.2", seconds=5)]
+        w = self.writer({
+            "verify": {"flags": [self.FLAG], "verdict": "no"},
+            "revise-1": {"fixes": [{"n": 1, "action": "fix",
+                                    "narration": "Rust took fourteen percent.",
+                                    "on_screen_text": ["14%"], "why": "the research"}]}})
+        check = w.verify_and_revise(shots)
+        prompt = self.calls[0]["prompt"]
+        self.assertIn("[on screen: 40%]", prompt)
+        self.assertNotIn("carry no claim, so skip them", prompt)
+        self.assertIn("Shots marked picture-only carry no spoken claim, but their "
+                      "on-screen text is still a claim: check it.", prompt)
+        self.assertEqual(shots[0].on_screen_text, ["14%"])
+        self.assertEqual(shots[0].narration, "")
+        row = check["revisions"][0]
+        self.assertNotIn("before", row)
+        self.assertEqual(row["on_screen_after"], ["14%"])
+
     def test_the_fact_revise_schema_adds_only_an_optional_super(self):
         fact = copy.deepcopy(script.FACT_REVISE_SCHEMA)
         item = fact["properties"]["fixes"]["items"]

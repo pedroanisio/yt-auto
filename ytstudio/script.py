@@ -4165,8 +4165,8 @@ class Screenwriter:
                  "flag it as you would the line, and say in the problem that it "
                  "is the on-screen text. Give the shot number, the problem, how "
                  "severe it is, and the smallest fix that makes the line "
-                 "defensible. Shots marked picture-only carry no claim, so "
-                 "skip them. Do not flag ordinary connective narration that "
+                 "defensible. Shots marked picture-only carry no spoken claim, "
+                 "but their on-screen text is still a claim: check it. Do not flag ordinary connective narration that "
                  "states no fact, and use shot number 0 for a problem with the "
                  "script as a whole. Then give a one-sentence verdict on whether "
                  "this script can be published as it stands."]
@@ -4440,6 +4440,12 @@ class Screenwriter:
                 continue
             row = {"n": n, "label": shot.label, "why": why}
             marks_before = shot_marks(shot)
+            # A picture-only shot keeps its silence under the fact-check
+            # (AUTO-150): FACT_REVISE_SCHEMA asks every fix for a narration,
+            # but a flag on a silent card is about its super, so only the
+            # super may change there.
+            if fact and not shot.narration.strip():
+                line = ""
             if line and line != shot.narration:
                 row |= {"before": shot.narration, "after": line}
                 shot.narration, shot.revised = line, why
