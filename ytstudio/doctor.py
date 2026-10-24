@@ -254,6 +254,7 @@ def check_environment(work: Path, *, ping: bool = False) -> Report:
     if ping:
         gateway_ping(report)
     review_log(report, work)
+    lessons_log(report, work)
     retention_baseline(report, work)
     return report
 
@@ -559,6 +560,25 @@ def review_log(report: Report, work: Path) -> None:
     report.add("note", "review log", said + "; it is evidence, and work/ is disposable",
                f"copy {path} out of work/ before clearing it; label a row by reading "
                "its script and setting `label` to reject, consider or recommend")
+
+
+def lessons_log(report: Report, work: Path) -> None:
+    """How many candidate engine lessons work/lessons-log.jsonl holds: gate
+    errors a vfx revision fixed (AUTO-111). Only `yt vfx --promote-lesson`
+    makes one a fact every author reads, and work/ is disposable, so the note
+    says to copy the log out."""
+    from . import vfx
+    path = Path(work) / vfx.LESSONS_LOG
+    if not path.is_file():
+        return
+    rows = vfx.read_lessons(path)
+    report.metrics["lessons_log"] = {"lessons": len(rows)}
+    report.add("note", "lessons log",
+               f"{len(rows)} candidate engine lesson(s) in {path}; it is evidence, and "
+               "work/ is disposable",
+               f"copy {path} out of work/ before clearing it; `yt vfx --lessons` lists the "
+               "rows and `yt vfx --promote-lesson N` adds one to ytstudio/kit/"
+               "engine_facts.json")
 
 
 # --------------------------------------------------------------------------- #

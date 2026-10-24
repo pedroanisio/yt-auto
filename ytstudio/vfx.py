@@ -2700,6 +2700,234 @@ def finished_versions(dossier: Dossier) -> set[str]:
             if isinstance(r, dict) and r.get("version")}
 
 
+# --------------------------------------------------------------------------- #
+# lessons: gate errors a revision fixed (AUTO-111)
+# --------------------------------------------------------------------------- #
+#
+# A revision that turns a gate error into a passing round has learned
+# something about the engine or the SDK that the next section would otherwise
+# pay to learn again. Only that mechanical case is a lesson: a review's score
+# moves round to round by as much as the gains, so a score gain is never one,
+# and a past film's program is never kept as an example to copy (its look is
+# that film's; invariant 2). The section's reviewer distils the lesson, a
+# general one is appended to work/lessons-log.jsonl, and only an operator's
+# `yt vfx --promote-lesson` moves it into kit/engine_facts.json, which every
+# author's kit/ENGINE.md prints.
+
+#: Candidate lessons, one JSON row each, beside work/review-log.jsonl.
+LESSONS_LOG = "lessons-log.jsonl"
+
+LESSON_CAUSES = ("engine", "authoring")
+
+LESSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "topic": {"type": "string"},
+        "elements": {"type": "array", "items": {"type": "string"}},
+        "text": {"type": "string"},
+        "cause": {"type": "string", "enum": list(LESSON_CAUSES)},
+        "finding": {"type": "string"},
+        "general": {"type": "boolean"},
+    },
+    "required": ["topic", "elements", "text", "cause", "finding", "general"],
+}
+
+#: How much of each round's program the lesson's prompt carries.
+LESSON_PROGRAM_CHARS = 16000
+LESSON_DIFF_CHARS = 12000
+
+#: A colour written as hex, in a lesson's text or topic.
+ANY_HEX = re.compile(r"#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3,4})\b")
+
+
+def fixed_errors(rounds: list[dict]) -> list[dict]:
+    """The gate errors a later round fixed: each error finding of round k that
+    is absent from a later round j which passes the gate (not cut off, no
+    error, reviewed: `passes_gate` applied to a round; a round the host lost
+    has no score and fixes nothing). Infra findings are the host's, as is
+    the error a host that lost a round twice leaves, so neither is a lesson.
+    One entry per finding, from the last round that had it to the first
+    passing round after: {round_from, round_to, finding}."""
+    out: dict[str, dict] = {}
+    for k, before in enumerate(rounds):
+        errors = [str(f) for f in before.get("findings") or []
+                  if str(f).startswith("error") and "the host lost" not in str(f)]
+        if not errors:
+            continue
+        after = next((r for r in rounds[k + 1:]
+                      if not r.get("timed_out") and not r.get("errors")
+                      and r.get("score") is not None), None)
+        if after is None:
+            continue
+        kept = {str(f) for f in after.get("findings") or []}
+        for finding in errors:
+            if finding not in kept:
+                out[finding] = {"round_from": before["round"], "round_to": after["round"],
+                                "finding": finding}
+    return sorted(out.values(), key=lambda e: (e["round_from"], e["finding"]))
+
+
+def lesson_problems(answer, *, fixed: list[str], names, style: dict,
+                    tokens: dict[str, str]) -> list[str]:
+    """What keeps an answer from being a lesson, one line each: an SDK element
+    it names that the SDK lacks, a colour, a style token or a palette name in
+    its words (a lesson is about the engine, never the look), or a finding
+    that was not among the fixed ones."""
+    if not isinstance(answer, dict):
+        return ["the answer is not an object"]
+    problems: list[str] = []
+    for key in ("topic", "text", "finding"):
+        if not isinstance(answer.get(key), str) or not answer[key].strip():
+            problems.append(f"{key} is empty")
+    if answer.get("cause") not in LESSON_CAUSES:
+        problems.append(f"cause is {answer.get('cause')!r}, not one of {', '.join(LESSON_CAUSES)}")
+    if not isinstance(answer.get("general"), bool):
+        problems.append("general is not true or false")
+    elements = answer.get("elements")
+    if not isinstance(elements, list) or not elements:
+        problems.append("elements names no SDK element")
+    else:
+        unknown = [str(e) for e in elements if str(e) not in names]
+        if unknown:
+            problems.append(f"elements names {', '.join(unknown)}, which the SDK has no "
+                            "element called")
+    words = " ".join(str(answer.get(k) or "") for k in ("topic", "text"))
+    if colour := ANY_HEX.search(words):
+        problems.append(f"the text holds a colour ({colour.group(0)}); a lesson is about "
+                        "the engine, never the look")
+    values = {str(v) for v in [*tokens_from(style).values(), *(tokens or {}).values()] if v}
+    for value in sorted(values):
+        if value.lower() in words.lower():
+            problems.append(f"the text holds the style's token value {value}")
+    if "var(--" in words or any(f"--{name}" in words for name in tokens_from(style)):
+        problems.append("the text names a style token; a lesson is about the engine, "
+                        "never the look")
+    for swatch in (style or {}).get("palette") or []:
+        name = str(swatch.get("name") or "").strip() if isinstance(swatch, dict) else ""
+        if name and re.search(rf"(?<!\w){re.escape(name)}(?!\w)", words):
+            problems.append(f"the text names the palette's {name!r}")
+    if isinstance(answer.get("finding"), str) and answer["finding"].strip() not in {
+            f.strip() for f in fixed}:
+        problems.append("finding is not one of the fixed findings, word for word")
+    return problems
+
+
+def append_lesson(path: Path, row: dict) -> None:
+    """One row at the end of the lessons log."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def read_lessons(path) -> list[dict]:
+    """The rows of a lessons log, in order. A missing file is no rows; a line
+    that is not a JSON object is skipped, since a person may edit the file."""
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    rows = []
+    for line in text.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def lessons_log_path(args, project=None) -> Path:
+    """work/lessons-log.jsonl: the work directory named on the command line,
+    else the one the project sits in (as work/review-log.jsonl is found)."""
+    work = getattr(args, "work", None)
+    if work or project is None:
+        return Path(work or workspace.DEFAULT_WORK) / LESSONS_LOG
+    return Path(project.root).parent / LESSONS_LOG
+
+
+def lesson_source(row: dict) -> str:
+    """Where a promoted fact came from, as engine_facts.json says it."""
+    return (f"yt vfx {row.get('slug', '?')} section {row.get('section', '?')} "
+            f"r{row.get('round_from', '?')}->{row.get('round_to', '?')}")
+
+
+def lesson_fact(row: dict) -> dict:
+    """A log row as a fact: stamped with the engine it was learned on."""
+    return {"topic": str(row.get("topic") or ""), "text": str(row.get("text") or ""),
+            "elements": [str(e) for e in row.get("elements") or []],
+            "source": lesson_source(row), "verified_on": str(row.get("engine") or "?")}
+
+
+def facts_json(data: dict) -> str:
+    """engine_facts.json as the repo keeps it by hand: the file's own keys one
+    per line, then one fact per block, a key per line. A promotion then adds
+    lines and changes none."""
+    def value(v) -> str:
+        return json.dumps(v, ensure_ascii=False)
+    head = [f"  {value(k)}: {value(v)}" for k, v in data.items() if k != "facts"]
+    facts = ["    {" + ",\n     ".join(f"{value(k)}: {value(v)}" for k, v in f.items()) + "}"
+             for f in data.get("facts") or []]
+    return ("{\n" + ",\n".join(head + ['  "facts": [\n' + ",\n".join(facts) + "\n  ]"])
+            + "\n}\n")
+
+
+def list_lessons(path: Path, facts: dict) -> int:
+    """`yt vfx --lessons`: every candidate row, numbered for --promote-lesson."""
+    rows = read_lessons(path)
+    if not rows:
+        print(f"no lessons in {path}", file=sys.stderr)
+        return 0
+    known = {str(f.get("text")) for f in facts.get("facts") or [] if isinstance(f, dict)}
+    print(f"{path}: {len(rows)} candidate lesson(s)")
+    for i, row in enumerate(rows):
+        state = "promoted" if str(row.get("text")) in known else (
+            f"label {row['label']}" if row.get("label") is not None else "candidate")
+        print(f"  {i}  [{state}] {lesson_source(row)} (engine {row.get('engine', '?')}, "
+              f"{row.get('cause', '?')}) {row.get('topic', '')}: {row.get('text', '')}\n"
+              f"      elements: {', '.join(map(str, row.get('elements') or []))}\n"
+              f"      fixes: {row.get('finding', '')}")
+    return 0
+
+
+def promote_lessons(path: Path, which: str) -> int:
+    """`yt vfx --promote-lesson ROW[,ROW]`: append those rows of the lessons log
+    to ytstudio/kit/engine_facts.json, the checked-in copy every kit prints.
+    Only an operator runs this: no stage and no author's kit.py writes that
+    file, so a person decides what enters it. A row already there is skipped."""
+    rows = read_lessons(path)
+    try:
+        picked = [int(x) for x in str(which).split(",") if x.strip()]
+    except ValueError:
+        print(f"error: --promote-lesson takes row numbers from --lessons (got {which!r})",
+              file=sys.stderr)
+        return 2
+    bad = [i for i in picked if not 0 <= i < len(rows)]
+    if not picked or bad:
+        print(f"error: {path} has {len(rows)} row(s); no row {', '.join(map(str, bad)) or which}",
+              file=sys.stderr)
+        return 2
+    target = sdkkit.FACTS_FILE
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"error: cannot read {target}: {exc}", file=sys.stderr)
+        return 1
+    facts = data.setdefault("facts", [])
+    known = {str(f.get("text")) for f in facts if isinstance(f, dict)}
+    for i in picked:
+        fact = lesson_fact(rows[i])
+        if not fact["text"] or fact["text"] in known:
+            print(f"  row {i}: already in {target.name}; skipped", file=sys.stderr)
+            continue
+        facts.append(fact)
+        known.add(fact["text"])
+        print(f"  row {i}: {fact['topic']} ({fact['source']}, verified on "
+              f"{fact['verified_on']}) -> {target}")
+    target.write_text(facts_json(data), encoding="utf-8")
+    return 0
+
+
 class VfxPlanner:
     """Plans the visuals, then has the model author them, section by section."""
 
@@ -2717,8 +2945,13 @@ class VfxPlanner:
                  verbose: bool = True, sections_only: set[int] | None = None,
                  lead: int | None = None, look_notes: list[str] | None = None,
                  relook: bool = False, recover: bool = False,
-                 take_attempt: set[int] | None = None, take_why: str = "") -> None:
+                 take_attempt: set[int] | None = None, take_why: str = "",
+                 lessons_log: Path | str | None = None) -> None:
         self.idea: Idea = bundle["idea"]
+        #: work/lessons-log.jsonl, where a general lesson a revision taught is
+        #: appended (AUTO-111); None writes no log (the lesson stays on the
+        #: section's record).
+        self.lessons_log = Path(lessons_log) if lessons_log else None
         self.bundle = bundle
         self.dossier = dossier
         self.ws = workspace_dir
@@ -3499,12 +3732,130 @@ class VfxPlanner:
                 findings = list(best["findings"])
                 self._say(f"    [{n}] round {best['round']} ({best['score']:g}/10) was the "
                           f"best; its program and document are kept")
+        # A gate error a later round fixed is a candidate engine lesson
+        # (AUTO-111), asked of this section's reviewer so its cost is booked
+        # below with the rest; a section that fixed none asks nothing.
+        fixed = fixed_errors(rounds)
+        learned = self._lesson(reviewer, n, name, fixed, style, tokens) if fixed else None
         self._account(engine.usage, reviewer.usage)
         chosen = best if promoted is not None else (rounds[-1] if rounds else None)
         record = snapshot(True, symbols, findings, revisions, chosen,
                           promoted if promoted is not None else (last or {}).get("round"))
+        record["lesson"] = learned
+        if learned and learned.get("problem"):
+            record["findings"] = list(record["findings"]) + [learned["problem"]]
         self.ws.write_record(name, record)
         return record
+
+    def _lesson_prompt(self, name: str, fixed: list[dict]) -> str:
+        """The question for one section's lesson: the fixed gate findings and
+        the programs of the rounds before and after the fix, kept under
+        rounds/<stem>/rNN/. Nothing of the treatment is shown: the lesson is
+        about what the engine or the SDK does."""
+        import difflib
+        stem = name[:-len(".scene.xml")]
+        program = self.ws.program_name(name)
+        pair = max(fixed, key=lambda e: (e["round_to"], e["round_from"]))
+
+        def kept(r: int) -> str:
+            path = self.ws.dir / Workspace.ROUNDS_DIR / stem / f"r{r:02d}" / program
+            return path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+        before, after = kept(pair["round_from"]), kept(pair["round_to"])
+        diff = "".join(difflib.unified_diff(before.splitlines(True), after.splitlines(True),
+                                            f"r{pair['round_from']:02d}/{program}",
+                                            f"r{pair['round_to']:02d}/{program}"))
+        try:
+            names = ", ".join(sorted(sdk().element_names()))
+        except Exception:
+            names = "(the SDK could not be read)"
+
+        def capped(text: str, limit: int) -> str:
+            return text if len(text) <= limit else text[:limit] + "\n... (cut here)\n"
+        return "\n\n".join([
+            f"A section's program, {program}, failed the frame gate and a later revision "
+            "passed it. The gate's error findings that the revision fixed, with the "
+            "rounds:",
+            "\n".join(f"- round {e['round_from']} -> round {e['round_to']}: {e['finding']}"
+                      for e in fixed),
+            "Distil one lesson for the next author, who writes another section of another "
+            "film with the same kit: what the engine or the SDK does that the failing round "
+            "did not expect, and what to do instead, in one sentence. `finding` is the one "
+            "fixed finding above that the lesson answers, copied word for word. `elements` "
+            "are the SDK element names the lesson is about, from the list below. `cause` is "
+            "engine when the engine or the SDK behaves in a way an author could not read "
+            "from the guide, authoring when the program made a mistake the kit already "
+            "rules out. `general` is false when the lesson only holds for this world.",
+            "The lesson is about the engine and the SDK, never the look: no colour, no "
+            "style token, no palette name, no layout or aesthetic choice. The next film's "
+            "treatment is its own.",
+            f"The SDK's element names: {names}",
+            (f"The change between the rounds:\n```diff\n{capped(diff, LESSON_DIFF_CHARS)}```"
+             if diff else "The rounds' programs were not both kept; no change can be shown."),
+            f"Round {pair['round_from']}'s program:\n```python\n"
+            f"{capped(before, LESSON_PROGRAM_CHARS) or '(not kept)'}\n```",
+            f"Round {pair['round_to']}'s program:\n```python\n"
+            f"{capped(after, LESSON_PROGRAM_CHARS) or '(not kept)'}\n```"])
+
+    def _lesson(self, reviewer, n: int, name: str, fixed: list[dict], style: dict,
+                tokens: dict[str, str]) -> dict:
+        """Ask the section's reviewer for the lesson its fixed gate errors
+        teach, check it mechanically, ask once more with the problems named,
+        and otherwise record the failure (invariant 3). A general lesson is
+        appended to the lessons log, once: an answer served from the cache
+        was logged when it was first given. Returns {fixed, lesson, logged,
+        problem}: the finding a lesson not kept leaves on the record."""
+        out: dict = {"fixed": fixed, "lesson": None, "logged": None, "problem": None}
+        # Asked once more at the most, each ask under the review's cap: a
+        # section that cannot pay that is not taken past its budget for it.
+        if self.spend.available(n) < 2 * self.review_budget_usd:
+            out["problem"] = (f"note: lesson: not asked; the budget leaves "
+                              f"${self.spend.available(n):.2f}, under two asks at "
+                              f"${self.review_budget_usd:g}")
+            return out
+        try:
+            names = set(sdk().element_names())
+        except Exception as exc:
+            out["problem"] = f"warning: lesson: the SDK's element names could not be read ({exc})"
+            return out
+        stem = name[:-len(".scene.xml")]
+        ask = f"lesson-{stem}"
+        prompt = self._lesson_prompt(name, fixed)
+        check = dict(fixed=[e["finding"] for e in fixed], names=names, style=style,
+                     tokens=tokens)
+        try:
+            answer = reviewer.decide(ask, prompt, LESSON_SCHEMA)
+            problems = lesson_problems(answer, **check)
+            if problems:
+                ask = f"{ask}-again"
+                answer = reviewer.decide(
+                    ask, prompt + "\n\nYour last answer cannot be kept: "
+                    + "; ".join(problems[:10]) + ". Answer again, the whole lesson.",
+                    LESSON_SCHEMA)
+                problems = lesson_problems(answer, **check)
+        except harness.HarnessError as exc:
+            out["problem"] = f"warning: lesson: {exc}"
+            return out
+        if problems:
+            out["problem"] = "warning: lesson: not kept after asking twice: " + "; ".join(problems)
+            return out
+        entry = next(e for e in fixed if e["finding"].strip() == answer["finding"].strip())
+        out["lesson"] = dict(answer, round_from=entry["round_from"], round_to=entry["round_to"])
+        if not answer["general"] or self.lessons_log is None:
+            return out
+        if any(d.name == ask and d.cached for d in reviewer.decisions):
+            return out
+        row = {"engine": sdkkit.engine_version(), "slug": self.ws.root.name, "section": n,
+               "doc": name, "round_from": entry["round_from"], "round_to": entry["round_to"],
+               **{k: answer[k] for k in LESSON_SCHEMA["required"]},
+               "model": self.reviewer_model, "when": time.strftime("%Y-%m-%dT%H:%M:%S"),
+               "label": None}
+        try:
+            append_lesson(self.lessons_log, row)
+            out["logged"] = str(self.lessons_log)
+        except OSError as exc:
+            out["problem"] = f"warning: lesson: not appended to {self.lessons_log} ({exc})"
+        self._say(f"    [{n}] lesson: {answer['topic']} ({entry['finding'][:80]})")
+        return out
 
     def author(self, outline: dict, effects: list[dict], style: dict,
                tokens: dict[str, str]) -> list[dict]:
@@ -4367,6 +4718,14 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                         "one cannot render; nothing is authored")
     p.add_argument("--why", default="", help="with --take-attempt: the operator's reason, "
                                               "kept on the record")
+    p.add_argument("--lessons", action="store_true",
+                   help=f"list the candidate engine lessons in <work>/{LESSONS_LOG} (gate "
+                        "errors a revision fixed), numbered for --promote-lesson; nothing "
+                        "is authored")
+    p.add_argument("--promote-lesson", metavar="ROW[,ROW]", dest="promote_lesson",
+                   help="append these rows of the lessons log to ytstudio/kit/"
+                        "engine_facts.json, stamped with the engine each was learned on, so "
+                        "every author's kit/ENGINE.md lists them; nothing is authored")
     p.add_argument("--relook", action="store_true",
                    help="put the approved look into the film: carry the section `yt keyframe` "
                         "authored and author every other section again against it, on the "
@@ -4431,10 +4790,16 @@ def planner_from_args(args, idea: Idea, project, *, sections_only: set[int] | No
         revisions=flag("revisions", DEFAULT_ROUNDS), author_bar=flag("author_bar", 7.0),
         fresh=bool(flag("fresh", False)), sections_only=sections_only, lead=lead,
         look_notes=look_notes, relook=relook, recover=recover, take_attempt=take_attempt,
-        take_why=take_why, verbose=verbose)
+        take_why=take_why, verbose=verbose, lessons_log=lessons_log_path(args, project))
 
 
 def run(args) -> int:
+    # The lessons log is the work directory's, not a project's: an operator's
+    # read or promotion needs no video and authors nothing (AUTO-111).
+    if getattr(args, "promote_lesson", None):
+        return promote_lessons(lessons_log_path(args), args.promote_lesson)
+    if getattr(args, "lessons", False):
+        return list_lessons(lessons_log_path(args), sdkkit.engine_facts())
     idea, project = workspace.resolve(args, inputs=("script", "voice", "styles"))
     if getattr(args, "finish_now", False):
         try:
