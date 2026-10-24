@@ -93,6 +93,17 @@ class Missing(unittest.TestCase):
         self.assertIn(f"({listen.TRANSCRIPT_TIME_SLACK_S:.1f})", text)
         self.assertIn(f"({listen.TRANSCRIPT_OUTPUT_TOKENS})", text)
 
+    def test_research_asks_for_historical_parallels(self):
+        # AUTO-151: one question at depth 4 or more, at most two kept rows,
+        # each from a page opened; an old dossier gets them only afresh
+        from ytstudio import research
+        text = flat(section("research"))
+        for needle in ("historical parallel", f"depth {research.PARALLEL_MIN_DEPTH}",
+                       "`parallels`", "`parallels_why`", "where it breaks",
+                       "never opened", "`warnings`", "`yt research --fresh`", "PL1",
+                       "Stakes:"):
+            self.assertIn(needle, text, needle)
+
     def test_voice_retakes_and_redo(self):
         text = flat(section("voice"))
         self.assertIn("speed", text)

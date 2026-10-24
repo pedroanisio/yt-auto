@@ -130,6 +130,16 @@ class ProductionDoc(unittest.TestCase):
         for key in ("`who`", "`what_happened`", "`consequence`", "`source`", "`claim`"):
             self.assertIn(key, row.split("`human_stories`", 1)[1], key)
 
+    def test_the_dossier_row_names_the_parallels(self):
+        # AUTO-151
+        row = next(l for l in DOC.read_text().splitlines() if l.startswith("| `dossier.json`"))
+        self.assertIn("`parallels`", row)
+        self.assertIn("`parallels_why`", row)
+        for key in ("`event`", "`year`", "`how_it_maps`", "`where_it_breaks`",
+                    "`source_url`"):
+            self.assertIn(key, row.split("`parallels`", 1)[1], key)
+        self.assertIn("--fresh", row.split("`parallels`", 1)[1])
+
     def test_the_script_row_names_the_headline_asset(self):
         # AUTO-149
         row = next(l for l in DOC.read_text().splitlines() if l.startswith("| `script.json`"))

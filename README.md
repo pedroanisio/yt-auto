@@ -603,6 +603,25 @@ physics of what moves, no misconception hunt, claims only about what is on
 screen, and gaps that do not block on unsourced numbers. The dossier records
 which scope it got; an explicit `--depth` wins over either.
 
+What happened before (AUTO-151). A narrated film researched at depth 4 or
+more (the default depth reaches it for a film of about 4.4 minutes or
+longer, or of unknown length) spends one of its questions on a historical
+parallel or precedent: an earlier, dated case that went the same way or the
+opposite way. It takes one of the `--depth` slots, so no extra web pass runs;
+below depth 4, and for a wordless film, the questions are asked exactly as
+before. The outline returns `parallels` (each `event`, `year`, `how_it_maps`,
+`where_it_breaks`, `source_url`) or an empty list and `parallels_why`. The
+dossier keeps at most two, and only rows whose `source_url` is a page the
+research opened (`research.parallels_of`); a row whose source was never
+opened, an incomplete row and a third one are dropped and listed in
+`warnings` as `historical parallel dropped:`, which `yt doctor` shows as
+research warns, and an explainer with none and no reason gets one research
+note. The dossier's README gains `## Historical parallels`, and `yt script`'s
+research block lists the kept rows as PL1, PL2, each told with where it
+breaks. None is ever required. The idea's stakes (`yt ideas --rich`) open
+every research prompt as a `Stakes:` line. Stages are cached, so an
+existing dossier gets parallels only after `yt research --fresh`.
+
 `--paper REF` (or `yt run --paper REF`; a DOI, an arXiv id or page, a URL,
 or a local PDF) makes a film that explains one paper: the `paper` scope.
 The paper is read first (`raw/00-paper.json`), by WebFetch or, for a local
