@@ -728,7 +728,9 @@ demonstrate (`shows`) and its on-screen text, with the plan's beat for each
 section, and never the narration. It writes the claim each section's
 pictures carry on their own and says whether that is the beat, then names
 the shots with a large number left bare, a mechanism the picture does not
-show, or a list nothing signposts. Each is a flag for one `revise-picture`
+show, a list nothing signposts, or a process the picture shows in one fixed
+state while `shows` says it demonstrates a change (`static_process`,
+AUTO-144). Each is a flag for one `revise-picture`
 decision, the only revision allowed to change a shot's picture (the
 fact-check's revise still rewrites only the narration). A flag the writer
 keeps, with its reason, binds nothing: the reviewer never heard the line,
@@ -742,6 +744,20 @@ reach the vfx planner, every section author and reviewer and the keyframe
 brief as `## Story constraints`, beside the fact-check's; a story flag on a
 section binds that section's shots. `yt script --revise` moves the flags of
 a shot it changes to `picture.stale`, where they bind nothing.
+
+A static process is not answered by a writer's keep (a line cannot make a
+still picture move), and it is checked again after authoring. The vfx
+planner is asked once more when it covers such a shot with a type that keeps
+the picture still (`vfx.STATIC_TYPES`); a second such answer is recorded as
+the section plan's `warnings`. Then `yt vfx`'s motion audit asks the
+reviewer's model, on rows read from each effect's document (what changes,
+which property, when, during its shots), whether the viewer watches the
+change (`reach-motion`); the answer is checked against those rows and asked
+once more before it is believed. What must change and does not is vfx.json
+`reach.motion.static`, `REQUIRED:` work in the refinement plan, a `yt doctor`
+warn naming `yt vfx --sections N`, and the section `yt improve` re-authors.
+It fails no stage, and a flat treatment that builds the process in steps
+passes.
 
 Sections are drafted in parallel (`--jobs`, default 4; `--jobs 1` drafts in
 order, each reading the one before) against a ledger that reserves each
