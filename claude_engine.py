@@ -676,6 +676,14 @@ class EngineConfig:
         for name in DEFAULTABLE:
             if getattr(self, name) is None:
                 setattr(self, name, default_for(name))
+        # --max-turns 0 stops before the first turn and still bills the
+        # launch; a negative one is the CLI's usage error. Neither is a cap,
+        # so it is refused here, by name, before anything runs.
+        if self.max_turns is not None and (
+                isinstance(self.max_turns, bool) or not isinstance(self.max_turns, int)
+                or self.max_turns < 1):
+            raise ValueError(f"EngineConfig.max_turns must be a whole number of "
+                             f"turns, 1 or more, or None; got {self.max_turns!r}")
 
     def resolve_executable(self) -> str:
         path = shutil.which(self.executable)
@@ -1067,7 +1075,9 @@ class ClaudeEngine:
                     stderr=proc.stdout[:2000],
                 ) from exc
 
-            if payload.get("is_error"):
+            # An older CLI printed the turn cap's stop with is_error false;
+            # its subtype alone says the call was cut off, as stream() reads it.
+            if payload.get("is_error") or turn_cap_stop(payload):
                 last_error = ClaudeExecutionError(
                     f"claude reported an error: "
                     f"{turn_cap_stop(payload) or payload.get('subtype') or payload.get('result')}",
@@ -1702,6 +1712,17 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return 0 if all(r.ok for r in results.values()) else 1
 
 
+def _positive_int(text: str) -> int:
+    """An argparse type for a count that must be 1 or more (--max-turns)."""
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a whole number: {text!r}") from None
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be 1 or more, got {value}")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="claude_engine",
@@ -1771,7 +1792,7 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--timeout", type=float, default=900.0,
                    help="seconds per call (default 900)")
     g.add_argument("--budget", type=float, help="max USD to spend on one call")
-    g.add_argument("--max-turns", dest="max_turns", type=int, metavar="N",
+    g.add_argument("--max-turns", dest="max_turns", type=_positive_int, metavar="N",
                    help="stop an agentic call after N turns (error_max_turns)")
 
     g = parser.add_argument_group("diagnostics")

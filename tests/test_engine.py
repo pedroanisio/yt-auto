@@ -5,6 +5,7 @@ passed at all (the CLI's own settings decide).
 No model is run: the tests look at the argv the engine would launch.
 """
 
+import io
 import json
 import os
 import unittest
@@ -627,6 +628,8 @@ from dataclasses import replace
 MAX_TURNS_STOP = ok_result(is_error=True, subtype="error_max_turns", result="",
                            num_turns=4, total_cost_usd=0.02,
                            errors=["Reached maximum number of turns (3)"])
+#: The same stop as an older CLI printed it, with is_error false.
+UNFLAGGED_STOP = dict(MAX_TURNS_STOP, is_error=False)
 READ = {"type": "assistant", "message": {"content": [
     {"type": "tool_use", "name": "Read", "input": {"file_path": "a.png"}}]}}
 
@@ -662,11 +665,28 @@ class MaxTurns(FakeClaudeCase):
                 claude_engine._engine_from_args(args)
             self.assertEqual(made.call_args.args[0].max_turns, expected)
 
+    def test_a_cap_below_one_is_refused_by_name(self):
+        # --max-turns 0 would stop before the first turn and still bill the
+        # launch; a negative one is the CLI's usage error. Neither is a cap.
+        for bad in (0, -1):
+            with self.subTest(max_turns=bad):
+                with self.assertRaises(ValueError) as caught:
+                    self.cfg(max_turns=bad)
+                self.assertIn("max_turns", str(caught.exception))
+                with self.assertRaises(SystemExit), \
+                        mock.patch("sys.stderr", io.StringIO()):
+                    claude_engine.build_parser().parse_args(
+                        ["--max-turns", str(bad), "ask", "hi"])
+        self.assertEqual(self.cfg(max_turns=1).max_turns, 1)
+
     def test_a_capped_ask_is_a_permanent_named_error(self):
-        for code in (0, 1):
-            with self.subTest(exit=code):
+        # Older CLIs printed the stop with is_error false; the subtype alone
+        # says the cap stopped the call, so both shapes raise.
+        for code, stop in ((0, MAX_TURNS_STOP), (1, MAX_TURNS_STOP),
+                           (0, UNFLAGGED_STOP), (1, UNFLAGGED_STOP)):
+            with self.subTest(exit=code, is_error=stop["is_error"]):
                 self.log.unlink(missing_ok=True)
-                eng = self.engine([{"result": MAX_TURNS_STOP, "exit": code},
+                eng = self.engine([{"result": stop, "exit": code},
                                    {"result": ok_result()}], max_turns=3, max_retries=3)
                 with self.assertRaises(claude_engine.ClaudeExecutionError) as caught:
                     eng.ask("hi")
@@ -676,10 +696,11 @@ class MaxTurns(FakeClaudeCase):
                 self.assertEqual(flag(self.launches()[0], "--max-turns"), "3")
 
     def test_a_capped_stream_stops_with_a_permanent_named_error_and_books_it(self):
-        for code in (0, 1):
-            with self.subTest(exit=code):
+        for code, stop in ((0, MAX_TURNS_STOP), (1, MAX_TURNS_STOP),
+                           (0, UNFLAGGED_STOP), (1, UNFLAGGED_STOP)):
+            with self.subTest(exit=code, is_error=stop["is_error"]):
                 self.log.unlink(missing_ok=True)
-                eng = self.engine([{"stream": [INIT, READ, MAX_TURNS_STOP], "exit": code},
+                eng = self.engine([{"stream": [INIT, READ, stop], "exit": code},
                                    {"stream": [INIT, HELLO, ok_result()]}],
                                   max_turns=3, max_retries=3)
                 seen = []
