@@ -36,7 +36,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from . import env, gateway, house, keyframe, narrative, render, retention, spend, workspace
-from .assets import licence_tier
+from .assets import kind_for, licence_tier
 from .core import read_json, timecode, write_json
 
 #: Levels, in the order the report sorts them.
@@ -1095,6 +1095,25 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
 
         manifest = read_json(project.root / "raw" / "08-downloads.json",
                              warn=False, shape=list) or []
+        # Build and vfx place only files on disk (AUTO-143): vetted pictures
+        # or clips that were never fetched make a film drawn without them.
+        pictures = [a for a in usable
+                    if (a.get("kind") or kind_for(a.get("content_type", ""),
+                                                  a.get("url", ""))) in ("image", "video")]
+        fetched = any(isinstance(row, dict) and str(row.get("status", "")) == "ok"
+                      for row in manifest)
+        if pictures and not fetched and not manifest:
+            report.add("warn", "assets", f"{len(pictures)} vetted picture or clip "
+                       "asset(s) were never downloaded; build and vfx place only "
+                       "files on disk", _cmd("research", project, "--download"))
+        elif pictures and not fetched:
+            # The download ran and nothing came back: the deferred and failed
+            # warnings below say which rows, and this says what it costs.
+            report.add("warn", "assets", f"none of the {len(manifest)} download(s) "
+                       f"succeeded, so {len(pictures)} vetted picture or clip asset(s) "
+                       "are not on disk; build and vfx place only files on disk",
+                       "read the deferred and failed rows in raw/08-downloads.json, then "
+                       + _cmd("research", project, "--download"))
         if manifest:
             by = {}
             for row in manifest:
@@ -1305,6 +1324,16 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
             report.add("warn", "vfx", f"the sections do not read as one film "
                        f"({cont.get('score', '?')}/10): {_clip(shown, 240)}",
                        "re-author the section(s) named; vfx.json `continuity` has each fix")
+        # AUTO-143: the opposite fault, a film that never leaves one set. A
+        # reviewer's warning, never a bar: staying is an editorial choice.
+        for run in [m for m in cont.get("monotony") or [] if isinstance(m, dict)][:3]:
+            names = [str(s) for s in run.get("sections") or []]
+            span = (f"{names[0]} to {names[-1]}" if len(names) > 1
+                    else names[0] if names else "?")
+            report.add("warn", "vfx", f"the film stays in one setting for sections {span}: "
+                       f"{_clip(str(run.get('problem', '')), 200)}",
+                       _clip(str(run.get("fix") or ""), 200)
+                       or "re-plan the section named with another setting")
         # A section carried after its inputs changed holds a review of other
         # inputs (`inherited`); nothing re-reviews it but authoring it again.
         # The approved look (`look`) was never scored: it lost no review, and
@@ -1481,11 +1510,12 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
         total = build.get("timeline", {}).get("shots", 0)
         report.metrics["build"] = {"shots": total, "placeholders": placeholders,
                                    "images": layers.get("image", 0),
+                                   "footage": layers.get("footage", 0),
                                    "findings": len(findings),
                                    "from_voice": build.get("timeline", {}).get("from_voice")}
         report.add("ok", "build", f"scene {build.get('scene', {}).get('version', '?')} · "
                    f"{total} shots · {layers.get('effect', 0)} effects, "
-                   f"{layers.get('image', 0)} from files, "
+                   f"{layers.get('image', 0) + layers.get('footage', 0)} from files, "
                    f"{placeholders} placeholder cards")
         # The screenplay's own errors ride in build.json for qa (`error:
         # script: ...`); the script area already fails them with the command

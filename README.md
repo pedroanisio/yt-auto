@@ -1148,7 +1148,22 @@ materials, the light rig, the hero model and one camera keyed across the
 section, every shot a phase at its offset from the section's start. A
 section is split into two worlds only where the plan asks for a cut. The
 build includes the world once and its clock runs continuously, so a camera
-move reads as one take, not as symbols with cameras of their own. No other
+move reads as one take, not as symbols with cameras of their own.
+
+Each world has a **setting** (AUTO-143): the effects plan names the
+section's first one (`setting`), and each cut names the setting of the world
+it starts. A cut is warranted when the story moves to another place, scale,
+time or real-world record, or when no camera move can bridge the change;
+inside one setting one continuous take stays the rule. The planner of each section sees
+the film's sections in order, each with its opening picture, so the film can
+change setting where the story does. A multi-world author brief lists each
+world with its setting and keeps the hero's scale, material and colour, the
+grade and the type language across them. After authoring, a continuity
+review on the reviewer's model (`--reviewer-model`) sees one proof frame per
+world, at most two per section, side by side; a planned change of setting is
+not a break, and the review names any run of sections that stays in one set,
+scale and look longer than the story warrants (`monotony` in `vfx.json`'s
+`continuity`), which `yt doctor` warns of. No other
 animation tool is in the loop; a plan that cannot be expressed in
 scene-render constructs is a plan this stage will not make. Hour and second
 totals are computed in Python, and `--budget-hours` shapes what gets cut.
@@ -1361,14 +1376,26 @@ Each shot is drawn by the first of these that applies:
    the editor extends over does not break the run, and the same symbol used
    again later is a separate include. `build.json` lists the merges under
    `editorial.merged`.
-2. **A licensed image** the research downloaded, carrying its `license` and
-   `credit` into the document.
+2. **A licensed picture** the research downloaded, carrying its `license` and
+   `credit` into the document: an image, or a clip placed as a silent
+   `<video>` (`hasAudio="false"`, AUTO-143). A clip's length is read only
+   from an `.mp4`, `.m4v` or `.mov` file's own `mvhd` header
+   (`build.clip_seconds`, no ffprobe); a clip known to be shorter than the
+   shot is not placed (the editor's brief says why, under `notes`), and a
+   clip in another container (`.webm`, `.ogv`) or whose header does not read
+   is placed over the shot's length with a `warning:`. A row served with a
+   generic type (`application/octet-stream`, as the Internet Archive serves
+   clips) and no dossier kind takes its kind from its suffix. Only pictures
+   draw a shot: a downloaded model, sound or document never does.
 3. **What the editor decides.** Every shot neither of those covers goes to the
-   model with the shots around it, the images available and the design
-   system, and it answers under a schema: `extend_previous` or `extend_next`
-   when a neighbouring effect genuinely carries the shot (the include is
-   stretched over the gap), `image` with an exact path, or `block` with the
-   reason the animation stage needs. The same decision names the shots whose
+   model with the shots around it, the images and the footage available and
+   the design system, and it answers under a schema: `extend_previous` or
+   `extend_next` when a neighbouring effect genuinely carries the shot (the
+   include is stretched over the gap), `image` with an exact path, `footage`
+   with the exact `clip` path of a licensed clip showing the real event or
+   place (refused, with a block, when the path is not a downloaded clip or
+   the clip is shorter than the shot), or `block` with the reason the
+   animation stage needs. The same decision names the shots whose
    caption would fight the picture and the hold after the last word.
 4. **An honest placeholder** for what was blocked, counted and named. A
    placeholder is disqualifying, so the manifest carries `publishable: false`
@@ -2210,6 +2237,14 @@ fails naming the status), and a user and password in `YT_GATEWAY_URL` are
 not sent by the ping (a note says so). It is refused under `YT_NO_REMOTE`. Once a
 published film has been read by `yt retention`, it notes how many the channel
 has measured: under ten, every retention finding carries `sanity_bound`.
+Two warnings serve the film over the presentation (AUTO-143): a dossier
+whose vetted image or video assets have no `ok` row in
+`raw/08-downloads.json` is an `assets` warning naming `yt research
+--download` (with no manifest, the assets were never downloaded; with rows
+but none ok, none of the downloads succeeded, and the deferred and failed
+rows say why), and each run of sections the vfx continuity review
+names as staying in one setting (`monotony`) is a `vfx` warning with the
+review's fix.
 Exit 1 on any fail, so it works in a script.
 
 ### `yt assets`
@@ -2300,7 +2335,10 @@ keyframe --approve`, then `yt run` again; a rejected look is authored again
 with the notes; `--skip keyframe` runs without one). `--redo stage[,stage]` or `--redo all` forces them, `--skip` leaves
 stages out, and `--quick` drops the quality passes (deliberation, polish,
 fact-check, plan review, listen-back) for a cheaper first draft and renders at draft
-quality. `cli.run_extras` is the flags each stage gets (`--rich` and
+quality. `cli.run_extras` is the flags each stage gets (`--download` for
+research on every run, `--quick` included, with `--fresh` beside it on a
+`--redo` without `--quick`, so build and vfx have the vetted pictures and
+clips on disk (AUTO-143); `--rich` and
 `--deliberate critique` for styles, `--polish --verify --review` for script
 (with `--reviewer-model` and `--review-budget-usd`, as keyframe and vfx get them;
 a `pool` reviewer is resolved once and handed to script alone as `sdk:<id>`,

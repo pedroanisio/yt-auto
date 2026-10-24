@@ -41,6 +41,7 @@ import json
 import math
 import os
 import re
+import struct
 import sys
 import wave
 from dataclasses import asdict, dataclass, field
@@ -61,19 +62,21 @@ FALLBACK_BACKGROUND = "#101418"
 HEX = re.compile(r"#[0-9a-fA-F]{6}")
 
 #: What the model may do with a shot nothing has drawn.
-COVERAGE_ACTIONS = ("extend_previous", "extend_next", "image", "block")
+COVERAGE_ACTIONS = ("extend_previous", "extend_next", "image", "footage", "block")
 
 ROLE = (
     "You are the editor assembling this film from what the stages produced: a "
     "timed screenplay, the recorded narration, the effects the animation stage "
-    "authored per shot, the licensed images the research found, and the design "
-    "system. You decide what the composition does where the plan has a gap, "
-    "where captions would fight the picture, and how long the film holds after "
-    "the last word. You never invent art: a gap is covered by stretching a "
+    "authored per shot, the licensed images and footage the research found, and "
+    "the design system. You decide what the composition does where the plan has "
+    "a gap, where captions would fight the picture, and how long the film holds "
+    "after the last word. You never invent art: a gap is covered by stretching a "
     "neighbouring effect that genuinely carries the shot, by a licensed image "
-    "that shows what the shot describes, or it is blocked and sent back to the "
-    "animation stage. A placeholder card is disqualifying, so `block` is an "
-    "honest answer, not a failure. Say what blocks publication in `blocking`."
+    "that shows what the shot describes, by a licensed clip showing the real "
+    "event or place the shot describes when the clip is at least as long as the "
+    "shot, or it is blocked and sent back to the animation stage. A placeholder "
+    "card is disqualifying, so `block` is an honest answer, not a failure. Say "
+    "what blocks publication in `blocking`."
 )
 
 EDIT_SCHEMA = {
@@ -88,6 +91,8 @@ EDIT_SCHEMA = {
                     "action": {"type": "string", "enum": list(COVERAGE_ACTIONS)},
                     "image": {"type": "string",
                               "description": "the image path, for action=image"},
+                    "clip": {"type": "string",
+                             "description": "the clip path, for action=footage"},
                     "reason": {"type": "string"},
                 },
                 "required": ["label", "action", "reason"],
@@ -597,17 +602,129 @@ SILENCED_BUSES = ("music", "effects")
 
 @dataclass
 class Media:
-    """A file on disk a shot can actually show."""
+    """A file the research downloaded, with what it is (`kind`, one of
+    assets.KINDS) and, for a clip whose header could be read, its length."""
     path: str
     title: str = ""
     licence: str = ""
     credit: str = ""
     kind: str = "image"
     about: str = ""          # what the research kept the file for
+    seconds: float | None = None
+
+
+#: The containers clip_seconds reads: ISO base media (mp4) and QuickTime.
+CLIP_SUFFIXES = (".mp4", ".m4v", ".mov")
+#: The kinds a shot can show as its picture; the rest (audio, a document,
+#: a mesh, a structure) only ever enter a film through an author's world.
+PICTURE_KINDS = ("image", "video")
+#: Content types that say nothing about what a file holds. The Internet
+#: Archive serves its clips as application/octet-stream, and kind_for reads
+#: any type it does not know as an image, so such a row is read by suffix.
+GENERIC_TYPES = ("", "application/octet-stream", "binary/octet-stream")
+#: A file's kind by its suffix, for a row whose content type is generic.
+SUFFIX_KINDS = {
+    **dict.fromkeys(CLIP_SUFFIXES + (".webm", ".ogv", ".avi"), "video"),
+    **dict.fromkeys((".jpg", ".jpeg", ".png", ".gif", ".tif", ".tiff", ".webp"), "image"),
+    **dict.fromkeys((".mp3", ".wav", ".flac", ".m4a", ".ogg", ".oga"), "audio"),
+    **dict.fromkeys((".glb", ".gltf", ".obj", ".stl", ".ply", ".fbx", ".usdz"), "3d-model"),
+    **dict.fromkeys((".pdb", ".cif", ".mmcif"), "structure"),
+    ".pdf": "document"}
+
+
+def row_kind(row: dict) -> str:
+    """A manifest row's kind when the dossier gives none: its content type
+    (assets.kind_for), or its file's suffix when the type is generic. A
+    suffix this does not know keeps kind_for's answer, an image."""
+    from .assets import kind_for
+    mime = str(row.get("content_type") or "")
+    if mime.split(";")[0].strip().lower() in GENERIC_TYPES:
+        suffix = Path(str(row.get("file") or "")).suffix.lower()
+        if suffix in SUFFIX_KINDS:
+            return SUFFIX_KINDS[suffix]
+    return kind_for(mime, str(row.get("url") or ""))
+
+
+def _box(f, start: int, end: int, kind: bytes) -> tuple[int, int] | None:
+    """The body (start, end) of the first `kind` box among the boxes from
+    `start` to `end`, or None. A size of 1 is a 64-bit largesize after the
+    type; a size of 0 runs to `end`."""
+    pos = start
+    while pos + 8 <= end:
+        f.seek(pos)
+        size, typ = struct.unpack(">I4s", f.read(8))
+        header = 8
+        if size == 1:
+            raw = f.read(8)
+            if len(raw) < 8:
+                return None
+            size, header = struct.unpack(">Q", raw)[0], 16
+        elif size == 0:
+            size = end - pos
+        if size < header:
+            return None            # a malformed box: nothing after it can be trusted
+        if typ == kind:
+            return pos + header, min(pos + size, end)
+        pos += size
+    return None
+
+
+def clip_seconds(path: Path | str) -> float | None:
+    """How long an .mp4/.m4v/.mov runs, from its movie header (moov/mvhd:
+    duration over timescale), read with struct and seek: no ffprobe runs
+    here (invariant 9). None for another container, a file with no moov or
+    mvhd, a timescale or duration of 0, or a duration of all ones (unknown)."""
+    p = Path(path)
+    if p.suffix.lower() not in CLIP_SUFFIXES:
+        return None
+    try:
+        with p.open("rb") as f:
+            end = f.seek(0, os.SEEK_END)
+            moov = _box(f, 0, end, b"moov")
+            mvhd = _box(f, moov[0], moov[1], b"mvhd") if moov else None
+            if not mvhd:
+                return None
+            f.seek(mvhd[0])
+            version = f.read(4)[:1]
+            if version == b"\x01":
+                raw = f.read(28)
+                if len(raw) < 28:
+                    return None
+                _, _, timescale, duration = struct.unpack(">QQIQ", raw)
+                unknown = 0xFFFFFFFFFFFFFFFF
+            elif version == b"\x00":
+                raw = f.read(16)
+                if len(raw) < 16:
+                    return None
+                _, _, timescale, duration = struct.unpack(">IIII", raw)
+                unknown = 0xFFFFFFFF
+            else:
+                return None
+    except (OSError, struct.error):
+        return None
+    if not timescale or not duration or duration == unknown:
+        return None
+    return round(duration / timescale, 3)
+
+
+def pictures(media: list[Media]) -> list[Media]:
+    """The media a shot can be drawn with: stills and clips. local_media
+    itself stays whole, since it is also the credit manifest for the meshes
+    and structure files an author embeds."""
+    return [m for m in media if m.kind in PICTURE_KINDS]
+
+
+def clip_unknown(p, clip: Media) -> str:
+    """The warning for a clip placed with no length its header gave: the
+    layer runs the shot's length, and whether the clip lasts is not known."""
+    return (f"warning: {p.label}: the clip {clip.path} has no length its header gives; "
+            f"placed over the shot's {p.seconds:g}s, check it lasts")
 
 
 def local_media(project_root: Path, dossier: dict | None) -> list[Media]:
-    """Assets the research downloaded, with the licence it verified."""
+    """Assets the research downloaded, with the licence it verified. The
+    kind is the dossier asset's, else the manifest row's (row_kind); a
+    clip carries its length when its header reads."""
     if not dossier:
         return []
     by_title = {_key(a.get("title", "")): a for a in dossier.get("assets", [])}
@@ -622,11 +739,14 @@ def local_media(project_root: Path, dossier: dict | None) -> list[Media]:
         if not (project_root / row["file"]).is_file():
             continue
         asset = by_title.get(_key(row.get("title", ""))) or {}
+        kind = asset.get("kind") or row_kind(row)
         out.append(Media(path=row["file"], title=row.get("title", ""),
                          licence=row.get("licence") or asset.get("licence", ""),
                          credit=asset.get("credit_line", ""),
-                         kind=asset.get("kind", "image"),
-                         about=str(asset.get("use_for", ""))[:200]))
+                         kind=kind,
+                         about=str(asset.get("use_for", ""))[:200],
+                         seconds=clip_seconds(project_root / row["file"])
+                         if kind == "video" else None))
     return out
 
 
@@ -1273,10 +1393,17 @@ class SceneBuilder:
 
     # -- what the model decides ---------------------------------------------
 
-    def _drawn(self, placed: list[Placed], media: list[Media]) -> dict[str, tuple]:
+    def _drawn(self, placed: list[Placed], media: list[Media],
+               notes: list[str] | None = None) -> dict[str, tuple]:
         """Per shot: what draws it before any decision -- an authored effect,
-        a licensed image, or nothing."""
+        a licensed image, a licensed clip (`footage`), or nothing. Only a
+        picture draws a shot: an audio file or a document whose title the
+        asset line names does not. A clip known to be shorter than its shot
+        (by more than TIMING_SLACK) is left for the editor, and a clip of
+        unknown length is placed; each is a warning appended to `notes`."""
+        notes = notes if notes is not None else []
         shots = {s.label: s for sec in self.sections for s in sec.shots}
+        drawable = pictures(media)
         out = {}
         for p in placed:
             hit = self.vfx_symbols.get(p.label)
@@ -1284,16 +1411,30 @@ class SceneBuilder:
                 out[p.label] = ("effect", hit)
                 continue
             shot = shots.get(p.label)
-            image = match_media(shot, media) if shot is not None else None
-            out[p.label] = ("image", image) if image is not None else ("none", None)
+            found = match_media(shot, drawable) if shot is not None else None
+            if found is None:
+                out[p.label] = ("none", None)
+            elif found.kind == "image":
+                out[p.label] = ("image", found)
+            elif found.seconds is not None and found.seconds + TIMING_SLACK < p.seconds:
+                notes.append(f"warning: {p.label}: the clip {found.path} runs "
+                             f"{found.seconds:g}s, shorter than the shot's {p.seconds:g}s; "
+                             "left for the editor")
+                out[p.label] = ("none", None)
+            else:
+                if found.seconds is None:
+                    notes.append(clip_unknown(p, found))
+                out[p.label] = ("footage", found)
         return out
 
     def brief(self) -> dict:
         """Everything the editor sees before deciding: the shots and what
-        draws each, the images available, the design system, the gaps."""
+        draws each, the images and footage available, the design system,
+        the gaps."""
         placed = timeline(self.sections, self.voice)
         media = local_media(self.root, self.dossier)
-        drawn = self._drawn(placed, media)
+        notes: list[str] = []
+        drawn = self._drawn(placed, media, notes)
         design = designer.Design.from_styles(self.styles, height=self.height)
         shots = {s.label: s for sec in self.sections for s in sec.shots}
         rows = []
@@ -1316,7 +1457,9 @@ class SceneBuilder:
                 # How long the authored symbol runs, beside how long the shot
                 # does: the editor can see a picture that ends early.
                 "symbol_seconds": self._symbol_seconds(hit) if kind == "effect" else None,
-                "image": hit.path if kind == "image" else ""})
+                "image": hit.path if kind == "image" else "",
+                "clip": hit.path if kind == "footage" else "",
+                "clip_seconds": hit.seconds if kind == "footage" else None})
         return {
             "title": self.idea.title,
             "treatment": design.treatment,
@@ -1325,7 +1468,14 @@ class SceneBuilder:
             "shots": rows,
             "uncovered": [p.label for p in placed if drawn[p.label][0] == "none"],
             "images": [{"path": m.path, "licence": m.licence, "credit": m.credit,
-                        "about": m.about} for m in media],
+                        "about": m.about} for m in media if m.kind == "image"],
+            "footage": [{"path": m.path, "licence": m.licence, "credit": m.credit,
+                         "about": m.about, "seconds": m.seconds}
+                        for m in media if m.kind == "video"],
+            # Why a shot with a matching clip is uncovered, or placed with no
+            # known length. Only when there is something to say, so a brief
+            # with no clip warnings asks the editor what it asked before.
+            **({"notes": notes} if notes else {}),
             **({"story": dict(self.story)} if self.story else {}),
         }
 
@@ -1352,11 +1502,13 @@ class SceneBuilder:
         """
         order = [p.label for p in placed]
         index = {label: n for n, label in enumerate(order)}
-        by_path = {m.path: m for m in media}
+        by_path = {m.path: m for m in media if m.kind == "image"}
+        footage = {m.path: m for m in media if m.kind == "video"}
         applied: dict[str, str] = {}
         reasons: dict[str, str] = {}
         covered_by: dict[str, str] = {}
         images: dict[str, Media] = {}
+        clips: dict[str, Media] = {}
         findings: list[str] = []
         wanted = {row.get("label"): row for row in self.edit.get("coverage", [])
                   if isinstance(row, dict)}
@@ -1396,6 +1548,25 @@ class SceneBuilder:
                     findings.append(f"warning: {p.label}: the image {path!r} is "
                                     "not one the project has; left as a placeholder")
                     applied[p.label] = "block"
+            elif action == "footage":
+                # The same rule as an automatic match: a clip that ends before
+                # its shot would freeze or vanish under the narration.
+                path = str((row or {}).get("clip") or "")
+                clip = footage.get(path)
+                if clip is None:
+                    findings.append(f"warning: {p.label}: the clip {path!r} is not "
+                                    "footage the project has; left as a placeholder")
+                    applied[p.label] = "block"
+                elif clip.seconds is not None and clip.seconds + TIMING_SLACK < p.seconds:
+                    findings.append(f"warning: {p.label}: the clip {path!r} runs "
+                                    f"{clip.seconds:g}s, shorter than the shot's "
+                                    f"{p.seconds:g}s; left as a placeholder")
+                    applied[p.label] = "block"
+                else:
+                    if clip.seconds is None:
+                        findings.append(clip_unknown(p, clip))
+                    clips[p.label] = clip
+                    applied[p.label] = "footage"
             else:
                 applied[p.label] = "block"
         # The span of each effect, stretched over the shots it now covers.
@@ -1486,7 +1657,7 @@ class SceneBuilder:
                 "the cut between them will snap")
         return {"applied": applied, "reasons": reasons, "covered_by": covered_by,
                 "merged": merged, "split_worlds": split_worlds,
-                "images": images, "spans": spans, "findings": findings,
+                "images": images, "clips": clips, "spans": spans, "findings": findings,
                 "captions_off": {str(x) for x in self.edit.get("captions_off", [])},
                 "tail": tail,
                 "notes": str(self.edit.get("notes", "")),
@@ -1842,8 +2013,10 @@ class SceneBuilder:
         if not placed:
             raise RuntimeError("the screenplay has no shots to place")
         media = local_media(self.root, self.dossier)
-        drawn = self._drawn(placed, media)
+        notes: list[str] = []
+        drawn = self._drawn(placed, media, notes)
         edit = self._decisions(placed, drawn, media)
+        edit["findings"][:0] = notes
         duration = round(max(p.at + p.seconds for p in placed) + edit["tail"], 3)
 
         scene = S.Scene(version="auto")
@@ -1966,19 +2139,30 @@ class SceneBuilder:
                 p.file = f"{owner['file']}#{owner['symbol']} (extended from {source})"
                 p.include = ident(f"shot-{edit['merged'].get(source, source)}")
                 continue
-            if kind == "image":
-                hit = hit
-            else:
-                hit = edit["images"].get(p.label)
+            if kind not in ("image", "footage"):
+                hit = edit["images"].get(p.label) or edit["clips"].get(p.label)
             if hit is not None:
-                asset = assets.add_image(id=ident(f"img-{p.label}"),
-                                         src=hit.path, width=self.width,
-                                         height=self.height)
+                if hit.kind == "video":
+                    # A licensed clip (AUTO-143), silent: its own soundtrack
+                    # never reaches the mix. The schema needs a duration and
+                    # a frame rate; a clip of unknown length is declared at
+                    # the shot's, and none is read for its rate (TO VERIFY).
+                    asset = assets.add_video(
+                        id=ident(f"clip-{p.label}"), src=hit.path, width=self.width,
+                        height=self.height, fps=str(self.fps),
+                        duration=f"{hit.seconds if hit.seconds is not None else p.seconds:g}",
+                        hasAudio="false")
+                    p.asset = "footage"
+                else:
+                    asset = assets.add_image(id=ident(f"img-{p.label}"),
+                                             src=hit.path, width=self.width,
+                                             height=self.height)
+                    p.asset = "image"
                 if hit.licence:
                     asset.license = hit.licence
                 if hit.credit:
                     asset.credit = hit.credit
-                p.asset, p.file = "image", hit.path
+                p.file = hit.path
                 placed_srcs.add(hit.path)
             else:
                 # An honest placeholder: the shot's own description on screen,
@@ -2213,9 +2397,19 @@ class SceneBuilder:
                     continue
                 if rel in placed_srcs:
                     continue
-                asset = assets.add_image(id=ident(f"credit-{Path(rel).stem}"),
-                                         src=rel, width=self.width,
-                                         height=self.height)
+                if hit.kind == "video":
+                    # A clip the author embedded is credited as what it is,
+                    # silent; with no length its header gives, the include's.
+                    seconds = hit.seconds if hit.seconds is not None else end - start
+                    asset = assets.add_video(id=ident(f"credit-{Path(rel).stem}"),
+                                             src=rel, width=self.width,
+                                             height=self.height, fps=str(self.fps),
+                                             duration=f"{round(seconds, 3):g}",
+                                             hasAudio="false")
+                else:
+                    asset = assets.add_image(id=ident(f"credit-{Path(rel).stem}"),
+                                             src=rel, width=self.width,
+                                             height=self.height)
                 if hit.licence:
                     asset.license = hit.licence
                 if hit.credit:
@@ -2346,6 +2540,7 @@ class SceneBuilder:
             "layers": {"effect": sum(1 for p in placed if p.asset == "effect"),
                        "drawn": sum(1 for p in placed if p.asset == "drawn"),
                        "image": sum(1 for p in placed if p.asset == "image"),
+                       "footage": sum(1 for p in placed if p.asset == "footage"),
                        "placeholder": len(placeholders)},
             # The production brief: a placeholder is disqualifying, not deductible,
             # and so is anything the editor named as blocking, and so is a
@@ -2562,8 +2757,11 @@ def edit_prompt(data: dict) -> str:
         "`extend_next` when the neighbouring effect genuinely carries this "
         "shot's visual (read both shots' `visual` and `narration`), `image` "
         "with the exact `path` of one of the `images` when it shows what the "
-        "shot describes and its licence allows it, otherwise `block` with the "
-        "reason the animation stage needs. List in `captions_off` any shot "
+        "shot describes and its licence allows it, `footage` with the exact "
+        "`clip` path of one of the `footage` when the clip shows the real event "
+        "or place the shot describes, its licence allows it and its `seconds` "
+        "is at least the shot's (a shorter clip is refused), otherwise `block` "
+        "with the reason the animation stage needs. List in `captions_off` any shot "
         "whose caption would fight a dense super or a full-frame figure. Set "
         "`tail_seconds` for the hold after the last shot. In `blocking`, name "
         "anything that prevents publication regardless of coverage; leave it "
@@ -2573,6 +2771,10 @@ def edit_prompt(data: dict) -> str:
         brief("Shots, in order", data["shots"]),
         brief("Uncovered shots", data["uncovered"]),
         brief("Images the project has", data["images"]),
+        brief("Footage the project has (path, licence, credit, about, seconds)",
+              data.get("footage", [])),
+        *([brief("Notes on the clips the build matched", data["notes"])]
+          if data.get("notes") else []),
     ])
 
 
@@ -2587,7 +2789,7 @@ def print_build(manifest: dict) -> None:
           f"narration, {line['from_script']} by the screenplay")
     layers = manifest["layers"]
     print(f"  layers: {layers.get('effect', 0)} compiled effects, "
-          f"{layers['image']} from "
+          f"{layers['image']} images and {layers.get('footage', 0)} clips from "
           f"real files, {layers['placeholder']} placeholder cards")
     print(f"  publishable: {'yes' if manifest.get('publishable') else 'NO'}")
     # Printed here, once, so a long findings list cannot push it past the cut.

@@ -199,7 +199,11 @@ def run_extras(args, *, redo: set) -> dict[str, list[str]]:
     return {
         # --redo means run again, which for research means ignoring its
         # cached stages too, or the "rerun" would just replay them.
-        "research": (["--fresh"] if redo & {"research", "all"} and not quick else [])
+        # --download (AUTO-143): build and vfx place only files on disk, so a
+        # run fetches the vetted pictures and clips; it costs no model money,
+        # so --quick keeps it.
+        "research": ["--download"]
+                    + (["--fresh"] if redo & {"research", "all"} and not quick else [])
                     + paper,
         "styles": ["--rich"] + ([] if quick else ["--deliberate", "critique"]),
         "script": ["--minutes", str(args.minutes)]

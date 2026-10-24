@@ -61,6 +61,23 @@ class Pipeline(unittest.TestCase):
             self.assertEqual("--review" in extra["sound"], not quick)
             self.assertEqual(extra["props"], [])
 
+    def test_research_downloads_on_every_run_quick_or_not(self):
+        # AUTO-143: build and vfx place only downloaded files, and a download
+        # costs no model money, so --quick keeps it; a redo adds --fresh.
+        for quick in (False, True):
+            args = argparse.Namespace(quick=quick, minutes=1.0)
+            self.assertEqual(cli.run_extras(args, redo=set())["research"], ["--download"])
+        redo = cli.run_extras(argparse.Namespace(quick=False, minutes=1.0), redo={"research"})
+        self.assertEqual(sorted(redo["research"]), ["--download", "--fresh"])
+        quick = cli.run_extras(argparse.Namespace(quick=True, minutes=1.0), redo={"all"})
+        self.assertEqual(quick["research"], ["--download"])
+        parser = cli.build_parser()
+        base = ["--project", "work/x", "--model", "sonnet", "--quiet"]
+        extra = cli.run_extras(argparse.Namespace(quick=False, minutes=1.0), redo=set())
+        argv = cli.stage_argv("research", base, extra)
+        self.assertEqual(argv, ["research", *base, "--download"])     # nothing else changes
+        self.assertTrue(parser.parse_args(argv).download)
+
     def test_every_pipeline_stage_parses_its_argv(self):
         parser = cli.build_parser()
         base = ["--project", "work/x", "--model", "sonnet", "--quiet"]

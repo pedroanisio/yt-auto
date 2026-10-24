@@ -160,7 +160,7 @@ itself, and `--project DIR` names a directory directly.
 | `yt keyframe` | script, voice, styles, props (what `yt vfx` reads) | the vfx plan, the lead section in `vfx/vNN/`, `keyframe/keyframe.png`, `keyframe/frames.png`, `keyframe.json`, `keyframe.md` | yes (the vfx plan; one author agent, one attempt, no vision review; `--sheet`: the older composed frame) |
 | `yt vfx` | script, voice, styles, props | `vfx/vNN/<section>.scene.xml`, `vfx/vNN/frames/` (and `frames/grid/`, the review's grid copies), `vfx.json`, `vfx.md`, `vfx.csv` | yes (one author agent per section, a frame review per round) |
 | `yt sound` | script | `sound.json`, `sound.md`, `cues.csv`; with `--fetch`, `sound/` and `sound/index.json` | yes (spotting; `yt sound --review` listens back and fixes its own important and blocking findings, one revision of the cue's design fields each, two rounds at most, and `yt sound --review --report-only` only reports them; the review keeps `heard`, `sound.heard`'s digest of the cue sheet's design as the review left it (not the files `--fetch` adds), which `yt qa` checks before it scores sound and music from it; the fetch judges each candidate that passes the level checks against its cue, from its evidence and a spectrogram, and records the verdict in the cue's `judgement`; a fresh spot then anchors each cue to the spoken word it lands on, `anchor`, derived and never asked, outside `heard`, which `yt build` follows when a take is redone and reports in build.json's `cue_anchors`, a word it cannot find once `lost` at the sheet's `at` with a warning, AUTO-140) |
-| `yt build` | all of the above | `scene.xml`, `build.json`, `vfx/vNN/<section>.include.scene.xml` | yes (coverage, captions, tail, blocking) |
+| `yt build` | all of the above | `scene.xml`, `build.json`, `vfx/vNN/<section>.include.scene.xml` | yes (coverage: `extend_previous`, `extend_next`, `image`, `footage` (a licensed clip placed as a silent `<video>`, its length read from the mp4 header, refused when shorter than the shot), `block`; captions, tail, blocking) |
 | `yt render` | `scene.xml` | `video.mp4`, `render.json` (a still, a validation, an audio pass or a pilot writes `render-<job>.json`) | no |
 
 **One spend record.** Every stage's JSON carries `usage`: `{cost_usd, model,
@@ -247,7 +247,7 @@ authored again with the notes; `--skip keyframe` runs without a look) --
 and skips a stage whose output exists unless it is named in
 `--redo` (`--redo all` repeats everything, `--skip` leaves stages out,
 `--quick` drops the deliberation, polish, fact-check, plan review and
-story review (`yt script --review`, never with `--gate`) and listen-back passes and renders at draft). It always passes `--fetch --synth` to `yt sound`, so
+story review (`yt script --review`, never with `--gate`) and listen-back passes and renders at draft). It always passes `--download` to `yt research` (`--quick` keeps it; AUTO-143), so build and vfx have the vetted pictures and clips on disk, and `--fetch --synth` to `yt sound`, so
 the sheet never leaves the stage with holes (the synthesis program the agent
 writes runs on this workstation, NumPy only and no ffmpeg; its WAVs are
 levelled on a render host like the fetched ones), and runs that stage beside
@@ -359,7 +359,12 @@ other catalogues, another licence policy or an older searcher
 (`Researcher.ASSET_SEARCH`) is searched again, and the outline with it.
 `--download` writes `downloads/` and gives each asset in `dossier.json` its
 `file` (an STL becomes OBJ, the original kept as `source_file`); that `file`
-is what the vfx and keyframe briefs offer the authors.
+is what the vfx and keyframe briefs offer the authors, and `yt build` places
+the licensed images and clips. `yt run` always passes it (AUTO-143), and
+`yt doctor` warns in `assets`, naming `yt research --download`, when vetted
+image or video assets have no `ok` row in `raw/08-downloads.json`: never
+downloaded when there is no manifest, none succeeded when its rows are all
+deferred or failed.
 
 **Research scales to the film's length.** `yt research` reads the idea's
 stated runtime ("60 seconds", "8-12 min"). A film under ten minutes shrinks the
@@ -1239,12 +1244,18 @@ hand-authored world showed the cost.
 
 ## Known limits
 
-- **A section is one world with one camera.** `yt vfx` authors one
-  `<symbol>` per section (set, materials, light rig, `hero-` model, one
+- **A world is one setting with one camera.** `yt vfx` authors one
+  `<symbol>` per world (set, materials, light rig, `hero-` model, one
   camera keyed across it) with the shots as phases at their offsets, and
   `yt build` includes consecutive shots of it as one continuous
-  `<include>`, so a camera move reads as a take. A cut inside a section has
-  to be asked for in the plan; it splits the section into two worlds.
+  `<include>`, so a camera move reads as a take. A section is one world
+  unless its effects plan cuts it: the plan names the section's `setting`,
+  each cut the `setting` of the world it starts (AUTO-143), warranted when
+  the story moves to another place, scale, time or real-world record, or
+  when no camera move can bridge the change; inside one setting one
+  continuous take stays the rule. Each section's planner sees the film's sections in order, each with
+  its opening picture. Across worlds the hero keeps its scale, material and
+  colour, and the grade and type language carry over.
 - **The sound is Freesound previews, not masters.** `yt sound --fetch`
   fills each cue with the best CC0/CC-BY hit's high-quality mp3 preview and
   `yt build` places it on a bus per role, every non-narration bus ducked under the narration and the
@@ -1300,10 +1311,14 @@ hand-authored world showed the cost.
   engine, and `schema.md` lists every value of every enumeration, so the
   route is visible to every author.
 - **Sections are reviewed alone, then together.** After authoring, `yt vfx`
-  shows one proof frame from each section side by side to a continuity
-  review (`continuity` in `vfx.json`: one film or not, a score, each break
-  with the section that should change and the fix). `yt doctor` warns when
-  the sections do not read as one film. Every author and reviewer the stage
+  shows one proof frame per world (the middle one, at most two per section,
+  each labelled with its setting) side by side to a continuity review on the
+  reviewer's model (`--reviewer-model`; `continuity` in `vfx.json`: one film
+  or not, a score, each break with the section that should change and the
+  fix, and `monotony`, each run of sections that stays in one set, scale and
+  look longer than the story warrants). A planned change of setting is not a
+  break. `yt doctor` warns when the sections do not read as one film, and
+  once per monotony run (at most three). Every author and reviewer the stage
   starts reports once into `vfx.json`'s `usage`, so it is the stage's whole
   bill.
 - **Vision reaches the model only on the agentic Read path.** `inspect`

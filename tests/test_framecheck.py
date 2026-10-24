@@ -237,5 +237,32 @@ class Grid(unittest.TestCase):
         self.assertIsNone(framecheck.cells_rect(["Z9"], (1920, 1080)))
 
 
+class ChecklistSettings(unittest.TestCase):
+    """AUTO-143: a film may cut between settings, so the checklist scopes room
+    and light to one setting and says a planned change of setting is no
+    break. It is rendered in three prompts (the vfx frame review, the
+    keyframe style frame, the author's brief), none of which knows symbols."""
+
+    def item(self, key):
+        return next(text for k, text, _ in framecheck.CHECKLIST if k == key)
+
+    def test_light_and_continuity_are_scoped_to_one_setting(self):
+        self.assertIn("the light rig stays the same within one setting", self.item("light"))
+        continuity = self.item("continuity")
+        self.assertIn("the same hero, grade and camera language throughout", continuity)
+        self.assertIn("room and light stay the same within one setting", continuity)
+        self.assertIn("a planned change of setting is not a break", continuity)
+        self.assertNotIn("in every frame", self.item("light"))
+
+    def test_no_rendering_names_a_symbol_or_a_world(self):
+        from ytstudio import keyframe, sdkkit, vfx
+        text = framecheck.checklist_text()
+        for word in ("symbol", "world"):
+            self.assertNotIn(word, text.lower())
+        for prompt in (vfx.REVIEW_ROLE, keyframe.REVIEW_ROLE, sdkkit.BRIEF):
+            self.assertIn(text, prompt)
+            self.assertIn("a planned change of setting is not a break", prompt)
+
+
 if __name__ == "__main__":
     unittest.main()
