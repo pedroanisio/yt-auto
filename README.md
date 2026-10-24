@@ -646,6 +646,15 @@ support, then fixes them in the same run: each blocking or important line
 gets the smallest rewrite, or is kept with a reason (a kept flag still binds
 the picture), and only the revised shots are checked again, for at most two
 rounds. `--report-only` keeps the old report-without-fixing behaviour.
+Each sourced shot also names the dossier claim it rests on (`c1`, `c2` ..)
+and how settled the line is (`established`, `hypothesis`, `speculation`,
+`what-if` or `none`); the code caps it at what the claim allows (a
+limitation the paper names is at most a hypothesis, a low-confidence claim
+speculation), and `script.md` prints it as `**STATUS**`. With `--review`,
+`--verify` also asks the reviewer of another family whether each line is as
+sure as its research (`verify-status`), and the fact-check's revise may
+weaken a status, never raise it; without `--review` that check is recorded
+as not evidenced, never as passed.
 `--polish` reads the narration end to end and rewrites only what repeats,
 stumbles or buries its point.
 
