@@ -4445,10 +4445,13 @@ class VfxPlanner:
             if len({f["section"] for f in frames}) < 2:
                 return {"skipped": "fewer than two sections have proof frames",
                         "frames": frames, "breaks": []}
+            # Capped as each section review on this model is: it reads about
+            # as many frames as a section review does, and no document.
             reviewer = harness.Harness(self.ws.root, "vfx", model=self.reviewer_model,
                                        role=CONTINUITY_ROLE, house=self.house,
                                        house_digest=self.house_digest, fresh=self.fresh,
-                                       verbose=self.verbose, timeout=1800.0)
+                                       verbose=self.verbose, timeout=1800.0,
+                                       budget_usd=self.review_budget_usd)
             prompt = "\n\n".join([
                 f"Read every PNG listed under `frames/` -- one proof frame from each "
                 f"world of each section of \"{self.idea.title}\", in film order, each "

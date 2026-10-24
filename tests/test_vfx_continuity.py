@@ -215,6 +215,21 @@ class Monotony(ContinuityCase):
         self.assertEqual(call["model"], self.planner.reviewer_model)
         self.assertNotEqual(call["model"], self.planner.model)
 
+    def test_the_review_is_capped_as_a_section_review_is(self):
+        authored = self.author()
+        world.FakeEngine.reviews = [dict(BREAK)]
+        made = []
+        real = harness.Harness
+
+        def record(*args, **kwargs):
+            made.append(kwargs)
+            return real(*args, **kwargs)
+        self.planner.review_budget_usd = 0.75
+        with patch.object(vfx.harness, "Harness", record):
+            self.planner.continuity(authored)
+        self.assertEqual(len(made), 1)
+        self.assertEqual(made[0]["budget_usd"], 0.75)
+
     def test_the_schema_requires_monotony_and_the_role_asks_for_it(self):
         self.assertIn("monotony", vfx.CONTINUITY_SCHEMA["required"])
         item = vfx.CONTINUITY_SCHEMA["properties"]["monotony"]["items"]
