@@ -49,7 +49,7 @@ from tests import test_script_review as review_tests  # noqa: E402
 SEEDED = {"list-plan": "train", "topic-train": "train", "empty-payoff": "ending",
           "and-chain": "train", "reveal-first": "reveal_setup",
           "recap-ending": "ending", "hook-enumerates": "hook",
-          "flat-tension": "tension", "no-trigger": "hook"}
+          "flat-tension": "tension", "no-trigger": "hook", "bad-metaphor": "devices"}
 
 #: The seeded faults only the cold read catches (judging 14): the story
 #: review is read on them and not judged.
@@ -412,6 +412,51 @@ class TensionAndTrigger(unittest.TestCase):
                 self.assertEqual(len(failed), 1, failed)
                 self.assertIn("trigger", failed[0])
                 self.assertIn("none", failed[0])
+
+
+class BadMetaphor(unittest.TestCase):
+    """AUTO-135: an analogy that maps the comet's tail onto its path."""
+
+    def test_the_case_loads_with_a_script_and_its_criterion(self):
+        path = cases()["bad-metaphor"]
+        for part in ("plan.json", "script.json", "expected.json"):
+            self.assertTrue((path / part).is_file(), part)
+        expected = load(path / "expected.json")
+        self.assertEqual(expected["criterion"], "devices")
+        self.assertIn("devices", narrative.KEYS)
+        self.assertEqual(expected["verdict"], "consider")
+        self.assertEqual(expected["plan_review"]["verdict"], "accept")
+
+    def test_judge_case_fails_a_reviewer_that_misses_the_wrong_mapping(self):
+        expected = load(FIXTURES / "bad-metaphor" / "expected.json")
+        own = dict(got_for("bad-metaphor"), plan_review="accept")
+        self.assertEqual(narrative.judge_case(expected, own), [])
+        grades = dict(own["grades"], devices="Good")
+        failed = narrative.judge_case(expected, dict(own, grades=grades))
+        self.assertTrue(any("devices graded Good" in line for line in failed), failed)
+        failed = narrative.judge_case(expected, dict(own, verdict="recommend"))
+        self.assertTrue(any("recommend" in line for line in failed), failed)
+        failed = narrative.judge_case(expected, dict(own, flags=[
+            f for f in own["flags"] if f["criterion"] != "devices"]))
+        self.assertTrue(any("no flag on devices" in line for line in failed), failed)
+        # the plan review names the mapping as a problem and accepts: a
+        # wrong mapping is never alone a reason to send the plan back
+        failed = narrative.judge_case(expected, dict(own, plan_review="revise"))
+        self.assertTrue(any("plan review" in line for line in failed), failed)
+
+    def test_the_good_case_grades_devices_excellent_with_no_device(self):
+        said = load(FIXTURES / "good" / "expected.json")["review"]
+        self.assertEqual(said["grades"]["devices"], "Excellent")
+        self.assertEqual(said["verdict"], "recommend")
+        plan = load(FIXTURES / "good" / "plan.json")
+        self.assertFalse([s for s in plan["sections"] if s.get("devices")])
+
+    def test_every_canned_review_validates_and_grades_devices(self):
+        for name, path in cases().items():
+            said = load(path / "expected.json")["review"]
+            with self.subTest(case=name):
+                self.assertEqual(problems(said, narrative.REVIEW_SCHEMA), [])
+                self.assertIn("devices", said["grades"])
 
 
 class LengthAudit(unittest.TestCase):

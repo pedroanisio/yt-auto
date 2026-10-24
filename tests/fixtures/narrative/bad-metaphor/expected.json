@@ -1,0 +1,58 @@
+{
+  "criterion": "devices",
+  "verdict": "consider",
+  "why": "The good film with one analogy added to its reveal: the gas tail streams behind the comet like smoke behind a train, along the path it has flown. The analogy maps the tail onto the comet's path, so the viewer learns the misconception the film breaks (the tail as a wake); the devices row grades a device that maps a part onto the wrong thing Poor. Its maps and breaks_at are filled, so no pre-check sees it: only a reader does.",
+  "judging_10": "judging 10 asks the calibration run for reject on every seeded case. devices is a house-strength row, and a Poor on a house-strength criterion yields consider, never reject; it is not one of the four criteria that decide a film. The calibration fails a reviewer that says recommend here, grades devices above Fair or leaves it without a flag, and a plan review that sends the plan back for it alone.",
+  "evidence": {
+    "in": "script.sections.2.shots.0.narration",
+    "says": "like smoke behind a train"
+  },
+  "review": {
+    "logline": "A comet's tail leads it away from the Sun because sunlight and a wind from the Sun push it, not because it trails behind.",
+    "synopsis": "A comet leaves the Sun tail first; sunlight is too weak to explain the gas tail; Biermann proposes a wind from the Sun, and the film likens the gas tail to smoke trailing a train along its path; Mariner 2 measures the wind; the opening comet is seen again.",
+    "grades": {
+      "train": "Excellent",
+      "hook": "Excellent",
+      "stakes": "Excellent",
+      "open_loops": "Good",
+      "reveal_setup": "Excellent",
+      "tension": "Excellent",
+      "ending": "Excellent",
+      "honesty": "Excellent",
+      "devices": "Poor"
+    },
+    "verdict": "consider",
+    "flags": [
+      {
+        "n": 7,
+        "section": 3,
+        "criterion": "devices",
+        "severity": "important",
+        "problem": "The analogy maps the gas tail onto the path the comet has flown, as smoke trails a train, so the viewer learns the tail is a wake: the belief the film set out to break. The tail points along the wind, away from the Sun.",
+        "fix": "Map the tail onto the wind, not the path: a windsock points where the wind goes, not where its pole moves; then say where it breaks: unlike a windsock, a comet has two tails.",
+        "quote": "the gas tail streams behind the comet like smoke behind a train, along the path it has flown."
+      }
+    ],
+    "first_minute": {
+      "promise_match": "The comet and its tail are on screen and named at once.",
+      "question_and_stakes": "Why the tail leads; the same wind reached Quebec in 1989.",
+      "trigger": "unexpected_observation",
+      "gap": "why a comet leaving the Sun has its tail in front"
+    }
+  },
+  "plan_review": {
+    "verdict": "accept",
+    "train_ok": true,
+    "reorder_survives": false,
+    "sections_advancing_none": [],
+    "payoff_concrete": true,
+    "questions_unanswered": [],
+    "problems": [
+      {
+        "section": 3,
+        "problem": "The analogy maps the gas tail onto the comet's path (smoke behind a train), which teaches the wake the film breaks.",
+        "fix": "Map the tail onto the wind instead (a windsock), and say where it breaks: a comet has two tails."
+      }
+    ]
+  }
+}

@@ -1204,6 +1204,10 @@ class StoryFindings(ImproveCase):
         self.assertIn("even though it is expensive", prompt)
         self.assertIn(narrative.rubric_text("writer"), prompt)    # rendered, not retyped
         self.assertIn("the story (hook, stakes", prompt)        # DUTIES["script"]
+        # AUTO-135: the devices row, with its Aim for line, reaches the router
+        devices = narrative.criterion("devices")
+        self.assertIn(f". devices: {devices.question} Aim for: {devices.levels['Excellent']}",
+                      prompt)
 
     def test_a_finding_the_plan_contradicts_is_annotated_and_still_routed(self):
         self.plan_script()
