@@ -760,7 +760,17 @@ class Fixtures(unittest.TestCase):
         screenplay = bad["script.json"]["sections"]
         self.assertEqual(screenplay[:2], good["script.json"]["sections"][:2])
         self.assertEqual(screenplay[3], good["script.json"]["sections"][3])
-        self.assertIn("like smoke behind a train", screenplay[2]["shots"][0]["narration"])
+        reveal = screenplay[2]["shots"][0]["narration"]
+        self.assertIn("like smoke behind a train", reveal)
+        # the fault is added to the reveal, never in place of it: the good
+        # film's statement of the wind stays, word for word, so only devices
+        # can fairly grade low
+        good_reveal = good["script.json"]["sections"][2]["shots"][0]["narration"]
+        self.assertTrue(reveal.startswith(good_reveal), reveal)
+        self.assertEqual(sum(s["seconds"] for s in screenplay[2]["shots"]),
+                         sum(s["seconds"] for s in good["script.json"]["sections"][2]["shots"]))
+        self.assertEqual([s["n"] for s in screenplay[2]["shots"]], [7, 8])
+        self.assertIn("flew through that stream", screenplay[2]["shots"][1]["narration"])
         expected = load(FIXTURES / "bad-metaphor" / "expected.json")
         self.assertEqual((expected["criterion"], expected["verdict"]), ("devices", "consider"))
         grades = expected["review"]["grades"]

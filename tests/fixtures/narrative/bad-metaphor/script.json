@@ -99,8 +99,8 @@
         {
           "n": 7,
           "visual": "particles streaming out from the Sun past a comet, its gas tail drawn trailing along the path it has flown, like smoke behind a train",
-          "narration": "His answer: the Sun never stops shedding itself, and the gas tail streams behind the comet like smoke behind a train, along the path it has flown.",
-          "seconds": 10,
+          "narration": "His answer: the Sun never stops shedding itself. A stream of particles pours out of it, in every direction, all the time. And the gas tail streams behind the comet like smoke behind a train, along the path it has flown.",
+          "seconds": 14,
           "asset": "make",
           "style": "the film's treatment",
           "source": "",
@@ -112,8 +112,8 @@
         {
           "n": 8,
           "visual": "a probe crossing the stream",
-          "narration": "Eleven years later Mariner 2 flew through it and measured it. We call it the solar wind.",
-          "seconds": 10,
+          "narration": "Eleven years later Mariner 2 flew through that stream and measured it. We call it the solar wind.",
+          "seconds": 6,
           "asset": "make",
           "style": "the film's treatment",
           "source": "",
