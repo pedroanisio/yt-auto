@@ -184,6 +184,17 @@ class Design:
         sw = self._assigned.get(name)
         return sw.hex if sw else dict((r, h) for h, r in FALLBACK)[name]
 
+    def parsed_roles(self) -> dict[str, str]:
+        """The roles this film's own palette fills, as {role: hex} with bare
+        role names: a role `assign` filled from FALLBACK, or ink made up as
+        white, is left out. A fallback design has none. The channel record
+        (AUTO-137) compares these, since a fallback colour two films share
+        is the house's, not a choice either film made."""
+        if self.source != "styles.json":
+            return {}
+        return {role: sw.hex for role, sw in self._assigned.items()
+                if any(sw is own for own in self.swatches)}
+
     def words(self, role: str) -> frozenset[str]:
         """What this film calls the role: the generic lexicon plus the nouns
         its own palette put beside the colour ("bode/perder" teaches "bode")."""
