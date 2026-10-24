@@ -799,6 +799,20 @@ def cut_problems(project: workspace.Project, build: dict | None) -> list[tuple[s
     return partial + _stale_video(project)
 
 
+def fallback_palette(project: workspace.Project, build: dict | None
+                     ) -> tuple[str, str] | None:
+    """(problem, fix) when build.json says the film is in design.py's house
+    fallback palette, else None (AUTO-155). The build only warned: this is
+    a delivery row once rendered and a styles warning before, never a build
+    error, which the build section would report a second time."""
+    design = (build or {}).get("design") or {}
+    if design.get("source") != "fallback":
+        return None
+    why = design.get("fallback") or "source fallback"
+    return (f"the film is in design.py's house fallback palette ({why}), not its own",
+            _cmd("styles", project, "--rich") + ", then " + _cmd("build", project))
+
+
 def delivery_evidence(project: workspace.Project, build: dict | None
                       ) -> list[tuple[str, str]]:
     """What stands between the rendered video and publication, as
@@ -843,6 +857,9 @@ def delivery_evidence(project: workspace.Project, build: dict | None
         missing.append(("the programme has no audio: no narration and no placed cue",
                         _cmd("sound", project, "--fetch", "--synth") + ", then "
                         + _cmd("build", project)))
+    palette = fallback_palette(project, built)
+    if palette:
+        missing.append(palette)
 
     video = project.path("video")
     rendered_at = _mtime(video) if video.exists() else 0.0
@@ -1446,6 +1463,12 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
                 and not build.get("timeline", {}).get("from_voice")):
             report.add("warn", "build", "the scene was built from screenplay "
                        "estimates, but a narration exists", _cmd("build", project))
+        # Before a render it is the styles stage's to fix, and a warn, so the
+        # styles lane does not fail and `yt run` does not loop on it; once
+        # rendered, delivery_evidence fails it instead (AUTO-155).
+        palette = fallback_palette(project, build)
+        if palette and "render" not in done:
+            report.add("warn", "styles", *palette)
     if "render" in done:
         video = project.path("video")
         size = video.stat().st_size if video.exists() else 0

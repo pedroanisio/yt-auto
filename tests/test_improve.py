@@ -348,6 +348,17 @@ class Routing(ImproveCase):
         self.assertEqual(found[1]["owner"], "sound")
         self.assertEqual(found[1]["severity"], "blocking")
 
+    def test_a_fallback_palette_warning_is_routed_to_styles(self):
+        # doctor's warn before render (AUTO-155): `styles` is a pipeline
+        # stage, so improve routes it there with no extra mapping
+        rows = [("warn", "styles", "the film is in design.py's house fallback palette "
+                 "(no styles.json), not its own", "yt styles --project p --rich, then "
+                 "yt build --project p")]
+        found = improve.collect(card(5.0), doctor=rows)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["owner"], "styles")
+        self.assertEqual(found[0]["source"], "doctor")
+
     def test_a_mechanical_fingerprint_is_kind_shot_and_objects(self):
         a = improve.fingerprint(mech())
         self.assertEqual(a, "penetration|1.4|hero-x+table-top")
