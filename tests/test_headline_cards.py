@@ -296,5 +296,73 @@ class Revise(unittest.TestCase):
                          data["findings"])
 
 
+class Draft(unittest.TestCase):
+    """`yt script` (no --revise) hands the dossier's press list to the
+    writer: the write prompt says how to stage "headline [Nk]", and a drafted
+    card that paraphrases N1 ends the stage with a source:headline warning."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.work = Path(self._tmp.name) / "work"
+        self.film = self.work / "the-bridge"
+        self.film.mkdir(parents=True)
+        (self.film / "idea.json").write_text(json.dumps(
+            {"title": "Why the bridge fell", "genre": "explainer", "description": "d"}))
+        write_json(self.film / "dossier.json", {"idea": {"title": "Why the bridge fell"},
+                                                "claims": [], "assets": [RECORD]})
+
+    def run_stage(self, supers):
+        from tests.test_script_plan import PLAN as STORY, kind, shots_for
+        asked = []
+
+        def ask(writer, name, prompt, schema):
+            asked.append((name, prompt))
+            which = kind(schema)
+            if which == "plan":
+                return json.loads(json.dumps(STORY))
+            if which in ("function", "shots"):
+                n = int(name.split("-")[1])
+                out = shots_for(n, ("context", "payoff"))
+                if n == 1:
+                    out["shots"][0].update(asset="headline [N1]", seconds=8,
+                                           on_screen_text=list(supers))
+                return out
+            if which == "fixes":
+                return {"fixes": []}
+            return {}
+        args = cli.build_parser().parse_args(
+            ["script", "--project", str(self.film), "--work", str(self.work), "--quiet"])
+        with mock.patch.object(script.Screenwriter, "_ask", ask), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            script.run(args)
+        return asked, json.loads((self.film / "script.json").read_text())
+
+    def test_the_write_prompt_says_how_to_stage_a_headline(self):
+        asked, _ = self.run_stage([HEADLINE, SOURCE])
+        writes = [p for name, p in asked if name.startswith("write-")]
+        self.assertTrue(writes, [name for name, _ in asked])
+        self.assertIn("headline [Nk]", writes[0])
+        self.assertIn(f"N1: \"{HEADLINE}\"", writes[0])
+
+    def test_a_paraphrased_card_ends_with_a_standing_headline_warning(self):
+        asked, data = self.run_stage(["Genoa operator skipped checks", SOURCE])
+        lines = [f for f in data["findings"] if "source:headline" in f]
+        self.assertEqual(len(lines), 1, data["findings"])
+        self.assertTrue(lines[0].startswith("warning: source:headline: shot 1.1"), lines)
+        self.assertTrue(any(name == "revise-rules" and f"\"{HEADLINE}\"" in p
+                            for name, p in asked))
+
+    def test_a_verbatim_card_raises_no_wall_of_text(self):
+        _, data = self.run_stage([HEADLINE, SOURCE])
+        self.assertFalse([f for f in data["findings"]
+                          if "source:headline" in f or "wall-of-text" in f],
+                         data["findings"])
+        # the one-release hint keys agree with the findings (AUTO-149)
+        self.assertFalse([h for h in data["legibility"] + data["unspoken_numbers"]
+                          if "1.1" in str(h)], (data["legibility"], data["unspoken_numbers"]))
+
+
 if __name__ == "__main__":
     unittest.main()

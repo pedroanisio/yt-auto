@@ -6877,8 +6877,11 @@ def run(args) -> int:
     # The two checks before the rules, kept under their old keys for one
     # release beside `findings`, where they are rule:legibility and
     # rule:unspoken-number now.
-    hints = {"legibility": legibility(sections),
-             "unspoken_numbers": unspoken_numbers(sections)}
+    # With the press list a cited headline card is measured as in `findings`
+    # (AUTO-149), so these keys do not list as unreadable the card the rules
+    # passed; with no dossier press is None and they are as before.
+    hints = {"legibility": legibility(sections, press=writer.press),
+             "unspoken_numbers": unspoken_numbers(sections, press=writer.press)}
     data |= hints
 
     if getattr(args, "gate", False):
