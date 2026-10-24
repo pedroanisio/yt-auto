@@ -2009,7 +2009,8 @@ MATCH_SCHEMA = {
 #: narration, since a quiz written from the words would test them against
 #: themselves. The cold reader takes it twice: before it has heard
 #: anything, and after hearing the narration. It is a measure: it scores
-#: nothing, gates nothing and feeds no flag.
+#: nothing and gates nothing; a gain under QUIZ_GAIN_FLOOR with facts
+#: missed is one warning (AUTO-162), and no flag.
 QUIZ_ROLE = (
     "You write a short multiple-choice quiz on what a film sets out to teach, "
     "from its plan and the research behind it. You have not seen the film. Each "
@@ -2019,6 +2020,16 @@ QUIZ_ROLE = (
 #: How many items a quiz holds, and the letters an item is keyed with.
 QUIZ_ITEMS = (4, 8)
 QUIZ_KEYS = ("A", "B", "C", "D")
+
+#: The fewest questions more the cold reader gets right after hearing the
+#: narration than before, under which a quiz that still misses facts is a
+#: story-review warning (AUTO-162): a narration that taught nothing is seen
+#: before voice is paid for. House, NO STANDARD: a prior, set before any
+#: film held quiz data, to be checked against the before, after and gain
+#: of the next films run with --review. One means "at least one fact got
+#: through"; the "before" is a model's prior, so a higher floor would judge
+#: the reader's expertise more than the narration.
+QUIZ_GAIN_FLOOR = 1
 
 QUIZ_SCHEMA = {
     "type": "object",
@@ -2260,6 +2271,56 @@ def quiz_lines(cold) -> list[str]:
     for reason in [failed] if isinstance(failed, str) else failed or []:
         out.append(f"Viewer quiz failed: {reason}")
     return out + [""] if out else []
+
+
+def _taught(item: dict, m: dict) -> str:
+    """What a missed item set out to teach: its keyed option's words, or
+    `keyed <letter>` when the key or the item does not resolve to one."""
+    key = str(m.get("key") or "").strip().upper()
+    options = item.get("options") if isinstance(item.get("options"), list) else []
+    at = QUIZ_KEYS.index(key) if key in QUIZ_KEYS else len(options)
+    fact = " ".join(str(options[at]).split()) if at < len(options) else ""
+    return f'= "{fact}"' if fact else f"keyed {m.get('key') or '?'}"
+
+
+def quiz_findings(cold) -> list[str]:
+    """The viewer quiz's one warning (AUTO-162): at most one line, when the
+    gain is under QUIZ_GAIN_FLOOR and items were still missed after hearing
+    the narration, naming each with its question and the fact it keys. A
+    pure comparison of the recorded scores, so it asks nothing.
+
+    Silent with no quiz, a failed before or after (no gain: quiz_lines says
+    the quiz failed), a gain at the floor, or nothing missed: a reader right
+    on every item before and after has a gain of 0 and nothing went
+    untaught, the "before" being a model's prior. The gain and the first
+    fact lead, so doctor's clipped message still shows them.
+
+    `cold` is the draft that stands: when a revision stood and its re-ask
+    (`quiz-after-r2`..) failed, the gain is None and this is silent, even
+    if round 1 measured a low gain; that measure is not carried over.
+    `yt script --revise` asks no quiz, so a warning it keeps measured the
+    narration the --review run left behind."""
+    cold = cold if isinstance(cold, dict) else {}
+    quiz = cold.get("quiz") if isinstance(cold.get("quiz"), dict) else {}
+    items = [i for i in quiz.get("items") or [] if isinstance(i, dict)]
+    missed = [m for m in quiz.get("missed_after") or [] if isinstance(m, dict)]
+    gain = quiz.get("gain")
+    if (not items or not missed or not isinstance(gain, int) or isinstance(gain, bool)
+            or gain >= QUIZ_GAIN_FLOOR):
+        return []
+    by_id = {str(i.get("id") or "").strip().upper(): i for i in items}
+    untaught = []
+    for m in missed:
+        item = by_id.get(str(m.get("id") or "").strip().upper(), {})
+        question = " ".join(str(m.get("question") or item.get("question") or "").split())
+        untaught.append(f'{m.get("id")} "{question}" {_taught(item, m)}'
+                        + (f" (from {m['from']})" if m.get("from") else ""))
+    rnd = quiz.get("round") or 1
+    return [f"warning: story review: viewer quiz gain {gain} under {QUIZ_GAIN_FLOOR} "
+            f"({quiz.get('before')} of {len(items)} before, {quiz.get('after')} after"
+            + (f", round {rnd}" if isinstance(rnd, int) and rnd > 1 else "")
+            + "); not taught: " + "; ".join(untaught)
+            + '; `yt script --review --notes "teach: <fact>"`']
 
 
 def heard_trigger(samples: list[dict]) -> str:
@@ -3639,7 +3700,8 @@ class Screenwriter:
         the quiz of the draft a revision replaced: its items and its before
         score stand, since neither reads the narration, and only
         `quiz-after-r<round>` is asked. A failed call is recorded and the
-        review stands: the quiz is a measure, never a verdict or a flag. A
+        review stands: the quiz is a measure, never a verdict or a flag; a
+        low gain is a warning in story_findings (AUTO-162). A
         failed author or before is carried with what it left behind; the
         first after's failure is not, since the new after replaces it."""
         prior = prior if isinstance(prior, dict) else {}
@@ -3784,8 +3846,9 @@ class Screenwriter:
         shots = [s for sec in sections for s in sec.shots]
         current = self.review_round(sections, plan, 1)
         cold = self.cold_read(shots, plan)
-        # The viewer quiz rides on the cold read's record and nothing reads
-        # it back: no verdict, flag or gate below sees it (AUTO-115).
+        # The viewer quiz rides on the cold read's record (AUTO-115): no
+        # verdict, flag or gate below sees it, and only story_findings
+        # reads it back, as one warning when it taught nothing (AUTO-162).
         cold.update(self.viewer_quiz(shots, plan))
         record: dict = {"model": self.reviewer_model or self.model, "rounds": [],
                         "revisions": [], "redrafts": [], "kept": [], "unresolved": [],
@@ -3916,7 +3979,11 @@ class Screenwriter:
         """The story review in the stage's findings: a reject is an `error:`
         (doctor fails on it; it stops voice only under --gate), a review
         with too few valid samples a `warning:`, and each flag no revision
-        can reach a `warning:` with the command that can."""
+        can reach a `warning:` with the command that can. Last, the viewer
+        quiz's warning when its gain is under QUIZ_GAIN_FLOOR with facts
+        missed (`quiz_findings`, AUTO-162), from the quiz of the draft that
+        stands (a failed re-ask leaves no gain, so round 1's is not
+        warned); like every `warning:` it gates nothing."""
         out = []
         verdict = record.get("verdict")
         grades = record.get("grades") or {}
@@ -3943,6 +4010,9 @@ class Screenwriter:
         cold = record.get("cold_read") or {}
         if cold.get("failed"):
             out.append(f"warning: story review: the cold read failed ({cold['failed']})")
+        # AUTO-162: a quiz that taught nothing is the operator's to act on,
+        # never a flag: it is not in `unresolved`, and no revise sees it.
+        out += quiz_findings(cold)
         return out
 
     def revise_ledger(self, sections: list[Section], shots: list[Shot], plan: dict, *,

@@ -662,6 +662,63 @@ class Doctor(unittest.TestCase):
         notes = [f.message for f in self.report() if f.level == "note"]
         self.assertTrue(any("rule:passive (pt-BR)" in m for m in notes), notes)
 
+    def test_a_quiz_warning_warns_in_script(self):
+        # AUTO-162: a viewer quiz that taught nothing is a story-review
+        # warning in script.json, and doctor's `warning:` passthrough warns
+        # on it with the gain and the first untaught fact inside its clip
+        import json
+        line = script.quiz_findings({"quiz": {
+            "items": [{"id": "K1", "question": "What held up the four lanes?",
+                       "options": ["a cable", "one bolt", "a pier", "the deck"],
+                       "answer": "B", "from": "Q1"}] + [
+                      {"id": f"K{i}", "question": f"Question {i}?",
+                       "options": ["a", "b", "c", "d"], "answer": "A", "from": ""}
+                      for i in range(2, 5)],
+            "before": 1, "after": 1, "gain": 0, "round": 1,
+            "missed_after": [{"id": "K1", "question": "What held up the four lanes?",
+                              "chose": "A", "key": "B", "from": "Q1"}]}})
+        self.assertEqual(len(line), 1, line)
+        (self.root / "script.json").write_text(json.dumps({
+            "target_seconds": 10, "findings": line, "sections": [
+                {"heading": "S1", "shots": [{"label": "1.1", "narration": "x",
+                                             "seconds": 10}]}]}))
+        report = self.report()
+        self.assertFalse([f for f in report if f.level == "fail"], report)
+        warns = [f for f in report if f.level == "warn"
+                 and f.message.startswith("story review: viewer quiz gain 0 under 1")]
+        self.assertEqual(len(warns), 1, report)
+        self.assertIn('"one bolt"', warns[0].message)
+        self.assertEqual(warns[0].fix, "read the Findings section of script.md")
+
+    def test_a_long_quiz_warning_is_clipped_with_its_gain_kept(self):
+        # a first untaught question long enough to pass the 160-character
+        # clip: doctor cuts it at a word and marks the cut, and the gain,
+        # which leads the line, is still read
+        import json
+        question = ("Which of the eleven inspection reports filed between the two "
+                    "closures first named the corroded bolt under the north lane?")
+        line = script.quiz_findings({"quiz": {
+            "items": [{"id": "K1", "question": question,
+                       "options": ["the first", "the fourth", "the ninth", "none"],
+                       "answer": "B", "from": "Q1"}] + [
+                      {"id": f"K{i}", "question": f"Question {i}?",
+                       "options": ["a", "b", "c", "d"], "answer": "A", "from": ""}
+                      for i in range(2, 5)],
+            "before": 2, "after": 1, "gain": -1, "round": 1,
+            "missed_after": [{"id": "K1", "question": question, "chose": "A",
+                              "key": "B", "from": "Q1"}]}})
+        self.assertEqual(len(line), 1, line)
+        self.assertGreater(len(line[0]), 160)
+        (self.root / "script.json").write_text(json.dumps({
+            "target_seconds": 10, "findings": line, "sections": [
+                {"heading": "S1", "shots": [{"label": "1.1", "narration": "x",
+                                             "seconds": 10}]}]}))
+        warns = [f for f in self.report() if f.level == "warn"
+                 and f.message.startswith("story review: viewer quiz gain -1 under 1")]
+        self.assertEqual(len(warns), 1, self.report())
+        self.assertTrue(warns[0].message.endswith(" …"), warns[0].message)
+        self.assertLessEqual(len(warns[0].message), 162)
+        self.assertIn("2 of 4 before, 1 after", warns[0].message)
 
     def test_a_script_error_carried_into_build_json_fails_once(self):
         # build.json carries the screenplay's error for qa; doctor reports it
