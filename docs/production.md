@@ -250,6 +250,17 @@ placeholder, a blocking editorial note, a picture that ends before its
 narration, a sound design of which nothing reached the mix, or a credit
 error remains.
 
+And, beside the chain, `yt package` writes `package/`, the upload set an
+operator puts into YouTube Studio by hand (nothing is uploaded):
+`package.json` (title, description, chapters, tags, thumbnail, credits,
+sources, the `scene_sha256` and `video_sha256` it judged, its findings and a
+`verdict` of `ready` or `not ready`), `description.txt`, `thumbnail.png`
+(1280x720, a frame code offered), `captions.vtt` (a copy of narration.vtt)
+and `UPLOAD.md`, the checklist in Studio's order. The chapters, credits,
+sources and URLs are assembled from scene.xml, build.json and the dossier,
+never written by a model; `yt doctor` reads delivery as not ready until a
+current package says `ready`.
+
 ### The frame, in bands
 
 At 1920×1080, scaling proportionally elsewhere:
