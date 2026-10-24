@@ -224,6 +224,7 @@ from . import listen as listen_pass
 from .proofframes import (PROOF_DIFF, PROOF_LIMIT, mismatch_text,  # noqa: F401
                           proof_diff, proof_plan, ungraded)
 from . import render as render_stage
+from . import script as script_stage
 from . import rhythm
 from .build import EVEN_SHOTS, shots_from_scene  # noqa: F401  (standalone sampling)
 from .core import read_json, timecode, write_json
@@ -2755,13 +2756,15 @@ def scratch_blockers(voice: dict | None, where: str = "") -> list[str]:
 
 
 def mechanical_blockers(build: dict, *, gate: dict | None, voice: dict | None = None,
-                        where: str = "") -> list[str]:
+                        where: str = "", script: dict | None = None) -> list[str]:
     """What the manifests already prove blocks publication, before anyone
     looks: build.json's placeholders, errors and editorial blockers, the
-    fallback palette, a failed gate, and a scratch narration in voice.json
-    (`scratch_blockers`, read only when `voice` is given). qa.run asks
-    scratch_blockers on its own and adds it after the brief, so the
-    reviewer's "Blocking, already proven" stays what it was."""
+    fallback palette, a failed gate, a fact-check blocker standing in
+    script.json (`fact_rows`, read only when `script` is given, AUTO-133),
+    and a scratch narration in voice.json (`scratch_blockers`, read only
+    when `voice` is given). qa.run asks scratch_blockers on its own and
+    adds it after the brief, so the reviewer's "Blocking, already proven"
+    stays what it was."""
     out = []
     for label in build.get("placeholders", []):
         out.append(f"placeholder card at shot {label} (disqualifying)")
@@ -2783,8 +2786,22 @@ def mechanical_blockers(build: dict, *, gate: dict | None, voice: dict | None = 
             out.append(f"gate: {row.get('what', '')}")
         if not (gate.get("triage") or {}).get("blocking"):
             out.append(f"gate failed (exit {gate.get('exit')})")
+    out += [f"fact-check: blocker at {row['label']}: {row['problem']}"
+            for row in fact_rows(script)]
     out += scratch_blockers(voice, where)
     return out
+
+
+def fact_rows(script: dict | None) -> list[dict]:
+    """The fact-check blockers standing in script.json (AUTO-133): the one
+    definition the script gate and doctor read (script.fact_blockers). An
+    important or minor flag is never one; it stays the reviewer's context.
+    The scorecard records them under `accuracy`, where improve routes them."""
+    if not isinstance(script, dict):
+        return []
+    shots = [s for sec in script.get("sections") or [] if isinstance(sec, dict)
+             for s in sec.get("shots") or [] if isinstance(s, dict)]
+    return script_stage.fact_blockers(script.get("check"), shots)
 
 
 def vfx_blockers(vfx: dict | None, authored: list | None = None) -> list[str]:
@@ -4956,7 +4973,8 @@ def run(args) -> int:
     # A scratch narration (AUTO-152) blocks the verdict but is not briefed:
     # briefed under "Blocking, already proven" it would change the scorecard
     # prompt of every stub or espeak film and ask its cached pass again.
-    blockers = mechanical_blockers(build, gate=gate) + vfx_blockers(vfx_doc) + problems
+    blockers = (mechanical_blockers(build, gate=gate, script=script)
+                + vfx_blockers(vfx_doc) + problems)
     scratch = scratch_blockers(voice, where)
     previous = chosen
     for earlier in [] if named else reversed(_passes(home)):
@@ -5178,6 +5196,8 @@ def run(args) -> int:
                          "blocking": all_blocking, "frames": sorted(have),
                          "samples": samples, "mechanical": mechanical, "capped": capped,
                          "rhythm": rhythm_block,
+                         # what improve routes to the script (AUTO-133)
+                         "accuracy": {"fact_check": fact_rows(script)},
                          "proof_note": proof_note, "listening": listening,
                          "cut": cut, "side_by_side": side,
                          "contact_sheet": sheet.name, "engine": reviewer.report(),

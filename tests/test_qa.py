@@ -181,6 +181,23 @@ class Bar(unittest.TestCase):
         self.assertEqual(qa.mechanical_blockers({"placeholders": [], "findings": []},
                                                 gate=None), [])
 
+    def test_a_standing_fact_check_blocker_is_a_mechanical_blocker(self):
+        # AUTO-133: script.fact_blockers, the list the script gate reads;
+        # important flags and resolved blockers are not blockers.
+        script = {"sections": [{"shots": [{"n": 1, "label": "1.1"},
+                                          {"n": 2, "label": "1.2"}]}],
+                  "check": {"flags": [
+                      {"n": 2, "severity": "blocker", "problem": "no source for it"},
+                      {"n": 0, "severity": "blocker", "problem": "the title overclaims"},
+                      {"n": 1, "severity": "blocker", "problem": "p", "resolved": True},
+                      {"n": 1, "severity": "important", "problem": "overstated"}]}}
+        empty = {"placeholders": [], "findings": []}
+        self.assertEqual(qa.mechanical_blockers(empty, gate=None, script=script), [
+            "fact-check: blocker at 1.2: no source for it",
+            "fact-check: blocker at script-wide: the title overclaims"])
+        self.assertEqual(qa.mechanical_blockers(empty, gate=None,
+                                                script={"sections": script["sections"]}), [])
+
 
 class ScratchTake(unittest.TestCase):
     """A stub or espeak narration proves the timeline and is never published
@@ -764,6 +781,32 @@ class StoryStage(unittest.TestCase):
         self.assertNotIn(line, same["blocking"])
         self.assertEqual((same["verdict"], len(same["blocking"])),
                          (base["verdict"], len(base["blocking"])))
+
+    # AUTO-133: a fact-check blocker standing in script.json keeps the film
+    # off READY, and the scorecard records the rows improve routes.
+
+    def test_qa_run_with_a_standing_fact_check_blocker_is_not_ready(self):
+        line = "fact-check: blocker at 1.2: the wind speed is not in the research"
+        self.run_qa()
+        base = self.scorecard(1)
+        self.assertEqual(base["accuracy"], {"fact_check": []})
+        path = self.root / "script.json"
+        script = json.loads(path.read_text())
+        for n, shot in enumerate(script["sections"][0]["shots"], 1):
+            shot["n"] = n
+        script["check"] = {"flags": [
+            {"n": 2, "severity": "blocker", "problem": "the wind speed is not in the research",
+             "fix": "drop the number"},
+            {"n": 3, "severity": "important", "problem": "overstated", "fix": "hedge"}]}
+        path.write_text(json.dumps(script))
+        self.run_qa()
+        card = self.scorecard(2)
+        self.assertEqual(card["verdict"], qa.NOT_READY)
+        self.assertIn(line, card["blocking"])
+        self.assertEqual(len(card["blocking"]), len(base["blocking"]) + 1)
+        self.assertEqual(card["accuracy"], {"fact_check": [
+            {"n": 2, "label": "1.2", "problem": "the wind speed is not in the research",
+             "fix": "drop the number", "kept": False}]})
 
     # AUTO-156: qa.json says whether the judge is the one the QA fixtures
     # passed, and a line under the verdict says so; nothing reads it to gate.
