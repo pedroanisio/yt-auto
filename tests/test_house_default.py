@@ -300,7 +300,11 @@ class TheShippedText(unittest.TestCase):
     def test_the_script_section_names_the_opening_trigger_and_stays_short(self):
         # AUTO-136: the trigger went into an existing bullet, not a new one
         script = self.raw["script"]
-        self.assertIn("on a question, a paradox or an unexpected observation", script)
+        self.assertIn("Open on a question, a paradox or an unexpected observation.", script)
+        # the trigger did not cost the payoff rule, nor read as the question
+        # the promise restates
+        self.assertIn("Nothing promised goes unpaid.", script)
+        self.assertNotIn("question within the first 30 seconds, on a question", script)
         self.assertIn(("attention", 1), cited(COMMENT.search(script).group(1)))
         self.assertEqual(len(self.parsed["script"].splitlines()), 11)
         self.assertLess(len(script), 1500)
