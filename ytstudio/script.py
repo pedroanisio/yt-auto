@@ -1545,12 +1545,147 @@ MATCH_SCHEMA = {
     "required": ["verdict", "difference"],
 }
 
+#: The viewer quiz (AUTO-115, after Code2Video's TeachQuiz): whether a
+#: viewer learns the facts the film teaches, which the cold read does not
+#: ask. Its author is shown the plan and the research and never the
+#: narration, since a quiz written from the words would test them against
+#: themselves. The cold reader takes it twice: before it has heard
+#: anything, and after hearing the narration. It is a measure: it scores
+#: nothing, gates nothing and feeds no flag.
+QUIZ_ROLE = (
+    "You write a short multiple-choice quiz on what a film sets out to teach, "
+    "from its plan and the research behind it. You have not seen the film. Each "
+    "question has one right answer a viewer could only know from being told it, "
+    "and three wrong options a viewer who was never told might believe.")
+
+#: How many items a quiz holds, and the letters an item is keyed with.
+QUIZ_ITEMS = (4, 8)
+QUIZ_KEYS = ("A", "B", "C", "D")
+
+QUIZ_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "items": {
+            "type": "array", "minItems": QUIZ_ITEMS[0], "maxItems": QUIZ_ITEMS[1],
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "K1, K2, ..."},
+                    "question": {"type": "string"},
+                    "options": {"type": "array", "items": {"type": "string"},
+                                "minItems": 4, "maxItems": 4, "description": (
+                                    "four distinct options, in the order A, B, C, D")},
+                    "answer": {"type": "string", "enum": list(QUIZ_KEYS),
+                               "description": "the letter of the right option"},
+                    "from": {"type": "string", "description": (
+                        "the plan question's id it tests, or the research claim, "
+                        "in a few words")},
+                },
+                "required": ["id", "question", "options", "answer", "from"],
+            },
+        },
+    },
+    "required": ["items"],
+}
+
+#: What the cold reader is told in place of the narration before it has
+#: heard any (`quiz-before`): its answers are the audience's prior, so it
+#: says it does not know rather than answer from what a model knows.
+QUIZ_BEFORE = ("You have heard nothing yet; answer as the film's audience would before "
+               "watching, and say 'unsure' rather than guess from expertise.")
+
+QUIZ_ANSWERS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "answers": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"id": {"type": "string"},
+                               "choice": {"type": "string",
+                                          "enum": [*QUIZ_KEYS, "unsure"]}},
+                "required": ["id", "choice"],
+            },
+        },
+    },
+    "required": ["answers"],
+}
+
 #: A story-review sample's decision name, and the sample (seed) it is.
 _STORY_NAME = re.compile(r"^review-r\d+-s(\d+)(?:-again)?$")
 #: The cold reader's decisions (`cold-read`, `cold-read-answers`, and
-#: `-r<round>` when the draft that stands is read again) and the match's.
-_COLD_NAME = re.compile(r"^cold-read(?:-answers)?(?:-r\d+)?$")
+#: `-r<round>` when the draft that stands is read again; the viewer quiz it
+#: takes, `quiz-before` and `quiz-after`, AUTO-115) and the match's.
+_COLD_NAME = re.compile(r"^(?:cold-read(?:-answers)?|quiz-before|quiz-after)(?:-r\d+)?$")
 _MATCH_NAME = re.compile(r"^cold-read-match(?:-r\d+)?$")
+#: The viewer quiz's author (`quiz`, and `quiz-again` for a bad item set).
+_QUIZ_NAME = re.compile(r"^quiz(?:-again)?$")
+
+
+def quiz_problems(items) -> list[str]:
+    """What makes a quiz's item set unusable, in words the author is asked
+    again with: the wrong number of items, an id used twice, an item
+    without four distinct non-empty options, or a key that is not A to D."""
+    if not isinstance(items, list):
+        return ["items is not a list"]
+    out = []
+    if not QUIZ_ITEMS[0] <= len(items) <= QUIZ_ITEMS[1]:
+        out.append(f"{len(items)} items, not {QUIZ_ITEMS[0]} to {QUIZ_ITEMS[1]}")
+    ids = set()
+    for n, item in enumerate(items, 1):
+        if not isinstance(item, dict):
+            out.append(f"item {n} is not an object")
+            continue
+        name = str(item.get("id") or "").strip()
+        if not name or name in ids:
+            out.append(f"item {n}'s id {name!r} is empty or used twice")
+        ids.add(name)
+        if not str(item.get("question") or "").strip():
+            out.append(f"{name or n} has no question")
+        options = item.get("options")
+        plain = [" ".join(str(o).split()).lower() for o in options] \
+            if isinstance(options, list) else []
+        if len(plain) != 4 or not all(plain) or len(set(plain)) != 4:
+            out.append(f"{name or n} needs four distinct, non-empty options")
+        if item.get("answer") not in QUIZ_KEYS:
+            out.append(f"{name or n}'s answer {item.get('answer')!r} is not A, B, C or D")
+    return out
+
+
+def _heard(shots) -> str:
+    """The narration as the cold reader hears it: shot by shot, numbered."""
+    return ("The narration, shot by shot, each with its number:\n\n"
+            + "\n".join(f"{s.n}. {s.narration or SILENT}" for s in shots))
+
+
+def _quiz_sheet(items: list[dict]) -> str:
+    """The quiz as its taker sees it: each item's id, question and lettered
+    options, never its key or where it came from."""
+    out = ["The quiz. For each item give its id and the letter you choose, or "
+           "'unsure':"]
+    for item in items:
+        out.append(f"\n{item['id']}. {item['question']}")
+        out += [f"   {k}. {o}" for k, o in zip(QUIZ_KEYS, item["options"])]
+    return "\n".join(out)
+
+
+def quiz_score(items: list[dict], answers) -> tuple[int, list[dict]]:
+    """How many items the reader chose the keyed letter on, unweighted, and
+    the items it missed with what it chose (empty when it gave no answer).
+    Only the letters are compared: nothing here reads the narration."""
+    chosen: dict[str, str] = {}
+    for a in (answers.get("answers") if isinstance(answers, dict) else None) or []:
+        if isinstance(a, dict):
+            chosen.setdefault(str(a.get("id")), str(a.get("choice") or "").strip())
+    right, missed = 0, []
+    for item in items:
+        chose = chosen.get(str(item["id"]), "")
+        if chose.upper() == item["answer"]:
+            right += 1
+        else:
+            missed.append({"id": item["id"], "question": item["question"], "chose": chose,
+                           "key": item["answer"], "from": item.get("from", "")})
+    return right, missed
 
 
 #: Curly quote marks, read as their straight forms when a flag's quote is
@@ -1637,6 +1772,34 @@ def story_flag_line(f: dict) -> str:
             f"{str(f.get('problem') or '').strip()}" + (f" (fix: {fix})" if fix else ""))
 
 
+def quiz_lines(cold) -> list[str]:
+    """The viewer quiz for script.md (AUTO-115), labelled as the measure it
+    is: the before and after counts, the gain, and the items missed after
+    the narration with their key. Empty when no quiz was asked."""
+    cold = cold if isinstance(cold, dict) else {}
+    quiz = cold.get("quiz") if isinstance(cold.get("quiz"), dict) else {}
+    out = []
+    if quiz.get("items"):
+        of = len(quiz["items"])
+
+        def count(n):
+            return f"{n} of {of}" if n is not None else "not scored"
+        after = (f"after the draft revised in round {quiz['round']}"
+                 if (quiz.get("round") or 1) > 1 else "after hearing the narration")
+        gain = f"gain {quiz['gain']}" if quiz.get("gain") is not None else "no gain measured"
+        out.append(f"Viewer quiz (a measure: it scores nothing and gates nothing): "
+                   f"{count(quiz.get('before'))} right before, {count(quiz.get('after'))} "
+                   f"{after}, {gain}. The \"before\" is a model's prior, not a lay "
+                   "viewer's.")
+        for m in quiz.get("missed_after") or []:
+            out.append(f"- missed {m.get('id')} \"{m.get('question')}\": chose "
+                       f"{m.get('chose') or 'nothing'}, keyed {m.get('key')}"
+                       + (f" (from {m['from']})" if m.get("from") else ""))
+    if cold.get("quiz_failed"):
+        out.append(f"Viewer quiz failed: {cold['quiz_failed']}")
+    return out + [""] if out else []
+
+
 def story_review_lines(record) -> list[str]:
     """The story review for script.md, beside the plan review and the
     fact-check: the verdict and its samples, the grades, the cold read, what
@@ -1684,6 +1847,7 @@ def story_review_lines(record) -> list[str]:
         out.append("")
     elif cold.get("failed"):
         out += [f"Cold read failed: {cold['failed']}", ""]
+    out += quiz_lines(cold)
     for r in record.get("revisions") or []:
         out.append(f"- revised {r.get('label')}: \"{r.get('before', '')}\" -> "
                    f"\"{r.get('after', '')}\" ({r.get('why', '')})")
@@ -1807,17 +1971,21 @@ class Screenwriter:
 
     def _reader(self, which: object) -> harness.Harness:
         """The story review's harness for sample `which` (an int seed),
-        `cold` or `match`: the reviewer's model and books, its own role.
-        The cold reader alone has no house and no feedback notes (judging
-        14: it knows the words and nothing else)."""
+        `cold`, `match` or `quiz`: the reviewer's model and books, its own
+        role. The cold reader has no house and no feedback notes (judging
+        14: it knows the words and nothing else); nor has the quiz's author
+        (AUTO-115), whose items are the plan's facts, not the channel's
+        voice."""
         if which not in self._readers:
             cold = which == "cold"
+            bare = cold or which == "quiz"
             role = (COLD_ROLE if cold else MATCH_ROLE if which == "match"
+                    else QUIZ_ROLE if which == "quiz"
                     else narrative.reviewer_role(seed=int(which)))
             self._readers[which] = harness.Harness(
                 self.root or ".", "script", model=self.reviewer_model or self.model,
-                role=role, house="" if cold else self.house,
-                house_digest=self.house_digest, feedback=not cold,
+                role=role, house="" if bare else self.house,
+                house_digest=self.house_digest, feedback=not bare,
                 budget_usd=self.review_budget_usd, fresh=self.fresh,
                 verbose=self.verbose, usage=self.usage,
                 decisions=self.harness.decisions, lock=self.harness.lock,
@@ -1837,6 +2005,8 @@ class Screenwriter:
         if _COLD_NAME.match(name) or _MATCH_NAME.match(name):
             return self._reader("cold" if _COLD_NAME.match(name) else "match").decide(
                 name, prompt, schema)
+        if _QUIZ_NAME.match(name):
+            return self._reader("quiz").decide(name, prompt, schema)
         drafting = ("shots" in schema.get("properties", {}) and self.draft_effort
                     and not claude_engine.default_for("effort"))
         return (self._drafter if drafting else self.harness).decide(name, prompt, schema)
@@ -2791,8 +2961,7 @@ class Screenwriter:
         samples still stand."""
         tag = "" if round_no == 1 else f"-r{round_no}"
         questions = [q for q in plan.get("questions") or [] if isinstance(q, dict)]
-        narration = ("The narration, shot by shot, each with its number:\n\n"
-                     + "\n".join(f"{s.n}. {s.narration or SILENT}" for s in shots))
+        narration = _heard(shots)
         try:
             read = self._ask(
                 f"cold-read{tag}",
@@ -2840,6 +3009,98 @@ class Screenwriter:
         out["match"] = str(match.get("verdict", ""))
         out["difference"] = str(match.get("difference", ""))
         return out
+
+    def viewer_quiz(self, shots: list[Shot], plan: dict, round_no: int = 1,
+                    prior: dict | None = None) -> dict:
+        """The viewer quiz (AUTO-115), for the cold read's record: `quiz`,
+        and `quiz_failed` when a call failed.
+
+        On the first draft its author (`quiz`) is shown the train, the
+        misconception, the plan's questions the film answers (one left open
+        on purpose has nothing to key) and the research, never the
+        narration, and writes 4 to 8 keyed multiple-choice items; a set
+        `quiz_problems` rejects is asked again once (`quiz-again`). The cold
+        reader takes it before hearing anything (`quiz-before`) and after
+        hearing the narration (`quiz-after`), shown the items without their
+        key or source. Each is scored against the key by letter. `prior` is
+        the quiz of the draft a revision replaced: its items and its before
+        score stand, since neither reads the narration, and only
+        `quiz-after-r<round>` is asked. A failed call is recorded and the
+        review stands: the quiz is a measure, never a verdict or a flag."""
+        prior = prior if isinstance(prior, dict) else {}
+        out: dict = {}
+        if prior.get("quiz"):
+            quiz = {k: prior["quiz"][k] for k in ("items", "before")}
+            if str(prior.get("quiz_failed") or "").startswith("quiz-before"):
+                out["quiz_failed"] = prior["quiz_failed"]
+        elif prior.get("quiz_failed"):
+            return {"quiz_failed": prior["quiz_failed"]}
+        else:
+            try:
+                items = self._quiz_items(plan)
+            except ClaudeError as exc:
+                self._say(f"[review] quiz failed ({exc})")
+                return {"quiz_failed": f"quiz: {exc}"}
+            quiz = {"items": items, "before": None}
+            try:
+                quiz["before"] = quiz_score(items, self._ask(
+                    "quiz-before", QUIZ_BEFORE + "\n\n" + _quiz_sheet(items),
+                    QUIZ_ANSWERS_SCHEMA))[0]
+            except ClaudeError as exc:
+                self._say(f"[review] quiz-before failed ({exc})")
+                out["quiz_failed"] = f"quiz-before: {exc}"
+        tag = "" if round_no == 1 else f"-r{round_no}"
+        quiz.update(after=None, gain=None, missed_after=[], round=round_no)
+        try:
+            got = self._ask(
+                f"quiz-after{tag}",
+                _heard(shots) + "\n\nAnswer from this narration alone; say 'unsure' "
+                "where it never told you.\n\n" + _quiz_sheet(quiz["items"]),
+                QUIZ_ANSWERS_SCHEMA)
+            quiz["after"], quiz["missed_after"] = quiz_score(quiz["items"], got)
+        except ClaudeError as exc:
+            self._say(f"[review] quiz-after{tag} failed ({exc})")
+            out["quiz_failed"] = f"quiz-after{tag}: {exc}"
+        if quiz["before"] is not None and quiz["after"] is not None:
+            quiz["gain"] = quiz["after"] - quiz["before"]
+        out["quiz"] = quiz
+        return out
+
+    def _quiz_items(self, plan: dict) -> list[dict]:
+        """The quiz's items from its author, asked once more as
+        `quiz-again` with what was wrong; a ClaudeError when the second set
+        is still unusable."""
+        asked = [q for q in plan.get("questions") or []
+                 if isinstance(q, dict) and int(q.get("closed_in") or 0) > 0]
+        parts = [f"The question the film is built on (its train):\n"
+                 f"{str(plan.get('train') or '').strip()}"]
+        if str(plan.get("misconception") or "").strip():
+            parts.append(f"What a typical viewer wrongly believes:\n{plan['misconception']}")
+        if asked:
+            parts.append("The questions the film answers:\n"
+                         + "\n".join(f"- {q.get('id')}: {q.get('text')}" for q in asked))
+        if self.research:
+            parts.append("The research behind it:\n" + self.research)
+        prompt = ("\n\n".join(parts) + f"\n\nWrite {QUIZ_ITEMS[0]} to {QUIZ_ITEMS[1]} "
+                  "multiple-choice questions on the facts this film sets out to teach, "
+                  "each from one of its questions or a claim in the research (say which "
+                  "in `from`). Give each four distinct options and key the right one "
+                  "by its letter. A viewer who was never told the answer should not be "
+                  "able to pick it by its wording alone.")
+        got = self._ask("quiz", prompt, QUIZ_SCHEMA)
+        problems = quiz_problems(got.get("items") if isinstance(got, dict) else None)
+        if problems:
+            self._say(f"[review] quiz: asking again ({'; '.join(problems[:3])})")
+            got = self._ask("quiz-again", prompt + "\n\nYour last quiz could not be used: "
+                            + "; ".join(problems[:10]) + ". Write it again.", QUIZ_SCHEMA)
+            problems = quiz_problems(got.get("items") if isinstance(got, dict) else None)
+            if problems:
+                raise ClaudeError("the quiz-again items are unusable: "
+                                  + "; ".join(problems[:5]))
+        return [{"id": str(i["id"]).strip(), "question": str(i["question"]).strip(),
+                 "options": [str(o).strip() for o in i["options"]],
+                 "answer": i["answer"], "from": str(i.get("from") or "").strip()}
+                for i in got["items"]]
 
     def _renumber(self, sections: list[Section]) -> list[Shot]:
         """Number every shot again after a section was redrafted: its place
@@ -2906,6 +3167,9 @@ class Screenwriter:
         shots = [s for sec in sections for s in sec.shots]
         current = self.review_round(sections, plan, 1)
         cold = self.cold_read(shots, plan)
+        # The viewer quiz rides on the cold read's record and nothing reads
+        # it back: no verdict, flag or gate below sees it (AUTO-115).
+        cold.update(self.viewer_quiz(shots, plan))
         record: dict = {"model": self.reviewer_model or self.model, "rounds": [],
                         "revisions": [], "redrafts": [], "kept": [], "unresolved": [],
                         "cold_read": cold, "previous_verdicts": [], "reverted": False}
@@ -2974,7 +3238,11 @@ class Screenwriter:
         if round_no > 1:
             # A revision stood: the cold reader reads the draft that stands,
             # so its premise and its match speak of the narration voiced.
+            # The quiz's items and its before score do not read the
+            # narration, so they carry over; only the after is asked again.
+            first = cold
             record["cold_read"] = cold = self.cold_read(shots, plan, round_no)
+            cold.update(self.viewer_quiz(shots, plan, round_no, prior=first))
         # What no revision of lines can reach, from the draft that stands:
         # the plan flags of its own review (an earlier round's that a better
         # draft no longer raises are gone) and its cold read's mismatch.

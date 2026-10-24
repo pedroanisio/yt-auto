@@ -31,6 +31,7 @@ import copy
 import io
 import json
 import re
+import shutil
 import sys
 import tempfile
 import unittest
@@ -66,6 +67,10 @@ def kind(schema):
             return name
     if "verdict" in props:
         return "match"
+    if "items" in props:
+        return "quiz"
+    if "answers" in props:
+        return "quiz-answers"
     return ""
 
 
@@ -115,6 +120,28 @@ COLD = {"premise": "A bridge fell because of one bolt nobody could see.",
         "unexplained_terms": ["gusset"],
         "claims": [{"claim": "one bolt held four lanes", "why_care": "you drive on one"}]}
 ANSWERS = {"answered": [{"question_id": "Q1", "shot_index": 5}]}
+
+#: A keyed viewer quiz (AUTO-115): four items, two from the plan's
+#: questions and two from the research. Its wording is its own, never a
+#: plan question's text, so a test can tell the plan's words from the quiz's.
+QUIZ = {"items": [
+    {"id": "K1", "question": "What held up the four lanes?",
+     "options": ["a cable", "one bolt", "a pier", "the deck"], "answer": "B", "from": "Q1"},
+    {"id": "K2", "question": "What kept the flaw from the inspectors?",
+     "options": ["rust", "paint", "water", "darkness"], "answer": "B", "from": "Q2"},
+    {"id": "K3", "question": "When does the twin bridge open?",
+     "options": ["in a year", "in a week", "in a month", "never"], "answer": "C",
+     "from": "QUIZ-FROM-CLAIM-ONE"},
+    {"id": "K4", "question": "How old was the bridge?",
+     "options": ["10 years", "40 years", "80 years", "120 years"], "answer": "B",
+     "from": "QUIZ-FROM-CLAIM-TWO"},
+]}
+#: Before the narration: one right (K4), one wrong, two unsure.
+BEFORE = {"answers": [{"id": "K1", "choice": "unsure"}, {"id": "K2", "choice": "A"},
+                      {"id": "K3", "choice": "unsure"}, {"id": "K4", "choice": "B"}]}
+#: After it: three right, K3 wrong (A for C).
+AFTER = {"answers": [{"id": "K1", "choice": "B"}, {"id": "K2", "choice": "B"},
+                     {"id": "K3", "choice": "A"}, {"id": "K4", "choice": "B"}]}
 
 ACCEPT = {"verdict": "accept", "train_ok": True, "reorder_survives": False,
           "sections_advancing_none": [], "payoff_concrete": True,
@@ -331,6 +358,10 @@ class Engine(FakeEngine):
             return {"flags": [], "verdict": "fine"}
         if which == "edits":
             return {"edits": []}
+        if which == "quiz":
+            return copy.deepcopy(QUIZ)
+        if which == "quiz-answers":
+            return copy.deepcopy(BEFORE if script.QUIZ_BEFORE in prompt else AFTER)
         return {}
 
 
@@ -1240,6 +1271,313 @@ class Doctor(unittest.TestCase):
         self.assertIn("2 verdict", notes[0].message)
         self.assertIn("1 labelled", notes[0].message)
         self.assertIn("copy", notes[0].fix + notes[0].message)
+
+
+# --------------------------------------------------------------------------- #
+# the viewer quiz, a measure beside the cold reader (AUTO-115)
+# --------------------------------------------------------------------------- #
+
+def quizzed(answers=None, *, quiz=QUIZ, before=BEFORE, after=AFTER):
+    """`answers` with the viewer quiz's three decisions answered."""
+    out = {"quiz": quiz, "quiz-before": before, "quiz-after": after}
+    out.update(answers or {})
+    return out
+
+
+def failing(*_):
+    raise ClaudeError("the reader timed out")
+
+
+#: A narration line as the default fake writes it: `line 2.1`.
+_NARRATION = re.compile(r"\bline \d\.\d\b")
+
+
+class ViewerQuiz(unittest.TestCase):
+    def test_the_quiz_is_written_from_the_plan_and_research_never_the_narration(self):
+        plan = copy.deepcopy(PLAN)
+        plan["questions"].append({"id": "Q3", "text": "LEFT-OPEN-QUESTION?", "opened_in": 3,
+                                  "closed_in": 0, "left_open_why": "the next film"})
+        w = writer(research="RESEARCH-ONLY-TEXT")
+        calls = faked(w, quizzed({"plan": plan}))
+        w.run(review=True)
+        authors = [c for c in calls if c["name"] == "quiz"]
+        self.assertEqual(len(authors), 1, names(calls))
+        prompt = authors[0]["prompt"]
+        for text in ("What brought the bridge down?", "Why did no inspection see it?",
+                     "RESEARCH-ONLY-TEXT", PLAN["train"], PLAN["misconception"]):
+            self.assertIn(text, prompt, text)
+        # a question left open on purpose has no answer to key
+        self.assertNotIn("LEFT-OPEN-QUESTION?", prompt)
+        # the narration is what the quiz measures: written from it, it would
+        # test the words against themselves
+        self.assertIsNone(_NARRATION.search(prompt), prompt)
+        self.assertEqual(authors[0]["schema"], script.QUIZ_SCHEMA)
+
+    def test_the_quiz_taker_is_never_shown_the_key_or_where_an_item_came_from(self):
+        rekeyed = copy.deepcopy(QUIZ)
+        for item, key in zip(rekeyed["items"], "DCBA"):
+            item["answer"], item["from"] = key, "ANOTHER-SOURCE"
+        prompts = []
+        for quiz in (QUIZ, rekeyed):
+            w = writer(research="RESEARCH-ONLY-TEXT")
+            calls = faked(w, quizzed(quiz=quiz))
+            w.run(review=True)
+            prompts.append({c["name"]: c["prompt"] for c in calls
+                            if c["name"] in ("quiz-before", "quiz-after")})
+        self.assertEqual(set(prompts[0]), {"quiz-before", "quiz-after"})
+        # the same items keyed otherwise ask the reader exactly the same
+        self.assertEqual(prompts[0], prompts[1])
+        for prompt in prompts[0].values():
+            self.assertIn("What held up the four lanes?", prompt)
+            self.assertIn("one bolt", prompt)
+            self.assertNotIn("QUIZ-FROM-CLAIM", prompt)
+
+    def test_the_answers_are_scored_against_the_key_and_the_gain_recorded(self):
+        w = writer()
+        faked(w, quizzed())
+        record = w.run(review=True)["review"]
+        quiz = record["cold_read"]["quiz"]
+        self.assertEqual(quiz["items"], QUIZ["items"])
+        self.assertEqual((quiz["before"], quiz["after"], quiz["gain"], quiz["round"]),
+                         (1, 3, 2, 1))
+        self.assertEqual(quiz["missed_after"], [
+            {"id": "K3", "question": "When does the twin bridge open?", "chose": "A",
+             "key": "C", "from": "QUIZ-FROM-CLAIM-ONE"}])
+        self.assertNotIn("quiz_failed", record["cold_read"])
+
+    def test_an_item_left_unanswered_or_answered_off_the_letters_is_missed(self):
+        after = {"answers": [{"id": "K1", "choice": "b"}, {"id": "K2", "choice": "E"},
+                             {"id": "K4", "choice": "unsure"}, {"id": "K9", "choice": "C"}]}
+        w = writer()
+        faked(w, quizzed(after=after))
+        quiz = w.run(review=True)["review"]["cold_read"]["quiz"]
+        # a lower-case letter is the letter; nothing else counts
+        self.assertEqual(quiz["after"], 1)
+        self.assertEqual([(m["id"], m["chose"]) for m in quiz["missed_after"]],
+                         [("K2", "E"), ("K3", ""), ("K4", "unsure")])
+
+    def test_a_bad_item_set_is_asked_again_once_then_recorded_as_failed(self):
+        bad_sets = []
+        dup = copy.deepcopy(QUIZ)
+        dup["items"][0]["options"] = ["one bolt", "one bolt", "a pier", "the deck"]
+        bad_sets.append(dup)
+        same_id = copy.deepcopy(QUIZ)
+        same_id["items"][1]["id"] = "K1"
+        bad_sets.append(same_id)
+        empty = copy.deepcopy(QUIZ)
+        empty["items"][2]["options"][3] = " "
+        bad_sets.append(empty)
+        bad_sets.append({"items": QUIZ["items"][:3]})
+        three = copy.deepcopy(QUIZ)
+        three["items"][3]["options"] = three["items"][3]["options"][:3]
+        bad_sets.append(three)
+        keyless = copy.deepcopy(QUIZ)
+        keyless["items"][0]["answer"] = "E"
+        bad_sets.append(keyless)
+        for bad in bad_sets:
+            w = writer()
+            calls = faked(w, quizzed({"quiz-again": QUIZ}, quiz=bad))
+            record = w.run(review=True)["review"]
+            self.assertEqual(names(calls).count("quiz-again"), 1, bad)
+            again = next(c for c in calls if c["name"] == "quiz-again")
+            self.assertEqual(again["schema"], script.QUIZ_SCHEMA)
+            self.assertEqual(record["cold_read"]["quiz"]["items"], QUIZ["items"], bad)
+        # a second bad set: no quiz, no exception, the review stands
+        w = writer()
+        calls = faked(w, quizzed({"quiz-again": dup}, quiz=dup))
+        record = w.run(review=True)["review"]
+        self.assertIn("quiz_failed", record["cold_read"])
+        self.assertNotIn("quiz", record["cold_read"])
+        self.assertFalse({"quiz-before", "quiz-after"} & set(names(calls)))
+        self.assertEqual(record["verdict"], "recommend")
+        self.assertEqual(record["cold_read"]["premise"], COLD["premise"])
+        # a failed author call is the same
+        w = writer()
+        calls = faked(w, quizzed({"quiz": failing}))
+        record = w.run(review=True)["review"]
+        self.assertIn("timed out", record["cold_read"]["quiz_failed"])
+        self.assertNotIn("quiz-again", names(calls))
+
+    def test_a_failed_quiz_before_still_scores_the_after(self):
+        w = writer()
+        faked(w, quizzed({"quiz-before": failing}))
+        cold = w.run(review=True)["review"]["cold_read"]
+        self.assertIn("quiz-before", cold["quiz_failed"])
+        self.assertEqual((cold["quiz"]["before"], cold["quiz"]["after"], cold["quiz"]["gain"]),
+                         (None, 3, None))
+
+    def test_a_revision_that_stands_is_quizzed_again_on_the_same_items(self):
+        w = writer()
+        answers = consider_then(("recommend", "better"))
+        answers["revise-story-1"] = {"fixes": [{"n": 1, "action": "fix",
+                                                "narration": "The river is empty now.",
+                                                "why": "opens on the picture"}]}
+        right = {"answers": [{"id": i["id"], "choice": i["answer"]} for i in QUIZ["items"]]}
+        calls = faked(w, quizzed(dict(answers, **{"quiz-after-r2": right})))
+        record = w.run(review=True)["review"]
+        order = names(calls)
+        for name, times in (("quiz", 1), ("quiz-before", 1), ("quiz-after", 1),
+                            ("quiz-after-r2", 1)):
+            self.assertEqual(order.count(name), times, (name, order))
+        self.assertLess(order.index("cold-read-r2"), order.index("quiz-after-r2"))
+        reread = next(c for c in calls if c["name"] == "quiz-after-r2")
+        self.assertIn("The river is empty now.", reread["prompt"])
+        quiz = record["cold_read"]["quiz"]
+        self.assertEqual(record["cold_read"]["round"], 2)
+        self.assertEqual(quiz["items"], QUIZ["items"])
+        self.assertEqual((quiz["before"], quiz["after"], quiz["gain"], quiz["round"]),
+                         (1, 4, 3, 2))
+        self.assertEqual(quiz["missed_after"], [])
+        # a revision put back is not quizzed again
+        w = writer()
+        answers = consider_then(("consider", "same"))
+        answers["revise-story-1"] = {"fixes": [{"n": 1, "action": "fix",
+                                                "narration": "A rewrite.", "why": "w"}]}
+        calls = faked(w, quizzed(answers))
+        record = w.run(review=True)["review"]
+        self.assertNotIn("quiz-after-r2", names(calls))
+        self.assertEqual(record["cold_read"]["quiz"]["round"], 1)
+
+    def test_the_cold_reads_own_questions_are_asked_as_before(self):
+        # the quiz shares the cold read's layout of the narration; the cold
+        # read's prompts, and so its cached decisions, are what they were
+        w = writer()
+        calls = faked(w, quizzed())
+        w.run(review=True)
+        heard = ("The narration, shot by shot, each with its number:\n\n"
+                 "1. line 1.1\n2. line 1.2\n3. line 2.1\n4. line 2.2\n5. line 3.1\n"
+                 "6. line 3.2")
+        read = next(c for c in calls if c["name"] == "cold-read")
+        self.assertEqual(read["prompt"], heard + (
+            "\n\nRestate the film's premise in your own words, list the terms a viewer "
+            "needs and is never told, and for each major claim say why a viewer should "
+            "care about it as the narration puts it."))
+        after = next(c for c in calls if c["name"] == "quiz-after")
+        self.assertTrue(after["prompt"].startswith(heard + "\n\n"), after["prompt"])
+
+    def test_without_review_no_quiz_is_asked(self):
+        w = writer()
+        calls = faked(w, quizzed())
+        w.run()
+        self.assertFalse([n for n in names(calls) if n.startswith("quiz")])
+
+    def test_the_quiz_is_routed_to_its_own_reader_and_the_takers_to_the_cold_one(self):
+        for name in ("quiz", "quiz-again"):
+            self.assertTrue(script._QUIZ_NAME.match(name), name)
+        for name in ("quiz-before", "quiz-after", "quiz-after-r2", "cold-read",
+                     "cold-read-answers-r3"):
+            self.assertTrue(script._COLD_NAME.match(name), name)
+            self.assertFalse(script._QUIZ_NAME.match(name), name)
+
+
+class ViewerQuizReader(EngineCase):
+    def test_the_quiz_taker_is_the_cold_reader_and_knows_only_the_words(self):
+        (self.root / "feedback").mkdir()
+        (self.root / "feedback" / "script.md").write_text("FEEDBACK-ONLY-TEXT")
+        w = script.Screenwriter(idea(), root=self.root, verbose=False, minutes=1, jobs=1,
+                                model="sonnet", reviewer_model="opus",
+                                house="HOUSE-ONLY-TEXT", research="RESEARCH-ONLY-TEXT")
+        data = w.run(review=True)
+        cold = next(c for c in Engine.seen if c["kind"] == "cold-read")
+        author = [c for c in Engine.seen if c["kind"] == "quiz"]
+        taken = [c for c in Engine.seen if c["kind"] == "quiz-answers"]
+        self.assertEqual(len(author), 1)
+        self.assertEqual(len(taken), 2)
+        before, after = taken
+        self.assertIn(script.QUIZ_BEFORE, before["prompt"])
+        self.assertNotIn(script.QUIZ_BEFORE, after["prompt"])
+        self.assertEqual({c["model"] for c in author + taken}, {"opus"})
+        # one reader: the cold reader's system, and no house or notes in it
+        for c in taken:
+            self.assertEqual(c["system"], cold["system"])
+        self.assertNotIn("line 1.1", before["prompt"])
+        self.assertIn("line 1.1", after["prompt"])
+        private = ("HOUSE-ONLY-TEXT", "RESEARCH-ONLY-TEXT", "FEEDBACK-ONLY-TEXT",
+                   PLAN["train"], PLAN["misconception"], PLAN["stakes"], PLAN["logline"],
+                   "QUIZ-FROM-CLAIM", *(q["text"] for q in PLAN["questions"]))
+        for c in taken:
+            for text in private:
+                self.assertNotIn(text, c["prompt"] + c["system"], text)
+        # the author has its own role, and is never the cold reader
+        self.assertIn(script.QUIZ_ROLE, author[0]["system"])
+        self.assertNotEqual(author[0]["system"], cold["system"])
+        quiz = data["review"]["cold_read"]["quiz"]
+        self.assertEqual((quiz["before"], quiz["after"], quiz["gain"]), (1, 3, 2))
+        for name in ("quiz", "quiz-before", "quiz-after"):
+            self.assertTrue((self.root / "decisions" / "script" / f"{name}.json").is_file(),
+                            name)
+
+
+#: Eight items, every one keyed A, for the gain-0 and gain-8 runs.
+QUIZ8 = {"items": [{"id": f"K{i}", "question": f"Question {i}?",
+                    "options": [f"right {i}", f"wrong {i}a", f"wrong {i}b", f"wrong {i}c"],
+                    "answer": "A", "from": "Q1"} for i in range(1, 9)]}
+ALL_RIGHT = {"answers": [{"id": f"K{i}", "choice": "A"} for i in range(1, 9)]}
+ALL_UNSURE = {"answers": [{"id": f"K{i}", "choice": "unsure"} for i in range(1, 9)]}
+
+
+class ViewerQuizCommand(unittest.TestCase):
+    """The quiz through `yt script`: it is in script.json and script.md, and
+    no verdict, flag, gate or exit code moves with it."""
+    setUp = Command.setUp
+    run_stage = Command.run_stage
+    rejected = Command.rejected
+
+    def outcome(self, *flags, answers):
+        for path in self.film.iterdir():
+            if path.name != "idea.json":
+                (shutil.rmtree if path.is_dir() else Path.unlink)(path)
+        code, asked, said = self.run_stage(*flags, answers=answers)
+        record = json.loads((self.film / "script.json").read_text())
+        narration = self.film / "narration.txt"
+        review = record["review"]
+        return {"code": code, "verdict": review["verdict"], "flags": review["flags"],
+                "unresolved": review["unresolved"], "findings": record["findings"],
+                "narration": narration.read_text() if narration.exists() else None,
+                "quiz": review["cold_read"].get("quiz"),
+                "quiz_failed": review["cold_read"].get("quiz_failed")}
+
+    def test_a_failed_quiz_after_changes_no_verdict_flag_or_narration(self):
+        for base in ({}, consider_then(("consider", "same"))):
+            fine = self.outcome("--review", answers=quizzed(base))
+            failed = self.outcome("--review", answers=quizzed(dict(base, **{
+                "quiz-after": failing})))
+            self.assertIsNone(fine["quiz_failed"])
+            self.assertIn("quiz-after", failed["quiz_failed"])
+            self.assertIsNone(failed["quiz"]["after"])
+            for key in ("code", "verdict", "flags", "unresolved", "findings", "narration"):
+                self.assertEqual(fine[key], failed[key], key)
+
+    def test_the_gain_moves_no_verdict_and_no_gate(self):
+        for flags, answers, code in ((("--review",), {}, 0),
+                                     (("--review", "--gate"), {}, 0),
+                                     (("--review", "--gate"), self.rejected(), 1)):
+            none = self.outcome(*flags, answers=quizzed(answers, quiz=QUIZ8,
+                                                        before=ALL_RIGHT, after=ALL_RIGHT))
+            eight = self.outcome(*flags, answers=quizzed(answers, quiz=QUIZ8,
+                                                         before=ALL_UNSURE, after=ALL_RIGHT))
+            self.assertEqual((none["quiz"]["gain"], eight["quiz"]["gain"]), (0, 8))
+            self.assertEqual(none["code"], code, flags)
+            for key in ("code", "verdict", "flags", "unresolved", "findings", "narration"):
+                self.assertEqual(none[key], eight[key], (flags, key))
+
+    def test_script_md_shows_the_quiz_as_a_measure(self):
+        self.run_stage("--review", answers=quizzed())
+        md = (self.film / "script.md").read_text()
+        story = md[md.index("## Story review"):]
+        line = next(l for l in story.splitlines() if l.startswith("Viewer quiz"))
+        self.assertIn("1 of 4", line)
+        self.assertIn("3 of 4", line)
+        self.assertIn("gain 2", line)
+        self.assertIn("measure", line)
+        self.assertIn("gates nothing", line)
+        self.assertIn("prior", line)
+        self.assertIn("K3", story)
+        self.assertIn("When does the twin bridge open?", story)
+        # a failed quiz says so, and the review stands
+        self.run_stage("--review", answers=quizzed({"quiz": failing}))
+        md = (self.film / "script.md").read_text()
+        self.assertIn("Viewer quiz failed", md)
 
 
 if __name__ == "__main__":
