@@ -478,6 +478,35 @@ class DoctorReadsContinuity(unittest.TestCase):
         self.assertIn("a tick mark moves", rows[0].message)
         self.assertEqual(rows[0].fix, f"yt vfx --project {self.root}")
 
+    def test_a_carried_author_of_the_reviewers_family_says_why_qa_does_not_block(self):
+        # the reviewer is of another family than this run's author, but a
+        # carried section's author is unrecorded or of the reviewer's own
+        # family: the row says so, and that re-authoring it lets QA block again
+        note = (" (not blocking QA: a section's author is not recorded or shares the "
+                "reviewer's family; re-author it or run `yt vfx --fresh`)")
+        for authors in (["sonnet", None], ["opus", "sonnet"]):
+            with self.subTest(authors=authors):
+                reviewer = dict(self.REVIEWER, authors=authors)
+                report = self.report(self.breaks(("Later", "the hero doubles", "blocking"),
+                                                 reviewer=reviewer), self.AUTHORED)
+                rows = self.continuity_rows(report)
+                self.assertEqual(len(rows), 1)
+                self.assertTrue(rows[0].message.endswith("]" + note), rows[0].message)
+
+    def test_an_authoring_that_is_not_a_record_does_not_stop_the_check(self):
+        # a hand-edited vfx.json: the bar falls back to 7
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "a-film"
+            root.mkdir()
+            write_json(root / "idea.json", {"title": "A film", "genre": "g",
+                                            "description": "d"})
+            write_json(root / "vfx.json", {"totals": {}, "plan": {}, "authoring": "7.5",
+                                           "authored": [{"n": 1, "section": "Open",
+                                                         "score": 6, "review": {}}]})
+            report = doctor.check_project(workspace.Project(root))
+            self.assertTrue([f for f in report.findings if f.area == "vfx"
+                             and "under its bar 7 " in f.message])
+
     def test_same_family_blocking_break_says_it_does_not_block_qa(self):
         note = " (not blocking QA: no reviewer of another family recorded)"
         for reviewer in ({"model": "opus[1m]", "author": "opus", "engine": "claude"}, None):

@@ -1328,7 +1328,7 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
         # that section alone. A blocking break from a reviewer of another
         # family also keeps QA off READY (qa.vfx_blockers); here every level
         # stays a warn or a note, so the lane never waits on a model's verdict.
-        from . import vfx as vfx_stage
+        from . import flags as flag_rules, vfx as vfx_stage
         cont = vfx.get("continuity") or {}
         cont = cont if isinstance(cont, dict) else {}
         authored = [r for r in vfx.get("authored") or [] if isinstance(r, dict)]
@@ -1350,6 +1350,17 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
         who = cont.get("reviewer")
         model = str(who.get("model") or "") if isinstance(who, dict) else ""
         apart = vfx_stage.judged_apart(cont)
+        # Why a blocking break does not block QA: no verdict from another
+        # family than this run's author, or one whose film carries a section
+        # with no recorded author or by the reviewer's own family (judged_apart
+        # needs every author apart). The second is mended by re-authoring.
+        author = str(who.get("author") or "").strip() if isinstance(who, dict) else ""
+        if not model or not author or flag_rules.own_reviewer(author, model.strip()) != "":
+            not_blocking = " (not blocking QA: no reviewer of another family recorded)"
+        else:
+            not_blocking = (" (not blocking QA: a section's author is not recorded or "
+                            "shares the reviewer's family; re-author it or run "
+                            "`yt vfx --fresh`)")
         for key, rows in by_owner.items():
             if isinstance(key, int):
                 heading = next((str(r.get("section") or "") for r in authored
@@ -1363,8 +1374,7 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
             report.add("warn", "vfx", f"continuity: {where}: {_clip(problems, 240)} "
                        f"[{'blocking' if blocking else 'major'}; reviewer "
                        f"{model or 'not recorded'}]"
-                       + (" (not blocking QA: no reviewer of another family recorded)"
-                          if blocking and not apart else ""), fix)
+                       + (not_blocking if blocking and not apart else ""), fix)
         if cont.get("one_film") is False and not serious:
             shown = "; ".join(f"{b.get('owner_section', '?')}: {b.get('problem', '')}"
                               for b in breaks[:3])
@@ -1389,7 +1399,8 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
         # A section ended under its bar (AUTO-153): `yt vfx` keeps the best
         # reviewed round when revisions, budget or host run out, and never
         # stops the film on it, so this is a warn naming why it stopped.
-        bar_default = (vfx.get("authoring") or {}).get("author_bar")
+        authoring = vfx.get("authoring")
+        bar_default = authoring.get("author_bar") if isinstance(authoring, dict) else None
         for rec in vfx.get("authored") or []:
             if not isinstance(rec, dict) or rec.get("n") is None:
                 continue
