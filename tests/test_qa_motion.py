@@ -720,6 +720,25 @@ class RhythmStage(StageCase):
         self.assertTrue(any("editing_pacing" in r and "cuts and builds vary" in r
                             for r in card["bar"]), card["bar"])
 
+    def test_the_bar_names_the_rhythm_finding_when_the_reviewer_was_already_under(self):
+        # The reviewer gave editing_pacing 5.0, so the cap lowers nothing;
+        # the bar still says which rhythm finding holds it there.
+        build = _build()
+        for n, shot in enumerate(build["shots"]):
+            shot["at"], shot["seconds"] = 4.0 * n, 4.0
+        build["scene"]["duration"] = 16.0
+        (self.root / "build.json").write_text(json.dumps(build))
+        (self.root / "render.json").unlink()
+        (self.root / "voice.json").write_text(json.dumps(_aligned_voice(build)))
+        qa.RENDERER = self.renderer(frozen_hook=False)
+        with mock.patch.dict(SCORECARD["scores"], {"editing_pacing": 5.0}):
+            qa.run(self.args())
+        card = json.loads((self.root / "qa" / "pass-01" / "scorecard.json").read_text())
+        self.assertEqual(card["scores"]["editing_pacing"], 5.0)
+        self.assertNotIn("editing_pacing", card["capped"])
+        self.assertTrue(any("editing_pacing" in r and "metronomic" in r
+                            and "cuts and builds vary" in r for r in card["bar"]), card["bar"])
+
     def assert_render_measures_not_evidenced(self, why):
         card = json.loads((self.root / "qa" / "pass-01" / "scorecard.json").read_text())
         rows = card["rhythm"]["not_evidenced"]

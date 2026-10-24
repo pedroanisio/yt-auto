@@ -4531,13 +4531,15 @@ def run(args) -> int:
             f"fewer than two of the {card['scoring']['asked']} scoring samples were valid "
             f"({card['scoring']['valid']}): nothing is scored on one reading"]
     if evidenced:
-        # The bar names the rhythm finding that held editing_pacing down.
-        for key in [k for k in RHYTHM_CAPPED if k in capped]:
-            held = [f for f in mechanical if f["severity"] == "blocking"
-                    and f.get("kind") in RHYTHM_KINDS]
-            if held:
-                reasons.append(f"{key} capped at {MECHANICAL_CAP:g} by {held[0]['kind']}: "
-                               f"{held[0]['problem']}")
+        # The bar names the rhythm finding that holds editing_pacing down,
+        # whether the cap lowered the reviewer's score or it was already
+        # under: either way that finding is why the category cannot pass.
+        held = [f for f in mechanical if f["severity"] == "blocking"
+                and f.get("kind") in RHYTHM_KINDS]
+        for key in RHYTHM_CAPPED if held else ():
+            how = "capped at" if key in capped else "held at or under"
+            reasons.append(f"{key} {how} {MECHANICAL_CAP:g} by {held[0]['kind']}: "
+                           f"{held[0]['problem']}")
     if evidenced and card.get("verdict") != verdict and not args.quiet:
         print(f"note: the reviewer said {card.get('verdict')!r}; the bar says "
               f"{verdict!r} ({'; '.join(reasons)})", file=sys.stderr)
