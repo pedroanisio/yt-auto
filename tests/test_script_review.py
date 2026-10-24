@@ -395,12 +395,22 @@ class Trigger(unittest.TestCase):
         self.assertEqual(len(said), 1, data["findings"])
         self.assertTrue(said[0].startswith("warning: story review:"), said[0])
         self.assertIn(script.REPLAN_FIX, said[0])
+        # a heard none is the flag, not a difference between two triggers
+        self.assertFalse([f for f in data["findings"] if "the opening was planned on" in f],
+                         data["findings"])
+        lines = script.story_review_lines(record)
+        self.assertIn("hook trigger: planned unexpected_observation, heard none", lines)
+        self.assertFalse([line for line in lines if "(differs)" in line], lines)
+        self.assertIs(script.trigger_differs(record["trigger"]), False)
 
     def test_a_heard_none_with_the_samples_own_hook_flag_is_still_one_warning(self):
-        # The samples also raise a whole-script hook flag, worded their own
-        # way: one fault, so one REPLAN_FIX warning stands for it.
-        whole = flag(n=0, section=0, criterion="hook", problem="the opening is a summary",
-                     fix="open on the comet", quote="")
+        # The samples also raise a whole-script hook flag (merge_flags keeps
+        # one per criterion), here on a different fault: the opening lists
+        # its conclusions. One REPLAN_FIX warning stands for the opening and
+        # carries that flag's problem and fix, so the fault is not lost.
+        whole = flag(n=0, section=0, criterion="hook",
+                     problem="the opening lists the conclusions", fix="hold them back",
+                     quote="")
         other = flag(n=0, section=0, criterion="train", problem="the train names a topic",
                      fix="name the obstacle", quote="")
         w = writer()
@@ -413,6 +423,11 @@ class Trigger(unittest.TestCase):
         hooks = [f for f in record["unresolved"] if f.get("criterion") == "hook"]
         self.assertEqual([f.get("by") for f in hooks], ["hook-trigger-match"],
                          record["unresolved"])
+        self.assertEqual(hooks[0]["problem"],
+                         "the first three spoken sentences open no curiosity trigger; "
+                         "the reviewers also said: the opening lists the conclusions")
+        self.assertEqual(hooks[0]["fix"], "open on the planned trigger: "
+                                          "unexpected_observation; hold them back")
         # a whole-script flag on another criterion still stands
         self.assertIn("the train names a topic",
                       [f["problem"] for f in record["unresolved"]])

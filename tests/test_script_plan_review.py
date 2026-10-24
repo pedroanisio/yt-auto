@@ -437,6 +437,19 @@ class OpeningAndTension(unittest.TestCase):
         plan["questions"][1].update(closed_in=0, left_open_why="the inquiry is open")
         self.assertEqual(checks(plan), [])
 
+    def test_a_rehook_matches_the_ledger_whatever_its_case(self):
+        # the writer may say q1 where the ledger holds Q1: the same question
+        plan = timed(["", "q1", " Q1 "])
+        self.assertEqual(checks(plan), [])
+        plan["questions"][0]["id"] = "q1"
+        plan["sections"][2]["rehook"] = "Q1"
+        self.assertEqual(checks(plan), [])
+        plan = timed(["", "Q1", "Q1", "q2"])
+        plan["questions"].append({"id": "Q2", "text": "How?", "opened_in": 1, "closed_in": 2})
+        self.assertIn("rule: section 4's rehook names q2, which was closed in section 2, "
+                      "before it: there is nothing left to re-open (structure 23, "
+                      "structure 8)", checks(plan))
+
     def test_section_2_with_no_rehook_is_a_house_line(self):
         found = checks(timed(["", "", "Q1"]))
         self.assertIn("house: section 2 has no rehook, at the boundary where the opening "
@@ -453,6 +466,18 @@ class OpeningAndTension(unittest.TestCase):
                       "plan one at least every 180 s (structure 23)", found)
         self.assertFalse([c for c in checks(timed(["", "Q1", "", ""]))
                           if "without a rehook" in c])
+
+    def test_a_long_one_section_plan_is_asked_for_more_sections(self):
+        # A section's rehook is read at its start, so no rehook can break a
+        # one-section film's gap: the line asks for the section it lacks.
+        for rehook in ("", "Q1"):
+            with self.subTest(rehook=rehook):
+                found = checks(timed([rehook], seconds=240))
+                self.assertEqual(found, ["house: a one-section plan runs 240 s with no "
+                                         "rehook after its opening: split it so a later "
+                                         "section re-opens a question at least every "
+                                         "180 s (structure 23)"])
+        self.assertEqual(checks(timed([""], seconds=180)), [])
 
     def test_a_long_film_with_no_rehook_gets_the_seven_minute_line_alone(self):
         found = checks(timed(["", "", "", ""], seconds=120))
