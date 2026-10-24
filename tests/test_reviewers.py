@@ -661,7 +661,8 @@ class SendsBack(GatewayFake):
             return {"sections": [{"section": i, "claim": f"claim {i}", "carries_beat": True,
                                   "missing": "", "confused_at": []} for i in (1, 2, 3)],
                     "reports": [{"n": 1, "bare_number": "40 percent", "unshown_claim": "",
-                                 "unsignposted_list": "", "static_process": ""}]}
+                                 "unsignposted_list": "", "static_process": "",
+                                 "unneeded_formula": "", "flat_spatial": ""}]}
         return answer(schema, prompt)
 
 

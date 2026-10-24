@@ -358,7 +358,7 @@ Or all of it at once, for one idea:
 | `yt pilot` | 30/60/180-second cuts of the finished film, nested, with what each proves | no model calls |
 | `yt gate` | the delivery verdict: loudness, scopes, frames, caption limits, run on a render host and naming the requirement that stopped it; plus the geometry check (a hero that penetrates the set, or reads merged into it on screen, blocks whatever the tool and the triage said) | one triage call |
 | `yt review` | the PDF review sheet: frames, captions, markers, sources, credits | no model calls |
-| `yt qa` | the scorecard per pass: every shot sampled at its midpoint and each narrated line where it starts (`line: <first words>`, AUTO-104), up to 60 stills (`--frames N` above the shot count adds the line stills first, then evenly spaced stills; below it, or past 60 shots by default, names the shots left out; the lines left without a still are named in `lines_unsampled`), one frame window per sample (the still is its middle frame), a contact sheet, the mechanical findings (flat, clipped, frozen, jump, off-camera, `penetration`: the hero inside a set solid, and `reads-merged`: the hero over a surface on screen with no shadow, from the engine's evaluated geometry and camera), the model's review, scored as the median of three samples (an audio category no current listening review covers is null in every sample, never a median), and a side-by-side comparison with the previous kept cut at the same timestamps | `qa.QA_SAMPLES` (3) inspection calls per pass, at most one merge decision and one `<pass>-compare-pass` inspection when an earlier scored pass exists (`--recheck` adds one `<pass>-recheck` inspection, AUTO-106); one render job per sample (by default one per shot and per narrated line, at most 60; `--frames N` sets it), one eval job per pass; `yt improve` pays this every pass; `--listen` (gateway, opt-in, AUTO-126) adds one `listen-<audio sha>` decision on the film's audio and at most one `-again`, and on a narrated film one `transcript-<audio sha>` decision and at most one `-again` (AUTO-152), priced by its preflight and refused over `--listen-budget-usd` (0.50), none when the same mix was heard before; `--watch` (gateway, opt-in, AUTO-127) adds one `watch-sNN` decision per piece of the cut and at most one `-again` each, plus up to 12 render jobs for the moments it reports, none when the same cut was watched before |
+| `yt qa` | the scorecard per pass: every shot sampled at its midpoint and each narrated line where it starts (`line: <first words>`, AUTO-104), up to 60 stills (`--frames N` above the shot count adds the line stills first, then evenly spaced stills; below it, or past 60 shots by default, names the shots left out; the lines left without a still are named in `lines_unsampled`), one frame window per sample (the still is its middle frame), a contact sheet, the mechanical findings (flat, clipped, frozen, jump, off-camera, `penetration`: the hero inside a set solid, and `reads-merged`: the hero over a surface on screen with no shadow, from the engine's evaluated geometry and camera; advisory and always minor, AUTO-145: `no-build`, a diagram's first shot whose ink does not grow from a still after its cut, through its line stills, to one before its end, and `text-dense`, too many words on screen counted from the rendered document), the model's review, scored as the median of three samples (an audio category no current listening review covers is null in every sample, never a median), and a side-by-side comparison with the previous kept cut at the same timestamps | `qa.QA_SAMPLES` (3) inspection calls per pass, at most one merge decision and one `<pass>-compare-pass` inspection when an earlier scored pass exists (`--recheck` adds one `<pass>-recheck` inspection, AUTO-106); one render job per sample (by default one per shot and per narrated line, at most 60; `--frames N` sets it), plus up to 12 single frames for the diagram build stills (AUTO-145), one eval job per pass; `yt improve` pays this every pass; `--listen` (gateway, opt-in, AUTO-126) adds one `listen-<audio sha>` decision on the film's audio and at most one `-again`, and on a narrated film one `transcript-<audio sha>` decision and at most one `-again` (AUTO-152), priced by its preflight and refused over `--listen-budget-usd` (0.50), none when the same mix was heard before; `--watch` (gateway, opt-in, AUTO-127) adds one `watch-sNN` decision per piece of the cut and at most one `-again` each, plus up to 12 render jobs for the moments it reports, none when the same cut was watched before |
 | `yt improve` | routes each QA finding to the stage that owns it, briefs that stage through `feedback/`, re-runs it and everything downstream, keeps the pass only if it measurably improved | one routing decision per pass, plus the stages it runs |
 | `yt doctor` | every video's state and the command that advances it | no model calls |
 | `yt probe` | the realism probe suite: one neutral brief per class of material, light or motion, composed by an agent coding with the SDK, built and framed by the harness, scored by a different model with each defect's cause | **$1.06** for one probe and one round; up to three author sessions and three reviews per probe |
@@ -829,7 +829,11 @@ pictures carry on their own and says whether that is the beat, then names
 the shots with a large number left bare, a mechanism the picture does not
 show, a list nothing signposts, or a process the picture shows in one fixed
 state while `shows` says it demonstrates a change (`static_process`,
-AUTO-144). Each is a flag for one `revise-picture`
+AUTO-144), a formula put on screen before anything showed what it relates,
+or one the beat does not need (`picture:formula`, direction 9), and a size,
+arrangement, path or interior given only in words or a flat label, with no
+human-scale comparison, cutaway or camera move through it
+(`picture:spatial`, AUTO-145). Each is a flag for one `revise-picture`
 decision, the only revision allowed to change a shot's picture (the
 fact-check's revise still rewrites only the narration). A flag the writer
 keeps, with its reason, binds nothing: the reviewer never heard the line,
@@ -1812,7 +1816,19 @@ findings, each with a timestamp, an owner (`vfx` for an authored shot,
 frozen burst, a jump inside a shot, and the objects `render.json` says the
 camera never framed, per shot, with their ids. A mechanical finding is
 blocking when it sits on the hook or the ending, or when the same kind is on
-more than one sampled shot. Then the model reads the frames and the sheet —
+more than one sampled shot. Two more are advisory, always minor and capping
+nothing until their thresholds are measured (AUTO-145). The first shot of
+each diagram effect in vfx.json (2d-diagram or data-animation, 3 s or
+more, not extended from another shot, even when it runs on in its section's
+world) gets a still just after its cut and one just before its end, under
+`frames/build/` and shown to no model; its ink (the share of the frame that is edges) at those and
+at its line stills is a series, and a series that never grows by 15 % of its
+last reading is `no-build`: the diagram was on screen whole from the cut and
+talked over. And the words on screen at each still are counted from the
+document QA renders, never read off the frame: a node over six words, or
+twelve at once (a formula counts four), is `text-dense`; a node named
+`quote-`, `headline-` or `credit-` is timed against its reading time
+instead. Then the model reads the frames and the sheet —
 with the shot each should show, the editorial decisions, the numbers and the
 mechanical findings beside each — and files the ten-category scorecard under
 a schema, every finding with a timestamp, what is visible, why it lowers

@@ -228,6 +228,7 @@ from . import rhythm
 from .build import EVEN_SHOTS, shots_from_scene  # noqa: F401  (standalone sampling)
 from .core import read_json, timecode, write_json
 from .harness import Harness, HarnessError, _digest, brief
+from .script import BOUNDS as SCRIPT_BOUNDS, READING_CPS
 from .script import SILENT as SILENT_LINE, Shot, spoken, visible_text
 from .sound import heard as sheet_heard
 from .voice import heard as takes_heard, words_estimated
@@ -259,6 +260,46 @@ CLIPPED_LEVEL, CLIPPED_SHARE = 250, 0.10  # share of the frame at or above this 
 #: A burst, by the mean absolute difference between consecutive frames.
 FROZEN_DIFF = 0.25                      # every step under this: nothing moved
 JUMP_RATIO, JUMP_MIN = 4.0, 4.0         # one step this far above the others' median
+
+#: Build stills (AUTO-145). The house asks that every diagram be built in
+#: steps keyed to the narration; the midpoint still and its burst cannot
+#: tell a build from a finished diagram under a slow push-in. The first
+#: shot of each effect of these types (vfx.json) that lasts BUILD_MIN_SECONDS
+#: gets one single frame where it opens and one where it closes, beyond
+#: --frames, at most BUILD_SAMPLES_MAX of them, longest shots first; later
+#: shots of the effect continue its take and open on what it built.
+BUILD_TYPES = ("2d-diagram", "data-animation")
+BUILD_MIN_SECONDS = 3.0
+BUILD_SAMPLES_MAX = 12
+BUILD_WHY = "build: "
+#: Where a build still of its own is written, under frames/: it is measured
+#: for ink and judged by no model, and the reviewer reads the PNGs directly
+#: under frames/, so it is kept out of their way (and out of the contact
+#: sheet, the evidence rows and the side by side, `judged`).
+BUILD_DIR = "build"
+#: A still's `ink`: the share of its THUMB luma thumbnail whose edge
+#: magnitude (PIL's FIND_EDGES) exceeds INK_EDGE. A build shot whose ink
+#: never rises by more than BUILD_STEP of its last value between two
+#: consecutive stills (first, each line, last) is `no-build`. House numbers,
+#: not measured yet (TO VERIFY, docs/production.md's calibration table).
+INK_EDGE = 32
+BUILD_STEP = 0.15
+#: Text density (AUTO-145), counted from the rendered document, never read
+#: off a frame: one node over the screenplay's wall-of-text bound (direction
+#: 2), or SCREEN_WORDS visible at once, is `text-dense`; a formula counts as
+#: FORMULA_WORDS. Nodes named for an attributed quote, a recreated headline
+#: or a licence credit are not counted, and are held to the time it takes to
+#: read them instead (script.READING_CPS); build's placeholder card (an
+#: asset `card-<label>` the composition draws) is reported as a placeholder.
+#: House numbers (TO VERIFY).
+SCREEN_WORDS = 12
+FORMULA_WORDS = 4
+WALL_WORDS = int(SCRIPT_BOUNDS["wall_of_text"]["value"])
+EXEMPT_TEXT = ("quote-", "headline-", "credit-")
+PLACEHOLDER_ASSET = "card-"
+#: Measured kinds filed always minor (AUTO-145): they never escalate on an
+#: edge or on more than one shot, so they cap nothing until calibrated.
+ADVISORY_KINDS = ("no-build", "text-dense")
 #: While a blocking mechanical finding stands, the reviewer cannot award more.
 MECHANICAL_CAP = 6.0
 CAPPED = ("visual_quality", "animation_vfx")
@@ -1029,7 +1070,8 @@ def _line_why(text: str) -> str:
 
 
 def sample(build: dict, *, limit: int | None = None,
-           voice: dict | None = None, watched: list[dict] | None = None) -> list[dict]:
+           voice: dict | None = None, watched: list[dict] | None = None,
+           builds=frozenset()) -> list[dict]:
     """Where the evidence is taken, per docs/production.md §7: every shot,
     at its midpoint (AUTO-103), each row's `why` naming the priority
     reasons that shot has (hook, ending, payoff, section start, re-hook,
@@ -1063,7 +1105,13 @@ def sample(build: dict, *, limit: int | None = None,
     above and beyond `limit`: one within WATCHED_NEAR seconds of a still
     merges into it at no cost, the others are added up to
     WATCH_SAMPLES_MAX, blocking ones first, then in time order. `why` is
-    `watched: <id> <first words>` and `watched` lists the ids a row shows."""
+    `watched: <id> <first words>` and `watched` lists the ids a row shows.
+
+    With `builds` (AUTO-145: `build_shots`, label to effect id), each such
+    shot gets a single frame where it opens and one where it closes, last
+    of all and beyond `limit` (`_add_builds`): `why` is `build: first` or
+    `build: last` and `builds` carries which, when, the frame and the
+    effect. Such a still has no burst and is never its shot's home."""
     shots = sorted(build.get("shots", []), key=lambda s: float(s["at"]))
     if not shots:
         return []
@@ -1112,7 +1160,173 @@ def sample(build: dict, *, limit: int | None = None,
             out.append(row(shot, t, SPREAD_WHY))
     if watched:
         _add_watched(out, shots, watched, row, fps=fps)
+    if builds:
+        _add_builds(out, shots, builds, row, fps=fps)
     return sorted(out, key=lambda r: r["t"])
+
+
+def _add_builds(out: list[dict], shots: list[dict], builds, row, *, fps: float) -> None:
+    """The build stills (AUTO-145), added to `out` in place: for each shot
+    `builds` names, longest first, a frame BURST_SECONDS/2 after its cut and
+    one BURST_SECONDS/2 before its end, where the burst of a cut does not
+    reach. A still that is a frame of a burst of its own shot's row merges
+    into that row at no cost; the others are new rows with no burst, up to
+    BUILD_SAMPLES_MAX in all. A shot whose new stills would not fit gets
+    none, so `builds_unsampled` names it whole."""
+    by_label: dict[str, dict] = {}
+    for shot in shots:
+        by_label.setdefault(str(shot.get("label", "")), shot)
+    wanted = [by_label[label] for label in builds if label in by_label]
+    added = 0
+    for shot in sorted(wanted, key=lambda s: (-float(s.get("seconds") or 0), float(s["at"]))):
+        label, at = str(shot.get("label", "")), float(shot["at"])
+        seconds = float(shot.get("seconds") or 0)
+        effect = builds.get(label, "") if isinstance(builds, dict) else ""
+        plan = []
+        for which, t in (("first", round(at + BURST_SECONDS / 2, 3)),
+                         ("last", round(at + seconds - BURST_SECONDS / 2, 3))):
+            frame = max(int(round(t * fps)), 0)
+            holders = [r for r in out if r["label"] == label and r["at"] == at
+                       and frame in (r.get("burst") or {}).get("frames", ())]
+            plan.append((which, t, frame, min(holders, key=lambda r: abs(r["t"] - t),
+                                              default=None)))
+        if added + sum(1 for *_, hit in plan if hit is None) > BUILD_SAMPLES_MAX:
+            continue
+        for which, t, frame, hit in plan:
+            why = f"{BUILD_WHY}{which}"
+            if hit is not None:
+                burst = hit["burst"]
+                frames, files = burst.get("frames") or [], burst.get("files") or []
+                name = hit["frame"]
+                if frame != burst.get("still_frame") and len(files) == len(frames):
+                    name = files[frames.index(frame)]
+                if why not in hit["why"].split("; "):
+                    hit["why"] = f"{hit['why']}; {why}" if hit["why"] else why
+                hit.setdefault("builds", []).append(
+                    {"which": which, "t": t, "frame": name, "effect": effect})
+                continue
+            used = {r["t"] for r in out}
+            if t in used:
+                # another still has this millisecond: the nearest free frame
+                # inside the shot
+                t = next((m for k in range(1, int(seconds * fps) + 1)
+                          for m in (round(t - k / fps, 3), round(t + k / fps, 3))
+                          if at < m < at + seconds and m not in used), t)
+            new = row(shot, t, why)
+            new.pop("burst", None)
+            new["frame"] = f"{BUILD_DIR}/{new['frame']}"
+            new["builds"] = [{"which": which, "t": t, "frame": new["frame"],
+                              "effect": effect}]
+            out.append(new)
+            added += 1
+
+
+def build_shots(vfx: dict | None, build: dict | None) -> dict[str, str]:
+    """The shots that get build stills (AUTO-145), as label to effect id in
+    film order: for each effect of a BUILD_TYPES type that vfx.json keeps
+    (not under `scene.dropped`), its earliest shot, drawn by an effect and
+    lasting BUILD_MIN_SECONDS. The effect's later shots continue its take
+    and open on what it built, and so does a shot extended from another;
+    neither is judged. A shot that runs on in an earlier shot's include is
+    judged all the same: one world per section folds every shot of the
+    section into the include of its first (build.py), so a diagram that is
+    the world's second phase opens no include of its own, yet it is still
+    the first shot of its effect, and the ink series measures growth from
+    whatever the earlier phase left on screen. Empty with no vfx.json."""
+    if not isinstance(vfx, dict) or not isinstance(build, dict):
+        return {}
+    shots = sorted(build.get("shots") or [], key=lambda s: float(s.get("at") or 0))
+    order: dict[str, int] = {}
+    for n, shot in enumerate(shots):
+        order.setdefault(str(shot.get("label", "")), n)
+    by_label = {str(s.get("label", "")): s for s in reversed(shots)}
+    dropped = set((vfx.get("scene") or {}).get("dropped") or {})
+    out: dict[str, str] = {}
+    for section in vfx.get("sections") or []:
+        for effect in (section or {}).get("effects") or []:
+            if effect.get("type") not in BUILD_TYPES or effect.get("id") in dropped:
+                continue
+            labels = [str(x) for x in effect.get("shots") or [] if str(x) in by_label]
+            if not labels:
+                continue
+            label = min(labels, key=order.__getitem__)
+            shot = by_label[label]
+            if (shot.get("asset") != "effect" or not shot.get("include")
+                    or "(extended from" in str(shot.get("file") or "")
+                    or float(shot.get("seconds") or 0) < BUILD_MIN_SECONDS):
+                continue
+            out.setdefault(label, str(effect.get("id") or ""))
+    return dict(sorted(out.items(), key=lambda kv: order[kv[0]]))
+
+
+def _build_series(samples: list[dict]) -> dict[str, dict]:
+    """Per shot with build stills (AUTO-145): its effect, its readings in
+    time order (the first build still, each narrated line said between the
+    two, the last) and the row that holds the first."""
+    out: dict[str, dict] = {}
+    for row in samples:
+        label = str(row.get("label", ""))
+        for entry in row.get("builds") or []:
+            if not isinstance(entry, dict):
+                continue
+            rec = out.setdefault(label, {"effect": entry.get("effect", ""), "points": [],
+                                         "first": None, "row": None})
+            rec[entry.get("which")] = entry
+            if entry.get("which") == "first":
+                rec["row"] = row
+    for label, rec in out.items():
+        first, last = rec.get("first"), rec.get("last")
+        if not first or not last:
+            continue
+        lines = [ln for row in samples if str(row.get("label", "")) == label
+                 for ln in row.get("lines") or []
+                 if isinstance(ln, dict) and first["t"] < float(ln.get("at", -1)) < last["t"]]
+        points = [(first["t"], first)] + sorted(
+            ((float(ln["at"]), ln) for ln in lines), key=lambda p: p[0]) + [(last["t"], last)]
+        rec["points"] = points
+    return out
+
+
+def builds_unsampled(builds, samples: list[dict]) -> list[str]:
+    """The shots `builds` names that got no build stills (AUTO-145): past
+    BUILD_SAMPLES_MAX, or in a pass sampled before them; in film order."""
+    have = {label for label, rec in _build_series(samples).items() if rec["points"]}
+    return [label for label in builds if label not in have]
+
+
+def note_builds(card: dict, builds, samples: list[dict], *, reused: bool = False) -> dict:
+    """The scorecard says which diagram shots were not checked for a build
+    (AUTO-145): a not_evidenced line for the shots with no build stills,
+    the shots whose stills have no ink reading and the shots that end on a
+    blank frame. A film with no build shot is left as it is."""
+    if not builds:
+        return card
+    parts = []
+    missing = builds_unsampled(builds, samples)
+    if missing:
+        under = ("in the reused pass" if reused else
+                 f"past the ceiling of {BUILD_SAMPLES_MAX} build stills")
+        parts.append(f"{len(missing)} of {len(builds)} diagram shots have no build "
+                     f"stills {under}: {', '.join(missing)}")
+    unread = [label for label, rec in _build_series(samples).items()
+              if rec["points"] and any(not isinstance(e.get("ink"), (int, float))
+                                       for _, e in rec["points"])]
+    if unread:
+        parts.append(f"the build stills of {', '.join(unread)} have no ink reading "
+                     "(a frame was not rendered or could not be read)")
+    # A shot that ends on a blank frame (a render that came out black) has
+    # nothing to grow towards: no_build_findings files nothing for it.
+    blank = [label for label, rec in _build_series(samples).items()
+             if rec["points"] and label not in unread
+             and float(rec["points"][-1][1]["ink"]) <= 0]
+    if blank:
+        parts.append(f"{', '.join(blank)} ended on a blank frame (ink 0 at the last "
+                     "build still), so its build was not measured")
+    if parts:
+        card = dict(card, not_evidenced=list(card.get("not_evidenced") or []) + [
+            "builds: " + "; ".join(parts) + "; whether those shots build in steps "
+            "was not measured"])
+    return card
 
 
 #: The most stills a watch adds to a pass (AUTO-127), how near a still a
@@ -1309,8 +1523,10 @@ def _free_moment(shot: dict, used: set[float], fps: float) -> float:
 
 def unsampled(build: dict, samples: list[dict]) -> list[str]:
     """The labels of the build's shots no sampled still belongs to, in
-    label order: what a --frames below the shot count left unseen."""
-    seen = {str(r.get("label", "")) for r in samples}
+    label order: what a --frames below the shot count left unseen. A build
+    still of its own (`measured_only`) does not count: no per-shot check is
+    filed on it and the reviewer is not shown it."""
+    seen = {str(r.get("label", "")) for r in judged(samples)}
     return sorted({str(s.get("label", "")) for s in build.get("shots", [])} - seen)
 
 
@@ -1422,18 +1638,132 @@ def burst_motion(paths) -> dict:
     return out
 
 
-def measure(samples: list[dict], frames_dir: Path) -> list[dict]:
-    """The numbers beside each sample: its still's statistics under `still`
-    and its burst's motion under `motion`. Rows are updated in place."""
+def frame_ink(path) -> float | None:
+    """How much is drawn in one still (AUTO-145): the share of its THUMB
+    luma thumbnail whose edge magnitude (FIND_EDGES) exceeds INK_EDGE. A
+    blank frame is 0 and each stroke drawn adds to it; the same drawing
+    moved a few pixels reads the same. None when it cannot be read. A
+    noise-like ground saturates it, so drawing on noise does not raise it."""
+    from PIL import ImageFilter
+    im = _thumb(path)
+    if im is None:
+        return None
+    hist = im.filter(ImageFilter.FIND_EDGES).histogram()
+    total = sum(hist)
+    return round(sum(hist[INK_EDGE + 1:]) / total, 4) if total else 0.0
+
+
+def measure(samples: list[dict], frames_dir: Path, *, screen=None) -> list[dict]:
+    """The numbers beside each sample: its still's statistics under `still`,
+    its burst's motion under `motion`, and (AUTO-145) its ink under `ink`,
+    with the ink of the frame each narrated line and build still is read
+    from on that entry. With `screen` (t, label -> the text nodes on
+    screen, `screen_text`) the words on screen under `text`. Rows are
+    updated in place."""
+    inks: dict[str, float | None] = {}
+
+    def ink(name: str) -> float | None:
+        if name not in inks:
+            path = frames_dir / name
+            inks[name] = frame_ink(path) if path.is_file() else None
+        return inks[name]
+
     for row in samples:
         still = frames_dir / row["frame"]
         if still.is_file():
             row["still"] = frame_stats(still)
+            value = ink(row["frame"])
+            if value is not None:
+                row["ink"] = value
         burst = row.get("burst") or {}
         if burst.get("files"):
             paths = [frames_dir / name for name in burst["files"]]
             row["motion"] = burst_motion([p for p in paths if p.is_file()])
+        for entry in (row.get("lines") or []) + (row.get("builds") or []):
+            if isinstance(entry, dict) and entry.get("frame"):
+                value = ink(str(entry["frame"]))
+                if value is not None:
+                    entry["ink"] = value
+        if screen is not None:
+            row["text"] = text_record(screen(row["t"], str(row.get("label", ""))))
     return samples
+
+
+def _lit(track, t: float) -> list[float] | None:
+    """The span of one opacity track (keys [time, value] on the film's
+    clock) that holds `t`, or None when the track has it unseen there. A
+    first key above 0 holds from the start; a later key above 0 opens a
+    span, read from when the text is fully in, and a key at 0 closes it;
+    after the last key its value holds."""
+    keys = sorted((float(k[0]), float(k[1])) for k in track or [] if len(k) == 2)
+    if not keys:
+        return [-math.inf, math.inf]
+    spans, start = [], (-math.inf if keys[0][1] > 0 else None)
+    for time, value in keys[1:]:
+        if value > 0 and start is None:
+            start = time
+        elif value <= 0 and start is not None:
+            spans.append([start, time])
+            start = None
+    if start is not None:
+        spans.append([start, math.inf])
+    return next((s for s in spans if s[0] <= t < s[1]), None)
+
+
+def screen_text(nodes: list[dict], t: float, off_camera=()) -> list[dict]:
+    """The text and formula nodes (geometry._composed with TEXT_KINDS) on
+    screen at `t` (AUTO-145): inside their window, seen under every opacity
+    track above them, and not among the ids the engine says the camera
+    never sees. Each comes back with `shown`, the span it holds there.
+    build's placeholder card (a top-level layer of a `card-` asset) is not
+    a super and is left out."""
+    off = set(off_camera or ())
+    out = []
+    for node in nodes or []:
+        ident = str(node.get("id", ""))
+        if ident in off:
+            continue
+        if "/" not in ident and str(node.get("asset", "")).startswith(PLACEHOLDER_ASSET):
+            continue
+        lo, hi = (node.get("window") or [-math.inf, math.inf])[:2]
+        lo = -math.inf if lo is None else float(lo)
+        hi = math.inf if hi is None else float(hi)
+        if not lo <= t < hi:
+            continue
+        shown = [lo, hi]
+        for track in node.get("fades") or []:
+            span = _lit(track, t)
+            if span is None:
+                break
+            shown = [max(shown[0], span[0]), min(shown[1], span[1])]
+        else:
+            out.append(dict(node, shown=shown))
+    return out
+
+
+def text_record(nodes: list[dict]) -> dict:
+    """What a still's viewer has to read (AUTO-145), from `screen_text`:
+    `words` counts every node not named for a quote, a headline or a credit
+    (EXEMPT_TEXT), a formula as FORMULA_WORDS; `items` gives each node's
+    words, whether it is exempt, the seconds it is on screen and the
+    seconds it takes to read (script.READING_CPS)."""
+    items = []
+    for node in nodes:
+        ident, kind = str(node.get("id", "")), str(node.get("kind", "text"))
+        name = str(node.get("name") or ident.rsplit("/", 1)[-1])
+        text = " ".join(str(node.get("text", "")).split())
+        shown = node.get("shown") or node.get("window") or [0.0, 0.0]
+        seconds = (float(shown[1]) - float(shown[0])
+                   if all(math.isfinite(float(v)) for v in shown[:2]) else None)
+        items.append({"id": ident, "kind": kind,
+                      "words": FORMULA_WORDS if kind == "formula" else len(text.split()),
+                      "exempt": any(s.startswith(EXEMPT_TEXT)
+                                    for s in (name, str(node.get("asset", "")))),
+                      "seconds": None if seconds is None else round(seconds, 3),
+                      "needs": round(len(text) / READING_CPS, 2), "text": text})
+    return {"words": sum(i["words"] for i in items if not i["exempt"]),
+            "nodes": len(items), "formulas": sum(1 for i in items if i["kind"] == "formula"),
+            "ids": [i["id"] for i in items], "items": items}
 
 
 _OFF_CAMERA = re.compile(r"(\S+) is drawn from .*?never inside the camera's view")
@@ -1503,13 +1833,14 @@ def reown_by_proof(mechanical: list[dict], proof_found: list[dict]) -> int:
     check is the build's, whatever draws the shot: the film does not show
     what the author built, so vfx cannot fix a frozen or off-camera shot
     in it. Each finding moved names the world under `reowned`; returns how
-    many moved."""
+    many moved. A `text-dense` stays with vfx: it is counted from the
+    document vfx wrote, not from what the film shows (AUTO-145)."""
     by_shot = {label: f["world"] for f in proof_found for label in f.get("shots") or []}
     moved = 0
     for f in mechanical:
         world = by_shot.get(str(f.get("shot", "")))
-        if (not world or f.get("kind") == "proof-mismatch" or f.get("owner") == "build"
-                or f.get("kind") in RHYTHM_KINDS):
+        if (not world or f.get("kind") in ("proof-mismatch", "text-dense")
+                or f.get("owner") == "build" or f.get("kind") in RHYTHM_KINDS):
             continue
         f["owner"] = "build"
         f["reowned"] = f"world {world} fails its proof-frame check, so the build owns this"
@@ -1664,29 +1995,184 @@ def _penetration_finding(records: list[dict]) -> dict:
     }
 
 
+def _build_only(row: dict) -> bool:
+    """A build still of its own (AUTO-145): every reason a build reason. It
+    has no burst and shows a shot at its edge, so it is never the shot's
+    home and its frame is read for ink, not judged flat."""
+    return all(why.startswith(BUILD_WHY) for why in str(row.get("why", "")).split("; "))
+
+
+def measured_only(row: dict) -> bool:
+    """A row no model is shown (AUTO-145): a build still of its own, with no
+    burst. It sits a quarter second from a cut, where a transition can be
+    mid-dissolve, and is there to be measured for ink, not judged; it is no
+    shot's home and does not count as a shot's still."""
+    return bool(row.get("builds")) and "burst" not in row and _build_only(row)
+
+
+def judged(samples: list[dict]) -> list[dict]:
+    """The rows a model is shown: every sample but the measured-only build
+    stills (`measured_only`)."""
+    return [row for row in samples if not measured_only(row)]
+
+
+def _norm(text) -> str:
+    return " ".join(str(text or "").lower().split())
+
+
+def no_build_findings(samples: list[dict]) -> list[dict]:
+    """`no-build` (AUTO-145): the first shot of a diagram effect whose ink
+    never rises by more than BUILD_STEP of its last value from one reading
+    to the next (the first build still, each line said between, the last):
+    the diagram is on screen whole from the cut and talked over, not built
+    in steps. A shot with a reading missing, or blank at its end, files
+    nothing (note_builds says which)."""
+    found = []
+    for label, rec in _build_series(samples).items():
+        points = rec["points"]
+        inks = [e.get("ink") for _, e in points]
+        if len(points) < 2 or not all(isinstance(v, (int, float)) for v in inks):
+            continue
+        last = float(inks[-1])
+        if last <= 0 or any(b - a > BUILD_STEP * last for a, b in zip(inks, inks[1:])):
+            continue
+        row, first = rec["row"] or {}, rec["first"]
+        series = [[round(float(t), 3), float(v)] for (t, _), v in zip(points, inks)]
+        read = ", ".join(f"{v:.2f} at {t:g} s" for t, v in series)
+        found.append({
+            "timestamp": first["t"], "frame": first.get("frame") or row.get("frame", ""),
+            "shot": label, "owner": "vfx", "kind": "no-build", "ink": series,
+            "problem": f"effect `{rec['effect']}` is on screen whole from the cut: ink "
+                       f"{read}; it never grows by more than {BUILD_STEP:.0%} of its "
+                       "last reading from one still to the next, so the diagram is "
+                       "talked over, not built",
+            "why": "the house builds every diagram in steps keyed to the narration, so "
+                   "the viewer sees each part arrive as it is named; measured "
+                   "mechanically from the ink of the stills, not judged",
+            "root_cause": "the effect's parts are all drawn at its first frame, with "
+                          "no reveal keyed to the lines that name them",
+            "fix": "reveal the diagram part by part on the narration's words (an "
+                   "opacity, a draw-on or a scale key per part), starting from an "
+                   "empty or near-empty frame at the cut"})
+    return found
+
+
+def screenplay_supers(script: dict | None) -> dict[str, list[str]]:
+    """The on-screen text the screenplay asked of each shot (label to its
+    on_screen_text): a dense super it asked for was already flagged there
+    by rule:wall-of-text, and `text-dense` says so."""
+    out: dict[str, list[str]] = {}
+    for sec in (script or {}).get("sections") or []:
+        for shot in (sec or {}).get("shots") or []:
+            if isinstance(shot, dict) and shot.get("on_screen_text"):
+                out[str(shot.get("label", ""))] = [str(s) for s in shot["on_screen_text"]]
+    return out
+
+
+def text_dense_findings(samples: list[dict], supers: dict | None = None) -> list[dict]:
+    """`text-dense` (AUTO-145), from the words the rendered document puts on
+    screen at each still (`text`): a node over the screenplay's
+    wall-of-text bound, SCREEN_WORDS or more at once, or a quote, headline
+    or credit off screen before it can be read. Once per shot for each
+    node and for the count, on the first still that shows it."""
+    found, seen = [], set()
+    for row in samples:
+        rec = row.get("text")
+        if not isinstance(rec, dict):
+            continue
+        label = str(row.get("label", ""))
+        base = {"timestamp": row["t"], "frame": row.get("frame", ""), "shot": label,
+                "owner": "vfx", "kind": "text-dense"}
+        asked = {_norm(s) for s in (supers or {}).get(label) or []}
+        items = [i for i in rec.get("items") or [] if isinstance(i, dict)]
+        for item in items:
+            ident = item.get("id", "")
+            if item.get("exempt"):
+                seconds, needs = item.get("seconds"), float(item.get("needs") or 0)
+                if seconds is None or seconds >= needs or (label, "read", ident) in seen:
+                    continue
+                seen.add((label, "read", ident))
+                found.append(base | {
+                    "problem": f"`{ident}` ({item.get('words')} words) is on screen "
+                               f"{seconds:.1f} s, under the {needs:.1f} s it takes to "
+                               "read",
+                    "why": "a quote, headline or credit is there to be read whole; "
+                           "counted from the document, not read off the frame",
+                    "root_cause": "the node's span or its fade is shorter than its text "
+                                  f"at {READING_CPS:g} characters a second",
+                    "fix": "hold it on screen long enough to read, or shorten it"})
+                continue
+            if (item.get("kind") == "formula" or int(item.get("words") or 0) <= WALL_WORDS
+                    or (label, "node", ident) in seen):
+                continue
+            seen.add((label, "node", ident))
+            problem = (f"`{ident}` carries {item['words']} words, over the {WALL_WORDS} a "
+                       "super may carry")
+            if _norm(item.get("text")) in asked:
+                problem += ("; the screenplay asked for this super; rule:wall-of-text "
+                            "already flagged it")
+            found.append(base | {
+                "problem": problem,
+                "why": "words on screen compete with the narration for the viewer's "
+                       "attention: a super is a few words, not a sentence; counted from "
+                       "the document, not read off the frame",
+                "root_cause": "the effect's text node carries a sentence instead of a "
+                              "label",
+                "fix": "cut the text to the few words the picture needs and let the "
+                       "narration say the rest"})
+        counted = [i for i in items if not i.get("exempt")]
+        total = int(rec.get("words") or 0)
+        # One long node is the whole count: the node's finding already names
+        # it, and a second naming only it would share its fingerprint
+        # (improve.fingerprint) and be routed as the same defect twice.
+        bearing = [i for i in counted if int(i.get("words") or 0) > 0]
+        alone = (len(bearing) == 1 and bearing[0].get("kind") != "formula"
+                 and int(bearing[0].get("words") or 0) > WALL_WORDS)
+        if total >= SCREEN_WORDS and not alone and (label, "count") not in seen:
+            seen.add((label, "count"))
+            names = ", ".join(f"`{i['id']}` ({i['words']})" for i in counted)
+            found.append(base | {
+                "problem": f"{total} words on screen at once, at or over the "
+                           f"{SCREEN_WORDS} a frame may carry: {names}",
+                "why": "a frame with this much to read is read, not watched; counted "
+                       "from the document, not read off the frame",
+                "root_cause": "labels, supers and formulas pile up in one frame instead "
+                              "of arriving with the narration",
+                "fix": "show fewer labels at once: bring each in when the narration "
+                       "names it and take the last one out"})
+    return found
+
+
 def mechanical_findings(samples: list[dict], diagnostics: dict | None = None,
-                        geometry: dict | None = None, merged: dict | None = None) -> list[dict]:
+                        geometry: dict | None = None, merged: dict | None = None, *,
+                        supers: dict | None = None) -> list[dict]:
     """What the measurements already prove, as findings in the scorecard's
     own shape plus `kind` and `shot`. Blocking when on the hook or the
     ending, or when the same kind is on more than one sampled shot; a
     `penetration` (`geometry`, records per shot label) and a `reads-merged`
-    (`merged`, spans per shot label) are always blocking and owned by vfx."""
+    (`merged`, spans per shot label) are always blocking and owned by vfx.
+    `no-build` and `text-dense` (AUTO-145; `supers`, label to the
+    screenplay's on-screen text) are ADVISORY_KINDS: always minor."""
     found: list[dict] = []
     # What is recorded per shot, not per frame, is filed once per shot
     # (AUTO-103: a shot can have several stills), on its midpoint still
     # when it has one. A shot is its label and its `at`; a row without `at`
     # (a pass sampled before AUTO-103) is its own shot.
     # An evenly spaced still or a line's (AUTO-104) is never the home while
-    # the shot has its own.
+    # the shot has its own; a build still (AUTO-145) never is.
     def extra(row: dict) -> bool:
-        return all(why == SPREAD_WHY or why.startswith(LINE_WHY)
+        return all(why == SPREAD_WHY or why.startswith((LINE_WHY, BUILD_WHY))
                    for why in str(row.get("why", "")).split("; "))
     home: dict[tuple, int] = {}
     for i, row in enumerate(samples):
+        if measured_only(row):
+            continue
         key = (str(row.get("label", "")), row.get("at", row.get("t")))
         if key not in home or (extra(samples[home[key]]) and not extra(row)):
             home[key] = i
     for i, row in enumerate(samples):
+        if measured_only(row):
+            continue
         base = {"timestamp": row["t"], "frame": row.get("frame", ""),
                 "shot": str(row.get("label", "")),
                 "owner": "vfx" if row.get("asset") == "effect" else "build"}
@@ -1739,7 +2225,7 @@ def mechanical_findings(samples: list[dict], diagnostics: dict | None = None,
                               "of easing",
                 "fix": "ease the key, or move the boundary to a cut the edit intends"})
         # What follows is recorded per shot (see `home` above).
-        if home[(base["shot"], row.get("at", row.get("t")))] != i:
+        if home.get((base["shot"], row.get("at", row.get("t")))) != i:
             continue
         diag = (diagnostics or {}).get(base["shot"]) or {}
         ids = list(diag.get("off_camera") or [])
@@ -1761,12 +2247,14 @@ def mechanical_findings(samples: list[dict], diagnostics: dict | None = None,
         reads = (merged or {}).get(base["shot"]) or []
         if reads:
             found.append(base | _merged_finding(reads) | {"owner": "vfx"})
+    found += no_build_findings(samples) + text_dense_findings(samples, supers)
     shots_by_kind: dict[str, set] = {}
     for f in found:
         shots_by_kind.setdefault(f["kind"], set()).add(f["shot"])
     edge = {str(row.get("label", "")) for row in samples if _on_edge(row)}
     for f in found:
-        f["severity"] = ("blocking" if f["kind"] in ALWAYS_BLOCKING or f["shot"] in edge
+        f["severity"] = ("minor" if f["kind"] in ADVISORY_KINDS else
+                         "blocking" if f["kind"] in ALWAYS_BLOCKING or f["shot"] in edge
                          or len(shots_by_kind[f["kind"]]) > 1 else "minor")
     return found
 
@@ -2157,9 +2645,10 @@ def score_unheard(card: dict, unheard: dict[str, dict]) -> dict:
 def contact_sheet(samples: list[dict], frames_dir: Path, out: Path) -> Path:
     """Every still tiled in time order with its timestamp, shot and motion
     verdict, so the reviewer sees the runtime at once. A missing still is an
-    empty, labelled tile."""
+    empty, labelled tile. A build still of its own is left out (`judged`):
+    it is measured, not looked at."""
     from PIL import Image, ImageDraw
-    rows = list(samples)
+    rows = judged(samples)
     cols = max(1, min(len(rows), SHEET_COLUMNS))
     lines = max(1, -(-len(rows) // cols))
     tw, th = SHEET_TILE
@@ -2572,7 +3061,7 @@ def side_by_side(args, reviewer: Harness, pass_dir: Path, previous: dict | None,
     frames = pass_dir / "frames"
     out_dir = pass_dir / PREVIOUS_DIR
     rows, todo, unpaired = [], [], []
-    for row in samples:
+    for row in judged(samples):
         if not (frames / row["frame"]).is_file():
             continue                     # this pass has no still there: nothing to pair
         if (prev_frames / row["frame"]).is_file():
@@ -3082,6 +3571,7 @@ def render_frames(args, project, scene: str, samples: list[dict],
         if source is not None and source.is_file():
             shutil.copyfile(source, still)
             continue
+        still.parent.mkdir(parents=True, exist_ok=True)       # frames/build/ (AUTO-145)
         code = render({"still": row["t"], "out": str(still)})
         if code or not still.is_file():
             problems.append(f"no frame at {row['t']}s (shot {row['label']}): "
@@ -3449,13 +3939,14 @@ def evidence_rows(samples: list[dict], script: dict, voice: dict | None, *, have
     line said there, the take, and what was measured of it (the still's
     statistics, the burst's motion, the engine's diagnostics and the
     mechanical findings already filed on its shot). `have` is the stills
-    that exist under frames/."""
+    that exist under frames/. A build still of its own is not evidence
+    (`judged`): its ink is already in the mechanical findings."""
     voice = voice or {}
     shots = {s.get("label"): s for sec in script.get("sections", [])
              for s in sec.get("shots", [])}
     takes = {t.get("label"): t for t in voice.get("takes", [])}
     evidence = []
-    for row in samples:
+    for row in judged(samples):
         shot = shots.get(row["label"], {})
         take = takes.get(row["label"], {})
         evidence.append({
@@ -3536,10 +4027,13 @@ def review_prompt(*, title: str, pass_name: str, sheet_name: str, has_narration:
                   narrated_total: int, story: dict | None, evidence: list[dict],
                   mechanical: list[dict], listening: list[dict], unheard: dict,
                   silent_film: bool, measurements: dict, blockers: list[str],
-                  extra_briefs=()) -> str:
+                  extra_briefs=(), measured_stills: int = 0) -> str:
     """The scorecard's prompt, before each sample's category order is added.
     `extra_briefs` are the listener's and the watcher's text (`--listen`,
-    `--watch`), placed after the measurements."""
+    `--watch`), placed after the measurements. `measured_stills`, the
+    build stills of their own under frames/build/ (AUTO-145), adds one
+    sentence saying they are not to be scored; with none the prompt is
+    as before, so a film with no diagram is not asked again."""
     return "\n\n".join([
         f"Review {pass_name} of \"{title}\". Read `{sheet_name}` first "
         "(every still tiled in time order with its timestamp), then every PNG "
@@ -3564,6 +4058,11 @@ def review_prompt(*, title: str, pass_name: str, sheet_name: str, has_narration:
         "mechanical findings are measured, not judged: do not repeat them as "
         "your own, but score as if they stand, because they do. Blocking items "
         "already proven by the manifests are listed; add what the frames show."
+        + (f" The {measured_stills} stills under `frames/{BUILD_DIR}/` are measured "
+           "for ink, not judged: each sits a quarter second from a cut, where a "
+           "transition can be mid-dissolve, and what they measure is in the "
+           "mechanical findings; neither read nor score them."
+           if measured_stills else "")
         + (" " + unseen_brief(missing, total_shots) if missing else "")
         + (" " + unseen_lines_brief(dropped_lines, narrated_total)
            if dropped_lines else ""),
@@ -3662,7 +4161,7 @@ def score_evidence(reviewer: Harness, pass_dir: Path, *, title: str, build: dict
         narrated_total=len(narrated_lines(build, voice)), story=story, evidence=evidence,
         mechanical=mechanical, listening=listening, unheard=unheard,
         silent_film=silent(build), measurements=measurements, blockers=blockers,
-        extra_briefs=extra_briefs)
+        extra_briefs=extra_briefs, measured_stills=len(samples) - len(judged(samples)))
     # QA_SAMPLES readings of the same evidence (AUTO-107): one reading's
     # noise is the size of the steps read as progress. structure 20 is
     # checked past the schema in each (one non-blank line per screenplay
@@ -4337,6 +4836,11 @@ def run(args) -> int:
             return 1
 
     # -- the evidence --------------------------------------------------------
+    # vfx.json is read once here: the build stills (AUTO-145), the proof
+    # frames, the reach summary and the continuity blockers all read this
+    # one copy.
+    vfx_doc = read_json(project.source("vfx"), warn=False) if project.source("vfx") else None
+    builds = build_shots(vfx_doc, build)
     if args.reuse:
         pass_dir = home / QA_DIR / args.reuse
         samples = read_json(pass_dir / "samples.json", warn=False, shape=list)
@@ -4362,7 +4866,7 @@ def run(args) -> int:
                 print(f"[qa] watch: {watched['status']}"
                       + (f" ({watched['reason']})" if watched.get("reason") else "")
                       + f", {len(watched.get('findings') or [])} finding(s)", file=sys.stderr)
-        samples = sample(build, limit=args.frame_limit, voice=voice,
+        samples = sample(build, limit=args.frame_limit, voice=voice, builds=builds,
                          **({"watched": watch_pass.candidates(watched)}
                             if watched is not None else {}))
         if not samples:
@@ -4396,10 +4900,20 @@ def run(args) -> int:
         return 1
 
     # -- what the frames measure, before anyone looks --------------------------
-    measure(samples, frames_dir)
-    write_json(pass_dir / "samples.json", samples)        # the plan, and now the numbers
     render_report = read_json(project.source("render"), warn=False)
     diagnostics = engine_diagnostics(render_report, build.get("shots", []))
+    # The words on screen at each still (AUTO-145), counted from the
+    # document the frames were rendered from, never read off a frame.
+    try:
+        text_nodes = geo._composed(Path(scene).read_text(encoding="utf-8", errors="replace"),
+                                   "", Path(scene).parent, kinds=geo.TEXT_KINDS)
+    except (OSError, ValueError):
+        text_nodes = []
+
+    def on_screen(t: float, label: str) -> list[dict]:
+        return screen_text(text_nodes, t, (diagnostics.get(label) or {}).get("off_camera"))
+    measure(samples, frames_dir, screen=on_screen)
+    write_json(pass_dir / "samples.json", samples)        # the plan, and now the numbers
     # Does the hero pass through the set? The still cannot say; the
     # engine's evaluated frame graph and the document's geometry can.
     sampled = [s for s in build.get("shots", []) if str(s.get("label", "")) in
@@ -4409,11 +4923,9 @@ def run(args) -> int:
         print(f"warning: geometry not checked: {geometry_report.get('why', '?')}", file=sys.stderr)
     mechanical = mechanical_findings(samples, diagnostics=diagnostics,
                                      geometry=geometry_by_shot(geometry_report, build.get("shots", [])),
-                                     merged=merged_by_shot(geometry_report, build.get("shots", [])))
-    # The film against the authors' proof frames of the same worlds. vfx.json
-    # is read once here: the proof frames, the reach summary and the
-    # continuity blockers all read this one copy.
-    vfx_doc = read_json(project.source("vfx"), warn=False) if project.source("vfx") else None
+                                     merged=merged_by_shot(geometry_report, build.get("shots", [])),
+                                     supers=screenplay_supers(script))
+    # The film against the authors' proof frames of the same worlds.
     proof_found, proof_note = proof_frame_findings(
         args, project, scene, vfx_doc, home, build.get("shots", []), pass_dir)
     mechanical += proof_found
@@ -4609,6 +5121,7 @@ def run(args) -> int:
     if dropped_lines and not args.quiet:
         print(f"note: {len(dropped_lines)} of {len(narrated)} narrated line(s) have "
               "no still where they start (scorecard: lines_unsampled)", file=sys.stderr)
+    card = note_builds(card, builds, samples, reused=bool(args.reuse))
     capped: list[str] = []
     if evidenced:
         # The unheard audio categories were left out of the medians

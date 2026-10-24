@@ -374,6 +374,20 @@ class TheShippedText(unittest.TestCase):
         self.assertIn("a temperament per film is a house extension", self.raw["format"])
         self.assertNotIn("house extension", self.parsed["format"])
 
+    def test_the_styles_ask_for_a_needed_formula_and_space_shown_in_space(self):
+        # AUTO-145: direction 9 (already the section's tag) puts the formula
+        # after the viewer has seen what it relates happen; the spatial line
+        # is a house rule, so the tag does not change.
+        formula = self.line("styles", "- A formula appears only when the beat needs it")
+        self.assertIn("never a formula as the first picture of an idea", formula)
+        spatial = self.line("styles", "- Where the idea is spatial")
+        for words in ("a scale comparison", "a cutaway", "a camera move through it",
+                      "not a label"):
+            self.assertIn(words, spatial)
+        self.assertEqual(cited(COMMENT.search(self.raw["styles"]).group(1)),
+                         [("direction", 4), ("direction", 9)])
+        self.assertLess(len(self.raw["styles"]), 1500)
+
     def test_the_strength_is_the_corpus_strength(self):
         # attention 8 says "whenever possible"; structure 19 lets a section
         # defer its answer to a named later one; structure 35 allows the one

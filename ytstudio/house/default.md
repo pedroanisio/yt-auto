@@ -33,6 +33,8 @@ The narration carries the message on first listen: a viewer who cannot rewind un
 <!-- rules: direction 4, 9 -->
 - Every section has an anchor visual, something that can be shown, named before the script is written; the story is scoped to what can be shown, and a section with nothing to show is cut or merged.
 - For every abstract claim the first shot is a specific worked example, simulation or drawing; the definition comes after the viewer has seen it happen.
+- A formula appears only when the beat needs it, after the viewer has seen what it relates happen; never a formula as the first picture of an idea.
+- Where the idea is spatial (size, arrangement, path, inside), show it in space: a scale comparison, a cutaway or a camera move through it, not a label.
 
 ## vfx
 <!-- rules: direction 1, 3, 6, 7, 8, 12 -->

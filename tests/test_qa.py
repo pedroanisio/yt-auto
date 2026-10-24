@@ -849,5 +849,181 @@ class StoryStage(unittest.TestCase):
             self.assertNotIn("calibrat", text)
 
 
+# --------------------------------------------------------------------------- #
+# AUTO-145: the words on screen, counted from the rendered document
+# --------------------------------------------------------------------------- #
+
+#: One section world, included at 0-6 s: a title layer for its own 0-2 s,
+#: a formula throughout, a label that fades in to 1 at 2 s and out to 0 at
+#: 4 s, and a label the engine says the camera never sees.
+SCREEN_WORLD = """<scene version="1.3">
+  <assets>
+    <text id="t-title" text="Rust eats bolts" width="900" height="120"/>
+    <text id="t-fade" text="half the load on it" width="900" height="120"/>
+    <text id="t-gone" text="never seen by anyone here" width="900" height="120"/>
+    <formula id="f-law" tex="F = m a" width="400" height="120"/>
+  </assets>
+  <symbols>
+    <symbol id="world-a" width="1920" height="1080">
+      <layer id="l-title" asset="t-title" start="0" end="2"/>
+      <layer id="l-law" asset="f-law"/>
+      <group id="g-fade">
+        <animate property="opacity"><key time="1.5" value="0"/><key time="2" value="1"/><key time="4" value="0"/></animate>
+        <layer id="l-fade" asset="t-fade"/>
+      </group>
+      <layer id="l-gone" asset="t-gone"/>
+    </symbol>
+  </symbols>
+</scene>
+"""
+
+SCREEN_SCENE = """<scene version="1.3"><project width="1920" height="1080" fps="30" duration="6"/>
+  <composition>
+    <include id="shot-1.1" start="0" end="6" src="vfx/v01/a.scene.xml" symbol="world-a"/>
+  </composition>
+</scene>
+"""
+
+
+def _node(ident, words, *, kind="text", window=(0.0, 60.0), text=None):
+    """A text node as the document walk gives it, with `words` words."""
+    return {"id": f"shot-1.2/{ident}", "name": ident, "kind": kind, "asset": "",
+            "text": text if text is not None else " ".join(f"w{i}" for i in range(words)),
+            "window": list(window), "fades": []}
+
+
+def _texted(label, nodes, t=None):
+    """qa.sample(_build()) with `nodes` read on screen at `label`'s still."""
+    rows = qa.sample(_build())
+    for row in rows:
+        if row["label"] == label:
+            row["text"] = qa.text_record(qa.screen_text(nodes, t if t is not None
+                                                        else row["t"]))
+    return rows
+
+
+def _dense(rows, **kw):
+    return [f for f in qa.mechanical_findings(rows, **kw) if f["kind"] == "text-dense"]
+
+
+class ScreenText(unittest.TestCase):
+    def test_the_visible_words_follow_the_include_the_spans_and_the_keys(self):
+        from ytstudio import geometry
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "vfx" / "v01").mkdir(parents=True)
+            (root / "vfx" / "v01" / "a.scene.xml").write_text(SCREEN_WORLD, encoding="utf-8")
+            nodes = geometry._composed(SCREEN_SCENE, "", root, kinds=geometry.TEXT_KINDS)
+        off = ["shot-1.1/l-gone"]
+        self.assertEqual(qa.FORMULA_WORDS, 4)
+
+        def words(t):
+            return qa.text_record(qa.screen_text(nodes, t, off))
+        one, three, five = words(1.0), words(3.0), words(5.0)
+        self.assertEqual(sorted(one["ids"]), ["shot-1.1/l-law", "shot-1.1/l-title"])
+        self.assertEqual((one["words"], one["nodes"], one["formulas"]), (3 + 4, 2, 1))
+        self.assertEqual(sorted(three["ids"]), ["shot-1.1/l-fade", "shot-1.1/l-law"])
+        self.assertEqual(three["words"], 5 + 4)
+        self.assertEqual(five["ids"], ["shot-1.1/l-law"])
+        self.assertEqual(five["words"], 4)
+        # without the engine's word the unseen label counts
+        self.assertIn("shot-1.1/l-gone", qa.text_record(qa.screen_text(nodes, 1.0))["ids"])
+        # outside the include nothing is on screen
+        self.assertEqual(qa.text_record(qa.screen_text(nodes, 7.0))["nodes"], 0)
+
+    def test_a_fade_out_and_a_second_fade_in_are_both_read(self):
+        node = dict(_node("l-twice", 2), fades=[[[0.0, 0.0], [1.0, 1.0], [2.0, 0.0],
+                                                [3.0, 0.0], [4.0, 1.0], [5.0, 0.0]]])
+        seen = [t for t in (0.5, 1.5, 2.5, 4.5, 5.5) if qa.screen_text([node], t)]
+        self.assertEqual(seen, [1.5, 4.5])
+        [shown] = qa.screen_text([node], 4.5)
+        self.assertEqual(shown["shown"], [4.0, 5.0])
+
+
+class TextDense(unittest.TestCase):
+    def test_one_node_over_the_wall_of_text_bound_is_text_dense_owned_by_vfx(self):
+        from ytstudio import script
+        self.assertEqual(script.BOUNDS["wall_of_text"]["value"], 6)
+        [f] = _dense(_texted("1.2", [_node("l-long", 9)]))
+        self.assertEqual((f["shot"], f["owner"], f["severity"]), ("1.2", "vfx", "minor"))
+        self.assertIn("`shot-1.2/l-long`", f["problem"])
+        self.assertIn("9 words", f["problem"])
+        for key in ("why", "root_cause", "fix", "timestamp", "frame"):
+            self.assertTrue(f[key], key)
+
+    def test_twelve_or_more_words_at_once_is_text_dense_and_ten_is_not(self):
+        self.assertEqual(qa.SCREEN_WORDS, 12)
+        [f] = _dense(_texted("1.2", [_node("a", 4), _node("b", 4), _node("c", 5)]))
+        for ident in ("a", "b", "c"):
+            self.assertIn(f"`shot-1.2/{ident}`", f["problem"])
+        self.assertIn("13 words", f["problem"])
+        self.assertEqual(_dense(_texted("1.2", [_node("a", 3), _node("b", 3),
+                                                _node("c", 4)])), [])
+        # a formula counts as FORMULA_WORDS
+        self.assertEqual(len(_dense(_texted("1.2", [_node("a", 4), _node("b", 4),
+                                                    _node("f", 0, kind="formula",
+                                                          text="E = m c^2")]))), 1)
+
+    def test_a_quote_with_time_to_be_read_passes_and_a_flashed_one_does_not(self):
+        quote = " ".join(["word"] * 14)
+        long = _node("quote-1", 14, text=quote, window=(5.0, 15.0))
+        self.assertEqual(_dense(_texted("1.2", [long])), [])
+        flashed = _node("quote-1", 14, text=quote, window=(6.5, 7.5))   # 1.2's still: 7 s
+        [f] = _dense(_texted("1.2", [flashed]))
+        self.assertIn("`shot-1.2/quote-1`", f["problem"])
+        self.assertIn("1.0 s", f["problem"])
+        for ident in ("headline-2", "credit-3"):
+            self.assertEqual(_dense(_texted("1.2", [_node(ident, 14,
+                                                          window=(5.0, 15.0))])), [])
+
+    def test_a_super_the_screenplay_asked_for_says_so(self):
+        text = "the paint hid the rust on every joint"
+        rows = _texted("1.2", [_node("l-super", 8, text=text)])
+        [f] = _dense(rows, supers={"1.2": [text.upper()]})
+        self.assertIn("the screenplay asked for this super; rule:wall-of-text already "
+                      "flagged it", f["problem"])
+        [plain] = _dense(rows)
+        self.assertNotIn("screenplay asked", plain["problem"])
+
+    def test_the_placeholder_card_is_not_counted(self):
+        card = dict(_node("x", 30), id="shot-1.2", name="shot-1.2", asset="card-1.2")
+        self.assertEqual(qa.screen_text([card], 5.0), [])
+
+
+class Advisory(unittest.TestCase):
+    """AUTO-145: no-build and text-dense are always minor and cap nothing
+    until their thresholds are calibrated."""
+
+    def findings(self, labels):
+        rows = qa.sample(_build())
+        for row in rows:
+            if row["label"] in labels:
+                row["text"] = qa.text_record(qa.screen_text([_node("l-long", 9)], row["t"]))
+        return qa.mechanical_findings(rows)
+
+    def test_they_stay_minor_on_an_edge_shot_and_on_three_shots(self):
+        self.assertEqual(qa.ADVISORY_KINDS, ("no-build", "text-dense"))
+        on_hook = self.findings({"1.1"})
+        self.assertEqual([(f["kind"], f["severity"]) for f in on_hook],
+                         [("text-dense", "minor")])
+        many = self.findings({"1.2", "2.1", "2.2"})
+        self.assertEqual([f["severity"] for f in many], ["minor"] * 3)
+        scores = {k: 9.0 for k in qa.CATEGORIES}
+        capped, overall, which = qa.cap_scores(scores, 9.0, on_hook + many + [
+            {"kind": "no-build", "severity": "minor", "shot": "1.1"}])
+        self.assertEqual((capped, overall, which), (scores, 9.0, []))
+        self.assertNotIn("no-build", qa.CAPPED)
+
+    def test_reown_moves_no_build_to_build_and_leaves_text_dense_with_vfx(self):
+        found = [{"kind": "no-build", "owner": "vfx", "shot": "1.2", "severity": "minor",
+                  "problem": "effect `fx` is on screen whole"},
+                 {"kind": "text-dense", "owner": "vfx", "shot": "1.2", "severity": "minor",
+                  "problem": "`shot-1.2/l-long` carries 9 words"}]
+        mismatch = {"kind": "proof-mismatch", "owner": "build", "severity": "blocking",
+                    "shot": "1.2", "world": "fx-open", "shots": ["1.2"], "problem": "d"}
+        self.assertEqual(qa.reown_by_proof(found + [mismatch], [mismatch]), 1)
+        self.assertEqual([f["owner"] for f in found], ["build", "vfx"])
+
+
 if __name__ == "__main__":
     unittest.main()

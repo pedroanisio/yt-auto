@@ -11,6 +11,7 @@ keeps the priority rows and names the shots it left out.
 
 import argparse
 import unittest
+from pathlib import Path
 
 from ytstudio import qa
 from tests.test_qa import _build
@@ -288,6 +289,200 @@ class PerShotFindings(unittest.TestCase):
         found = [f for f in qa.mechanical_findings(rows, diagnostics={"": {"off_camera": ["a"]}})
                  if f["kind"] == "off_camera"]
         self.assertEqual([f["timestamp"] for f in found], [2.0, 6.0])
+
+
+def _diagram_film():
+    """AUTO-145: a film with one diagram effect over two shots, a card, a
+    short diagram, a dropped one and a shot extended from another; and its
+    vfx.json."""
+    def shot(label, at, seconds, include, file="vfx/v01/a.scene.xml#world"):
+        return {"label": label, "at": at, "seconds": seconds, "asset": "effect",
+                "section": label[0], "include": include, "file": file}
+    build = {"scene": {"fps": 30}, "shots": [
+        shot("1.1", 0.0, 4.0, "shot-1.1"),
+        shot("1.2", 4.0, 6.0, "shot-1.2"),
+        shot("1.3", 10.0, 5.0, "shot-1.2"),                  # the same world, running on
+        shot("2.1", 15.0, 2.5, "shot-2.1"),
+        shot("2.2", 17.5, 5.0, "shot-2.2"),
+        shot("2.3", 22.5, 5.0, "shot-2.1",
+             "vfx/v01/b.scene.xml#world (extended from 2.1)")]}
+    vfx = {"sections": [
+        {"effects": [{"id": "open-card", "type": "text-and-callout", "shots": ["1.1"]},
+                     {"id": "open-steps", "type": "2d-diagram", "shots": ["1.3", "1.2"]}]},
+        {"effects": [{"id": "two-short", "type": "2d-diagram", "shots": ["2.1"]},
+                     {"id": "two-dropped", "type": "data-animation", "shots": ["2.2"]},
+                     {"id": "two-ext", "type": "data-animation", "shots": ["2.3"]}]}],
+        "scene": {"dropped": {"two-dropped": "no document was authored for its section"}}}
+    return build, vfx
+
+
+def _builds(rows, label):
+    return [r for r in rows if r["label"] == label
+            and any(w.startswith(qa.BUILD_WHY) for w in r["why"].split("; "))]
+
+
+class BuildStills(unittest.TestCase):
+    """AUTO-145: the first shot of a diagram effect gets a still where it
+    opens and one where it closes, so a build can be told from a finished
+    diagram talked over."""
+
+    def test_only_the_first_shot_of_a_diagram_effect_of_three_seconds_or_more(self):
+        build, vfx = _diagram_film()
+        self.assertEqual(qa.BUILD_TYPES, ("2d-diagram", "data-animation"))
+        self.assertEqual(qa.BUILD_MIN_SECONDS, 3.0)
+        # not the card, not the second shot, not the 2.5 s one, not the
+        # dropped effect, not the shot extended from another
+        self.assertEqual(qa.build_shots(vfx, build), {"1.2": "open-steps"})
+
+    def test_the_first_and_last_stills_sit_inside_the_shot_with_no_burst(self):
+        build, vfx = _diagram_film()
+        rows = qa.sample(build, builds=qa.build_shots(vfx, build))
+        found = _builds(rows, "1.2")
+        self.assertEqual([r["why"] for r in found], ["build: first", "build: last"])
+        first, last = found
+        self.assertEqual(first["t"], 4.0 + qa.BURST_SECONDS / 2)
+        self.assertEqual(last["t"], 10.0 - qa.BURST_SECONDS / 2)
+        for r in found:
+            self.assertNotIn("burst", r)
+            self.assertTrue(4.0 < r["t"] < 10.0)
+            self.assertEqual(r["builds"], [{"which": r["why"][len("build: "):],
+                                            "t": r["t"], "frame": r["frame"],
+                                            "effect": "open-steps"}])
+        for label in ("1.1", "1.3", "2.1", "2.2", "2.3"):
+            self.assertEqual(_builds(rows, label), [], label)
+        # the midpoint stills are as before
+        plain = qa.sample(build)
+        self.assertEqual([r for r in rows if not r.get("builds")], plain)
+
+    def test_a_build_still_inside_a_burst_of_its_shot_merges_into_that_row(self):
+        build, vfx = _diagram_film()
+        voice = {"takes": [{"label": "1.2", "text": "It starts here.", "seconds": 6.0,
+                            "words": [{"text": "It", "start": 0.0, "end": 0.3},
+                                      {"text": "starts", "start": 0.3, "end": 0.8},
+                                      {"text": "here.", "start": 0.8, "end": 1.2}]}]}
+        without = qa.sample(build, voice=voice)
+        rows = qa.sample(build, voice=voice, builds=qa.build_shots(vfx, build))
+        self.assertEqual(len(rows), len(without) + 1)             # only the last is new
+        [line] = [r for r in rows if r["label"] == "1.2" and r.get("lines")]
+        self.assertIn("build: first", line["why"].split("; "))
+        self.assertIn("burst", line)
+        [entry] = line["builds"]
+        self.assertEqual((entry["which"], entry["t"]), ("first", 4.25))
+        self.assertIn(entry["frame"], [line["frame"]] + line["burst"]["files"])
+        self.assertEqual([r["why"] for r in _builds(rows, "1.2") if r is not line],
+                         ["build: last"])
+
+    def test_past_the_ceiling_the_longest_shots_are_kept_and_the_rest_named(self):
+        self.assertEqual(qa.BUILD_SAMPLES_MAX, 12)
+        shots, effects, at = [], [], 0.0
+        for n, seconds in enumerate((3, 9, 4, 8, 5, 7, 6, 3.5)):
+            label = f"1.{n + 1}"
+            shots.append({"label": label, "at": at, "seconds": float(seconds),
+                          "asset": "effect", "include": f"shot-{label}",
+                          "file": "a#w", "section": "1"})
+            effects.append({"id": f"fx-{n + 1}", "type": "2d-diagram", "shots": [label]})
+            at += seconds
+        build = {"scene": {"fps": 30}, "shots": shots}
+        builds = qa.build_shots({"sections": [{"effects": effects}]}, build)
+        self.assertEqual(len(builds), 8)
+        rows = qa.sample(build, builds=builds)
+        kept = sorted({r["label"] for r in rows if r.get("builds")})
+        self.assertEqual(kept, ["1.2", "1.3", "1.4", "1.5", "1.6", "1.7"])
+        self.assertEqual(sum(1 for r in rows if r.get("builds") and "burst" not in r), 12)
+        self.assertEqual(qa.builds_unsampled(builds, rows), ["1.1", "1.8"])
+        card = qa.note_builds({"not_evidenced": []}, builds, rows)
+        [line] = [n for n in card["not_evidenced"] if n.startswith("builds:")]
+        self.assertIn("2 of 8", line)
+        self.assertIn("1.1", line)
+        self.assertIn("1.8", line)
+        # build stills sit beyond --frames, like the watched ones
+        tight = qa.sample(build, limit=3, builds=builds)
+        self.assertEqual(sum(1 for r in tight if r.get("builds")), 12)
+
+    def test_a_diagram_phase_inside_a_folded_world_gets_build_stills(self):
+        # One world per section (vfx.scene_for): build folds the section's
+        # shots into one include owned by its first shot, so the diagram's
+        # first shot, 2.3, opens no include of its own. It is still the
+        # first shot of its effect, and is judged; its second shot is not.
+        def shot(label, at):
+            return {"label": label, "at": at, "seconds": 6.0, "asset": "effect",
+                    "section": "2", "include": "shot-2.1", "file": "vfx/v01/b.scene.xml#world"}
+        build = {"scene": {"fps": 30}, "shots": [shot("2.1", 0.0), shot("2.2", 6.0),
+                                                 shot("2.3", 12.0), shot("2.4", 18.0)]}
+        vfx = {"sections": [{"effects": [
+            {"id": "fx-open", "type": "text-callout", "shots": ["2.1", "2.2"]},
+            {"id": "fx-steps", "type": "2d-diagram", "shots": ["2.3", "2.4"]}]}]}
+        self.assertEqual(qa.build_shots(vfx, build), {"2.3": "fx-steps"})
+        rows = qa.sample(build, builds=qa.build_shots(vfx, build))
+        self.assertEqual([r["why"] for r in _builds(rows, "2.3")],
+                         ["build: first", "build: last"])
+        self.assertEqual(_builds(rows, "2.4"), [])
+
+    def test_build_stills_of_their_own_sit_apart_from_the_judged_frames(self):
+        # Measured for ink and judged by no model: their files are under
+        # frames/build/, not directly under frames/ where the reviewer reads.
+        build, vfx = _diagram_film()
+        rows = qa.sample(build, builds=qa.build_shots(vfx, build))
+        own = [r for r in _builds(rows, "1.2") if "burst" not in r]
+        self.assertEqual(len(own), 2)
+        for r in own:
+            self.assertEqual(r["frame"], f"{qa.BUILD_DIR}/{qa.frame_name(r['t'])}")
+            self.assertEqual(r["builds"][0]["frame"], r["frame"])
+        self.assertEqual(qa.judged(rows), [r for r in rows if not any(r is o for o in own)])
+
+    def test_build_stills_of_their_own_reach_neither_the_evidence_nor_the_sheet(self):
+        import tempfile
+        from PIL import Image
+        build, vfx = _diagram_film()
+        rows = qa.sample(build, builds=qa.build_shots(vfx, build))
+        own = {r["frame"] for r in rows if r.get("builds") and "burst" not in r}
+        self.assertEqual(len(own), 2)
+        evidence = qa.evidence_rows(rows, {"sections": []}, None, have=set(),
+                                    diagnostics={}, mechanical=[])
+        self.assertEqual(len(evidence), len(rows) - 2)
+        self.assertFalse(own & {e["frame"] for e in evidence})
+        with tempfile.TemporaryDirectory() as tmp:
+            frames = Path(tmp) / "frames"
+            with_builds = qa.contact_sheet(rows, frames, Path(tmp) / "a.png")
+            without = qa.contact_sheet(qa.judged(rows), frames, Path(tmp) / "b.png")
+            with Image.open(with_builds) as a, Image.open(without) as b:
+                self.assertEqual(a.size, b.size)
+                self.assertEqual(a.tobytes(), b.tobytes())
+        prompt = qa.review_prompt(
+            title="t", pass_name="pass-01", sheet_name="contact-sheet.png",
+            has_narration=False, missing=[], total_shots=1, dropped_lines=[],
+            narrated_total=0, story=None, evidence=[], mechanical=[], listening=[],
+            unheard={}, silent_film=True, measurements={}, blockers=[], measured_stills=2)
+        self.assertIn(f"The 2 stills under `frames/{qa.BUILD_DIR}/`", prompt)
+        self.assertIn("measured for ink, not judged", prompt)
+        plain = qa.review_prompt(
+            title="t", pass_name="pass-01", sheet_name="contact-sheet.png",
+            has_narration=False, missing=[], total_shots=1, dropped_lines=[],
+            narrated_total=0, story=None, evidence=[], mechanical=[], listening=[],
+            unheard={}, silent_film=True, measurements={}, blockers=[])
+        self.assertNotIn(qa.BUILD_DIR + "/", plain)    # no diagram: the prompt as before
+
+    def test_a_shot_whose_only_still_is_a_build_still_is_unsampled(self):
+        # Under a tight --frames a build still can be all a shot has; it
+        # carries none of the shot's checks, so the shot reads unsampled.
+        build, vfx = _diagram_film()
+        rows = qa.sample(build, limit=1, builds=qa.build_shots(vfx, build))
+        mine = [r for r in rows if r["label"] == "1.2"]
+        self.assertEqual([r["why"] for r in mine], ["build: first", "build: last"])
+        self.assertTrue(all("burst" not in r for r in mine))
+        self.assertIn("1.2", qa.unsampled(build, rows))
+        # a shot with a still of its own is sampled, whatever else it has
+        self.assertNotIn("1.2", qa.unsampled(build, qa.sample(
+            build, builds=qa.build_shots(vfx, build))))
+
+    def test_with_no_vfx_json_the_samples_are_unchanged(self):
+        build, _ = _diagram_film()
+        self.assertEqual(qa.build_shots(None, build), {})
+        self.assertEqual(qa.build_shots({}, build), {})
+        self.assertEqual(qa.sample(build, builds=qa.build_shots(None, build)),
+                         qa.sample(build))
+        self.assertEqual(qa.note_builds({"not_evidenced": []}, {}, qa.sample(build)),
+                         {"not_evidenced": []})
 
 
 class Flag(unittest.TestCase):

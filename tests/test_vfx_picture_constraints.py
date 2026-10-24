@@ -113,6 +113,37 @@ class SectionBrief(unittest.TestCase):
         self.assertIn("nothing shows the lift", text)
         self.assertNotIn("40,000 tonnes", text)                   # section two's
 
+    def test_a_standing_formula_flag_binds_the_brief_and_a_kept_one_does_not(self):
+        # AUTO-145: picture:formula rides the existing path; script.json
+        # keeps a writer's keep under picture.kept, which binds nothing.
+        formula = {"n": 1, "severity": "important", "kind": "picture:formula",
+                   "problem": "picture:formula: shot 1.1: the section opens on F = ma",
+                   "fix": "show the relation first as a worked case"}
+        spatial = {"n": 2, "severity": "important", "kind": "picture:spatial",
+                   "problem": "picture:spatial: shot 1.2: the nested shells are a label",
+                   "fix": "show it in space", "kept": "the line compares it to bowls"}
+        data = copy.deepcopy(SCRIPT)
+        data["picture"]["flags"].append(formula)
+        data["picture"]["kept"] = [spatial]
+
+        def brief(script):
+            with tempfile.TemporaryDirectory() as tmp:
+                ws = vfx.Workspace(Path(tmp), version="v01")
+                path = ws.brief(1, idea=Idea(title="T", genre="g", description="d"),
+                                house_rules="", style=STYLE, tokens={"ink": "#FFFFFF"},
+                                frame=(1920, 1080), section=SECTION, effects=EFFECTS,
+                                words={}, assets=[], worlds=vfx.world_symbols(SECTION, EFFECTS),
+                                constraints=vfx.picture_constraints(script))
+                return path.read_text(encoding="utf-8")
+        text = brief(data)
+        story = text.split("## Story constraints", 1)[1]
+        self.assertIn("shot 1.1: picture:formula: shot 1.1: the section opens on F = ma", story)
+        self.assertIn("REQUIRED: show the relation first as a worked case", story)
+        self.assertNotIn("nested shells", text)
+        data["picture"]["flags"].remove(formula)
+        data["picture"]["kept"].append(dict(formula, kept="the beat needs it"))
+        self.assertNotIn("F = ma", brief(data))
+
 
 class Planner(unittest.TestCase):
     def test_the_planners_section_prompt_carries_them(self):
@@ -206,6 +237,11 @@ class StaticCover(unittest.TestCase):
         self.assertEqual(vfx.static_cover(
             [dict(effect("C", "stock-treatment", ["1.3"]), id="x")], rows), [])
         self.assertEqual(vfx.static_cover(effects, []), [])
+        # AUTO-145: an unneeded formula is not a static process either
+        formula = [{"label": "1.1", "severity": "important", "source": "picture",
+                    "problem": "picture:formula: shot 1.1: opens on F = ma", "fix": "f"}]
+        self.assertEqual(vfx.static_cover(
+            [dict(effect("C", "text-and-callout", ["1.1"]), id="x")], formula), [])
         self.assertEqual(vfx.STATIC_TYPES,
                          ("text-and-callout", "photo-composite", "stock-treatment"))
 

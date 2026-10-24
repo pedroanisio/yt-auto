@@ -248,6 +248,48 @@ class Routing(ImproveCase):
                          ["voice", "script", "vfx", "vfx"])
         self.assertEqual({r["by"] for r in routing["routes"].values()}, {"mechanical"})
 
+    def test_build_and_density_findings_route_to_vfx_without_the_model(self):
+        # AUTO-145: measured from frames and from the document vfx authored
+        def advisory(kind, problem):
+            return dict(mech(kind, "1.2", owner="vfx", severity="minor"), problem=problem)
+        findings = improve.collect(card(5.0, mechanical=[
+            advisory("no-build", "effect `fx-steps` is on screen whole from the cut"),
+            advisory("text-dense", "`shot-1.2/l-long` carries 9 words")]))
+        FakeEngine.route = route_all_to("sound")
+        h = harness.Harness(self.root, "improve", verbose=False)
+        routing = improve.route(h, findings, name="route-pass-01")
+        self.assertEqual([routing["routes"][f"F{n}"]["stage"] for n in (1, 2)],
+                         ["vfx", "vfx"])
+        self.assertEqual({r["by"] for r in routing["routes"].values()}, {"mechanical"})
+        for kind in ("no-build", "text-dense"):
+            self.assertIn(kind, improve.MECHANICAL_KINDS)
+
+    def test_two_dense_nodes_in_one_shot_are_two_defects(self):
+        def dense(ident):
+            return dict(mech("text-dense", "1.2", severity="minor"),
+                        problem=f"`shot-1.2/{ident}` carries 9 words, over the 6")
+        a, b = improve.fingerprint(dense("l-one")), improve.fingerprint(dense("l-two"))
+        self.assertNotEqual(a, b)
+        self.assertEqual(a, "text-dense|1.2|l-one")
+        self.assertEqual(improve.fingerprint(dict(dense("l-one"), timestamp=99.0)), a)
+
+    def test_one_long_node_is_one_defect_not_two(self):
+        # A 13-word label is over the wall-of-text bound and over the
+        # screen's count at once; both name only it, so filing both would
+        # report one defect twice under one fingerprint.
+        from ytstudio import qa
+        rows = qa.sample({"shots": [{"label": "1.2", "at": 0.0, "seconds": 4.0,
+                                     "asset": "effect", "section": "1"}]})
+        node = {"id": "shot-1.2/l-long", "name": "l-long", "kind": "text", "asset": "",
+                "text": " ".join(f"w{i}" for i in range(13)), "window": [0.0, 60.0],
+                "fades": []}
+        for row in rows:
+            row["text"] = qa.text_record(qa.screen_text([node], row["t"]))
+        dense = [f for f in qa.mechanical_findings(rows) if f["kind"] == "text-dense"]
+        self.assertEqual(len(dense), 1, dense)
+        prints = [improve.fingerprint(f) for f in dense]
+        self.assertEqual(prints, ["text-dense|1.2|l-long"])
+
     def test_prose_findings_are_routed_by_the_model(self):
         findings = improve.collect(card(5.0, findings=[
             prose("the hero reads flat under the key", owner="scene-render lighting"),

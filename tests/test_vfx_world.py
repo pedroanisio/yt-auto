@@ -29,7 +29,7 @@ from unittest.mock import patch
 from PIL import Image
 
 from claude_engine import Event, Usage
-from ytstudio import harness, vfx
+from ytstudio import harness, qa, vfx
 from ytstudio.core import Idea
 from ytstudio.research import Dossier
 from ytstudio.scene_sdk import sdk
@@ -1662,6 +1662,12 @@ class SettingsBrief(unittest.TestCase):
     def test_the_author_system_says_each_symbol_is_one_world(self):
         self.assertIn("Each symbol is one world", vfx.AUTHOR_SYSTEM)
         self.assertNotIn("A section is one world", vfx.AUTHOR_SYSTEM)
+
+    def test_the_author_system_asks_quotes_headlines_and_credits_by_their_ids(self):
+        # AUTO-145: QA's word count exempts these by id, and times them instead
+        for prefix in qa.EXEMPT_TEXT:
+            self.assertIn(f"`{prefix}`", vfx.AUTHOR_SYSTEM)
+        self.assertIn("read", vfx.AUTHOR_SYSTEM)
 
 
 class SettingsReview(unittest.TestCase):
