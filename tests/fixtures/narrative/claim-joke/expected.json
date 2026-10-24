@@ -1,0 +1,43 @@
+{
+  "verdict": "recommend",
+  "at_least": {
+    "voice": "Good"
+  },
+  "why": "The good film with one joke in shot 5: blowing out a candle from the next town is how weak sunlight is against the gas tail, so the joke's punchline is the mechanism the shot claims, and attention 21 keeps it (humour that serves a claim is not a seductive detail). The voice row's Excellent level asks that any humour land on the point being made, which this one does; a reviewer that grades voice below Good or flags it for the joke has marked down humour the rubric keeps.",
+  "review": {
+    "logline": "A comet's tail leads it away from the Sun because sunlight and a wind from the Sun push it, not because it trails behind.",
+    "synopsis": "A comet leaves the Sun tail first; sunlight pushing the gas tail would be like blowing out a candle from the next town; Biermann proposes a wind from the Sun and Mariner 2 measures it; the opening comet is seen again.",
+    "grades": {
+      "train": "Excellent",
+      "hook": "Excellent",
+      "stakes": "Excellent",
+      "open_loops": "Good",
+      "reveal_setup": "Excellent",
+      "tension": "Excellent",
+      "ending": "Excellent",
+      "honesty": "Excellent",
+      "voice": "Excellent",
+      "devices": "Excellent"
+    },
+    "verdict": "recommend",
+    "flags": [],
+    "first_minute": {
+      "promise_match": "The comet and its tail are on screen and named at once.",
+      "question_and_stakes": "Why the tail leads; the same wind reached Quebec in 1989.",
+      "trigger": "unexpected_observation",
+      "gap": "why a comet leaving the Sun has its tail in front"
+    }
+  },
+  "plan_review": {
+    "verdict": "accept",
+    "train_ok": true,
+    "reorder_survives": false,
+    "sections_advancing_none": [],
+    "payoff_concrete": true,
+    "questions_unanswered": [],
+    "problems": []
+  },
+  "cold_read": {
+    "match": "match"
+  }
+}

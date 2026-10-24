@@ -1,0 +1,56 @@
+{
+  "criterion": "voice",
+  "verdict": "consider",
+  "why": "The good film with one aside added to shot 4: the alarm-clock line answers \"which claim does this serve?\" with none, so attention 21 cuts it as a seductive detail, and the voice row's Fair level names it: a joke or aside that serves no claim. The rest is the good film's, so voice is the only row the aside moves.",
+  "judging_10": "judging 10 asks the calibration run for reject on every seeded case. This case's one fault is a voice graded Fair, and voice is not one of the four criteria that decide a film, so by judging 11 and 12 it is a consider: one cut mends it. The calibration fails a reviewer that says recommend here, grades voice above Fair or leaves it without a flag.",
+  "evidence": {
+    "in": "script.sections.1.shots.0.narration",
+    "says": "alarm clock"
+  },
+  "review": {
+    "logline": "A comet's tail leads it away from the Sun because sunlight and a wind from the Sun push it, not because it trails behind.",
+    "synopsis": "A comet leaves the Sun tail first; sunlight pushes dust, with an aside about an alarm clock, but is too weak to explain the gas tail; Biermann proposes a wind from the Sun and Mariner 2 measures it; the opening comet is seen again.",
+    "grades": {
+      "train": "Excellent",
+      "hook": "Excellent",
+      "stakes": "Excellent",
+      "open_loops": "Good",
+      "reveal_setup": "Excellent",
+      "tension": "Excellent",
+      "ending": "Excellent",
+      "honesty": "Excellent",
+      "voice": "Fair",
+      "devices": "Excellent"
+    },
+    "verdict": "consider",
+    "flags": [
+      {
+        "n": 4,
+        "section": 2,
+        "criterion": "voice",
+        "severity": "important",
+        "problem": "The alarm-clock joke serves no claim: it says nothing about sunlight, dust or the tail, and spends the viewer's attention just before the step the film turns on.",
+        "fix": "Cut the aside, or make it land on the claim: a joke about how weak sunlight's push is would serve the point the next shot makes.",
+        "quote": "Which is more than my alarm clock manages on a Monday."
+      }
+    ],
+    "first_minute": {
+      "promise_match": "The comet and its tail are on screen and named at once.",
+      "question_and_stakes": "Why the tail leads; the same wind reached Quebec in 1989.",
+      "trigger": "unexpected_observation",
+      "gap": "why a comet leaving the Sun has its tail in front"
+    }
+  },
+  "plan_review": {
+    "verdict": "accept",
+    "train_ok": true,
+    "reorder_survives": false,
+    "sections_advancing_none": [],
+    "payoff_concrete": true,
+    "questions_unanswered": [],
+    "problems": []
+  },
+  "cold_read": {
+    "match": "match"
+  }
+}
