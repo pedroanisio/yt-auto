@@ -1136,8 +1136,8 @@ move reads as one take, not as symbols with cameras of their own.
 Each world has a **setting** (AUTO-143): the effects plan names the
 section's first one (`setting`), and each cut names the setting of the world
 it starts. A cut is warranted when the story moves to another place, scale,
-time or real-world record and no camera move can bridge it; inside one
-setting one continuous take stays the rule. The planner of each section sees
+time or real-world record, or when no camera move can bridge the change;
+inside one setting one continuous take stays the rule. The planner of each section sees
 the film's sections in order, each with its opening picture, so the film can
 change setting where the story does. A multi-world author brief lists each
 world with its setting and keeps the hero's scale, material and colour, the
@@ -1360,11 +1360,15 @@ Each shot is drawn by the first of these that applies:
    again later is a separate include. `build.json` lists the merges under
    `editorial.merged`.
 2. **A licensed picture** the research downloaded, carrying its `license` and
-   `credit` into the document: an image, or a clip (`.mp4`, `.m4v`, `.mov`)
-   placed as a silent `<video>` (`hasAudio="false"`, AUTO-143). A clip's
-   length is read from its own `mvhd` header (`build.clip_seconds`, no
-   ffprobe); a clip known to be shorter than the shot is not placed, and one
-   whose length cannot be read is placed with a `warning:`. Only pictures
+   `credit` into the document: an image, or a clip placed as a silent
+   `<video>` (`hasAudio="false"`, AUTO-143). A clip's length is read only
+   from an `.mp4`, `.m4v` or `.mov` file's own `mvhd` header
+   (`build.clip_seconds`, no ffprobe); a clip known to be shorter than the
+   shot is not placed (the editor's brief says why, under `notes`), and a
+   clip in another container (`.webm`, `.ogv`) or whose header does not read
+   is placed over the shot's length with a `warning:`. A row served with a
+   generic type (`application/octet-stream`, as the Internet Archive serves
+   clips) and no dossier kind takes its kind from its suffix. Only pictures
    draw a shot: a downloaded model, sound or document never does.
 3. **What the editor decides.** Every shot neither of those covers goes to the
    model with the shots around it, the images and the footage available and
@@ -2218,8 +2222,10 @@ published film has been read by `yt retention`, it notes how many the channel
 has measured: under ten, every retention finding carries `sanity_bound`.
 Two warnings serve the film over the presentation (AUTO-143): a dossier
 whose vetted image or video assets have no `ok` row in
-`raw/08-downloads.json` (or no manifest) is an `assets` warning naming `yt
-research --download`, and each run of sections the vfx continuity review
+`raw/08-downloads.json` is an `assets` warning naming `yt research
+--download` (with no manifest, the assets were never downloaded; with rows
+but none ok, none of the downloads succeeded, and the deferred and failed
+rows say why), and each run of sections the vfx continuity review
 names as staying in one setting (`monotony`) is a `vfx` warning with the
 review's fix.
 Exit 1 on any fail, so it works in a script.

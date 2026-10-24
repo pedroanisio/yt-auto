@@ -362,7 +362,9 @@ other catalogues, another licence policy or an older searcher
 is what the vfx and keyframe briefs offer the authors, and `yt build` places
 the licensed images and clips. `yt run` always passes it (AUTO-143), and
 `yt doctor` warns in `assets`, naming `yt research --download`, when vetted
-image or video assets have no `ok` row in `raw/08-downloads.json`.
+image or video assets have no `ok` row in `raw/08-downloads.json`: never
+downloaded when there is no manifest, none succeeded when its rows are all
+deferred or failed.
 
 **Research scales to the film's length.** `yt research` reads the idea's
 stated runtime ("60 seconds", "8-12 min"). A film under ten minutes shrinks the
@@ -1242,9 +1244,9 @@ hand-authored world showed the cost.
   `<include>`, so a camera move reads as a take. A section is one world
   unless its effects plan cuts it: the plan names the section's `setting`,
   each cut the `setting` of the world it starts (AUTO-143), warranted when
-  the story moves to another place, scale, time or real-world record that no
-  camera move can bridge; inside one setting one continuous take stays the
-  rule. Each section's planner sees the film's sections in order, each with
+  the story moves to another place, scale, time or real-world record, or
+  when no camera move can bridge the change; inside one setting one
+  continuous take stays the rule. Each section's planner sees the film's sections in order, each with
   its opening picture. Across worlds the hero keeps its scale, material and
   colour, and the grade and type language carry over.
 - **The sound is Freesound previews, not masters.** `yt sound --fetch`
