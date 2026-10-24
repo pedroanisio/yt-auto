@@ -408,7 +408,11 @@ def listen_prompt(title: str, seconds: float, *, script: dict, build: dict, voic
     film asks the same question and is served from decisions/qa/."""
     from . import qa
     said = qa.narration_text(script, build, voice)
-    cues = [{k: c.get(k) for k in ("at", "seconds", "kind", "level", "motif")
+    # A cue's time is where the build placed it on its word (cue_anchors),
+    # else the sheet's `at`; a build.json without anchors asks as before.
+    placed = qa.placed_cue_times(build)
+    cues = [{k: (placed.get(str(c.get("cue_id")), c.get(k)) if k == "at" else c.get(k))
+             for k in ("at", "seconds", "kind", "level", "motif")
              if c.get(k) is not None} for c in (sound or {}).get("cues") or []
             if isinstance(c, dict)][:80]
     return "\n\n".join([

@@ -838,5 +838,56 @@ class Records(Listen):
         self.assertGreater(dict(spend.flag_increments(None, "qa", ["--listen"]))["--listen"], 0)
 
 
+def _anchored_build(**extra):
+    """build.json as `yt build` writes it for an anchored sheet whose S1 a
+    redone take moved from 3 s to 5.4 s (AUTO-140)."""
+    data = motion._build(audio_tracks=3)
+    data["cue_anchors"] = [
+        {"cue": "M1", "sheet_at": 0.0, "placed_at": 0.0, "status": "kept",
+         "anchor": {"shot": "1.1", "take": "1.1.wav@x", "word": 0, "text": "This",
+                    "offset": 0.0}},
+        {"cue": "S1", "sheet_at": 3.0, "placed_at": 5.4, "status": "moved",
+         "anchor": {"shot": "1.2", "take": "1.2.wav@y", "word": 1, "text": "its",
+                    "offset": 0.1}}]
+    data.update(extra)
+    return data
+
+
+class PlacedTimes(unittest.TestCase):
+    """The listener and the scorecard reviewer are told where the cue was
+    placed, not where the sheet once put it; a build.json without anchors
+    asks exactly what it asked before."""
+
+    def prompt(self, build):
+        script = {"sections": [{"shots": [{"label": "1.1"}, {"label": "1.2"}]}]}
+        return _listen().listen_prompt("One take", SECONDS, script=script, build=build,
+                                       voice=listening._voice(), sound=listening._sound())
+
+    def test_the_listen_prompt_takes_each_cues_placed_time(self):
+        prompt = self.prompt(_anchored_build())
+        cues = json.loads(prompt.split("The cue sheet as spotted: context, not evidence:\n")[1]
+                          .split("\n\n")[0])
+        self.assertEqual([(c["at"], c["kind"]) for c in cues], [(0.0, "music"), (5.4, "sfx")])
+
+    def test_without_cue_anchors_the_listen_prompt_is_todays(self):
+        prompt = self.prompt(motion._build(audio_tracks=3))
+        legacy = [{k: c.get(k) for k in ("at", "seconds", "kind", "level", "motif")
+                   if c.get(k) is not None} for c in listening._cues()]
+        self.assertIn("\n\n" + harness.brief("The cue sheet as spotted: context, not evidence",
+                                             legacy) + "\n\n", prompt)
+        self.assertNotIn("placed", prompt)
+        self.assertNotIn("timeline as built", prompt)
+
+    def test_the_scorecards_cue_rows_take_the_placed_time(self):
+        rows = qa.sound_cue_rows(listening._sound(), _anchored_build())
+        self.assertEqual([(r["at"], r["kind"]) for r in rows], [(0.0, "music"), (5.4, "sfx")])
+        legacy = [{"at": c.get("at"), "seconds": c.get("seconds"), "kind": c.get("kind"),
+                   "level": c.get("level"), "motif": c.get("motif")}
+                  for c in listening._cues()]
+        self.assertEqual(qa.sound_cue_rows(listening._sound(), motion._build()), legacy)
+        self.assertEqual(json.dumps(qa.sound_cue_rows(listening._sound(), {})),
+                         json.dumps(legacy))
+
+
 if __name__ == "__main__":
     unittest.main()

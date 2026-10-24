@@ -2823,6 +2823,30 @@ def render_frames(args, project, scene: str, samples: list[dict],
 # cli
 # --------------------------------------------------------------------------- #
 
+#: build.json's sound measures handed to the scorecard when it has them.
+BUILD_SOUND_MEASURES = ("beat_sync", "cue_anchors")
+
+
+def placed_cue_times(build: dict | None) -> dict[str, float]:
+    """cue id -> where `yt build` placed it (build.json's cue_anchors), for a
+    sheet spotted with anchors; empty for one without."""
+    rows = (build or {}).get("cue_anchors")
+    return {str(r.get("cue")): r.get("placed_at") for r in rows
+            if isinstance(r, dict) and r.get("placed_at") is not None} \
+        if isinstance(rows, list) else {}
+
+
+def sound_cue_rows(sound: dict | None, build: dict | None) -> list[dict]:
+    """The cue sheet as the scorecard reviewer is shown it: each cue's place,
+    length, kind, level and motif, the place being where the build put it
+    when build.json records that and the sheet's `at` otherwise."""
+    placed = placed_cue_times(build)
+    return [{"at": placed.get(str(c.get("cue_id")), c.get("at")),
+             "seconds": c.get("seconds"), "kind": c.get("kind"),
+             "level": c.get("level"), "motif": c.get("motif")}
+            for c in (sound or {}).get("cues", [])][:80]
+
+
 def narration_measurements(voice: dict) -> dict:
     """What voice.json says the narration is. A wordless film says so (and how
     many descriptive captions it carries), so no reviewer reads engine "none"
@@ -3392,9 +3416,7 @@ def run(args) -> int:
             "engine": diagnostics.get(row["label"]),
             "mechanical": [f"[{f['severity']}] {f['kind']}: {f['problem']}"
                            for f in mechanical if f["shot"] == row["label"]]})
-    cues_near = [{"at": c.get("at"), "seconds": c.get("seconds"), "kind": c.get("kind"),
-                  "level": c.get("level"), "motif": c.get("motif")}
-                 for c in sound.get("cues", [])][:80]
+    cues_near = sound_cue_rows(sound, build)
     measurements = {
         "runtime": build.get("scene", {}).get("duration"),
         "frame": {k: build.get("scene", {}).get(k) for k in ("width", "height", "fps")},
@@ -3413,6 +3435,10 @@ def run(args) -> int:
         "reach": reach.summary((read_json(project.source("vfx"), warn=False) or {}).get("reach")
                                if project.source("vfx") else None),
     }
+    # Where the cues landed on their words and how the cuts sit on the music
+    # (AUTO-140), for editing_pacing and music_score: only when the build
+    # wrote them, so a film not rebuilt asks what it asked before.
+    measurements.update({k: build[k] for k in BUILD_SOUND_MEASURES if k in build})
     blockers = mechanical_blockers(build, gate=gate) + problems
     previous = chosen
     for earlier in [] if named else reversed(_passes(home)):
