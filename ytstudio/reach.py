@@ -389,8 +389,32 @@ CHANGE_FAMILIES = ("motion", "simulation")
 
 #: Properties whose change only shows or hides a target: one such change is
 #: an entrance, not the change a process needs; reveals of two or more
-#: targets at distinct times are a step build.
-FADE_PROPERTIES = frozenset(("opacity", "visible", "visibility"))
+#: targets at distinct times are a step build. A textAnimator's fade presets
+#: are its property too, as is "opacity" when that is all it offsets.
+FADE_PROPERTIES = frozenset(("opacity", "visible", "visibility", "fade", "fade-in",
+                             "fade-out"))
+
+#: Members of the motion family that hold something in place, or mark time,
+#: without changing anything themselves: never a row. A change authored
+#: inside one (an `animate` under a map `pin`) is a row on it.
+STILL_MOTION = frozenset(("constraint", "transformConstraint", "pin", "beatGrid", "cue"))
+
+#: The constructs whose change is their keys: fewer than two distinct key
+#: times is a constant, not a row.
+KEYED = ("animate", "morph")
+
+#: What a textAnimator offsets on its units (scene-render's textAnimatorType);
+#: its `start`/`end` are the selector's range, never seconds.
+TEXT_OFFSETS = ("x", "y", "zDepth", "scale", "scaleX", "scaleY", "rotation", "rotationX",
+                "rotationY", "skew", "opacity", "fill", "stroke", "strokeWidth", "tracking",
+                "lineSpacing", "blur", "baselineShift", "characterOffset", "variation",
+                "anchorX", "anchorY")
+
+
+def _changes(tag: str) -> bool:
+    """An element of the families whose elements change something over time."""
+    return family_of(tag) in CHANGE_FAMILIES and tag not in STILL_MOTION
+
 
 #: The motion reviewer's role.
 MOTION_ROLE = (
@@ -461,14 +485,21 @@ def motion_slice(doc_text: str, symbol_id: str, windows=None) -> list[dict]:
     property, start, end}.
 
     A motion element changes its parent: the target is the parent's
-    "<tag>#<id>", the property its `property` (or `preset`), and an element
-    with `<key time>` children runs from its first key to its last. One
-    without keys runs over its own presetStart/presetDuration or start/end,
-    else its parent's life. A simulation changes itself: the target is the
-    element, the property "", and it runs over its parent's start..end, or
-    the symbol's span. Every ancestor's `start` (a layer, a group, a
-    sequence) is added to the times under it. An element inside another of
-    these families (a `key`, a `burst`) is part of it, not a row. Pure."""
+    "<tag>#<id>" ("<tag>#(unnamed N)" for one with no id, the same N for
+    every change on it), the property its `property` (or `preset`), and an
+    element with `<key time>` children, or `animate` children with keys,
+    runs from its first key to its last. An `animate` or `morph` with fewer
+    than two distinct key times is a constant and no row, and STILL_MOTION
+    elements are never rows. One without keys runs over its presetStart
+    (on its parent's parent timeline, as scene-render defines it) for
+    presetDuration, or its own start/end, else its parent's life; a
+    textAnimator's start/end are its selector's range, so it runs from its
+    text's start for presetDuration (1 s by default). A simulation changes
+    itself: the target is the element, the property "", and it runs over
+    its parent's start..end, or the symbol's span. Every ancestor's `start`
+    (a layer, a group, a sequence) is added to the times under it. An
+    element inside another changing one (a `key`, a `burst`) is part of it,
+    not a row. Pure."""
     try:
         root = ET.fromstring(doc_text)
     except ET.ParseError:
@@ -480,50 +511,70 @@ def motion_slice(doc_text: str, symbol_id: str, windows=None) -> list[dict]:
     span = _number(symbol.get("duration")) or max(
         (float(b) for _, b in windows or ()), default=0.0)
     rows: list[dict] = []
-    unnamed = [0]
+    names: dict[ET.Element, str] = {}
 
     def name_of(node: ET.Element) -> str:
-        if node.get("id"):
-            return f"{_strip(node.tag)}#{node.get('id')}"
-        unnamed[0] += 1
-        return f"{_strip(node.tag)}#{unnamed[0]}"
+        # One name per element, so two changes on one unnamed shape are one
+        # target; "(unnamed N)" cannot be a real id's "<tag>#N".
+        if node not in names:
+            names[node] = (f"{_strip(node.tag)}#{node.get('id')}" if node.get("id")
+                           else f"{_strip(node.tag)}#(unnamed {len(names) + 1})")
+        return names[node]
 
-    def walk(node: ET.Element, offset: float, life: tuple[float, float]) -> None:
-        parent_family = family_of(_strip(node.tag))
+    def walk(node: ET.Element, offset: float, base: float,
+             life: tuple[float, float]) -> None:
+        # offset: where node's own times start; base: its parent's offset.
+        inside = _changes(_strip(node.tag))
         for child in node:
             tag = _strip(child.tag)
             family = family_of(tag)
             start, end = _number(child.get("start")), _number(child.get("end"))
-            if family in CHANGE_FAMILIES and parent_family not in CHANGE_FAMILIES:
-                rows.append(_row(child, tag, family, node if family == "motion" else child,
-                                 offset, life, name_of))
+            if _changes(tag) and not inside:
+                row = _row(child, tag, family, node if family == "motion" else child,
+                           offset, base, life, name_of)
+                if row is not None:
+                    rows.append(row)
             own = offset + (start or 0.0)
             child_life = ((offset + start if start is not None else life[0]),
                           (offset + end if end is not None else life[1])) \
                 if start is not None or end is not None else life
-            walk(child, own, child_life)
+            walk(child, own, offset, child_life)
 
-    walk(symbol, 0.0, (0.0, span))
+    walk(symbol, 0.0, 0.0, (0.0, span))
     if windows is not None:
         rows = [r for r in rows if _overlaps(r["start"], r["end"], windows)]
     return rows
 
 
 def _row(el: ET.Element, tag: str, family: str, target: ET.Element, offset: float,
-         life: tuple[float, float], name_of) -> dict:
-    """One row of `motion_slice`: `life` is the parent's (start, end)."""
-    times = [t for t in (_number(k.get("time")) for k in el
-                         if _strip(k.tag) == "key") if t is not None]
+         base: float, life: tuple[float, float], name_of) -> dict | None:
+    """One row of `motion_slice`, or None for a constant: `offset` is where
+    the target's times start, `base` its parent's, `life` its (start, end)."""
+    def keys(node: ET.Element) -> list[float]:
+        return [t for t in (_number(k.get("time")) for k in node
+                            if _strip(k.tag) == "key") if t is not None]
+    times = keys(el) + [t for a in el if _strip(a.tag) == "animate" for t in keys(a)]
     if family == "simulation":
         prop, (start, end) = "", life
     else:
-        prop = str(el.get("property") or el.get("preset") or "")
-        ps, pd = _number(el.get("presetStart")), _number(el.get("presetDuration"))
+        if tag in KEYED and len(set(times)) < 2:
+            return None
+        preset = el.get("preset")
+        if tag == "textAnimator":
+            prop = str(preset or ",".join(a for a in TEXT_OFFSETS if el.get(a) is not None))
+        else:
+            prop = str(el.get("property") or preset or "")
         own_start, own_end = _number(el.get("start")), _number(el.get("end"))
         if times:
             start, end = offset + min(times), offset + max(times)
-        elif ps is not None:
-            start, end = offset + ps, offset + ps + (pd or 0.0)
+        elif tag == "textAnimator":
+            # presetStart and presetDuration are textAnimator's alone; a
+            # stagger stretches the run by an amount not read here, so it
+            # runs to its text's end, as does an animator with no preset.
+            ps, pd = _number(el.get("presetStart")), _number(el.get("presetDuration"))
+            start = base + ps if ps is not None else life[0]
+            end = (start + pd if pd is not None
+                   else start + 1.0 if preset and el.get("stagger") is None else life[1])
         elif own_start is not None or own_end is not None:
             start = offset + (own_start or 0.0)
             end = offset + own_end if own_end is not None else life[1]
