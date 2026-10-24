@@ -468,7 +468,14 @@ happened to them and what followed, each kept by `research.human_stories_of`
 only when its claim is a dossier claim and its source that claim's or a page
 the research opened, a dropped one a `human story dropped:` warning in
 dossier.json that `yt doctor` shows as a note, not a provenance warning,
-and none never a failure), the `audience` (lay,
+and none never a failure; and, as `PL1`, `PL2`, its `parallels`: AUTO-151,
+at most two historical parallels or precedents, each with how it maps and
+where it breaks, kept by `research.parallels_of` only when its source is a
+page the research opened, a dropped one a `historical parallel dropped:`
+warning that `yt doctor` shows as a research warn; only when the block lists
+one is the plan told `script.PARALLEL_BRIEF`, to cite it as `[PL1]` in a beat
+that says where it breaks, never to invent one, and none is required; an
+existing dossier gets them only after `yt research --fresh`), the `audience` (lay,
 enthusiast, expert), an optional `persona` (AUTO-158: the narrator's
 `temperament` for this film, free text, and `why` the subject calls for it;
 the house format's temperament when it names one), told to every section

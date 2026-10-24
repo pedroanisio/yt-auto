@@ -296,5 +296,144 @@ class PressBlock(unittest.TestCase):
         self.assertNotIn("P1", text)
 
 
+# --------------------------------------------------------------------------- #
+# AUTO-151: historical parallels by PL id, each told with where it breaks
+# --------------------------------------------------------------------------- #
+
+PARALLEL = {"event": "Tacoma Narrows bridge collapse", "year": "1940",
+            "how_it_maps": "a design trusted on paper failed under an unmodelled load",
+            "where_it_breaks": "Tacoma failed by flutter, not corrosion",
+            "source_url": "https://example.org/tacoma"}
+
+#: A dossier written before AUTO-151, and research_block's output for it,
+#: taken on develop 5405613 before the change.
+OLD_DOSSIER = {"claims": [claim("one fact")],
+               "identifiable_case": {"who": "The Morandi bridge", "source": "u"},
+               "human_stories": [{"who": "Families", "what_happened": "lost relatives",
+                                  "consequence": "", "source": "https://example.org/m",
+                                  "claim": "x"}]}
+OLD_BLOCK = (
+    "Every claim you may put on camera, with the source to cite for it and its id:\n"
+    "- c1: one fact --  (source: s, https://h.example/fact; primary, high confidence)"
+    "\n\nAn identifiable case the film can follow: The Morandi bridge (source: u)\n\n"
+    "People the subject affected and what followed, each traced to a claim and a page "
+    "the research opened:\n- P1: Families: lost relatives (source: https://example.org/m)")
+
+#: sha256 of the plan and plan-fields prompts for OLD_BLOCK, taken on
+#: develop 5405613 before the change: a dossier with no parallels keeps its
+#: digests, so its cached plan decisions are reused.
+OLD_PLAN = "2db935f4ff1c406040d0d8182c590fab08ad1023c04ee830fb828697c3ed1c48"
+OLD_PLAN_FIELDS = "e8aff6a7bd7473ae4ac4cc3eaf6ec1590179471ff3f1c8891617e9ee704f1919"
+
+
+class Parallels(unittest.TestCase):
+    def block(self, data, **kw):
+        with contextlib.redirect_stderr(io.StringIO()):
+            return script.research_block(data, **kw)
+
+    def test_the_kept_parallels_are_numbered_with_where_they_break(self):
+        data = dict(OLD_DOSSIER, parallels=[PARALLEL, dict(PARALLEL, event="Quebec bridge",
+                                                         year="1907")])
+        text = self.block(data)
+        self.assertIn(script.PARALLELS_HEADING + "\n"
+                      "- PL1: Tacoma Narrows bridge collapse (1940): maps: a design "
+                      "trusted on paper failed under an unmodelled load; breaks: Tacoma "
+                      "failed by flutter, not corrosion (source: https://example.org/tacoma)"
+                      "\n- PL2: Quebec bridge (1907): maps: ", text)
+        self.assertLess(text.index("An identifiable case"), text.index("- PL1:"))
+
+    def test_at_most_two_are_listed(self):
+        data = {"parallels": [dict(PARALLEL, event=f"E{n}") for n in range(4)]}
+        text = self.block(data)
+        self.assertIn("- PL2: E1", text)
+        self.assertNotIn("PL3", text)
+
+    def test_the_unvetted_outline_copy_is_never_read(self):
+        data = dict(OLD_DOSSIER, outline={"parallels": [PARALLEL]})
+        text = self.block(data)
+        self.assertNotIn("PL1", text)
+        self.assertNotIn(script.PARALLELS_HEADING, text)
+
+    def test_an_older_dossier_renders_as_before(self):
+        self.assertEqual(self.block(OLD_DOSSIER), OLD_BLOCK)
+        self.assertEqual(self.block(dict(OLD_DOSSIER, parallels=[], parallels_why="none")),
+                         OLD_BLOCK)
+
+    def test_without_ids_no_parallel_is_listed(self):
+        # a screenplay written before the ids is revised against today's block
+        self.assertNotIn("PL1", self.block({"parallels": [PARALLEL]}, ids=False))
+
+    def test_a_line_without_a_year_has_no_empty_brackets(self):
+        self.assertEqual(script.parallel_line(dict(PARALLEL, year=" ")),
+                         "Tacoma Narrows bridge collapse: maps: a design trusted on paper "
+                         "failed under an unmodelled load; breaks: Tacoma failed by "
+                         "flutter, not corrosion (source: https://example.org/tacoma)")
+
+    def test_the_line(self):
+        self.assertEqual(script.parallel_line(dict(PARALLEL, event="  Dee   bridge ")),
+                         "Dee bridge (1940): maps: a design trusted on paper failed under "
+                         "an unmodelled load; breaks: Tacoma failed by flutter, not "
+                         "corrosion (source: https://example.org/tacoma)")
+
+
+class ParallelBrief(unittest.TestCase):
+    def writer(self, research, tmp, **kw):
+        from ytstudio.core import Idea
+        return script.Screenwriter(Idea(title="t", genre="g", description="d"),
+                                   minutes=1, verbose=False, root=tmp,
+                                   research=research, **kw)
+
+    def prompts(self, research, **kw):
+        import tempfile
+        asked = []
+
+        def ask(name, prompt, schema):
+            asked.append(prompt)
+            return {"sections": []}
+        with tempfile.TemporaryDirectory() as tmp:
+            w = self.writer(research, tmp, **kw)
+            w._ask = ask
+            try:
+                w.plan()
+            except Exception:       # the outline path asks again, then gives up
+                pass
+        return asked
+
+    def test_the_brief_is_told_only_when_the_research_lists_parallels(self):
+        import tempfile
+        with_ = self.block(dict(OLD_DOSSIER, parallels=[PARALLEL]))
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self.writer(with_, tmp)._parallels(), [script.PARALLEL_BRIEF])
+            self.assertEqual(self.writer(OLD_BLOCK, tmp)._parallels(), [])
+            self.assertEqual(self.writer("", tmp)._parallels(), [])
+
+    def block(self, data):
+        with contextlib.redirect_stderr(io.StringIO()):
+            return script.research_block(data)
+
+    def test_both_plan_paths_carry_it_after_the_story_brief(self):
+        research = self.block(dict(OLD_DOSSIER, parallels=[PARALLEL]))
+        outline = {"sections": [{"heading": "h", "seconds": 60, "beats": ["b"]}]}
+        for kw in ({}, {"outline": outline}):
+            prompt = self.prompts(research, **kw)[0]
+            self.assertIn(script.PARALLEL_BRIEF, prompt)
+            self.assertLess(prompt.index(script.STORY_BRIEF),
+                            prompt.index(script.PARALLEL_BRIEF))
+
+    def test_a_dossier_without_parallels_is_asked_as_before(self):
+        import hashlib
+        outline = {"sections": [{"heading": "h", "seconds": 60, "beats": ["b"]}]}
+        plan = self.prompts(OLD_BLOCK)[0]
+        fields = self.prompts(OLD_BLOCK, outline=outline)[0]
+        self.assertNotIn(script.PARALLEL_BRIEF, plan + fields)
+        self.assertEqual(hashlib.sha256(plan.encode()).hexdigest(), OLD_PLAN)
+        self.assertEqual(hashlib.sha256(fields.encode()).hexdigest(), OLD_PLAN_FIELDS)
+
+    def test_the_brief_never_asks_for_one(self):
+        self.assertIn("none is required", script.PARALLEL_BRIEF)
+        self.assertIn("where it breaks", script.PARALLEL_BRIEF)
+        self.assertNotIn("PL", script.STORY_BRIEF)
+
+
 if __name__ == "__main__":
     unittest.main()

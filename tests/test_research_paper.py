@@ -816,15 +816,18 @@ def explainer_prompts(root: Path) -> dict[str, str]:
 #: The 01-questions plan text is the one prompt the card changes. AUTO-132
 #: then adds the standing sentence to the claims prompt, so 03-claims is
 #: re-pinned on its branch; AUTO-149 adds the people affected to the web pass
-#: (agent) and human_stories to the outline, so both are re-pinned; every other
-#: prompt is still the pre-AUTO-131 one.
+#: (agent) and human_stories to the outline, so both are re-pinned; AUTO-151
+#: adds the unsourced-parallel gap to the audit and parallels to the outline,
+#: so 06-gaps and 07-outline are re-pinned again (the 3-minute idea is below
+#: PARALLEL_MIN_DEPTH, so its 01-questions is unchanged); every other prompt
+#: is still the pre-AUTO-131 one.
 EXPLAINER_PROMPTS = {
     "agent": "2c49542bd3f2e903eed0c62054a0c1b4040270ae61637723d2173bc8bf34f776",
     "03-claims": "868682117c8ed29d1acd01bacb4005d3c4ad502ec50e08bfd2bd908659a48e9a",
     "04-sources": "d7ff65c3dcfc7e03124571646e8ae195e5a4914f3b74a73f721a24540d79dacb",
     "05-shots": "976cc3da462e8e565fa327d28ab84651b079c689c981cae74ed8c413f8d55b09",
-    "06-gaps": "2d574b5c6ff5f40b2a635451dd2d18687e70eea8b47fdcad25e0e3c9b94a655e",
-    "07-outline": "5dd9cdae03b7d5ad860043573180fa3ec4fed5ef275f3cd0223d296f382a5384",
+    "06-gaps": "5bc120c5c93c32aef46d5566652601ffbb5fe7fc3b7e53153f3a699885259875",
+    "07-outline": "eb0bb8bb73eec87baea46b443453250fb21d7b88e5320387940a41dadcf064f7",
 }
 
 

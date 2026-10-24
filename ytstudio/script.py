@@ -1486,6 +1486,27 @@ def identifiable_case(data: dict) -> str:
     return f"{who} (source: {source})" if source else f"{who} (no source)"
 
 
+#: How the research block introduces the historical parallels (AUTO-151).
+#: Screenwriter._parallels looks for it, so the plan is told PARALLEL_BRIEF
+#: only when the research lists one.
+PARALLELS_HEADING = ("Historical parallels the research documents (cite one as [PL1]; "
+                     "tell it with where it breaks):")
+
+#: The most parallels the research block lists (research.PARALLELS).
+PARALLELS_LISTED = 2
+
+
+def parallel_line(p: dict) -> str:
+    """One historical parallel from the dossier: what it was, how it maps,
+    where it breaks, and the page it came from."""
+    text = {k: " ".join(str(p.get(k) or "").split())
+            for k in ("event", "year", "how_it_maps", "where_it_breaks", "source_url")}
+    # the year is not required of a kept row: an empty one prints no "()"
+    year = f" ({text['year']})" if text["year"] else ""
+    return (f"{text['event']}{year}: maps: {text['how_it_maps']}; "
+            f"breaks: {text['where_it_breaks']} (source: {text['source_url']})")
+
+
 #: How the script brief introduces the press coverage (AUTO-149): a
 #: headline is staged as a card the film typesets, never a page it shows.
 PRESS_HEADING = ("Press coverage you may stage as a recreated headline card "
@@ -1527,9 +1548,9 @@ def research_block(data: dict, *, limit: int = 60, ids: bool = True) -> str:
     today's whole, articles among the footage and no human stories.
 
     With ids, the press coverage (AUTO-149, `assets.press_items`) is its
-    own N-numbered block and the footage list holds only the rest, and the
+    own N-numbered block and the footage list holds only the rest, the
     dossier's human stories are numbered P1.. beside the identifiable
-    case."""
+    case, and its historical parallels (AUTO-151) PL1, PL2 after them."""
     parts = []
     if data.get("premise"):
         parts.append(f"Researched premise: {data['premise']}")
@@ -1608,6 +1629,14 @@ def research_block(data: dict, *, limit: int = 60, ids: bool = True) -> str:
         # person the research traced ("[P1] ...") rather than invents one.
         parts.append("People the subject affected and what followed, each traced to "
                      "a claim and a page the research opened:\n" + "\n".join(stories))
+    # AUTO-151: the parallels research vetted (top level), never the
+    # outline's raw copy, numbered PL apart from M, P and Q.
+    parallels = [p for p in data.get("parallels") or [] if isinstance(p, dict)] \
+        if ids else []
+    if parallels:
+        parts.append(PARALLELS_HEADING + "\n" + "\n".join(
+            f"- PL{n}: {parallel_line(p)}"
+            for n, p in enumerate(parallels[:PARALLELS_LISTED], 1)))
     gaps = [f"- {g.get('severity', '?')}: {g.get('issue', '')}"
             for g in data.get("gaps", [])
             if g.get("severity") in ("blocker", "important")]
@@ -1922,6 +1951,15 @@ PAPER_BRIEF = (
     "works; the contribution may land at mechanism_section; the consequences and "
     "the limitations are said on air (section 1 or later), never left out. Keep "
     "what the paper itself shows apart from what others say it means.")
+
+#: Told to the plan after STORY_BRIEF when the research lists historical
+#: parallels (AUTO-151), and only then: STORY_BRIEF itself is unchanged, so a
+#: plan whose research has none keeps its digest and its cached decision.
+PARALLEL_BRIEF = (
+    "The research lists historical parallels (PL1, ...). Where one sharpens the "
+    "stakes or the reveal, put it in a section's beats led by its id (\"[PL1] "
+    "...\"), and in the same beat say where it breaks; never invent a parallel "
+    "the research does not list, and none is required.")
 
 #: Told to the plan when the idea carries a promise (`yt ideas --rich`): the
 #: packaging is fixed before the hook is written, and the hook answers to it
@@ -3399,6 +3437,11 @@ class Screenwriter:
         nothing otherwise, so a plan from an older idea is asked as before."""
         return [FROZEN_PROMISE] if self.idea.promise else []
 
+    def _parallels(self) -> list[str]:
+        """PARALLEL_BRIEF when the research block lists historical parallels
+        (AUTO-151); nothing otherwise, so the plan is asked as before."""
+        return [PARALLEL_BRIEF] if PARALLELS_HEADING in (self.research or "") else []
+
     def _channel(self) -> list[str]:
         """The channel's earlier films for the plan's writer (AUTO-137);
         nothing for a first film, so its plan is asked as before."""
@@ -3456,7 +3499,8 @@ class Screenwriter:
                  "research is supplied, name the claims each section rests on "
                  "and the assets it shows. Put the weakest material last or "
                  "cut it. Also give the logline.",
-                 STORY_BRIEF, *self._paper_brief(), *self._frozen(), *self._channel(), *again]
+                 STORY_BRIEF, *self._parallels(), *self._paper_brief(), *self._frozen(),
+                 *self._channel(), *again]
         data = self._ask("plan-2" if again else "plan", "\n\n".join(parts),
                          plan_schema(self.paper is not None))
 
@@ -3489,8 +3533,8 @@ class Screenwriter:
                  "Write the story fields for this outline. Answer one entry "
                  f"under sections for each of its {len(sections)} sections, in "
                  "its order.",
-                 STORY_BRIEF, *self._paper_brief(), *self._frozen(), *self._channel(),
-                 *(again or [])]
+                 STORY_BRIEF, *self._parallels(), *self._paper_brief(), *self._frozen(),
+                 *self._channel(), *(again or [])]
         prompt = "\n\n".join(parts)
         name = "plan-fields-2" if again else "plan-fields"
         schema = plan_fields_schema(self.paper is not None)

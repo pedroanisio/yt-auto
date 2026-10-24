@@ -126,6 +126,13 @@ class Missing(unittest.TestCase):
                       qa_row)
         self.assertIn(f"`TRANSCRIPT_OUTPUT_TOKENS` {listen.TRANSCRIPT_OUTPUT_TOKENS}", qa_row)
 
+    def test_historical_parallels_are_documented(self):
+        # AUTO-151
+        for needle in ("`PL1`", "`parallels`", "`research.parallels_of`",
+                       "where it breaks", "`script.PARALLEL_BRIEF`",
+                       "historical parallel dropped:", "`yt research --fresh`"):
+            self.assertIn(needle, FLAT, needle)
+
     def test_headlines_on_screen_are_documented(self):
         # AUTO-149
         for needle in ("**Headlines on screen (AUTO-149).**", "`assets.press_items`",

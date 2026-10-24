@@ -78,7 +78,7 @@ class FakeEngine:
                 "claims": [], "sources": [], "shots": [], "topic_searches": [],
                 "working_title": "t", "runtime": "60 s", "sections": [],
                 "misconceptions": [], "identifiable_case": {"who": "", "source": ""},
-                "human_stories": []}
+                "human_stories": [], "parallels": [], "parallels_why": ""}
 
 
 class Plan(unittest.TestCase):

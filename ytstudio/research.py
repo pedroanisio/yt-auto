@@ -114,8 +114,9 @@ SCOPES = {
             "Audit this research before scripting. List what is missing, "
             "weakly sourced, contested or likely to draw a correction in the "
             "comments, with how to resolve each. Note the misconceptions the "
-            "video should address head-on. Then give a one-sentence verdict on "
-            "whether the premise holds as stated."),
+            "video should address head-on. Flag as a gap any historical "
+            "parallel the notes draw without a source. Then give a "
+            "one-sentence verdict on whether the premise holds as stated."),
         "outline": (
             "Write the script outline. Open on the strongest concrete fact, "
             "not a definition. Each section gets a heading, a runtime in "
@@ -133,7 +134,13 @@ SCOPES = {
             "what_happened to them, the consequence that followed, the source "
             "that documents it and the claim it rests on (quote the claim "
             "text); leave the list empty rather than name a story no source "
-            "documents."),
+            "documents. And parallels: at most two historical parallels or "
+            "precedents the notes document, each with event, year, "
+            "how_it_maps (what carries over to this subject), where_it_breaks "
+            "(where the analogy fails) and source_url (a page the research "
+            "opened); leave the list empty rather than name one no source "
+            "documents, and say why in parallels_why (empty when the list is "
+            "not)."),
     },
     "cinematic": {
         "name": "cinematic",
@@ -185,9 +192,9 @@ SCOPES = {
             "motion rests on under claims_used (quote the claim text) and the "
             "reference it matches under assets_used (quote the titles). Total "
             "runtime should match the target length. Return an empty "
-            "misconceptions list, an empty identifiable_case and an empty "
-            "human_stories list: nothing is said aloud to correct or to "
-            "follow."),
+            "misconceptions list, an empty identifiable_case, an empty "
+            "human_stories list, an empty parallels list and an empty "
+            "parallels_why: nothing is said aloud to correct or to follow."),
     },
 }
 
@@ -230,6 +237,23 @@ SCOPES["paper"] = {
         "above, and keep what the paper itself shows apart from what others "
         "say it means."),
 }
+
+
+#: What a spoken film's plan is asked on top of its scope's (AUTO-151): one
+#: of its questions spent on what happened before. It takes one of the
+#: {depth} slots, so no extra web pass runs; it is appended in
+#: Researcher.questions rather than written into a scope's plan, so a film
+#: researched below PARALLEL_MIN_DEPTH, or a wordless one, is asked exactly
+#: what it was.
+PARALLEL_QUESTION = (
+    "Among the {depth} questions, one asks for a historical parallel or "
+    "precedent -- an earlier, dated case that went the same way or the "
+    "opposite way -- and where it is documented; it is a checkable question, "
+    "not a framing one.")
+
+#: Below this many questions every slot stays a mechanism question: a film
+#: shorter than about 4.4 minutes at the default depth (runtime_scale).
+PARALLEL_MIN_DEPTH = 4
 
 
 def claim_key(text: object) -> str:
@@ -672,6 +696,9 @@ GAPS_SCHEMA = {
 #: The most human stories a dossier keeps (AUTO-149).
 HUMAN_STORIES = 3
 
+#: The most historical parallels a dossier keeps (AUTO-151).
+PARALLELS = 2
+
 OUTLINE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -735,9 +762,35 @@ OUTLINE_SCHEMA = {
                 "required": ["who", "what_happened", "consequence", "source", "claim"],
             },
         },
+        # AUTO-151: what happened before -- an earlier case the subject
+        # maps onto, with where the analogy fails, from a page the research
+        # opened. At most PARALLELS are kept (parallels_of: the harness checks
+        # no maxItems); none, with parallels_why, is a valid answer.
+        "parallels": {
+            "type": "array",
+            "maxItems": PARALLELS,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "event": {"type": "string"},
+                    "year": {"type": "string",
+                             "description": "as the source dates it, e.g. 1907 or c. 1850"},
+                    "how_it_maps": {"type": "string",
+                                    "description": "what carries over to this subject"},
+                    "where_it_breaks": {"type": "string",
+                                        "description": "where the analogy fails"},
+                    "source_url": {"type": "string",
+                                   "description": "a page the research opened"},
+                },
+                "required": ["event", "year", "how_it_maps", "where_it_breaks",
+                             "source_url"],
+            },
+        },
+        "parallels_why": {"type": "string",
+                          "description": "why the list is empty; empty when it is not"},
     },
     "required": ["working_title", "runtime", "sections", "misconceptions",
-                 "identifiable_case", "human_stories"],
+                 "identifiable_case", "human_stories", "parallels", "parallels_why"],
 }
 
 
@@ -877,6 +930,70 @@ def story_warnings(dropped: list[dict]) -> list[str]:
             for d in dropped]
 
 
+#: A parallel's fields, in the order the brief prints them.
+PARALLEL_FIELDS = ("event", "year", "how_it_maps", "where_it_breaks", "source_url")
+
+#: How a dropped parallel's warning opens, so the dossier's markdown and
+#: `yt doctor` can tell it from a provenance warning about the claims.
+PARALLEL_DROPPED = "historical parallel dropped:"
+
+
+def _url_key(url: object) -> str:
+    """A URL as a parallel's source is matched against the pages opened:
+    whitespace, a #fragment and a trailing '/' aside, scheme and host in
+    any case. The path keeps its case: another path is another page."""
+    u = str(url or "").strip().split("#", 1)[0].rstrip("/")
+    parsed = urlparse(u)
+    if parsed.scheme and parsed.netloc:
+        return parsed._replace(scheme=parsed.scheme.lower(),
+                               netloc=parsed.netloc.lower()).geturl()
+    return u
+
+
+def parallels_of(outline: dict | None, urls_opened: list[str]) -> tuple[list[dict], list[str]]:
+    """The outline's historical parallels (AUTO-151) as `(kept, warnings)`.
+
+    A row is kept only when it names the event, how it maps, where it
+    breaks and a source, and that source is a page the research opened
+    (`urls_opened`). A claim's source_url is not enough, since it can come
+    from a search snippet; whether the parallel truly maps is the outline
+    model's extraction and the plan reviewer's to read, not this check's.
+    At most PARALLELS are kept, in order; every other row is one warning.
+    An outline written before the field gives ([], [])."""
+    rows = (outline or {}).get("parallels") if isinstance(outline, dict) else None
+    if not isinstance(rows, list):
+        return [], []
+    opened = {_url_key(u) for u in urls_opened or []}
+    kept: list[dict] = []
+    warnings: list[str] = []
+    for raw in rows:
+        if not isinstance(raw, dict):
+            # a bare string from the outline model leaves a trace, not nothing
+            warnings.append(f"{PARALLEL_DROPPED} ?: not a row")
+            continue
+        row = {k: str(raw.get(k) or "").strip() for k in PARALLEL_FIELDS}
+        name = row["event"] or "?"
+        empty = next((k for k in ("event", "how_it_maps", "where_it_breaks", "source_url")
+                      if not row[k]), None)
+        if empty:
+            warnings.append(f"{PARALLEL_DROPPED} {name}: {empty} is empty")
+        elif _url_key(row["source_url"]) not in opened:
+            warnings.append(f"{PARALLEL_DROPPED} {name}: source never opened "
+                            f"({row['source_url']})")
+        elif len(kept) >= PARALLELS:
+            warnings.append(f"{PARALLEL_DROPPED} {name}: more than {PARALLELS}")
+        else:
+            kept.append(row)
+    return kept, warnings
+
+
+def parallels_why_of(outline: dict | None, kept: list[dict]) -> str:
+    """Why the research names no parallel: the outline's parallels_why when
+    none was kept and it is text, else "". A stub's [] is no reason."""
+    why = (outline or {}).get("parallels_why") if isinstance(outline, dict) else None
+    return why.strip() if not kept and isinstance(why, str) else ""
+
+
 # --------------------------------------------------------------------------- #
 # dossier storage
 # --------------------------------------------------------------------------- #
@@ -999,7 +1116,11 @@ class Researcher:
     def _idea_block(self) -> str:
         # A local paper is named by its basename (Idea.block): no prompt
         # that can echo it into a claim or the notes is told where it lives.
-        return self.idea.block()
+        # The stakes `yt ideas --rich` planned (AUTO-151) are said here, not
+        # in Idea.block, which keyframe, styles and the screenplay share; an
+        # idea without them is asked exactly as before.
+        block = self.idea.block()
+        return f"{block}\nStakes: {self.idea.stakes}" if self.idea.stakes else block
 
     def _stage(self, name: str, work, *, redo: bool = False) -> object:
         """Run `work()` unless this stage is already on disk (or `redo`, or
@@ -1194,10 +1315,14 @@ class Researcher:
     def questions(self, paper: dict | None = None) -> dict:
         read = (f"What the paper says, as read:\n\n{self._notes_block([paper])}\n\n"
                 if paper is not None and self.scope["name"] == "paper" else "")
+        # A spoken film deep enough spends one question on a precedent
+        # (AUTO-151); any other is asked exactly what it was.
+        parallel = (" " + PARALLEL_QUESTION.format(depth=self.depth)
+                    if self.scope["spoken"] and self.depth >= PARALLEL_MIN_DEPTH else "")
         return self._stage("01-questions", lambda: self._decide(
             "01-questions",
             f"{self._idea_block()}\n\n{read}"
-            + self.scope["plan"].format(depth=self.depth),
+            + self.scope["plan"].format(depth=self.depth) + parallel,
             QUESTIONS_SCHEMA))
 
     def research(self, questions: list[dict]) -> list[dict]:
@@ -1532,6 +1657,7 @@ class Researcher:
         outline = self.outline(claims, assets, gaps, digest)
         stories, dropped = human_stories_of(outline, claims.get("claims", []),
                                             sorted(set(self.visited)))
+        parallels, unkept = parallels_of(outline, sorted(set(self.visited)))
         idea = asdict(self.idea)
         if paper:
             # A local paper's path stays in idea.json, never in the dossier.
@@ -1554,12 +1680,16 @@ class Researcher:
             # The people the subject affected, each traced to a claim and a
             # page opened; the untraced ones are warnings (AUTO-149).
             "human_stories": stories,
+            # What happened before, each from a page opened; the rest are
+            # warnings, and none with a reason is an answer (AUTO-151).
+            "parallels": parallels,
+            "parallels_why": parallels_why_of(outline, parallels),
             "verdict": gaps.get("verdict", ""),
             "outline": outline,
             # What the paper means, each item citing its claims (AUTO-131).
             **({"paper": digest} if digest is not None else {}),
             "urls_opened": sorted(set(self.visited)),
-            "warnings": provenance_warnings(notes) + story_warnings(dropped),
+            "warnings": provenance_warnings(notes) + story_warnings(dropped) + unkept,
             "allow_sa": self.allow_sa,
             "usage": spend.from_usage(self.usage, self.model),
             "engine": self.harness.report(),
@@ -1922,7 +2052,7 @@ def write_dossier(dossier: Dossier, data: dict, downloads: list[dict]) -> list[P
                "look and the physics of what is on screen. It speaks no claim, so an "
                "unsourced number is not a blocker here.", ""]
     provenance = [w for w in data.get("warnings") or []
-                  if not str(w).startswith(STORY_DROPPED)]
+                  if not str(w).startswith((STORY_DROPPED, PARALLEL_DROPPED))]
     if provenance:
         md += ["> **Provenance.** " + " ".join(provenance) + " Treat the "
                "affected claims as unverified until re-run with `--fresh`.", ""]
@@ -2036,6 +2166,26 @@ def write_dossier(dossier: Dossier, data: dict, downloads: list[dict]) -> list[P
                + (f"; consequence: {s['consequence']}" if s.get("consequence") else "")
                + f" — {s.get('source', '')}" for s in stories]
         md += [f"- *{w}*" for w in dropped]
+    if "parallels" in data:
+        # AUTO-151: what happened before, each with where it breaks and the
+        # page it came from; the rows the research could not source, said so.
+        parallels = [p for p in data.get("parallels") or [] if isinstance(p, dict)]
+        unkept = [w for w in data.get("warnings") or []
+                  if str(w).startswith(PARALLEL_DROPPED)]
+        why = str(data.get("parallels_why") or "").strip()
+
+        def year(p: dict) -> str:
+            # the year is not required of a kept row: an empty one prints no "()"
+            y = str(p.get("year") or "").strip()
+            return f" ({y})" if y else ""
+        lines = [f"- {p.get('event', '')}{year(p)}: maps: "
+                 f"{p.get('how_it_maps', '')}; breaks: {p.get('where_it_breaks', '')}"
+                 f" — {p.get('source_url', '')}" for p in parallels]
+        if not parallels and why:
+            lines.append(f"- none: {why}")
+        lines += [f"- *{w}*" for w in unkept]
+        if lines:
+            md += ["", "## Historical parallels", "", *lines]
 
     outline = data.get("outline") or {}
     if outline.get("sections"):

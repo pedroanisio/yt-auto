@@ -39,7 +39,7 @@ from . import (env, gateway, house, keyframe, narrative, render, retention, rhyt
                workspace)
 from .assets import kind_for, licence_tier
 from .core import read_json, timecode, write_json
-from .research import STORY_DROPPED
+from .research import PARALLEL_DROPPED, PARALLEL_MIN_DEPTH, STORY_DROPPED
 
 #: Levels, in the order the report sorts them.
 LEVELS = ("fail", "warn", "note", "ok")
@@ -1095,6 +1095,7 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
             "unsourced": len(unsourced), "sources": len(dossier.get("sources", [])),
             "assets": len(assets), "assets_usable": len(usable),
             "gaps": len(gaps), "blockers": len(blockers),
+            "parallels": len(dossier.get("parallels") or []),
             "cost_usd": round((dossier.get("usage") or {}).get("cost_usd", 0), 2)}
         report.add("ok", "research", f"{len(claims)} claims · "
                    f"{len(dossier.get('sources', []))} sources · {len(usable)}/"
@@ -1113,11 +1114,17 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
         # is no provenance trouble: the outline offered a story it could not
         # trace, which a fresh research would not fix. It is noted, never
         # enforced, and it must not silence the blind-question check below.
+        # A dropped historical parallel (AUTO-151) is a warn, since the outline
+        # named a precedent it could not source, but no provenance trouble
+        # either: no --fresh is asked for, and the blind-question check stands.
         warnings = [str(w) for w in dossier.get("warnings") or []]
-        provenance = [w for w in warnings if not w.startswith(STORY_DROPPED)]
+        provenance = [w for w in warnings
+                      if not w.startswith((STORY_DROPPED, PARALLEL_DROPPED))]
         for warning in warnings:
             if warning.startswith(STORY_DROPPED):
                 report.add("note", "research", warning)
+            elif warning.startswith(PARALLEL_DROPPED):
+                report.add("warn", "research", warning)
             else:
                 report.add("warn", "research", warning, _cmd("research", project, "--fresh"))
         if opened and not provenance:
@@ -1128,6 +1135,21 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
             if blind:
                 report.add("warn", "research", f"question(s) {', '.join(blind)} "
                            "opened no page; those facts rest on search snippets")
+        # A spoken film asked for parallels (AUTO-151) that named none and said
+        # nothing of why: noted, never enforced, since none is a valid answer.
+        # A paper film is spoken and shares the explainer's outline text; a
+        # wordless film is never asked, and an older dossier has no key. The
+        # dossier records no depth, but it keeps one note per question: one
+        # researched below PARALLEL_MIN_DEPTH never asked the parallel question,
+        # and a plain --fresh would spend a research run asking the same ones.
+        if dossier.get("scope") in ("explainer", "paper") and "parallels" in dossier \
+                and not dossier.get("parallels") \
+                and not str(dossier.get("parallels_why") or "").strip():
+            asked = [e for e in dossier.get("notes", []) if not e.get("paper")]
+            deeper = (("--depth", str(PARALLEL_MIN_DEPTH))
+                      if len(asked) < PARALLEL_MIN_DEPTH else ())
+            report.add("note", "research", "no historical parallel and no reason given",
+                       _cmd("research", project, "--fresh", *deeper))
         for gap in blockers:
             report.add("fail", "research", f"blocker: {_clip(gap.get('issue', ''))}",
                        _clip(gap.get("how_to_resolve", "")))
