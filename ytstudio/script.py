@@ -3419,8 +3419,11 @@ class Screenwriter:
             name = "plan-review" if previous is None else "plan-review-2"
             review, checks, asked = self.review_plan(plan, name=name)
             verdict = review.get("verdict")
+            # The field lines too (AUTO-161), so the record says why a plan
+            # went back or stopped even when the problems list is thin.
             rounds.append({"name": name, "verdict": verdict,
-                           "problems": list(review.get("problems") or []), **asked})
+                           "problems": list(review.get("problems") or []),
+                           "field_lines": review_field_lines(review), **asked})
             if verdict not in narrative.PLAN_VERDICTS:
                 # Asked again once by the harness and still off the list: no
                 # verdict was given, so the stage fails rather than guess one.
@@ -3438,6 +3441,7 @@ class Screenwriter:
                 continue
             break
         record = {"verdict": verdict, "problems": list(review.get("problems") or []),
+                  "field_lines": rounds[-1]["field_lines"],
                   "retried": previous is not None, "model": self.reviewer.model,
                   "prechecks": checks, "unsettled": rounds[-1]["unsettled"],
                   "rounds": rounds}
@@ -3449,7 +3453,7 @@ class Screenwriter:
             # script.json is not written on a stop (its existence marks the
             # stage done for `yt run`), so the command keeps this elsewhere.
             self.plan_review_stop = record
-            said = "; ".join(problem_lines(record["problems"]) + review_field_lines(review)
+            said = "; ".join(problem_lines(record["problems"]) + record["field_lines"]
                              ) or "no problem named"
             raise ClaudeError(
                 f"the beat sheet did not pass review ({verdict}"
@@ -6328,8 +6332,8 @@ def question_ledger(questions) -> list[str]:
 
 def plan_review_lines(record) -> list[str]:
     """script.json's `plan_review` as a Markdown section: who read the plan,
-    the verdict, whether it was planned again, the problems and the
-    pre-checks the reviewer was shown."""
+    the verdict, whether it was planned again, the problems with what the
+    reading's own fields found, and the pre-checks the reviewer was shown."""
     if not isinstance(record, dict) or not record.get("verdict"):
         return []
     md = ["## Plan review", "",
@@ -6341,8 +6345,10 @@ def plan_review_lines(record) -> list[str]:
     for r in rounds[:-1]:
         # what sent the first plan back, kept beside the final reading
         md += [f"- {r.get('name', 'plan-review')}: {r.get('verdict', '?')}"]
-        md += [f"  - {line}" for line in problem_lines(r.get("problems"))]
-    md += [f"- {line}" for line in problem_lines(record.get("problems"))]
+        md += [f"  - {line}" for line in problem_lines(r.get("problems"))
+               + list(r.get("field_lines") or [])]
+    md += [f"- {line}" for line in problem_lines(record.get("problems"))
+           + list(record.get("field_lines") or [])]
     md += [f"- pre-check: `{c.split(':', 1)[0]}` {c.split(':', 1)[-1].strip()}"
            for c in record.get("prechecks") or []]
     # what the reading still contradicted after it was asked again

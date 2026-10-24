@@ -300,6 +300,26 @@ class Stakes(unittest.TestCase):
         self.assertEqual([r["verdict"] for r in stop["rounds"]], ["revise", "revise"])
         self.assertEqual(stop["verdict"], "revise")
 
+    def test_each_round_and_the_record_keep_their_field_lines(self):
+        # The stop's record says why the plan stopped even when the problems
+        # list is thin: the field lines go to plan_review.json, not only to
+        # stderr.
+        thin = verdict("revise", [(0, "thin", "fix it")], stakes=False)
+        w = writer()
+        faked(w, [thin, thin])
+        with self.assertRaises(ClaudeError):
+            w.run(review=True)
+        stop = w.plan_review_stop
+        self.assertEqual([r["field_lines"] for r in stop["rounds"]],
+                         [[STAKES_LINE], [STAKES_LINE]])
+        self.assertEqual(stop["field_lines"], [STAKES_LINE])
+        md = "\n".join(script.plan_review_lines(stop))
+        self.assertIn(STAKES_LINE, md)
+        w = writer()
+        faked(w, [verdict("accept")])
+        record = w.run(review=True)["plan_review"]
+        self.assertEqual((record["field_lines"], record["rounds"][0]["field_lines"]), ([], []))
+
     def test_a_revise_whose_fields_name_the_stakes_is_not_asked_again(self):
         # The fields already tell plan-2 what to fix, so an empty problems
         # list is no reason for a second call.
@@ -1019,10 +1039,12 @@ class Command(unittest.TestCase):
     def run_stage(self, *flags, verdicts=()):
         queue = list(verdicts)
         asked = []
+        self.prompts = {}
 
         def ask(self_, name, prompt, schema):
             which = kind(schema)
             asked.append(name)
+            self.prompts[name] = prompt
             if which == "plan-review":
                 return copy.deepcopy(queue.pop(0))
             if which == "plan":
@@ -1107,6 +1129,7 @@ class Command(unittest.TestCase):
         record = stopped["plan_review"]
         self.assertEqual([r["verdict"] for r in record["rounds"]], ["revise", "revise"])
         self.assertIn("1989 Quebec blackout", json.dumps(record["problems"]))
+        self.assertEqual(record["field_lines"], [STAKES_LINE])
 
     def test_a_stakes_revise_then_accept_records_both_rounds(self):
         code, asked, said = self.run_stage(
@@ -1116,6 +1139,10 @@ class Command(unittest.TestCase):
         record = json.loads((self.film / "script.json").read_text())["plan_review"]
         self.assertEqual([r["verdict"] for r in record["rounds"]], ["revise", "accept"])
         self.assertIn("plan-2", asked)
+        # stakes is what sent it back: plan-2 is told the field's line, and
+        # the first round keeps it in script.json
+        self.assertIn(STAKES_LINE, self.prompts["plan-2"])
+        self.assertEqual(record["rounds"][0]["field_lines"], [STAKES_LINE])
 
     def test_a_passed_review_clears_the_record_of_an_earlier_stop(self):
         self.run_stage("--review", "--model", "sonnet",
