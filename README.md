@@ -661,9 +661,9 @@ median of the valid samples; two that disagree on the verdict are a
 consider; a failed call is a failed engine row, and fewer than two valid
 samples is `not_evidenced`, never a pass. A flag on a shot or a section the
 script does not have is a broken answer, asked again like any other. So is a
-flag whose `quote` is not words its shot or section says, read past
-whitespace and curly or straight quote marks and nothing else (empty only
-for the whole script), or whose `conflicts_with` names a shot that does not
+flag whose `quote` is not whole words its shot or section says, read past
+whitespace and curly or straight quote marks and nothing else (empty for
+the whole script, and only empty on a silent shot or section), or whose `conflicts_with` names a shot that does not
 say its quote: a contradiction quotes both lines. The writer, `script.md`
 and the merged flag's `quotes` show the words each sample meant. A cold
 reader (`cold-read`) hears the narration alone, with no research, plan or
