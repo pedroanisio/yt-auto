@@ -16,10 +16,10 @@ re-asks nothing.
 The narration carries the message on first listen: a viewer who cannot rewind understands each line as it is said, while the picture shows what that line says. Show the concrete case before the abstract rule. One shot carries one new idea.
 
 ## script
-<!-- rules: judging 13; structure 1, 6, 7, 9, 19, 20, 21, 22, 27; attention 8, 9, 10; direction 16, 21 -->
+<!-- rules: judging 13; structure 1, 6, 7, 9, 19, 20, 21, 22, 27; attention 1, 8, 9, 10; direction 16, 21 -->
 - State the film's train in one sentence: who or what pursues what, against which obstacle, to answer which question. A topic is not a train.
 - Join consecutive beats with but, therefore or because; a beat that only follows "and then" is reworked, cut or moved.
-- Write the promise as one sentence and restate its question within the first 30 seconds; the last section pays it in resolved form. Nothing promised goes unpaid.
+- Open on a question, a paradox or an unexpected observation. Write the promise as one sentence, restate its question by 30 seconds and pay it, resolved, at the end. Nothing promised goes unpaid.
 - Within the first 30 seconds the viewer knows why they should care: the consequence for them or people like them.
 - Say what is at risk, and by when, before the mechanism is explained whenever possible; withhold it only when a twist is the point. Later beats put more at risk than earlier ones.
 - Each section opens on the specific question it answers and answers it before it ends, or names the later section that does, leaving the viewer something they did not have at its start.

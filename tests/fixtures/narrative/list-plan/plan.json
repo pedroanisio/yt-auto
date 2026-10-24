@@ -8,6 +8,10 @@
   "misconception": "[M1] A comet's tail is a wake left behind as it moves.",
   "misconception_why": "",
   "audience": "lay",
+  "hook": {
+    "trigger": "question",
+    "gap": "what a comet is made of"
+  },
   "reveal": {
     "section": 3,
     "constraint_section": 1
@@ -68,7 +72,7 @@
       "opens": [],
       "closes": [],
       "connective": "and",
-      "rehook": "",
+      "rehook": "Q1",
       "escalation": "",
       "anchor_visual": "three comets side by side"
     },
@@ -91,7 +95,7 @@
         "Q1"
       ],
       "connective": "and",
-      "rehook": "",
+      "rehook": "Q1",
       "escalation": "",
       "anchor_visual": "a curved and a straight tail"
     },

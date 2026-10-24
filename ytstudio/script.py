@@ -114,6 +114,21 @@ STORY_PROPERTIES = {
                           "description": "why misconception is empty, or empty"},
     "audience": {"type": "string", "enum": list(AUDIENCES),
                  "description": "who the film is pitched at. " + _ENUM_DRIFT},
+    # AUTO-136: the opening's curiosity trigger (attention 1), declared so
+    # the story review can compare it with the opening it hears.
+    "hook": {
+        "type": "object",
+        "properties": {
+            "trigger": {"type": "string",
+                        "enum": [*narrative.HOOK_TRIGGERS],
+                        "description": ("the curiosity trigger the first three spoken "
+                                        "sentences pull. " + _ENUM_DRIFT)},
+            "gap": {"type": "string", "description": (
+                "the specific gap the opening names, in one crew-facing sentence. "
+                + _NOT_EMPTY)},
+        },
+        "required": ["trigger", "gap"],
+    },
     "reveal": {
         "type": "object",
         "properties": {
@@ -158,7 +173,7 @@ STORY_PROPERTIES = {
     },
 }
 STORY_REQUIRED = ["promise", "payoff", "train", "stakes", "viewer_stake", "audience",
-                  "reveal", "questions", "ending"]
+                  "reveal", "questions", "ending", "hook"]
 
 #: What each section carries for the story, beside its beats.
 SECTION_STORY = {
@@ -171,13 +186,20 @@ SECTION_STORY = {
         "but or therefore (because when it explains); and only when nothing "
         "else is honest. " + _ENUM_DRIFT)},
     "rehook": {"type": "string", "description": (
-        "the id of a question this section re-opens to hold the viewer, or empty")},
-    "escalation": {"type": "string",
-                   "description": "one clause: what gets harder or costlier here"},
+        "the id of a ledger question this section re-opens or restates as it begins; "
+        "empty only for section 1")},
+    "escalation": {"type": "string", "description": (
+        "one clause: what gets harder, costlier or more at risk here than in the section "
+        "before; empty only for section 1 and the final payoff section, which resolves "
+        "rather than raises")},
     "anchor_visual": {"type": "string",
                       "description": "the one picture this section stands on"},
 }
-SECTION_STORY_REQUIRED = ["opens", "closes", "connective", "anchor_visual"]
+#: rehook and escalation are required keys (AUTO-136); their value may be
+#: empty where the description allows, and the plan's pre-checks say where
+#: it may not.
+SECTION_STORY_REQUIRED = ["opens", "closes", "connective", "rehook", "escalation",
+                          "anchor_visual"]
 
 PLAN_SCHEMA = {
     "type": "object",
@@ -1394,6 +1416,12 @@ STORY_BRIEF = (
     "the research lists it; never invent one. When there is none, leave it "
     "empty and say why in misconception_why.\n"
     "- audience: lay, enthusiast or expert.\n"
+    "- hook: trigger, the curiosity trigger the first three spoken sentences pull: "
+    "question (a question posed), paradox (two things that cannot both be true), "
+    "unexpected_observation (something seen that should not be so), "
+    "unresolved_outcome (a sequence whose end is held back) or someone_knows "
+    "(something someone knows that the viewer does not); and gap, the specific gap "
+    "the opening names, in one sentence.\n"
     "- reveal: the section holding the main reveal, and constraint_section, "
     "the earlier section that shows the viewer why it is hard. The reveal "
     "comes after the constraint, never before.\n"
@@ -1410,9 +1438,11 @@ STORY_BRIEF = (
     "how it joins the section before it: open for section 1 only, then BUT "
     "(it turns against what came before) or THEREFORE (it follows from it), "
     "because when it explains why; and when nothing else is honest, so it can "
-    "be seen; rehook, the id of a question it re-opens to hold the viewer, or "
-    "empty; escalation, one clause on what gets harder or costlier; and "
-    "anchor_visual, the one picture it stands on.\n"
+    "be seen; rehook, the id of a ledger question it re-opens or restates as it "
+    "begins, empty only for section 1; escalation, one clause on what gets "
+    "harder, costlier or more at risk than in the section before, empty only for "
+    "section 1 and the final payoff section, which resolves rather than raises; "
+    "and anchor_visual, the one picture it stands on.\n"
     "Every plan field is crew-facing: write them in English, like the shot "
     "descriptions, whatever language the film is in, so the later stages can "
     "read them.")
@@ -1557,6 +1587,13 @@ PLAN_CRITERIA = ("train", "stakes", "open_loops", "reveal_setup", "ending")
 #: from the channel's curves, so its pre-check is `house:`.
 REHOOK_AFTER_SECONDS = 7 * 60
 
+#: The longest stretch a plan may leave without a rehook (AUTO-136). A house
+#: value from structure 23's "once per three minutes" check, low confidence
+#: and backed by no public dataset: a prior to tune from retention.json once
+#: films carry it, so its pre-check is `house:`. Section 1 counts as hooked,
+#: since the hook opens the film.
+REHOOK_EVERY_SECONDS = 180
+
 #: What makes a train a question when it has no question mark.
 _ASKS = ("why", "how", "whether")
 
@@ -1587,6 +1624,84 @@ PRECHECK_NOTE = (
     "or reject.")
 
 
+def planned_trigger(plan) -> str | None:
+    """The plan's declared hook trigger (AUTO-136), or None when it has none
+    or one off narrative.HOOK_TRIGGERS: a drifted value is recorded as a note
+    (_record_drift) and read as no value, so it is never compared with the
+    heard opening."""
+    hook = plan.get("hook") if isinstance(plan, dict) else None
+    trigger = hook.get("trigger") if isinstance(hook, dict) else None
+    return trigger if trigger in narrative.HOOK_TRIGGERS else None
+
+
+def _escalation_lines(sections: list[dict]) -> list[str]:
+    """attention 9 measured from the plan: a middle section (2 to n-1) with
+    no escalation, and two middle sections stating the same one (case and
+    spacing aside), are flat stakes. Section 1 opens and the last section
+    resolves, so neither is held to it."""
+    out, seen = [], {}
+    for n, spec in enumerate(sections[1:-1], 2):
+        said = " ".join(str(spec.get("escalation") or "").split()).lower()
+        if not said:
+            out.append(f"rule: middle section {n} has an empty escalation: each middle "
+                       "section puts more at risk than the one before (attention 9)")
+        elif said in seen:
+            out.append(f"rule: middle sections {seen[said]} and {n} state the same "
+                       "escalation: the stakes stay flat (attention 9)")
+        else:
+            seen[said] = n
+    return out
+
+
+def _rehook_lines(plan: dict, sections: list[dict]) -> list[str]:
+    """A rehook names a question the ledger holds and that is still open
+    when its section begins (structure 23, 8). A question closed in the same
+    section is re-opened and answered there; one left open (closed_in 0)
+    stays open. Ids match whatever their case: a writer who says q1 where
+    the ledger holds Q1 names the same question."""
+    ledger = {str(q.get("id", "")).strip().upper(): q.get("closed_in")
+              for q in plan.get("questions") or [] if isinstance(q, dict)}
+    out = []
+    for n, spec in enumerate(sections, 1):
+        qid = str(spec.get("rehook") or "").strip()
+        if not qid:
+            continue
+        if qid.upper() not in ledger:
+            out.append(f"rule: section {n}'s rehook names {qid}, which is not in the "
+                       "questions ledger: there is nothing to re-open (structure 23, "
+                       "structure 8)")
+            continue
+        closed = ledger[qid.upper()]
+        if isinstance(closed, int) and not isinstance(closed, bool) and 0 < closed < n:
+            out.append(f"rule: section {n}'s rehook names {qid}, which was closed in "
+                       f"section {closed}, before it: there is nothing left to re-open "
+                       "(structure 23, structure 8)")
+    return out
+
+
+def _rehook_gap(sections: list[dict]) -> tuple[int, int, int | None]:
+    """The longest stretch with no rehook, as (seconds, the section that
+    starts it, the section that ends it or None for the end of the film):
+    from the start of a section with a rehook to the start of the next one
+    with a rehook. Section 1 counts as having one."""
+    starts, at = [], 0
+    for spec in sections:
+        starts.append(at)
+        try:
+            at += int(spec.get("seconds", 0) or 0)
+        except (TypeError, ValueError):
+            pass
+    hooked = [n for n, spec in enumerate(sections, 1)
+              if n == 1 or str(spec.get("rehook") or "").strip()]
+    best = (0, 1, None)
+    for i, n in enumerate(hooked):
+        nxt = hooked[i + 1] if i + 1 < len(hooked) else None
+        gap = (starts[nxt - 1] if nxt else at) - starts[n - 1]
+        if gap > best[0]:
+            best = (gap, n, nxt)
+    return best
+
+
 def plan_view(plan: dict) -> dict:
     """The plan as the reviewer and a second plan read it: the story fields
     and each numbered section with its beats and story fields."""
@@ -1601,10 +1716,13 @@ def plan_view(plan: dict) -> dict:
 
 def plan_prechecks(plan: dict, seconds: int, title: str = "") -> list[str]:
     """What a plan's own fields show before anyone reads it, one line each:
-    `rule:` for a corpus rule the fields break (an empty story field, an
-    empty payoff line or one that names nothing the plan names, an AND
-    join, a question with no answer, a reveal before its constraint) and
-    `house:` for the house's priors (a long film with no re-hook, a train
+    `rule:` for a corpus rule the fields break (an empty story field or
+    hook gap, an empty payoff line or one that names nothing the plan names,
+    an AND join, a middle section with no escalation or the same one as
+    another, a rehook of a question not in the ledger or already closed, a
+    question with no answer, a reveal before its constraint) and `house:`
+    for the house's priors (a long film with no re-hook, section 2 with
+    none, a stretch longer than REHOOK_EVERY_SECONDS without one, a train
     with no question). They go to the reviewer to confirm, never decide.
 
     The plan fields are crew-facing English (STORY_BRIEF), so the English
@@ -1619,6 +1737,10 @@ def plan_prechecks(plan: dict, seconds: int, title: str = "") -> list[str]:
     for key in ("train", "stakes", "viewer_stake"):
         if not " ".join(str(plan.get(key) or "").split()):
             out.append(f"rule: {key} is empty (judging 13; attention 8, 10)")
+    hook = plan.get("hook") if isinstance(plan.get("hook"), dict) else {}
+    if not " ".join(str(hook.get("gap") or "").split()):
+        out.append("rule: hook.gap is empty: the opening names the specific gap it opens "
+                   "(attention 1)")
     ending = plan.get("ending") if isinstance(plan.get("ending"), dict) else {}
     line = " ".join(str(ending.get("payoff_line") or "").split())
     named = " ".join(str(plan.get(k) or "") for k in ("train", "promise")) + " " + title
@@ -1635,6 +1757,8 @@ def plan_prechecks(plan: dict, seconds: int, title: str = "") -> list[str]:
             out.append(f"rule: section {n} joins the one before with AND: between beats "
                        "the honest connective is BUT or THEREFORE, and an AND join is a "
                        "list (structure 1, 3)")
+    out += _escalation_lines(sections)
+    out += _rehook_lines(plan, sections)
     for q in plan.get("questions") or []:
         if not isinstance(q, dict):
             continue
@@ -1655,11 +1779,33 @@ def plan_prechecks(plan: dict, seconds: int, title: str = "") -> list[str]:
             out.append(f"rule: the constraint (section {before}) does not come before the "
                        f"reveal (section {at}): the viewer knows why it is hard first "
                        "(structure 22)")
-    if seconds > REHOOK_AFTER_SECONDS and not any(str(s.get("rehook") or "").strip()
-                                                  for s in sections):
+    long_unhooked = seconds > REHOOK_AFTER_SECONDS and not any(
+        str(s.get("rehook") or "").strip() for s in sections)
+    if long_unhooked:
         out.append(f"house: a film over seven minutes with no rehook in any section "
                    f"({timecode(seconds)}): plan one where the opening hands over and at "
                    "the later drop points (structure 23, judging 5)")
+    # The seven-minute line already asks for a rehook where the opening hands
+    # over, so section 2's line would be a second line for one fault.
+    if (len(sections) > 1 and not long_unhooked
+            and not str(sections[1].get("rehook") or "").strip()):
+        out.append("house: section 2 has no rehook, at the boundary where the opening "
+                   "hands over (structure 23)")
+    gap, start, end = _rehook_gap(sections)
+    # The seven-minute line is this one over the whole film after section 1;
+    # a film never gets both.
+    if gap > REHOOK_EVERY_SECONDS and not long_unhooked:
+        # A section's rehook is read at its start, so a one-section film's
+        # gap is the whole film whatever it says: ask for the section.
+        if len(sections) < 2:
+            out.append(f"house: a one-section plan runs {gap} s with no rehook after its "
+                       "opening: split it so a later section re-opens a question at least "
+                       f"every {REHOOK_EVERY_SECONDS} s (structure 23)")
+        else:
+            out.append(f"house: {gap} s pass without a rehook, from section {start} to "
+                       + (f"section {end}" if end else "the end of the film")
+                       + f": plan one at least every {REHOOK_EVERY_SECONDS} s "
+                       "(structure 23)")
     train = " ".join(str(plan.get("train") or "").split())
     if train and "?" not in train and not _has(train, _ASKS):
         out.append("house: the train asks no question (no question mark, no why, how or "
@@ -2116,6 +2262,61 @@ def quiz_lines(cold) -> list[str]:
     return out + [""] if out else []
 
 
+def heard_trigger(samples: list[dict]) -> str:
+    """The opening's curiosity trigger as a round's valid samples heard it
+    (AUTO-136): the label most of them give in first_minute.trigger, given
+    by at least two. Fewer than two valid samples, a tie between labels or
+    `not_heard` (no narration was drafted) is `not_evidenced`, never a
+    guess."""
+    if len(samples) < 2:
+        return "not_evidenced"
+    # a drifted answer may keep first_minute as a string or a list: it
+    # names no trigger
+    labels = [s["first_minute"].get("trigger") if isinstance(s.get("first_minute"), dict)
+              else None for s in samples]
+    counts: dict[str, int] = {}
+    for label in labels:
+        if label in narrative.HEARD_TRIGGERS:
+            counts[label] = counts.get(label, 0) + 1
+    ranked = sorted(counts.items(), key=lambda kv: -kv[1])
+    if not ranked or ranked[0][1] < 2 or (len(ranked) > 1 and ranked[1][1] == ranked[0][1]):
+        return "not_evidenced"
+    return "not_evidenced" if ranked[0][0] == "not_heard" else ranked[0][0]
+
+
+def trigger_differs(trigger) -> bool | None:
+    """Whether a review's planned and heard triggers differ: None when there
+    is no record of them, False when they agree, when either is not
+    evidenced, or when the opening was heard on none (that is the
+    hook-trigger-match flag, not a difference between two triggers)."""
+    if not isinstance(trigger, dict) or "heard" not in trigger:
+        return None
+    planned, heard = trigger.get("planned"), trigger.get("heard")
+    return bool(planned) and heard not in (None, "not_evidenced", "none") and planned != heard
+
+
+def _merged_hook_flag(flag: dict, hooks: list[dict]) -> dict:
+    """The hook-trigger-match flag with the samples' own whole-script hook
+    problems and fixes added, each said once, in the order first given."""
+    def joined(key: str) -> str:
+        parts = []
+        for text in [str(flag.get(key) or "").strip()] + [
+                str(f.get(key) or "").strip() for f in hooks]:
+            if text and text not in parts:
+                parts.append(text)
+        if key == "problem" and len(parts) > 1:
+            return f"{parts[0]}; the reviewers also said: " + "; ".join(parts[1:])
+        return "; ".join(parts)
+    return dict(flag, problem=joined("problem"), fix=joined("fix"))
+
+
+def trigger_line(trigger: dict) -> str:
+    """The planned trigger against the heard one, for script.md."""
+    return (f"hook trigger: planned {trigger.get('planned') or 'no listed trigger'}, "
+            f"heard {trigger.get('heard') or 'not_evidenced'}"
+            + (" (differs)" if trigger_differs(trigger) else ""))
+
+
 def story_review_lines(record) -> list[str]:
     """The story review for script.md, beside the plan review and the
     fact-check: the verdict and its samples, the grades, the cold read, what
@@ -2137,6 +2338,8 @@ def story_review_lines(record) -> list[str]:
         out += ["| Criterion | Grade |", "|---|---|"]
         out += [f"| {k} | {grades[k]} |" for k in narrative.KEYS if grades.get(k)]
         out.append("")
+    if trigger_differs(record.get("trigger")) is not None:
+        out += [trigger_line(record["trigger"]), ""]
     for s in samples:
         state = ("failed: " + str(s["failed"]) if s.get("failed") else
                  "valid" if s.get("valid") else
@@ -2520,6 +2723,11 @@ class Screenwriter:
         if audience is not None and audience not in AUDIENCES:
             self.findings.append(f"note: audience {audience!r} not in the schema; "
                                  "no audience brief is given")
+        hook = plan.get("hook") if isinstance(plan.get("hook"), dict) else {}
+        trigger = hook.get("trigger")
+        if trigger is not None and trigger not in narrative.HOOK_TRIGGERS:
+            self.findings.append(f"note: hook trigger {trigger!r} not in the schema; it "
+                                 "is not compared with the heard opening")
         for n, section in enumerate(plan.get("sections") or [], 1):
             connective = section.get("connective")
             if connective is not None and connective not in CONNECTIVES:
@@ -3163,6 +3371,14 @@ class Screenwriter:
                 (review.get("previous") or {}).get("verdict") not in narrative.PREVIOUS:
             found.append("a revision round says whether this draft is better, the same "
                          "or worse than the one it revises: `previous` is missing")
+        first = review.get("first_minute") if isinstance(review.get("first_minute"),
+                                                         dict) else {}
+        if first.get("trigger") == "not_heard" and shots and \
+                any(spoken(line) for line in shots.values()):
+            # AUTO-136: not_heard is for a plan read before any line exists
+            found.append("first_minute.trigger is not_heard, but the script's shots carry "
+                         "narration: name the trigger its first three spoken sentences "
+                         "pull, or none")
         for f in review.get("flags") or []:
             if not isinstance(f, dict):
                 continue
@@ -3279,7 +3495,8 @@ class Screenwriter:
         prompt, `review-r<round>-s1..`, each with its own level order. The
         grade per criterion and the verdict are the medians of the valid
         samples (narrative.median); fewer than two valid samples is
-        `not_evidenced`, never a verdict."""
+        `not_evidenced`, never a verdict. `trigger` is the opening's
+        curiosity trigger as the samples heard it (heard_trigger)."""
         prompt = self._story_prompt(sections, plan, previous)
         # What a flag may name and quote (AUTO-112): each shot's line, and
         # each section's shots.
@@ -3305,7 +3522,8 @@ class Screenwriter:
                                     borderline="consider")
                    if len(valid) >= 2 else "not_evidenced")
         out = {"round": round_no, "grades": grades, "verdict": verdict,
-               "samples": samples, "flags": merge_flags(valid)}
+               "samples": samples, "flags": merge_flags(valid),
+               "trigger": heard_trigger(valid)}
         if previous is not None:
             out["previous"] = narrative.median([s.get("previous") for s in valid],
                                                narrative.PREVIOUS, borderline="same") \
@@ -3646,6 +3864,23 @@ class Screenwriter:
         # the plan flags of its own review (an earlier round's that a better
         # draft no longer raises are gone) and its cold read's mismatch.
         plan_flags: list[dict] = []
+        # AUTO-136: the opening's trigger, planned against heard. Only an
+        # opening heard to pull none is a flag: the triggers' borders are
+        # fuzzy, so a film planned on a question that opens on a paradox is
+        # not defective, and the difference is only shown.
+        planned = planned_trigger(plan)
+        record["trigger"] = {"planned": planned,
+                             "heard": current.get("trigger") or "not_evidenced"}
+        heard_none = record["trigger"]["heard"] == "none"
+        if heard_none:
+            plan_flags.append({
+                "n": 0, "section": 0, "criterion": "hook", "severity": "important",
+                "problem": "the first three spoken sentences open no curiosity trigger",
+                "fix": (f"open on the planned trigger: {planned}" if planned else
+                        "open on a curiosity trigger: a question, a paradox, an "
+                        "unexpected observation, an unresolved outcome or something "
+                        "someone knows that the viewer does not"),
+                "by": "hook-trigger-match"})
         if cold.get("match") == "mismatch":
             plan_flags.append({
                 "n": 0, "section": 0, "criterion": "train", "severity": "important",
@@ -3654,8 +3889,19 @@ class Screenwriter:
                 "fix": "make the train's question and obstacle heard in the narration",
                 "by": "cold-read-match"})
         if current["verdict"] in ("consider", "reject"):
-            plan_flags += [f for f in current["flags"] if f.get("severity") in REVISABLE
-                           and not int(f.get("n", 0) or 0) and not int(f.get("section", 0) or 0)]
+            whole = [f for f in current["flags"] if f.get("severity") in REVISABLE
+                     and not int(f.get("n", 0) or 0) and not int(f.get("section", 0) or 0)]
+            if heard_none:
+                # An opening heard to pull no trigger is the hook's
+                # whole-script fault, and the samples' own whole-script hook
+                # flags speak of the same opening: one warning stands for
+                # them, carrying each of their problems and fixes so a
+                # different hook fault (an opening that lists its
+                # conclusions) still reaches the writer.
+                plan_flags[0] = _merged_hook_flag(
+                    plan_flags[0], [f for f in whole if f.get("criterion") == "hook"])
+                whole = [f for f in whole if f.get("criterion") != "hook"]
+            plan_flags += whole
         seen = set()
         for f in plan_flags:
             key = (f.get("criterion"), str(f.get("problem")))
@@ -3686,6 +3932,11 @@ class Screenwriter:
         elif verdict == "consider":
             out.append(f"note: story review: consider ({weak or 'no weak grade'}); its "
                        "flags are in script.md")
+        trigger = record.get("trigger")
+        if trigger_differs(trigger):
+            out.append(f"note: story review: the opening was planned on "
+                       f"{trigger['planned']} and heard on {trigger['heard']}; no flag "
+                       "is filed for the difference")
         for f in record.get("unresolved") or []:
             out.append(f"warning: story review: {story_flag_line(f)}; a revision cannot "
                        f"reach it: `{f.get('command', REPLAN_FIX)}`")

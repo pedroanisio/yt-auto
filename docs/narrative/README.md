@@ -58,8 +58,8 @@ judging 13; Zeigarnik → attention Contested.
    There is no generator: when a rule changes, the section that cites it is
    edited, and the test catches a citation that drifts.
 3. **The narrative rubric.** `ytstudio/narrative.py` holds it, in the
-   shape set by `judging-narrative.md` rules 7–13: `RUBRIC`, seven criteria
-   (train, hook, stakes, open loops, reveal setup, ending, honesty) drawn
+   shape set by `judging-narrative.md` rules 7–13: `RUBRIC`, eight criteria
+   (train, hook, stakes, open loops, reveal setup, tension, ending, honesty) drawn
    from the `Check:` lines, each with four labelled levels (Excellent, Good,
    Fair, Poor) of one line, a worked example, the corpus rules it cites and
    the strength of its lead rule from the table below; the review's schema
@@ -67,7 +67,8 @@ judging 13; Zeigarnik → attention Contested.
    verdict reject / consider / recommend, every problem a flag tied to a
    section and a shot); the plan review's schema; the level order permuted
    per sample; and `check_review`, which names a recommend carrying a Poor,
-   a consider with no flag and a flag on no criterion. `reject` is
+   a consider with no flag, a flag on no criterion and an opening heard to
+   pull no curiosity trigger under a hook graded Good or better. `reject` is
    coverage's Pass, renamed because doctor, improve and the operator read
    verdict strings. The hook's window is written in words, the house's to
    set. One tuple is to be rendered into the writer's prompt and the
@@ -76,13 +77,15 @@ judging 13; Zeigarnik → attention Contested.
    the calibration set (judging 10): plans and scripts seeded with one known
    fault each (a list-shaped plan, a topic-only train, an empty payoff, an
    AND chain, a reveal before its constraint, a recap ending, a hook that
-   enumerates its conclusions, a premise a cold reader could not restate,
+   enumerates its conclusions, a middle whose stakes stay flat, an opening
+   with no curiosity trigger, a premise a cold reader could not restate,
    terms a lay audience is never given), and one good pair; the good
    script and the recap ending each have a padded copy. judging 10 asks
    the calibration run for reject on every seeded case; the cases whose
    one fault is a Fair, or a Poor on a criterion that does not decide a
    film (a hook that lists its conclusions, a recap ending, a reveal
-   before its constraint, an AND chain), are held to consider instead, because judging 11 and 12 make a fixable fault a
+   before its constraint, an AND chain, flat tension, an opening with no
+   trigger), are held to consider instead, because judging 11 and 12 make a fixable fault a
    consider, and a gate that rejects them would regenerate a film one
    flag would mend. Their `expected.json` says so in `judging_10`: the
    calibration fails a reviewer that recommends them, grades the named

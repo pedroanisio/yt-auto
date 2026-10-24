@@ -16,6 +16,7 @@
       "stakes": "Excellent",
       "open_loops": "Excellent",
       "reveal_setup": "Excellent",
+      "tension": "Excellent",
       "ending": "Fair",
       "honesty": "Excellent"
     },
@@ -33,7 +34,9 @@
     ],
     "first_minute": {
       "promise_match": "The comet and its tail are on screen and named at once.",
-      "question_and_stakes": "Why the tail leads; the same wind reached Quebec in 1989."
+      "question_and_stakes": "Why the tail leads; the same wind reached Quebec in 1989.",
+      "trigger": "unexpected_observation",
+      "gap": "why a comet leaving the Sun has its tail in front"
     }
   }
 }

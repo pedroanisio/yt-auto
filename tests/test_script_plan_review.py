@@ -340,6 +340,16 @@ class Prompt(unittest.TestCase):
         # a short film is not held to the re-hook
         self.assertNotIn("seven minutes", self.review_prompt(plan, minutes=1))
 
+    def test_two_middle_sections_with_the_same_escalation_reach_the_prompt(self):
+        # AUTO-136: flat stakes reach the plan reviewer as a rule: line
+        plan = copy.deepcopy(PLAN)
+        plan["sections"].insert(2, dict(copy.deepcopy(plan["sections"][1]),
+                                        heading="More paint", rehook="Q2",
+                                        escalation="  The twin opens SOON "))
+        plan["sections"][3]["rehook"] = "Q1"
+        prompt = self.review_prompt(plan)
+        self.assertIn("- rule: middle sections 2 and 3 state the same escalation", prompt)
+
     def test_the_pre_checks_never_stop_the_stage(self):
         plan = copy.deepcopy(PLAN)
         plan["ending"]["payoff_line"] = ""
@@ -349,6 +359,177 @@ class Prompt(unittest.TestCase):
         data = w.run(review=True)
         self.assertTrue(any(n.startswith("write-") for n in names(calls)))
         self.assertTrue(any(p.startswith("rule:") for p in data["plan_review"]["prechecks"]))
+
+
+# --------------------------------------------------------------------------- #
+# the opening and the tension, measured from the plan (AUTO-136)
+# --------------------------------------------------------------------------- #
+
+NARRATIVE = Path(__file__).resolve().parent / "fixtures" / "narrative"
+
+
+def timed(rehooks, seconds=60, escalations=None):
+    """A plan of len(rehooks) sections of `seconds` each, the ledger's Q1
+    open from section 1 to the last; each middle section escalates on its
+    own clause unless `escalations` says otherwise."""
+    count = len(rehooks)
+    plan = copy.deepcopy(PLAN)
+    plan["questions"] = [{"id": "Q1", "text": "Why?", "opened_in": 1, "closed_in": count}]
+    plan["reveal"] = ({"section": count, "constraint_section": 1} if count > 1
+                      else {"section": 0, "constraint_section": 0})
+    plan["sections"] = [
+        {"heading": f"S{n}", "purpose": "p", "seconds": seconds, "beats": ["b"],
+         "opens": ["Q1"] if n == 1 else [], "closes": ["Q1"] if n == count else [],
+         "connective": "open" if n == 1 else "but", "rehook": rehook,
+         "escalation": (escalations[n - 1] if escalations else
+                        "" if n in (1, count) else f"the cost rises to level {n}"),
+         "anchor_visual": "a"}
+        for n, rehook in enumerate(rehooks, 1)]
+    return plan
+
+
+def checks(plan, seconds=None):
+    total = sum(s["seconds"] for s in plan["sections"]) if seconds is None else seconds
+    return script.plan_prechecks(plan, total)
+
+
+class OpeningAndTension(unittest.TestCase):
+    def test_a_clean_plan_has_no_pre_check(self):
+        self.assertEqual(checks(PLAN), [])
+        self.assertEqual(checks(timed(["", "Q1", "Q1"])), [])
+        self.assertEqual(script.plan_prechecks(script.read_json(NARRATIVE / "good" / "plan.json"),
+                                               130), [])
+
+    def test_an_empty_middle_escalation_is_a_rule_line_and_the_ends_are_exempt(self):
+        plan = timed(["", "Q1", "Q1", "Q1"])
+        plan["sections"][1]["escalation"] = " "
+        found = checks(plan)
+        self.assertEqual([c for c in found if "escalation" in c],
+                         ["rule: middle section 2 has an empty escalation: each middle "
+                          "section puts more at risk than the one before (attention 9)"])
+        plan = timed(["", "Q1", "Q1", "Q1"])
+        plan["sections"][0]["escalation"] = plan["sections"][3]["escalation"] = ""
+        self.assertEqual(checks(plan), [])
+
+    def test_equal_middle_escalations_are_flat_stakes_and_the_last_is_exempt(self):
+        plan = timed(["", "Q1", "Q1", "Q1", "Q1"])
+        plan["sections"][3]["escalation"] = "The cost  rises to LEVEL 2"
+        found = [c for c in checks(plan) if "same escalation" in c]
+        self.assertEqual(found, ["rule: middle sections 2 and 4 state the same escalation: "
+                                 "the stakes stay flat (attention 9)"])
+        plan = timed(["", "Q1", "Q1", "Q1"])
+        plan["sections"][3]["escalation"] = plan["sections"][2]["escalation"]
+        self.assertEqual(checks(plan), [])
+
+    def test_a_rehook_must_name_a_question_still_open(self):
+        plan = timed(["", "Q1", "Q9"])
+        self.assertIn("rule: section 3's rehook names Q9, which is not in the questions "
+                      "ledger: there is nothing to re-open (structure 23, structure 8)",
+                      checks(plan))
+        plan = timed(["", "Q1", "Q1", "Q2"])
+        plan["questions"].append({"id": "Q2", "text": "How?", "opened_in": 1, "closed_in": 2})
+        self.assertIn("rule: section 4's rehook names Q2, which was closed in section 2, "
+                      "before it: there is nothing left to re-open (structure 23, "
+                      "structure 8)", checks(plan))
+        # closed in the same section is re-opened and answered there; left
+        # open (closed_in 0) is still open
+        plan["questions"][1]["closed_in"] = 4
+        self.assertEqual(checks(plan), [])
+        plan["questions"][1].update(closed_in=0, left_open_why="the inquiry is open")
+        self.assertEqual(checks(plan), [])
+
+    def test_a_rehook_matches_the_ledger_whatever_its_case(self):
+        # the writer may say q1 where the ledger holds Q1: the same question
+        plan = timed(["", "q1", " Q1 "])
+        self.assertEqual(checks(plan), [])
+        plan["questions"][0]["id"] = "q1"
+        plan["sections"][2]["rehook"] = "Q1"
+        self.assertEqual(checks(plan), [])
+        plan = timed(["", "Q1", "Q1", "q2"])
+        plan["questions"].append({"id": "Q2", "text": "How?", "opened_in": 1, "closed_in": 2})
+        self.assertIn("rule: section 4's rehook names q2, which was closed in section 2, "
+                      "before it: there is nothing left to re-open (structure 23, "
+                      "structure 8)", checks(plan))
+
+    def test_section_2_with_no_rehook_is_a_house_line(self):
+        found = checks(timed(["", "", "Q1"]))
+        self.assertIn("house: section 2 has no rehook, at the boundary where the opening "
+                      "hands over (structure 23)", found)
+        self.assertEqual(checks(timed([""])), [])
+
+    def test_a_rehook_gap_over_three_minutes_is_a_house_line(self):
+        self.assertEqual(script.REHOOK_EVERY_SECONDS, 180)
+        found = checks(timed(["", "Q1", "", "", ""]))
+        self.assertIn("house: 240 s pass without a rehook, from section 2 to the end of "
+                      "the film: plan one at least every 180 s (structure 23)", found)
+        found = checks(timed(["", "", "", "", "Q1"]))
+        self.assertIn("house: 240 s pass without a rehook, from section 1 to section 5: "
+                      "plan one at least every 180 s (structure 23)", found)
+        self.assertFalse([c for c in checks(timed(["", "Q1", "", ""]))
+                          if "without a rehook" in c])
+
+    def test_a_long_one_section_plan_is_asked_for_more_sections(self):
+        # A section's rehook is read at its start, so no rehook can break a
+        # one-section film's gap: the line asks for the section it lacks.
+        for rehook in ("", "Q1"):
+            with self.subTest(rehook=rehook):
+                found = checks(timed([rehook], seconds=240))
+                self.assertEqual(found, ["house: a one-section plan runs 240 s with no "
+                                         "rehook after its opening: split it so a later "
+                                         "section re-opens a question at least every "
+                                         "180 s (structure 23)"])
+        self.assertEqual(checks(timed([""], seconds=180)), [])
+
+    def test_a_long_film_with_no_rehook_gets_the_seven_minute_line_alone(self):
+        found = checks(timed(["", "", "", ""], seconds=120))
+        self.assertTrue([c for c in found if "over seven minutes" in c], found)
+        self.assertFalse([c for c in found if "without a rehook" in c], found)
+        # the seven-minute line already asks for one where the opening hands
+        # over, so the section-2 line would be a second line for one fault
+        self.assertFalse([c for c in found if "section 2 has no rehook" in c], found)
+
+    def test_an_empty_hook_gap_is_a_rule_line(self):
+        plan = copy.deepcopy(PLAN)
+        plan["hook"]["gap"] = "  "
+        self.assertEqual(checks(plan), ["rule: hook.gap is empty: the opening names the "
+                                        "specific gap it opens (attention 1)"])
+
+    def test_a_plan_with_no_hook_object_names_no_gap_either(self):
+        # a plan from before AUTO-136, kept in an older script.json, has no
+        # hook at all: it names no gap, so it gets the same rule: line
+        for hook in (None, "a question"):
+            plan = copy.deepcopy(PLAN)
+            if hook is None:
+                del plan["hook"]
+            else:
+                plan["hook"] = hook
+            with self.subTest(hook=hook):
+                self.assertEqual(checks(plan), ["rule: hook.gap is empty: the opening "
+                                                "names the specific gap it opens "
+                                                "(attention 1)"])
+
+    def test_each_seeded_plan_carries_only_the_lines_of_its_own_fault(self):
+        good = script.plan_prechecks(script.read_json(NARRATIVE / "good" / "plan.json"), 130)
+        for path in sorted(NARRATIVE.iterdir()):
+            plan = script.read_json(path / "plan.json")
+            title = (script.read_json(path / "script.json") or {}).get("idea", {}).get(
+                "title", "") if (path / "script.json").is_file() else ""
+            found = script.plan_prechecks(plan, 130, title)
+            new = [c for c in found if any(w in c for w in (
+                "escalation", "rehook", "hook.gap"))]
+            with self.subTest(case=path.name):
+                if path.name in ("and-chain", "list-plan"):
+                    self.assertEqual(new, [
+                        "rule: middle section 2 has an empty escalation: each middle "
+                        "section puts more at risk than the one before (attention 9)",
+                        "rule: middle section 3 has an empty escalation: each middle "
+                        "section puts more at risk than the one before (attention 9)"])
+                elif path.name == "flat-tension":
+                    self.assertEqual(new, ["rule: middle sections 2 and 3 state the same "
+                                           "escalation: the stakes stay flat (attention 9)"])
+                else:
+                    self.assertEqual(new, [], path.name)
+        self.assertEqual(good, [])
 
 
 # --------------------------------------------------------------------------- #

@@ -450,8 +450,8 @@ def answer(schema, prompt=""):
         return out
     if which == "review":
         if "previous" in schema.get("required", []):
-            return sample("recommend", previous="better")
-        return sample("consider", flags=[flag()])
+            return sample("recommend", previous="better", trigger="question")
+        return sample("consider", flags=[flag()], trigger="question")
     if which == "cold-read":
         return copy.deepcopy(COLD)
     if which == "answers":
@@ -653,9 +653,10 @@ class SendsBack(GatewayFake):
             return copy.deepcopy(ACCEPT)
         if which == "review" and "previous" not in schema.get("required", []):
             if n == 1:
-                return sample("consider", flags=[flag(n=99)])
+                return sample("consider", flags=[flag(n=99)], trigger="question")
             # every section is written as shots_for(1): section 2 says "line 1.1" too
-            return sample("consider", flags=[flag(), flag(n=0, section=2, quote="line 1.1")])
+            return sample("consider", flags=[flag(), flag(n=0, section=2, quote="line 1.1")],
+                          trigger="question")
         if "sections" in schema.get("properties", {}) and which == "":
             return {"sections": [{"section": i, "claim": f"claim {i}", "carries_beat": True,
                                   "missing": "", "confused_at": []} for i in (1, 2, 3)],

@@ -310,12 +310,14 @@ ROLE = (
 
 #: The rubric rows narrative_clarity and editing_pacing are read against: the
 #: ones a viewer of the finished film can judge (docs/production.md §2 row 9:
-#: hook, stakes, open questions closed, the payoff on the promise). `train` is
-#: the plan's sentence and `honesty` a claim against the sources, which the
-#: frames cannot settle; escalation and visual support have no row of their
-#: own, so they reach the reviewer through the story brief (each section's
-#: `escalation`) and the frames (each shot's `shows`).
-STORY_RUBRIC = ("hook", "stakes", "open_loops", "reveal_setup", "ending")
+#: hook, stakes, re-hooks, open questions closed, escalation, the payoff on
+#: the promise). `train` is the plan's sentence and `honesty` a claim against
+#: the sources, which the frames cannot settle. Escalation and re-hooks are
+#: graded by the `tension` row (AUTO-136), with each section's `escalation`
+#: in the story brief as the writer's declaration beside it; visual support
+#: has no row of its own and reaches the reviewer through the frames (each
+#: shot's `shows`).
+STORY_RUBRIC = ("hook", "stakes", "open_loops", "reveal_setup", "tension", "ending")
 
 ROLE += (
     "\n\nnarrative_clarity and editing_pacing are judged on the story the film "

@@ -207,6 +207,8 @@ class ScriptTest(DecisionCase):
                 return {"logline": "l", "promise": "p", "payoff": "p",
                         "train": "Someone must learn whether it moves before it falls?",
                         "stakes": "s", "viewer_stake": "v", "audience": "lay",
+                        # AUTO-136: the opening's trigger and gap
+                        "hook": {"trigger": "question", "gap": "whether it moves"},
                         "reveal": {"section": 1, "constraint_section": 1},
                         "questions": [{"id": "Q1", "text": "Does it move?",
                                        "opened_in": 1, "closed_in": 1}],
@@ -214,7 +216,8 @@ class ScriptTest(DecisionCase):
                                    "next_film": "n"},
                         "sections": [{"heading": "One", "purpose": "p", "seconds": 10,
                                       "beats": ["b"], "opens": ["Q1"], "closes": ["Q1"],
-                                      "connective": "open", "anchor_visual": "a drawing"}]}
+                                      "connective": "open", "rehook": "", "escalation": "",
+                                      "anchor_visual": "a drawing"}]}
             if "shots" in schema.get("required", []):
                 return {"shots": [{"visual": "a drawing", "narration": "It moves.",
                                    "seconds": 4, "asset": "", "style": "",
@@ -233,6 +236,11 @@ class ScriptTest(DecisionCase):
                 contextlib.redirect_stderr(io.StringIO()):
             script.run(args)
         record = json.loads((film / "script.json").read_text())
+        # AUTO-136: script.json carries the plan's hook and each section's
+        # rehook and escalation, as the plan answered them.
+        self.assertEqual(record["hook"], {"trigger": "question", "gap": "whether it moves"})
+        self.assertEqual({k: record["sections"][0][k] for k in ("rehook", "escalation")},
+                         {"rehook": "", "escalation": ""})
         self.assertEqual(record["house"]["sources"], ["ytstudio/house/default.md"])
         self.assertEqual(record["house"]["stage"], "script")
         self.assertEqual(record["house"], house.load(work, film).digest("script"))
