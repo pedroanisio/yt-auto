@@ -484,6 +484,10 @@ class Trigger(unittest.TestCase):
 
 class TensionRow(unittest.TestCase):
     def test_a_fair_tension_is_a_consider_and_its_section_flag_is_redrafted(self):
+        # The samples say consider themselves: no code turns a tension grade
+        # into a verdict. That tension is not a reject ground is the rubric's
+        # text (test_narrative_rubric), read by the reviewer; this test pins
+        # only where a tension flag goes.
         w = writer()
         flat = flag(n=0, section=2, criterion="tension",
                     problem="section 2 risks nothing the opening did not",
