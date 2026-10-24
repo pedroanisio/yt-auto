@@ -120,12 +120,12 @@ class Shape(unittest.TestCase):
         self.assertEqual({k for k, v in tiers.items() if v == "important"},
                          {"rule:unspoken-number", "rule:legibility", "rule:numbers",
                           "rule:hook-subject", "rule:hook-answer", "rule:payoff-last",
-                          "rule:wall-of-text"})
+                          "rule:wall-of-text", "rule:marks"})
         self.assertEqual({k for k, v in tiers.items() if v == "minor"}, {"rule:last-line"})
         self.assertEqual({k for k, v in tiers.items() if v == "house"},
                          {"rule:clause", "rule:passive", "rule:person", "rule:pace",
                           "rule:density", "rule:hook-promise", "rule:hook-stakes",
-                          "rule:end-signal", "rule:recap"})
+                          "rule:end-signal", "rule:recap", "rule:pronouncer"})
 
     def test_only_the_error_and_important_tiers_are_revisable(self):
         flags = rules(film(["Welcome. " + " ".join(["word"] * 30) + "."]))
@@ -472,6 +472,107 @@ class LastLine(unittest.TestCase):
         flags = by_rule(rules(sheet), "rule:last-line")
         self.assertEqual([(f["n"], f["tier"], f["severity"]) for f in flags],
                          [(6, "minor", "minor")])
+
+
+class Marks(unittest.TestCase):
+    """rule:marks (AUTO-139): a delivery mark points at a word of its line,
+    one emphasis a sentence, and a pronouncer says something."""
+
+    def marked(self, **marks):
+        return clean(body=[("We scraped the paint off one joint.", marks),
+                           "Under it, the steel had rusted through."])
+
+    def test_the_rules_and_bounds_carry_the_keys(self):
+        self.assertIn("marks", script.BOUNDS)
+        self.assertIn("pronouncer", script.BOUNDS)
+        for key in ("marks", "pronouncer"):
+            self.assertEqual(script.BOUNDS[key]["corpus"], ("direction 28",))
+            self.assertEqual(script.BOUNDS[key]["strength"], "practitioner")
+        self.assertIn("rule:marks", RULE_IDS)
+        self.assertIn("rule:pronouncer", RULE_IDS)
+
+    def test_marks_on_words_of_the_line_pass(self):
+        self.assertEqual(rules(self.marked(emphasis=["paint"], pauses=["joint"])), [])
+
+    def test_an_emphasis_word_not_in_its_line(self):
+        flags = by_rule(rules(self.marked(emphasis=["bolt"])), "rule:marks")
+        self.assertEqual([(f["n"], f["tier"], f["severity"]) for f in flags],
+                         [(3, "important", "important")])
+        self.assertIn('"bolt"', flags[0]["problem"])
+
+    def test_two_emphasis_words_in_one_sentence(self):
+        flags = by_rule(rules(self.marked(emphasis=["paint", "joint"])), "rule:marks")
+        self.assertEqual(len(flags), 1)
+        self.assertIn("two", flags[0]["problem"])
+
+    def test_one_emphasis_a_sentence_over_two_sentences(self):
+        sheet = clean(body=[("We scraped the paint. The joint was bare.",
+                             {"emphasis": ["paint", "joint"]}),
+                            "Under it, the steel had rusted through."])
+        self.assertEqual(by_rule(rules(sheet), "rule:marks"), [])
+
+    def test_a_pronounce_term_missing_from_the_line_and_an_empty_say(self):
+        flags = by_rule(rules(self.marked(pronounce=[{"term": "Brunel", "say": "broo-NEL"}])),
+                        "rule:marks")
+        self.assertEqual(len(flags), 1)
+        self.assertIn("Brunel", flags[0]["problem"])
+        empty = by_rule(rules(self.marked(pronounce=[{"term": "paint", "say": ""}])),
+                        "rule:marks")
+        self.assertEqual(len(empty), 1)
+        self.assertIn("say", empty[0]["problem"])
+
+    def test_a_pause_word_not_in_its_line(self):
+        self.assertEqual(len(by_rule(rules(self.marked(pauses=["bolt"])), "rule:marks")), 1)
+
+
+class Pronouncer(unittest.TestCase):
+    """rule:pronouncer (AUTO-139): in a screenplay that carries marks, a
+    section's unmarked mid-sentence names are one house warning."""
+
+    NAMES = "Under it, Brunel and Telford had argued for years."
+
+    def sheet(self, body_marks=None, lang_marks=True):
+        first = ("We scraped the paint off one joint.",
+                 {"emphasis": ["paint"]} if lang_marks else {})
+        return clean(body=[first, (self.NAMES, body_marks or {})])
+
+    def test_two_unmarked_names_are_one_flag_naming_both(self):
+        flags = by_rule(rules(self.sheet()), "rule:pronouncer")
+        self.assertEqual(len(flags), 1)
+        self.assertEqual((flags[0]["tier"], flags[0]["severity"]), ("house", "minor"))
+        self.assertNotIn(flags[0]["severity"], script.REVISABLE)
+        self.assertIn("Brunel", flags[0]["problem"])
+        self.assertIn("Telford", flags[0]["problem"])
+        # the sentence's first word and "I" are not names
+        self.assertNotIn("Under", flags[0]["problem"])
+
+    def test_a_named_pronouncer_clears_it(self):
+        marks = {"pronounce": [{"term": "Brunel", "say": "broo-NEL"},
+                               {"term": "Telford", "say": "TEL-ferd"}]}
+        self.assertEqual(by_rule(rules(self.sheet(marks)), "rule:pronouncer"), [])
+
+    def test_i_and_a_sentence_opening_are_never_named(self):
+        sheet = clean(body=[("We scraped the paint. Paint, I think, hid it.",
+                             {"emphasis": ["paint", "hid"]}),
+                            "Under it, the steel had rusted through."])
+        self.assertEqual(by_rule(rules(sheet), "rule:pronouncer"), [])
+
+    def test_a_screenplay_with_no_marks_raises_neither_rule(self):
+        flags = rules(self.sheet(lang_marks=False))
+        self.assertEqual(by_rule(flags, "rule:pronouncer"), [])
+        self.assertEqual(by_rule(flags, "rule:marks"), [])
+        sections = self.sheet(lang_marks=False)
+        self.assertIn("not_evidenced: rule:pronouncer (pre-marks script)",
+                      script.not_evidenced("", sections))
+        self.assertIn("not_evidenced: rule:pronouncer (pre-marks script)",
+                      script.rule_lines([], {}, "", sections=sections))
+        self.assertNotIn("not_evidenced: rule:pronouncer (pre-marks script)",
+                         script.not_evidenced("", self.sheet()))
+
+    def test_german_is_not_read_for_names(self):
+        flags = rules(self.sheet(), lang="de")
+        self.assertEqual(by_rule(flags, "rule:pronouncer"), [])
+        self.assertIn("not_evidenced: rule:pronouncer (de)", script.not_evidenced("de"))
 
 
 class Lines(unittest.TestCase):

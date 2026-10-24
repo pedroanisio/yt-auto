@@ -795,13 +795,18 @@ judge. Four tiers:
   numerals in one sentence), `rule:hook-subject` (no content word of the
   title said or shown in the first 30 seconds; the title's verb counts, since
   telling the key noun from it needs a parser), `rule:hook-answer` (the payoff said in
-  those 30 seconds) and `rule:payoff-last` (the payoff line not in the last
-  section).
+  those 30 seconds), `rule:payoff-last` (the payoff line not in the last
+  section) and `rule:marks` (a shot's delivery mark on a word its line does
+  not say, two emphasis words in one sentence, or a pronouncer with an
+  empty `say`; AUTO-139).
 - **house**, the house's own prior, recorded and never revised:
   `rule:clause`, `rule:passive` (English only), `rule:person`, `rule:pace`
   (the words do not fit the shots at `--wpm`: consistency with the planned
-  read, not the corpus's 170-190 wpm band), `rule:density`, `rule:hook-promise`, `rule:hook-stakes`, `rule:end-signal`
-  and `rule:recap`.
+  read, not the corpus's 170-190 wpm band), `rule:density`, `rule:hook-promise`, `rule:hook-stakes`, `rule:end-signal`,
+  `rule:recap` and `rule:pronouncer` (one warning per section listing the
+  capitalised names said mid-sentence with no pronouncer; English and
+  Portuguese, and only in a screenplay that carries marks: one with none
+  records `not_evidenced: rule:pronouncer (pre-marks script)`).
 - **minor**: `rule:last-line` (a last sentence over 20 words).
 
 The error and important flags go to one revision (`revise-rules`, a second

@@ -463,10 +463,15 @@ tier: `rule:filler`, `rule:sentence`. The important tier:
 script.json keys stay), `rule:wall-of-text` (an on-screen string over six
 words, a numeral with its separators counted as one, or more than four
 words of its own line printed verbatim: direction 2's check, AUTO-98), `rule:numbers`, `rule:hook-subject`,
-`rule:hook-answer`, `rule:payoff-last`. The house tier, recorded as
+`rule:hook-answer`, `rule:payoff-last`, `rule:marks` (a delivery mark on a
+word its line does not say, two emphasis words in a sentence, an empty
+pronouncer; AUTO-139). The house tier, recorded as
 `warning: house:rule:x` and never revised: `rule:clause`, `rule:passive`
 (English only), `rule:person`, `rule:pace`, `rule:density`,
-`rule:hook-promise`, `rule:hook-stakes`, `rule:end-signal`, `rule:recap`.
+`rule:hook-promise`, `rule:hook-stakes`, `rule:end-signal`, `rule:recap`,
+`rule:pronouncer` (a section's mid-sentence capitalised names with no
+pronouncer, one flag per section; run only where some shot carries a mark,
+else `not_evidenced: rule:pronouncer (pre-marks script)`).
 The minor tier: `rule:last-line`. A greeting that says a word of the
 title is the first content sentence, not filler; `rule:hook-subject` takes
 any content word of the title, its verb included; `rule:pace` is
