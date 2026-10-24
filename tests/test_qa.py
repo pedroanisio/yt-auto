@@ -665,6 +665,34 @@ class StoryStage(unittest.TestCase):
         card = json.loads((self.root / "qa" / "pass-01" / "scorecard.json").read_text())
         self.assertFalse(any("satisfaction" in n for n in card["not_evidenced"]))
 
+    # AUTO-153: a blocking continuity break from a reviewer of another family
+    # keeps the film off READY; the same verdict from the author's family is
+    # doctor's warn alone.
+
+    def continuity_break(self, author):
+        (self.root / "vfx.json").write_text(json.dumps({
+            "authored": [{"n": 1, "section": "One"}, {"n": 2, "section": "Two"}],
+            "continuity": {"one_film": False, "score": 3, "summary": "two films",
+                           "monotony": [], "reviewer": {"model": "opus", "author": author,
+                                                        "engine": "claude"},
+                           "breaks": [{"sections": ["One", "Two"], "owner_section": "Two",
+                                       "problem": "the hero is twice the size",
+                                       "fix": "scale it", "severity": "blocking"}]}}))
+
+    def test_qa_run_with_a_blocking_continuity_break_is_not_ready(self):
+        line = "vfx continuity: section 2 (Two): the hero is twice the size"
+        self.continuity_break("sonnet")
+        self.run_qa()
+        card = json.loads((self.root / "qa" / "pass-01" / "scorecard.json").read_text())
+        self.assertEqual(card["verdict"], qa.NOT_READY)
+        self.assertIn(line, card["blocking"])
+        self.assertIn(f"{len(card['blocking'])} blocking item(s)", card["bar"])
+        # the author's own family: the break is not QA's to block on
+        self.continuity_break("opus")
+        self.run_qa()
+        card = json.loads((self.root / "qa" / "pass-02" / "scorecard.json").read_text())
+        self.assertNotIn(line, card["blocking"])
+
     # AUTO-156: qa.json says whether the judge is the one the QA fixtures
     # passed, and a line under the verdict says so; nothing reads it to gate.
 

@@ -2083,6 +2083,37 @@ def mechanical_blockers(build: dict, *, gate: dict | None) -> list[str]:
     return out
 
 
+def vfx_blockers(vfx: dict | None, authored: list | None = None) -> list[str]:
+    """The vfx continuity breaks that block publication: one line per break
+    marked `blocking`, when vfx.json records that the verdict came from a
+    reviewer of another family than the author (vfx.judged_apart). Sections
+    are reviewed alone, so this is the one review that sees a hero change
+    size at a section boundary, and READY must not pass over it. A verdict
+    by the author's own family, or one with no record of who gave it (a
+    vfx.json from before the record), never blocks: doctor warns of it
+    instead. A major or minor break, `one_film: false` on its own, and a
+    review that was skipped or failed add nothing. `authored` defaults to
+    vfx.json's own; the section is named by number when its heading joins
+    to one authored section, as written otherwise."""
+    from . import vfx as vfx_stage
+    cont = (vfx or {}).get("continuity") if isinstance(vfx, dict) else None
+    if (not isinstance(cont, dict) or cont.get("skipped") or cont.get("error")
+            or not vfx_stage.judged_apart(cont)):
+        return []
+    authored = (vfx.get("authored") or []) if authored is None else authored
+    out = []
+    for b in cont.get("breaks") or []:
+        if not isinstance(b, dict) or b.get("severity") != "blocking":
+            continue
+        owner = str(b.get("owner_section") or "?")
+        n = vfx_stage.owner_section_n(owner, authored)
+        heading = next((str(r.get("section") or "") for r in authored
+                        if isinstance(r, dict) and r.get("n") == n), "")
+        where = f"section {n} ({heading})" if n is not None else owner
+        out.append(f"vfx continuity: {where}: {b.get('problem', '')}")
+    return out
+
+
 def compare(prev: dict | None, cur: dict) -> dict:
     """Pass against pass: per-category deltas and what regressed.
 
@@ -4145,10 +4176,12 @@ def run(args) -> int:
     mechanical = mechanical_findings(samples, diagnostics=diagnostics,
                                      geometry=geometry_by_shot(geometry_report, build.get("shots", [])),
                                      merged=merged_by_shot(geometry_report, build.get("shots", [])))
-    # The film against the authors' proof frames of the same worlds.
+    # The film against the authors' proof frames of the same worlds. vfx.json
+    # is read once here: the proof frames, the reach summary and the
+    # continuity blockers all read this one copy.
+    vfx_doc = read_json(project.source("vfx"), warn=False) if project.source("vfx") else None
     proof_found, proof_note = proof_frame_findings(
-        args, project, scene, read_json(project.source("vfx"), warn=False)
-        if project.source("vfx") else None, home, build.get("shots", []), pass_dir)
+        args, project, scene, vfx_doc, home, build.get("shots", []), pass_dir)
     mechanical += proof_found
     reowned = reown_by_proof(mechanical, proof_found)
     if proof_note and not args.quiet:
@@ -4165,9 +4198,8 @@ def run(args) -> int:
     # -- what the reviewer sees beside each frame ----------------------------
     measurements = stage_measurements(
         build, voice, sound=sound, gate=gate, geometry=geometry_report, styles=styles,
-        reach=(read_json(project.source("vfx"), warn=False) or {}).get("reach")
-        if project.source("vfx") else None)
-    blockers = mechanical_blockers(build, gate=gate) + problems
+        reach=(vfx_doc or {}).get("reach") if project.source("vfx") else None)
+    blockers = mechanical_blockers(build, gate=gate) + vfx_blockers(vfx_doc) + problems
     previous = chosen
     for earlier in [] if named else reversed(_passes(home)):
         if earlier != pass_dir:
