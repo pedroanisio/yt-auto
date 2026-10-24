@@ -2086,7 +2086,8 @@ def mechanical_blockers(build: dict, *, gate: dict | None) -> list[str]:
 def vfx_blockers(vfx: dict | None, authored: list | None = None) -> list[str]:
     """The vfx continuity breaks that block publication: one line per break
     marked `blocking`, when vfx.json records that the verdict came from a
-    reviewer of another family than the author (vfx.judged_apart). Sections
+    reviewer of another family than every author of the film, carried
+    sections' authors too (vfx.judged_apart). Sections
     are reviewed alone, so this is the one review that sees a hero change
     size at a section boundary, and READY must not pass over it. A verdict
     by the author's own family, or one with no record of who gave it (a

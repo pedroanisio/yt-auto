@@ -188,7 +188,7 @@ class ReviewerRecord(ContinuityCase):
 
     def test_continuity_records_reviewer_author_and_engine(self):
         expect = {"model": self.planner.reviewer_model, "author": "sonnet",
-                  "engine": harness.ENGINE_NAME}
+                  "authors": ["sonnet"], "engine": harness.ENGINE_NAME}
         authored = self.author()
         world.FakeEngine.reviews = [dict(BREAK)]
         self.assertEqual(self.planner.continuity(authored)["reviewer"], expect)
@@ -217,6 +217,55 @@ class ReviewerRecord(ContinuityCase):
         self.assertEqual(again[1]["carried_from"], "v01")
         self.assertEqual(again[1]["bar"], 6.5)
         self.assertEqual(again[2]["bar"], 9.0)
+
+
+    def test_authored_record_names_its_author_and_a_carry_keeps_it(self):
+        self.planner.model, self.planner.reviewer_model = "opus", "sonnet"
+        self.assertEqual([r["author"] for r in self.author()], ["opus", "opus"])
+        idea = Idea(title="T", genre="g", description="d")
+        bundle = {"idea": idea, "outline": {}, "claims": [], "assets": [], "premise": ""}
+        self.planner = vfx.VfxPlanner(
+            bundle, Dossier(self.root, idea, at=self.root), self.ws, model="sonnet",
+            reviewer_model="opus", sections=self.sections, revisions=0, author_bar=0.0,
+            verbose=False, sections_only={2})
+        again = {r["n"]: r for r in self.author()}
+        self.assertEqual((again[1]["author"], again[2]["author"]), ("opus", "sonnet"))
+
+    def test_a_carried_section_by_the_reviewers_family_is_not_judged_apart(self):
+        # v01: opus authors, sonnet reviews. v02 re-authors section 2 on sonnet
+        # with opus reviewing: section 1 is still opus's own work, so opus's
+        # verdict on the film is not one from another family.
+        self.planner.model, self.planner.reviewer_model = "opus", "sonnet"
+        self.author()
+        idea = Idea(title="T", genre="g", description="d")
+        bundle = {"idea": idea, "outline": {}, "claims": [], "assets": [], "premise": ""}
+        self.planner = vfx.VfxPlanner(
+            bundle, Dossier(self.root, idea, at=self.root), self.ws, model="sonnet",
+            reviewer_model="opus", sections=self.sections, revisions=0, author_bar=0.0,
+            verbose=False, sections_only={2})
+        authored = self.author()
+        world.FakeEngine.reviews = [dict(BREAK)]
+        result = self.planner.continuity(authored)
+        self.assertEqual(result["reviewer"]["authors"], ["opus", "sonnet"])
+        self.assertFalse(vfx.judged_apart(result))
+
+    def test_a_section_with_no_recorded_author_is_not_judged_apart(self):
+        authored = self.author()
+        authored[0].pop("author")       # a record written before authors were kept
+        world.FakeEngine.reviews = [dict(BREAK)]
+        result = self.planner.continuity(authored)
+        self.assertEqual(result["reviewer"]["authors"], ["sonnet", None])
+        self.assertFalse(vfx.judged_apart(result))
+        authored[0]["author"] = "sonnet"
+        self.planner.fresh = True
+        world.FakeEngine.reviews = [dict(BREAK)]
+        self.assertTrue(vfx.judged_apart(self.planner.continuity(authored)))
+
+    def test_the_engine_named_is_the_one_the_reviewer_ran_on(self):
+        authored = self.author()
+        world.FakeEngine.reviews = [dict(BREAK)]
+        with patch.object(vfx.harness, "ENGINE_NAME", "codex"):
+            self.assertEqual(self.planner.continuity(authored)["reviewer"]["engine"], "codex")
 
 
 class OwnerSection(unittest.TestCase):

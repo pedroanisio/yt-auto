@@ -55,6 +55,15 @@ class VfxBlockers(unittest.TestCase):
     def test_same_family_record_gives_no_blocker(self):
         self.assertEqual(qa.vfx_blockers(broken(author="opus", model="opus[1m]")), [])
 
+    def test_every_author_of_the_film_must_be_of_another_family(self):
+        # a --sections run: section 1 carried from an opus author, section 2
+        # re-authored on sonnet, opus reviewing the film
+        self.assertEqual(qa.vfx_blockers(broken(authors=["opus", "sonnet"])), [])
+        self.assertEqual(len(qa.vfx_blockers(broken(authors=["sonnet"]))), 1)
+        self.assertEqual(len(qa.vfx_blockers(broken(authors=["sonnet", "haiku"]))), 1)
+        # a carried section with no recorded author: not shown apart
+        self.assertEqual(qa.vfx_blockers(broken(authors=["sonnet", None])), [])
+
     def test_unrecorded_reviewer_gives_no_blocker(self):
         old = broken()
         old["continuity"].pop("reviewer")

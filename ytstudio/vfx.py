@@ -508,15 +508,23 @@ def owner_section_n(owner: str, authored: list) -> int | None:
 
 def judged_apart(continuity: dict | None) -> bool:
     """Whether a continuity verdict records a reviewer of another family than
-    the author, by the rule every reviewing stage applies before it pays
-    (flags.own_reviewer). Only such a verdict may block QA: one by the
-    author's own family, or one that does not say who gave it (every
-    vfx.json written before `continuity.reviewer`), stays a doctor warn."""
+    every author of the film it judged, by the rule every reviewing stage
+    applies before it pays (flags.own_reviewer). Only such a verdict may
+    block QA: one by an author's own family, or one that does not say who
+    gave it (every vfx.json written before `continuity.reviewer`), stays a
+    doctor warn. `authors` matters after `--sections`: the sections carried
+    from an earlier version may have another author than this run's
+    `--model`, and the reviewer may be of theirs. A carried section with no
+    recorded author (None) is not shown to be apart, so it never blocks."""
     rec = (continuity or {}).get("reviewer") if isinstance(continuity, dict) else None
     if not isinstance(rec, dict):
         return False
-    model, author = str(rec.get("model") or "").strip(), str(rec.get("author") or "").strip()
-    return bool(model and author) and flags.own_reviewer(author, model) == ""
+    model = str(rec.get("model") or "").strip()
+    authors = [rec.get("author"), *(rec.get("authors") or [])]
+    if not model or any(not isinstance(a, str) or not a.strip() for a in authors):
+        return False
+    return all(flags.own_reviewer(a.strip(), model) == "" for a in authors)
+
 
 #: Effect families, roughly cheapest to most expensive to refine by hand.
 EFFECT_TYPES = ("text-and-callout", "2d-diagram", "data-animation", "map-move",
@@ -3884,6 +3892,9 @@ class VfxPlanner:
                     # the bar the score was reviewed against: doctor warns
                     # under it, and a carry keeps it with the score
                     "bar": self.author_bar,
+                    # who wrote it: a carry keeps it, so continuity can tell
+                    # every author of the film from this run's --model
+                    "author": self.model,
                     "review": chosen["review"] if chosen else None,
                     "cost_usd": round(engine.usage.cost_usd + reviewer.usage.cost_usd, 4),
                     "budget": self.spend.row(n), "stopped": self.spend.stopped.get(n),
@@ -4425,6 +4436,7 @@ class VfxPlanner:
                 "worlds": world_rows(worlds),
                 "revisions": 0, "rounds": [], "best_round": None, "score": None,
                 "review": None, "cost_usd": round(self.spend.spent(n), 4),
+                "author": self.model,
                 "inputs_sha256": self._inputs_sha256(section, group),
                 **self._provenance(n, ["error"])}
 
@@ -4460,7 +4472,15 @@ class VfxPlanner:
         result, skipped and failed too, records who judged it (`reviewer`):
         QA lets a blocking break stop the film only when that record shows a
         reviewer of another family than the author (`judged_apart`)."""
-        who = {"model": self.reviewer_model, "author": self.model,
+        # Every author of the film judged: a carried section keeps the model
+        # that wrote it, and one carried from before authors were kept is
+        # None, which judged_apart reads as not shown apart.
+        named = {str(d["author"]) for d in authored if d.get("author")}
+        authors = sorted(named) + ([None] if any(not d.get("author") for d in authored) else [])
+        # This harness names no engine of its own (Harness.engine None), so it
+        # runs on the stage's engine, ENGINE_NAME; once built, the record is
+        # read off it, so a reviewer harness given its own engine would say so.
+        who = {"model": self.reviewer_model, "author": self.model, "authors": authors,
                "engine": harness.ENGINE_NAME}
 
         def work() -> dict:
@@ -4499,6 +4519,7 @@ class VfxPlanner:
                                        house_digest=self.house_digest, fresh=self.fresh,
                                        verbose=self.verbose, timeout=1800.0,
                                        budget_usd=self.review_budget_usd)
+            who["engine"] = reviewer.engine or harness.ENGINE_NAME
             prompt = "\n\n".join([
                 f"Read every PNG listed under `frames/` -- one proof frame from each "
                 f"world of each section of \"{self.idea.title}\", in film order, each "
