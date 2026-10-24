@@ -127,6 +127,22 @@ def write_json(path: str | Path, data: object) -> Path:
 # the idea
 # --------------------------------------------------------------------------- #
 
+#: The paper references that name no local file (AUTO-131): a DOI, an arXiv
+#: id (new or old style, with a version or not) and an http(s) URL.
+PAPER_DOI = re.compile(r"^(?:doi:\s*)?(10\.\d{4,9}/\S+)$", re.I)
+PAPER_ARXIV = re.compile(
+    r"^(?:arxiv:\s*)?((?:\d{4}\.\d{4,5}|[a-z-]+(?:\.[a-z]{2})?/\d{7})(?:v\d+)?)$", re.I)
+PAPER_HTTP = re.compile(r"^https?://", re.I)
+
+
+def paper_is_local(ref: object) -> bool:
+    """Whether a paper reference names a local file: anything set that is
+    not a DOI, an arXiv id, an http(s) URL or already a `file:` name."""
+    ref = str(ref or "").strip()
+    return bool(ref) and not (ref.startswith("file:") or PAPER_HTTP.match(ref)
+                              or PAPER_DOI.match(ref) or PAPER_ARXIV.match(ref))
+
+
 @dataclass
 class Idea:
     title: str
@@ -149,6 +165,10 @@ class Idea:
     #: `ideas.TITLE_CONCRETE`); the sort reads only the score.
     curiosity: str = ""
     title_concrete: str = ""
+    #: The paper the film explains (`yt research --paper`, AUTO-131): an
+    #: http(s) URL, a DOI, an arXiv id or a local PDF path. Empty for a film
+    #: that is not about one paper, whose idea.json then never names it.
+    paper: str = ""
 
     @classmethod
     def from_raw(cls, raw: dict) -> Idea:
@@ -161,7 +181,7 @@ class Idea:
             clean.setdefault("description", "")
         for key in ("title", "genre", "description", "hook", "length", "why",
                     "question", "stakes", "viewer_belief", "promise",
-                    "curiosity", "title_concrete"):
+                    "curiosity", "title_concrete", "paper"):
             if key in clean:
                 clean[key] = str(clean[key]).strip()
         return cls(**clean)
@@ -176,6 +196,12 @@ class Idea:
             bits.append(f"Target length: {self.length}")
         if self.keywords:
             bits.append(f"Search intent: {', '.join(self.keywords)}")
+        if self.paper:
+            # A local file is named by its basename: every stage sends this
+            # block to a model, and where the file lives is not the film's.
+            name = (f"file:{os.path.basename(os.path.expanduser(self.paper.strip()))}"
+                    if paper_is_local(self.paper) else self.paper)
+            bits.append(f"Paper: {name}")
         return "\n".join(bits)
 
 

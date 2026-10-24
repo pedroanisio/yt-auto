@@ -46,6 +46,7 @@ from claude_engine import ClaudeError
 from .core import Idea, read_json, timecode, wrap, write_json
 from .ideas import CHANNEL_STYLES, style_brief
 from . import flags, harness, house, narrative, reviewers, spend, workspace
+from .research import claim_key, paper_url, same_paper
 
 #: Narration pace. 150 wpm is an unhurried documentary read; 180 is brisk.
 DEFAULT_WPM = 150
@@ -219,6 +220,52 @@ PLAN_FIELDS_SCHEMA = {
     },
     "required": [*STORY_REQUIRED, "sections"],
 }
+
+#: What a paper film's plan places (AUTO-131): the dossier's digest of the
+#: paper (research.PAPER_ITEMS), each item said in the film's own plan, on
+#: the research claims it rests on, in one section.
+PAPER_FRAMING = ("problem", "contribution", "significance", "implications",
+                 "consequences", "limitations")
+
+_FRAMING_ITEM = {
+    "type": "object",
+    "properties": {
+        "said": {"type": "string", "description": (
+            "one crew-facing sentence: what the film says of it. " + _NOT_EMPTY)},
+        "claims": {"type": "array", "items": {"type": "string"}, "description": (
+            "the research claims it rests on, each quoted as the research writes it")},
+        "section": {"type": "integer", "description": "the section number that says it"},
+    },
+    "required": ["said", "claims", "section"],
+}
+
+#: The two plan fields only a paper film is asked for.
+PAPER_PROPERTIES = {
+    "framing": {"type": "object",
+                "description": "where the film places what the paper means",
+                "properties": {key: _FRAMING_ITEM for key in PAPER_FRAMING},
+                "required": list(PAPER_FRAMING)},
+    "mechanism_section": {"type": "integer", "description": (
+        "the first section that explains how the paper's method or finding works")},
+}
+
+
+def _with_paper(schema: dict) -> dict:
+    out = copy.deepcopy(schema)
+    out["properties"].update(copy.deepcopy(PAPER_PROPERTIES))
+    out["required"] = [*out["required"], *PAPER_PROPERTIES]
+    return out
+
+
+def plan_schema(paper: bool) -> dict:
+    """The plan's schema: PLAN_SCHEMA itself, or for a paper film a copy
+    that also requires `framing` and `mechanism_section`."""
+    return _with_paper(PLAN_SCHEMA) if paper else PLAN_SCHEMA
+
+
+def plan_fields_schema(paper: bool) -> dict:
+    """The outline's plan fields, as plan_schema has the plan."""
+    return _with_paper(PLAN_FIELDS_SCHEMA) if paper else PLAN_FIELDS_SCHEMA
 
 
 #: The shot's delivery marks (AUTO-139), as the writer and `revise-rules`
@@ -1200,8 +1247,7 @@ def research_block(data: dict, *, limit: int = 60) -> str:
     # loses the support for a beat it must write, and the fact-check flags
     # the line as unsourced when the dossier holds its source. The other
     # slots go to the best sourced of the rest.
-    def key(text: str) -> str:
-        return " ".join(str(text).lower().split())[:120]
+    key = claim_key
 
     used = {key(c) for section in (data.get("outline") or {}).get("sections", [])
             for c in section.get("claims_used", [])}
@@ -1371,6 +1417,24 @@ STORY_BRIEF = (
     "descriptions, whatever language the film is in, so the later stages can "
     "read them.")
 
+#: Told to a paper film's plan (AUTO-131), after STORY_BRIEF and the digest:
+#: the context comes before the mechanism, and every item stands on claims.
+#: Checked, not just asked: paper_prechecks measures the same placements.
+PAPER_BRIEF = (
+    "This film explains one paper, whose digest is above. Also give:\n"
+    "- framing: for each of problem, contribution, significance, implications, "
+    "consequences and limitations, said (one crew-facing sentence: what the film "
+    "says of it), claims and section (the section that says it). Every item "
+    "quotes the research claims it rests on, exactly as the research writes "
+    "them.\n"
+    "- mechanism_section: the first section that explains how the paper's method "
+    "or finding works.\n"
+    "The problem, the significance and the implications land in sections before "
+    "mechanism_section, so the viewer knows why the paper matters before how it "
+    "works; the contribution may land at mechanism_section; the consequences and "
+    "the limitations are said on air (section 1 or later), never left out. Keep "
+    "what the paper itself shows apart from what others say it means.")
+
 #: Told to the plan when the idea carries a promise (`yt ideas --rich`): the
 #: packaging is fixed before the hook is written, and the hook answers to it
 #: (docs/narrative: structure 5, 6). The plan's own promise keeps the one
@@ -1452,6 +1516,16 @@ def section_story_lines(spec: dict, plan: dict, *, index: int, total: int) -> li
     elif reveal.get("constraint_section") == index and reveal.get("section"):
         bits.append(f"This section shows why the reveal in section {reveal['section']} "
                     "is hard; do not give the reveal away.")
+    # A paper film's framing (AUTO-131): what of the paper this section says.
+    frame = plan.get("framing") if isinstance(plan.get("framing"), dict) else {}
+    for key in PAPER_FRAMING:
+        item = frame.get(key) if isinstance(frame.get(key), dict) else {}
+        said = " ".join(str(item.get("said") or "").split())
+        if item.get("section") == index and said:
+            rests = "; ".join(" ".join(str(c).split()) for c in item.get("claims") or []
+                              if str(c).strip())
+            bits.append(f"This section carries the paper's {key}: {said}"
+                        + (f" (resting on: {rests})" if rests else "") + ".")
     ending = plan.get("ending") if isinstance(plan.get("ending"), dict) else {}
     if index == total and any(ending.get(k) for k in ("payoff_line", "callback", "next_film")):
         bits.append(
@@ -1516,7 +1590,8 @@ PRECHECK_NOTE = (
 def plan_view(plan: dict) -> dict:
     """The plan as the reviewer and a second plan read it: the story fields
     and each numbered section with its beats and story fields."""
-    out = {k: plan[k] for k in ("logline", *STORY_PROPERTIES) if k in plan}
+    out = {k: plan[k] for k in ("logline", *STORY_PROPERTIES, *PAPER_PROPERTIES)
+           if k in plan}
     out["sections"] = [
         {"section": n, **{k: spec[k] for k in ("heading", "purpose", "seconds", "beats",
                                                "claims", *SECTION_STORY) if k in spec}}
@@ -1589,6 +1664,54 @@ def plan_prechecks(plan: dict, seconds: int, title: str = "") -> list[str]:
     if train and "?" not in train and not _has(train, _ASKS):
         out.append("house: the train asks no question (no question mark, no why, how or "
                    "whether): a nudge, since punctuation alone satisfies it (judging 13)")
+    return out
+
+
+def _section_no(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def paper_prechecks(plan: dict, claims: list[dict], paper: str) -> list[str]:
+    """What a paper film's framing shows before anyone reads it (AUTO-131),
+    one line each, beside plan_prechecks: `rule:` for an item said in no
+    words, resting on no research claim or on a quote that is none of
+    them (case and whitespace aside), a mechanism_section outside 2..N, a
+    problem, significance or implications not before the mechanism, and
+    limitations said in no section; `house:` for a contribution resting on
+    no claim the paper itself (`paper`, its URL) reports. For the reviewer
+    to confirm, never a verdict."""
+    known = {claim_key(c.get("claim", "")): c for c in claims or [] if isinstance(c, dict)}
+    frame = plan.get("framing") if isinstance(plan.get("framing"), dict) else {}
+    item = lambda key: frame.get(key) if isinstance(frame.get(key), dict) else {}  # noqa: E731
+    total = len([s for s in plan.get("sections") or [] if isinstance(s, dict)])
+    out: list[str] = []
+    for key in PAPER_FRAMING:
+        if not " ".join(str(item(key).get("said") or "").split()):
+            out.append(f"rule: framing.{key} is empty")
+        quotes = [str(q) for q in item(key).get("claims") or [] if str(q).strip()]
+        if not quotes:
+            out.append(f"rule: framing.{key} cites no research claim")
+        for quote in quotes:
+            if claim_key(quote) not in known:
+                out.append(f"rule: framing.{key} cites \"{' '.join(quote.split())}\", which "
+                           "is not a research claim")
+    mechanism = plan.get("mechanism_section")
+    if not (_section_no(mechanism) and 2 <= mechanism <= total):
+        out.append(f"rule: mechanism_section is missing or outside 2..{total}")
+    else:
+        for key in ("problem", "significance", "implications"):
+            at = item(key).get("section")
+            if not (_section_no(at) and 1 <= at < mechanism):
+                out.append(f"rule: the paper's {key} (section {at}) does not come before "
+                           f"the mechanism (section {mechanism})")
+    limits = item("limitations").get("section")
+    if not (_section_no(limits) and 1 <= limits <= total):
+        out.append("rule: framing.limitations is placed in no section: the film says the "
+                   "paper's limits on air")
+    quotes = [str(q) for q in item("contribution").get("claims") or [] if str(q).strip()]
+    if quotes and not any(same_paper(known[claim_key(q)].get("source_url"), paper)
+                          for q in quotes if claim_key(q) in known):
+        out.append("house: the contribution cites no claim from the paper itself")
     return out
 
 
@@ -2071,8 +2194,15 @@ class Screenwriter:
                  review_budget_usd: float | None = None, rounds: int = 2,
                  samples: int = STORY_SAMPLES, fresh: bool = False,
                  review_log: Path | str | None = None,
+                 paper: dict | None = None, claims: list[dict] | None = None,
                  verbose: bool = True, root: Path | str | None = None) -> None:
         self.idea = idea
+        #: A paper film's digest and the dossier's claims (AUTO-131): the
+        #: plan is asked to place the digest's items (`framing`), and
+        #: paper_prechecks measures it against the claims. None for any
+        #: other film, which is asked exactly what it always was.
+        self.paper = paper
+        self.paper_claims = claims
         self.root = root            # the project, for its open revision notes
         self.model = model
         self.seconds = max(1, round(minutes * 60))
@@ -2261,6 +2391,26 @@ class Screenwriter:
         nothing otherwise, so a plan from an older idea is asked as before."""
         return [FROZEN_PROMISE] if self.idea.promise else []
 
+    def _paper_brief(self) -> list[str]:
+        """A paper film's digest and PAPER_BRIEF; nothing for another film."""
+        if self.paper is None:
+            return []
+        return [harness.brief("The paper this film explains", self.paper), PAPER_BRIEF]
+
+    def _paper_url(self) -> str:
+        """The URL the paper's own claims cite: the idea's paper as research
+        cites it, else the digest's citation."""
+        if str(self.idea.paper or "").strip():
+            return paper_url(self.idea.paper)
+        cite = (self.paper or {}).get("citation")
+        return str((cite if isinstance(cite, dict) else {}).get("url") or "")
+
+    def paper_checks(self, plan: dict) -> list[str]:
+        """paper_prechecks for a paper film; none for another."""
+        if self.paper is None:
+            return []
+        return paper_prechecks(plan, self.paper_claims or [], self._paper_url())
+
     def _sent_back(self, previous: dict, review: dict) -> str:
         """What a second plan is told: the plan it wrote and the reviewer's
         problems with it. The new plan is the model's to write (invariant 3):
@@ -2292,8 +2442,9 @@ class Screenwriter:
                  "research is supplied, name the claims each section rests on "
                  "and the assets it shows. Put the weakest material last or "
                  "cut it. Also give the logline.",
-                 STORY_BRIEF, *self._frozen(), *again]
-        data = self._ask("plan-2" if again else "plan", "\n\n".join(parts), PLAN_SCHEMA)
+                 STORY_BRIEF, *self._paper_brief(), *self._frozen(), *again]
+        data = self._ask("plan-2" if again else "plan", "\n\n".join(parts),
+                         plan_schema(self.paper is not None))
 
         # The model's section runtimes rarely add up; hold the total.
         fit_sections(data.get("sections") or [], self.seconds)
@@ -2324,10 +2475,11 @@ class Screenwriter:
                  "Write the story fields for this outline. Answer one entry "
                  f"under sections for each of its {len(sections)} sections, in "
                  "its order.",
-                 STORY_BRIEF, *self._frozen(), *(again or [])]
+                 STORY_BRIEF, *self._paper_brief(), *self._frozen(), *(again or [])]
         prompt = "\n\n".join(parts)
         name = "plan-fields-2" if again else "plan-fields"
-        fields_ = self._ask(name, prompt, PLAN_FIELDS_SCHEMA)
+        schema = plan_fields_schema(self.paper is not None)
+        fields_ = self._ask(name, prompt, schema)
         rows = fields_.get("sections") or []
         # The count is part of the answer's validity, which the schema cannot
         # state: asked once more with the problem named (invariant 3), under
@@ -2340,7 +2492,7 @@ class Screenwriter:
                 f"{name}-retry",
                 prompt + f"\n\nYour previous answer was rejected: {problem}. Answer "
                 f"exactly {len(sections)} entries under sections, one per outline "
-                "section, in its order.", PLAN_FIELDS_SCHEMA)
+                "section, in its order.", schema)
             rows = fields_.get("sections") or []
         if len(rows) != len(sections):
             # Neither answer is usable; kept, they would fail every rerun.
@@ -2353,6 +2505,10 @@ class Screenwriter:
         data = {"logline": self.outline.get("working_title", self.idea.title),
                 **{k: fields_[k] for k in STORY_PROPERTIES if k in fields_},
                 "sections": sections}
+        if self.paper is not None:
+            # Only the story fields are copied above; a paper film's two
+            # would be dropped with the rest of the answer.
+            data.update({k: fields_[k] for k in PAPER_PROPERTIES if k in fields_})
         self._record_drift(data)
         return data
 
@@ -2382,7 +2538,7 @@ class Screenwriter:
         Returns the review, the pre-checks and what the again ask found
         (`again`, and the `unsettled` lines still standing). A failed call
         raises: the gate is never skipped in silence."""
-        checks = plan_prechecks(plan, self.seconds, self.idea.title)
+        checks = plan_prechecks(plan, self.seconds, self.idea.title) + self.paper_checks(plan)
         self._say(f"[plan] {name}: {self.reviewer.model} reads the plan"
                   + (f" ({len(checks)} pre-check(s))" if checks else ""))
         parts = [self._brief(), harness.brief("The plan", plan_view(plan)),
@@ -3809,6 +3965,10 @@ class Screenwriter:
             specs = plan.get("sections") or []
             if not specs:
                 raise ClaudeError("the plan came back with no sections")
+        # A paper film's misplaced framing is recorded whether or not the
+        # plan was reviewed (AUTO-131): doctor warns on it.
+        self.findings += [f"warning: paper framing: {line[len('rule: '):]}"
+                          for line in self.paper_checks(plan) if line.startswith("rule: ")]
 
         sourced = bool(self.research)
         ledger = Ledger.from_plan(specs)
@@ -3907,6 +4067,8 @@ class Screenwriter:
             # The story the plan locked (AUTO-90), as the model answered it.
             **{k: plan[k] for k in STORY_PROPERTIES
                if k in plan and k not in ("promise", "payoff")},
+            # A paper film's framing and mechanism section (AUTO-131).
+            **{k: plan[k] for k in PAPER_PROPERTIES if k in plan},
             # The ledger with the shots that raise and answer each question,
             # as labels (AUTO-96).
             **({"questions": questions_record(plan, sections)}
@@ -5224,6 +5386,7 @@ def run(args) -> int:
     rules, digest = house.for_args(args, project, "script")
     if rules and not args.quiet:
         print(f"standards: {', '.join(digest['sources'])}", file=sys.stderr)
+    paper_film = (dossier or {}).get("scope") == "paper" and bool((dossier or {}).get("paper"))
     writer = Screenwriter(
         idea, house=rules, house_digest=digest, root=project.root,
         model=args.model, minutes=args.minutes, wpm=args.wpm,
@@ -5232,6 +5395,9 @@ def run(args) -> int:
         research=research_block(dossier) if dossier else "",
         direction=direction_block(direction) if direction else "",
         outline=(dossier or {}).get("outline") if args.outline else None,
+        # A paper film (AUTO-131) is planned on the dossier's digest and claims.
+        paper=(dossier or {}).get("paper") if paper_film else None,
+        claims=(dossier or {}).get("claims") if paper_film else None,
         reviewer_model=args.reviewer_model if args.review else None, reviewer=pooled,
         review_budget_usd=args.review_budget_usd, rounds=args.rounds,
         fresh=getattr(args, "fresh", False),

@@ -245,6 +245,11 @@ def _compare_usd(root: Path | None, argv: list[str]) -> float:
 #: second plan and its reading.
 PLAN_REVIEW_USD = 0.5
 
+#: What `yt research --paper` adds (AUTO-131): the agentic read of the
+#: paper (`00-paper`) and the digest decision (`06b-paper`, at most one
+#: `06b-paper-again`). A guess until one real paper measures it (TO VERIFY).
+PAPER_USD = 1.0
+
 #: What the picture-check adds under the same flag (AUTO-98), assumed until
 #: a record measures it: the reviewer's reading of every shot's picture (and
 #: at most one `picture-check-again`) plus the author's one `revise-picture`.
@@ -366,7 +371,8 @@ def watch_usd(root: Path | None, argv: Iterable[str] = ()) -> float:
 #: the plan review (AUTO-92), the story review (AUTO-93) and the
 #: picture-check (AUTO-98), so a record written before one of them gains
 #: only what it lacks.
-FLAG_USD = {"script": {"--review": ((PLAN_REVIEW_USD, "plan-review"),
+FLAG_USD = {"research": {"--paper": ((PAPER_USD, "06b-paper"),)},
+            "script": {"--review": ((PLAN_REVIEW_USD, "plan-review"),
                                     (story_review_usd, "review-r1"),
                                     (PICTURE_CHECK_USD, "picture-check"))},
             # QA compares the new cut side by side with the pass `--previous`

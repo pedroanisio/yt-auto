@@ -117,7 +117,7 @@ All paths are relative to the project directory, `work/<slug>/`.
 | `vfx.json` | The build plan. Per effect: `type`, `technique` (the drawing steps), `tools`, `seconds`, `difficulty`, `template` for shared rigs. Under `authoring`: the active `version` (`vfx/vNN/`), every version kept, the review rounds and scores per section, and the shot -> {file, symbol} map the build reads -- one world symbol per section, its shots as phases. Under `reach`: which constructs each symbol uses against everything the engine offers (`usage`, `report` by family, the manifest's caveats) and the model's audit -- per effect `strongest` or `upgrade` with the stronger construct named, and a 0-10 reach score; and `motion` (AUTO-144), the reviewer model's motion audit on rows read from each effect's document: `answer`, `static` (the effects that must show a change and show it static, each with `what_changes` and `fix`) and `reason` (why it could not be read, else empty; `failed` when the reviewer itself failed, so the next `yt vfx` asks again). Per section, `warnings` names an effect whose type keeps a process its picture-check says is frozen still. QA reads it, so "weak motion" can name the construct left unused and the static processes. |
 | `props.json` | The CC0 props `yt props` fetched from Poly Haven under `props/<kind>/<id>/`: per item `kind`, `file`, `files`, `licence`, `credit`, `source_url`. The vfx brief lists them so the author places real models, HDRIs and textures. |
 | `voice.json` | The clock: per take `file`, `at`, `seconds`, word-level `words`, and the per-section drift. Per take also `spoken` (what the engine was sent when the screenplay's delivery marks changed it, "" otherwise), `spoken_chars` and `delivery` (the section note, the shot's performance note, the marks, what the engine `applied` and what it could only record, `recorded_only`). Captions and cps are always from `text`. Top-level `delivery` counts the controls `applied` and `recorded_only`, `by_kind`, and lists the casting rows that named no section (`unmatched`); `casting.delivery` keeps each section row with its clamped `speed`/`settings`. A paid (elevenlabs) run also records `draft: {status: current\|stale\|missing\|accepted, fails}`, the read-aloud draft it was checked against; `voice-draft.json` (`yt voice --draft`) is that free read, never the voice. |
-| `dossier.json` | The truth: `claims` with `source_url` and confidence, `assets` with `licence`, `credit_line`, `commercial_ok`, `misconceptions` (each a `belief` with its `source`), `identifiable_case` (`who`, `source`), `gaps`. |
+| `dossier.json` | The truth: `claims` with `source_url` and confidence, `assets` with `licence`, `credit_line`, `commercial_ok`, `misconceptions` (each a `belief` with its `source`), `identifiable_case` (`who`, `source`), `gaps`; a paper film's `paper` (its `citation` and six items, `problem` to `limitations`, each `text` with the `claims` it rests on). |
 | `sound.json` | The audio design: cues with `kind` (including `silence`), `at`, `seconds`, `level`, `fade_in`, `fade_out`, `motif`, a `query` for the library, the mix targets (numbers beside the prose: `narration_lufs`, `bed_below_narration_db`, `effects_peak_dbtp`) and `normalize` (`mode`, `reason`), the master's normalise mode the build reads. After `yt sound --fetch`, each filled cue also carries `file` (under `sound/`), `licence`, `credit`, `source_url` and `duration`, which is what the build places; `unfilled[]` lists what nothing matched. |
 | `work/house.md` | The editorial standard, which production serves rather than reinterprets. |
 | `docs/compute.md` | Where heavy work runs, and the traps of each machine. |
@@ -241,6 +241,17 @@ pays the title's promise in resolved form (structure 7). After the payoff,
 at most a one-line pointer to the next film, then the cut; no recap
 (structure 27, which that file's Contested section lists as a default, not
 a law).
+
+**A paper film.** When the dossier's scope is `paper` (`yt research
+--paper`), the plan is told, from `script.PAPER_BRIEF`: "The problem, the
+significance and the implications land in sections before mechanism_section,
+so the viewer knows why the paper matters before how it works; the
+contribution may land at mechanism_section; the consequences and the
+limitations are said on air (section 1 or later), never left out. Keep what
+the paper itself shows apart from what others say it means." Each of the
+digest's six items rests on research claims quoted exactly, and the plan's
+pre-checks hold it to that; a misplaced item is a `warning: paper framing:`
+finding in script.json.
 
 ---
 

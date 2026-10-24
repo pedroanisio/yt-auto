@@ -43,7 +43,8 @@ from urllib.parse import urlparse
 from claude_engine import ClaudeEngine, ClaudeError, EngineConfig, Usage
 from . import assets as yt_assets
 from . import flags, harness, spend, workspace
-from .core import Idea, _merge_usage, slugify, write_json
+from .core import (PAPER_ARXIV, PAPER_DOI, PAPER_HTTP, Idea, _merge_usage,
+                   paper_is_local, slugify, write_json)
 
 RESEARCHER_SYSTEM = (
     "You are a documentary researcher for a science and engineering YouTube "
@@ -82,7 +83,10 @@ SCOPES = {
             "that must be answered before scripting -- the ones that decide "
             "whether the premise survives contact with the facts. Favour "
             "questions with checkable answers: numbers, dates, mechanisms, "
-            "named decisions. Avoid vague framing questions. Among them, ask "
+            "named decisions. Avoid vague framing questions. One question asks "
+            "what the subject costs or changes in the world and for whom, with "
+            "the source that documents it: a significance question with a "
+            "documented answer is not a vague framing question. Among them, ask "
             "what a lay viewer most often wrongly believes about the subject "
             "and where that belief is documented, and look for one named, "
             "identifiable case -- a person, a place, an event -- the film can "
@@ -173,13 +177,144 @@ SCOPES = {
 }
 
 
-def scope_for(idea: Idea) -> dict:
-    """Which research plan an idea gets, from its genre and premise.
+#: The paper scope (AUTO-131): the film explains one paper, read first in
+#: its own pass (`00-paper`). Its plan asks what a film about a paper needs
+#: beyond the mechanism; the claims cite the paper's own URL for what it
+#: reports (`{paper_url}`, filled by scope_for); the gap audit is the
+#: explainer's; the outline puts the problem and why it matters before the
+#: mechanism and is handed the paper's digest (`06b-paper`).
+SCOPES["paper"] = {
+    "name": "paper",
+    "spoken": True,
+    "misconceptions": True,
+    "depth": DEFAULT_DEPTH,
+    "plan": (
+        "Plan the research for this video, whose subject is one paper (the "
+        "Paper above, with what it says as read). Give exactly {depth} "
+        "questions that must be answered before scripting, each answerable "
+        "from a source the film can cite. Among them ask, with numbers where "
+        "there are any (fold two into one question when there are fewer "
+        "questions than these): the problem the paper addresses and what it "
+        "costs in the world, and for whom; the state of the art before it and "
+        "what the paper adds; how independent researchers, reviews, "
+        "replications and the press received it; the documented downstream "
+        "consequences and applications; and the paper's limitations, its open "
+        "questions and what would refute it. The remaining questions stay "
+        "checkable mechanism questions: numbers, dates, how the method works, "
+        "named decisions. For each, give 2-4 web searches that would actually "
+        "find the answer, and restate the premise in one sentence."),
+    "claims": SCOPES["explainer"]["claims"] + (
+        " What the paper itself reports is cited to the paper's own URL "
+        "({paper_url}) as source_url, marked primary; what others say about "
+        "it is cited to them."),
+    "shots": "",
+    "gaps": SCOPES["explainer"]["gaps"],
+    "outline": SCOPES["explainer"]["outline"] + (
+        " The film is about the paper: place the problem it addresses and why "
+        "it matters before the paper's mechanism, build on the paper's digest "
+        "above, and keep what the paper itself shows apart from what others "
+        "say it means."),
+}
 
-    A wordless piece -- cinematic, a music video, an ambient loop, "no
+
+def claim_key(text: object) -> str:
+    """A claim's text as two quotes of it are matched: case and whitespace
+    folded, the first 120 characters. Nothing fuzzier: a quote that differs
+    in its words is another claim."""
+    return " ".join(str(text).lower().split())[:120]
+
+
+_DOI, _ARXIV_ID, _HTTP = PAPER_DOI, PAPER_ARXIV, PAPER_HTTP
+
+
+def _local_paper(ref: str) -> Path | None:
+    """The local file a paper reference names, or None for a URL, a DOI or
+    an arXiv id."""
+    ref = str(ref or "").strip()
+    return Path(ref).expanduser() if paper_is_local(ref) else None
+
+
+def paper_to_keep(ref: object) -> str:
+    """The reference as idea.json keeps it: as given, except a local file,
+    kept by its absolute path so a later run from another folder still
+    finds it. idea.json is local; the dossier names the file by its
+    basename only (paper_label)."""
+    ref = str(ref or "").strip()
+    local = _local_paper(ref)
+    return str(local.resolve()) if local is not None else ref
+
+
+def paper_url(ref: str) -> str:
+    """The URL a paper is cited by, everywhere it is cited: a DOI's
+    https://doi.org/ address, an arXiv id's (or abs page's) PDF, any other
+    http(s) URL as direct_file_url leaves it, and `file:<basename>` for a
+    local file, whose path never enters the dossier."""
+    ref = str(ref or "").strip()
+    if ref.startswith("file:"):
+        return ref
+    if m := _DOI.match(ref):
+        return f"https://doi.org/{m.group(1)}"
+    if m := _ARXIV_ID.match(ref):
+        return direct_file_url(f"https://arxiv.org/abs/{m.group(1)}")
+    if _HTTP.match(ref):
+        return direct_file_url(ref)
+    return f"file:{Path(ref).name}"
+
+
+def paper_label(ref: str) -> str:
+    """The reference as the dossier and the prompts may name it: as given,
+    except a local path, which is named by its basename."""
+    return paper_url(ref) if _local_paper(ref) is not None else str(ref or "").strip()
+
+
+def _paper_key(url: object) -> str:
+    u = str(url or "").strip()
+    m = re.match(r"^https?://(?:www\.|export\.)?arxiv\.org/(?:abs|pdf)/(.+?)(?:\.pdf)?/?$",
+                 u, re.I)
+    if m:
+        return "arxiv:" + re.sub(r"v\d+$", "", m.group(1)).lower()
+    m = re.match(r"^https?://(?:dx\.)?doi\.org/(.+?)/?$", u, re.I)
+    if m:
+        return "doi:" + urllib.parse.unquote(m.group(1)).lower()
+    parsed = urlparse(u)
+    if parsed.scheme.lower() in ("http", "https") and parsed.netloc:
+        return (parsed.netloc.lower() + parsed.path.rstrip("/")
+                + (f"?{parsed.query}" if parsed.query else ""))
+    return u
+
+
+def same_paper(a: object, b: object) -> bool:
+    """Whether two URLs name one paper: an arXiv abs page and its PDF, with
+    or without a version suffix, or a DOI through either resolver; any other
+    URL only as itself (scheme, host case and a trailing slash aside)."""
+    key = _paper_key(a)
+    return bool(key) and key == _paper_key(b)
+
+
+#: Why a paper is refused under YT_ENGINE=codex: the read is evidenced by
+#: the engine's own tool events, and codex reports neither of the two.
+PAPER_REFUSAL = ("--paper needs the claude engine: codex reports no WebFetch/Read "
+                 "events, so the paper read cannot be evidenced")
+
+
+def paper_refusal() -> str:
+    """PAPER_REFUSAL when the engine cannot evidence a paper read, else ""."""
+    return PAPER_REFUSAL if harness.ENGINE_NAME == "codex" else ""
+
+
+def scope_for(idea: Idea) -> dict:
+    """Which research plan an idea gets, from its paper, genre and premise.
+
+    An idea with a paper gets the paper scope, whatever its genre. A
+    wordless piece -- cinematic, a music video, an ambient loop, "no
     narration" -- gets the lighter cinematic scope; everything else keeps the
     explainer scope that narrated videos have always had.
     """
+    if str(getattr(idea, "paper", "") or "").strip():
+        scope = dict(SCOPES["paper"])
+        url = paper_url(idea.paper)
+        scope["claims"] = scope["claims"].replace("{paper_url}", url)
+        return scope
     if _WORDLESS_GENRE.search(idea.genre or "") or \
             _WORDLESS_PREMISE.search(idea.description or ""):
         return dict(SCOPES["cinematic"])
@@ -549,6 +684,66 @@ OUTLINE_SCHEMA = {
 }
 
 
+#: What the paper's digest (`06b-paper`, AUTO-131) holds about the paper,
+#: in the order a film about it tells them.
+PAPER_ITEMS = ("problem", "contribution", "significance", "implications",
+               "consequences", "limitations")
+
+_PAPER_ITEM = {
+    "type": "object",
+    "properties": {
+        "text": {"type": "string", "description": "one or two crew-facing sentences"},
+        "claims": {"type": "array", "items": {"type": "string"}, "description": (
+            "the claims it rests on, each quoted from the claims list above")},
+    },
+    "required": ["text", "claims"],
+}
+
+PAPER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "citation": {
+            "type": "object",
+            "properties": {"title": {"type": "string"}, "authors": {"type": "string"},
+                           "year": {"type": "string"}, "url": {"type": "string"}},
+            "required": ["title", "authors", "year", "url"],
+        },
+        **{key: _PAPER_ITEM for key in PAPER_ITEMS},
+    },
+    "required": ["citation", *PAPER_ITEMS],
+}
+
+
+def paper_problems(digest: dict, claims: list[dict], paper: str) -> list[str]:
+    """What is wrong with a paper digest's form, one line each: an item with
+    no text, an item that cites no claim, a quote that is none of the
+    claims (case and whitespace aside), and a contribution that cites no
+    claim sourced to the paper itself (`paper`, its URL). Whether the
+    significance follows from the claims is the plan reviewer's to judge,
+    not this check's."""
+    known = {claim_key(c.get("claim", "")): c for c in claims or [] if isinstance(c, dict)}
+    digest = digest if isinstance(digest, dict) else {}
+    out = []
+    for key in PAPER_ITEMS:
+        entry = digest.get(key) if isinstance(digest.get(key), dict) else {}
+        if not " ".join(str(entry.get("text") or "").split()):
+            out.append(f"{key}: the text is empty")
+        quotes = [str(q) for q in entry.get("claims") or [] if str(q).strip()]
+        if not quotes:
+            out.append(f"{key}: cites no claim")
+            continue
+        for quote in quotes:
+            if claim_key(quote) not in known:
+                out.append(f"{key}: cites \"{' '.join(quote.split())}\", which is not one "
+                           "of the claims")
+        if key == "contribution" and not any(
+                same_paper(known[claim_key(q)].get("source_url"), paper)
+                for q in quotes if claim_key(q) in known):
+            out.append(f"contribution: cites no claim whose source is the paper itself "
+                       f"({paper})")
+    return out
+
+
 def sourced_misconceptions(outline: dict, gaps: dict) -> list[dict]:
     """The beliefs the film breaks, as `{belief, source}`: the outline's, which
     carry the source that documents them, else the gap audit's, which name
@@ -665,9 +860,16 @@ class Researcher:
             fresh=fresh, verbose=verbose, budget_usd=budget)
         self._agent_usage = Usage()
         self.visited: list[str] = []
+        #: The paper the film explains (AUTO-131), as given and as cited;
+        #: both empty for a film that is not about one paper.
+        self.paper_ref = str(getattr(idea, "paper", "") or "").strip()
+        self.paper_url = paper_url(self.paper_ref) if self.paper_ref else ""
         #: Set once this run searched the catalogues again, so the outline
         #: that quotes the old assets is written again too.
         self.assets_searched = False
+        #: Set when the cached research was made for another paper, or for
+        #: none (read_paper): every stage the read feeds is made again.
+        self.remade = False
 
     # -- plumbing ----------------------------------------------------------
 
@@ -685,10 +887,14 @@ class Researcher:
             print(msg, file=sys.stderr)
 
     def _idea_block(self) -> str:
+        # A local paper is named by its basename (Idea.block): no prompt
+        # that can echo it into a claim or the notes is told where it lives.
         return self.idea.block()
 
     def _stage(self, name: str, work, *, redo: bool = False) -> object:
-        """Run `work()` unless this stage is already on disk (or `redo`)."""
+        """Run `work()` unless this stage is already on disk (or `redo`, or
+        it was fed by a paper read again: `remade`)."""
+        redo = redo or (self.remade and name in self.PAPER_FED)
         if not (self.fresh or redo):
             cached = self.dossier.load(name)
             if cached is not None:
@@ -764,12 +970,121 @@ class Researcher:
                 "searches": searches,
                 "denied": denied}
 
+    #: The stages the paper's read feeds, every one after `00-paper`: cached
+    #: for another paper, or for none, they would replay research about
+    #: something else under this paper's name.
+    PAPER_FED = ("01-questions", "02-research", "03-claims", "04-sources", "05-shots",
+                 "05-assets", "06-gaps", "06b-paper", "07-outline")
+
+    def read_paper(self) -> dict:
+        """The paper itself, read in one agentic pass (`00-paper`) before any
+        question is planned, outside every pool so a failure stops the run.
+        A notes entry flagged `paper`. A cached read of another reference is
+        read again, and so is everything it fed (`remade`); a dossier
+        researched without a paper is researched again with it, since its
+        questions were planned without the paper's (reception, limits)."""
+        if why := paper_refusal():
+            raise ClaudeError(why)
+        asked = f"The paper itself: {paper_label(self.paper_ref)}"
+        cached = None if self.fresh else self.dossier.load("00-paper")
+        redo = isinstance(cached, dict) and cached.get("question") != asked
+        before = [n for n in self.PAPER_FED if self.dossier.load(n) is not None] \
+            if cached is None and not self.fresh else []
+        if redo or before:
+            was = (str(cached.get("question", "")).removeprefix("The paper itself: ")
+                   if redo else "no paper")
+            self._say(f"[00-paper] the cached research was made for {was}; researching "
+                      f"again for {paper_label(self.paper_ref)}")
+            self.remade = True
+        return self._stage("00-paper", lambda: self._read_paper(asked), redo=redo)
+
+    def _read_paper(self, asked: str) -> dict:
+        """Validate-fail, never silent: the read stands only when the
+        engine's own tool events show the paper opened -- a WebFetch whose
+        URL is the paper's (same_paper; a DOI's doi.org address counts, the
+        redirect never reaching tool_input), or a Read of the very file.
+        A denied tool, or no such event, raises naming the reference."""
+        ref, url = self.paper_ref, self.paper_url
+        local = _local_paper(ref)
+        target = local.resolve() if local is not None else None
+        if target is not None and not target.is_file():
+            raise ClaudeError(f"the paper {ref} is not a file here: --paper takes an "
+                              "http(s) URL, a DOI, an arXiv id or a local PDF")
+        config = EngineConfig(
+            tools=("Read",) if target else ("WebFetch",), model=self.model,
+            permission_mode="dontAsk", max_turns_budget_usd=self.budget,
+            timeout=1800.0, cwd=str(target.parent) if target else None)
+        engine = harness.build_engine(config, ClaudeEngine)
+        ask = (f"Read the file `{target.name}` in the current directory with the Read "
+               "tool: it is the paper. Read every page." if target else
+               f"Read this paper for a YouTube video: {url}\n\nOpen it with WebFetch "
+               "at exactly that URL. Do not search for it and do not answer from "
+               "memory.")
+        prompt = (
+            f"{ask}\n\n{self._idea_block()}\n\n"
+            "Write dense research notes on what the paper itself reports: the "
+            "problem it addresses, the work before it that it names, its method, "
+            "its findings with exact numbers, units and conditions, the "
+            "limitations the authors state, and the full citation (title, "
+            f"authors, year). Cite every fact to {url}. If the paper cannot be "
+            "opened, or only an abstract is readable, say so plainly instead of "
+            "filling in. No preamble, no summary of your process.")
+        visited: list[str] = []
+        notes: list[str] = []
+        denied: list[dict] = []
+        opened = False
+        try:
+            for event in engine.stream(prompt):
+                if event.subtype == "tool_use" and event.tool_input:
+                    if target is not None:
+                        path = event.tool_input.get("file_path")
+                        try:
+                            hit = bool(path) and (target.parent / str(path)).resolve() == target
+                        except (OSError, ValueError):
+                            hit = False
+                        if hit:
+                            opened = True
+                            if url not in visited:
+                                visited.append(url)
+                    elif event.tool_input.get("url"):
+                        fetched = str(event.tool_input["url"])
+                        visited.append(fetched)
+                        opened = opened or same_paper(fetched, url)
+                        self._say(f"    fetch {fetched[:90]}")
+                if event.type == "assistant" and event.text:
+                    notes.append(event.text)
+                if event.type == "result":
+                    denied = _denials(event)
+        finally:
+            _merge_usage(self._agent_usage, engine.usage)
+        if denied:
+            tools = ", ".join(sorted({d["tool"] for d in denied}))
+            raise ClaudeError(f"the paper {ref} could not be read: {tools} denied, so its "
+                              "notes would be written from memory")
+        if not opened:
+            how = (f"no Read of {target.name}" if target else f"no WebFetch of {url}")
+            raise ClaudeError(f"the paper {ref} was never opened ({how} among the engine's "
+                              "tool events), so its notes would be written from memory")
+        text = "\n".join(notes).strip()
+        if target is not None:
+            # The agent may echo where the file lives; the dossier never says.
+            given = Path(os.path.abspath(local))
+            for where, said in ((str(target), url), (str(given), url), (str(local), url),
+                                (str(target.parent), "."), (str(given.parent), "."),
+                                (str(local.parent), ".")):
+                if len(where) > 1:
+                    text = text.replace(where, said)
+        return {"question": asked, "notes": text, "visited": visited, "searches": 0,
+                "denied": denied, "paper": True}
+
     # -- stages ------------------------------------------------------------
 
-    def questions(self) -> dict:
+    def questions(self, paper: dict | None = None) -> dict:
+        read = (f"What the paper says, as read:\n\n{self._notes_block([paper])}\n\n"
+                if paper is not None and self.scope["name"] == "paper" else "")
         return self._stage("01-questions", lambda: self._decide(
             "01-questions",
-            f"{self._idea_block()}\n\n"
+            f"{self._idea_block()}\n\n{read}"
             + self.scope["plan"].format(depth=self.depth),
             QUESTIONS_SCHEMA))
 
@@ -813,7 +1128,9 @@ class Researcher:
             "fact-checking. One entry per distinct source actually present in "
             "the notes, deduplicated, best first. Include the publisher and "
             "year where the notes give them, and say in one clause what the "
-            "video takes from each. Do not invent URLs.",
+            "video takes from each. Do not invent URLs."
+            + (f" The paper itself is the first source, at {self.paper_url}."
+               if self.scope["name"] == "paper" else ""),
             SOURCES_SCHEMA))
 
     def shots(self, notes: list[dict]) -> dict:
@@ -869,7 +1186,7 @@ class Researcher:
         if plan is None:
             plan = self.shots(notes)
         key = self._asset_search_key()
-        cached = None if self.fresh else self.dossier.load("05-assets")
+        cached = None if self.fresh or self.remade else self.dossier.load("05-assets")
         if isinstance(cached, dict) and cached.get("search") == key:
             self._say("[05-assets] cached")
             yt_assets.settle_kinds(cached.get("assets", []))
@@ -1000,18 +1317,65 @@ class Researcher:
             + self.scope["gaps"],
             GAPS_SCHEMA))
 
-    def outline(self, claims: dict, assets: dict, gaps: dict) -> dict:
+    def paper_digest(self, claims: dict, sources: dict) -> dict:
+        """What the paper means, as `06b-paper` decides it: its citation and
+        PAPER_ITEMS, each citing claims quoted from `03-claims`. The digest
+        is the author's extraction, checked here for form (paper_problems);
+        a faulty one is asked once more (`06b-paper-again`) with the faults,
+        and faulty twice, neither answer is kept and the run fails. Whether
+        it follows from the claims is the plan reviewer's to judge."""
+        rows = claims.get("claims", [])
+
+        def work() -> dict:
+            prompt = (
+                f"{self._idea_block()}\n\n"
+                f"Claims:\n{json.dumps(rows, indent=2)}\n\n"
+                f"Sources:\n{json.dumps(sources.get('sources', []), indent=2)}\n\n"
+                "Digest the paper this film explains. Give its citation (title, "
+                f"authors, year, and {self.paper_url} as url), then, each in one or "
+                "two crew-facing sentences resting on the claims above: the problem "
+                "it addresses and what that costs in the world; its contribution, "
+                "what it adds to what came before; its significance; its "
+                "implications in the world; its broader consequences, what followed "
+                "from it; and its limitations, open questions and what would refute "
+                "it. Under each, quote the claims it rests on exactly as the claims "
+                "list writes them. The contribution cites at least one claim the "
+                f"paper itself reports (source_url {self.paper_url}). Keep what the "
+                "paper itself shows apart from what others say it means.")
+            digest = self._decide("06b-paper", prompt, PAPER_SCHEMA)
+            problems = paper_problems(digest, rows, self.paper_url)
+            if not problems:
+                return digest
+            self._say(f"[06b-paper] asking again ({'; '.join(problems)})")
+            digest = self._decide(
+                "06b-paper-again", prompt + "\n\nYour previous answer was rejected:\n"
+                + "\n".join(f"- {line}" for line in problems)
+                + "\nAnswer again, quoting only claims from the list above.", PAPER_SCHEMA)
+            problems = paper_problems(digest, rows, self.paper_url)
+            if problems:
+                # Neither answer is usable; kept, they would fail every rerun.
+                for name in ("06b-paper", "06b-paper-again"):
+                    self.harness.forget(name)
+                raise ClaudeError("the paper's digest is still faulty after asking "
+                                  f"again: {'; '.join(problems)}")
+            return digest
+        return self._stage("06b-paper", work)
+
+    def outline(self, claims: dict, assets: dict, gaps: dict,
+                paper: dict | None = None) -> dict:
         # The outline quotes the assets each section shows; once the
         # catalogues were searched again, the cached one names the old set.
         used = sorted(a.get("url", "") for a in assets.get("assets", []))
         redo = self.assets_searched or \
             self.dossier.load("07-outline-assets") not in (None, used)
+        digest = (f"The paper's digest:\n{json.dumps(paper, indent=2)}\n\n"
+                  if paper is not None else "")
         outline = self._stage("07-outline", lambda: self._decide(
             "07-outline",
             f"{self._idea_block()}\n\n"
             f"Claims:\n{json.dumps(claims.get('claims', []), indent=2)}\n\n"
             f"Assets:\n{json.dumps(assets.get('assets', []), indent=2)}\n\n"
-            f"Audit:\n{json.dumps(gaps, indent=2)}\n\n"
+            f"Audit:\n{json.dumps(gaps, indent=2)}\n\n{digest}"
             + self.scope["outline"],
             OUTLINE_SCHEMA), redo=redo)
         self.dossier.save("07-outline-assets", used)
@@ -1029,24 +1393,39 @@ class Researcher:
         return [future.result() for future in futures]
 
     def run(self) -> dict:
-        plan = self.questions()
-        notes = self.research(plan.get("questions", []))
+        # A paper is read before anything is planned, and its failure stops
+        # the run (AUTO-131). Its entry leads the notes outside the cached
+        # 02-research, so research cached before --paper still gets it.
+        paper = self.read_paper() if self.paper_ref else None
+        plan = self.questions(paper)
+        notes = ([paper] if paper else []) + self.research(plan.get("questions", []))
+        if paper:
+            self.visited += paper.get("visited", [])
         # The decisions run in dependency levels on one pool, --jobs wide:
         # claims, sources and the shot list need only the notes; the asset
-        # search needs the shots and the sources, the gap audit the claims
-        # and the sources; the outline needs all three. The stage names are
-        # unchanged, so a dossier researched in series replays.
+        # search needs the shots and the sources, the gap audit (and a
+        # paper's digest) the claims and the sources; the outline needs all
+        # of them. The stage names are unchanged, so a dossier researched in
+        # series replays.
         with ThreadPoolExecutor(max_workers=self.jobs) as pool:
             claims, sources, shots = self._level(pool, (
                 lambda: self.claims(notes),
                 lambda: self.sources(notes),
                 lambda: self.shots(notes)))
-            assets, gaps = self._level(pool, (
+            assets, gaps, *digest = self._level(pool, (
                 lambda: self.assets(notes, sources, plan=shots),
-                lambda: self.gaps(claims, sources)))
-        outline = self.outline(claims, assets, gaps)
+                lambda: self.gaps(claims, sources),
+                *([lambda: self.paper_digest(claims, sources)] if paper else [])))
+        digest = digest[0] if digest else None
+        outline = self.outline(claims, assets, gaps, digest)
+        idea = asdict(self.idea)
+        if paper:
+            # A local paper's path stays in idea.json, never in the dossier.
+            idea["paper"] = paper_label(self.paper_ref)
+        else:
+            idea.pop("paper", None)     # a film without one records the idea as before
         return {
-            "idea": asdict(self.idea),
+            "idea": idea,
             "scope": self.scope["name"],
             "premise": plan.get("premise", ""),
             "questions": plan.get("questions", []),
@@ -1060,6 +1439,8 @@ class Researcher:
             "identifiable_case": case_of(outline),
             "verdict": gaps.get("verdict", ""),
             "outline": outline,
+            # What the paper means, each item citing its claims (AUTO-131).
+            **({"paper": digest} if digest is not None else {}),
             "urls_opened": sorted(set(self.visited)),
             "warnings": provenance_warnings(notes),
             "allow_sa": self.allow_sa,
@@ -1092,6 +1473,22 @@ def _denials(event) -> list[dict]:
     return out
 
 
+def _paper_provenance(entry: dict) -> list[str]:
+    """What the paper's notes entry says about where its facts came from. A
+    denied tool cannot normally reach here (read_paper raises on it)."""
+    if entry.get("denied"):
+        tools = sorted({str(d.get("tool", d)) if isinstance(d, dict) else str(d)
+                        for d in entry["denied"]})
+        return [f"the paper: {', '.join(tools)} denied, so it could not be read; its "
+                "notes may be written from memory"]
+    visited = [str(v) for v in entry.get("visited") or []]
+    if not visited:
+        return ["the paper: nothing was opened; its notes may be written from memory"]
+    if all(v.startswith("file:") for v in visited):
+        return [f"the paper: no public URL; the primary source is {visited[0]}"]
+    return []
+
+
 def provenance_warnings(notes: list[dict]) -> list[str]:
     """What, if anything, says these notes did not come from the web.
 
@@ -1099,7 +1496,14 @@ def provenance_warnings(notes: list[dict]) -> list[str]:
     `yt doctor` -- can see that a question was answered blind.
     """
     out = []
-    for n, entry in enumerate(notes, 1):
+    n = 0
+    for entry in notes:
+        if entry.get("paper"):
+            # The paper's own read (AUTO-131) is not a question: it shifts no
+            # number, and says where its primary source is when it has no URL.
+            out += _paper_provenance(entry)
+            continue
+        n += 1
         if entry.get("denied"):
             tools = sorted({str(d.get("tool", d)) if isinstance(d, dict) else str(d)
                             for d in entry["denied"]})
@@ -1404,6 +1808,20 @@ def write_dossier(dossier: Dossier, data: dict, downloads: list[dict]) -> list[P
         md += ["> **Provenance.** " + " ".join(data["warnings"]) + " Treat the "
                "affected claims as unverified until re-run with `--fresh`.", ""]
 
+    paper = data.get("paper")
+    if isinstance(paper, dict) and paper:
+        # What the paper means, each item with the claims it rests on (AUTO-131).
+        cite = paper.get("citation") if isinstance(paper.get("citation"), dict) else {}
+        md += ["## The paper", "",
+               f"**{cite.get('title', '')}** — {cite.get('authors', '')}"
+               + (f" ({cite['year']})" if cite.get("year") else "")
+               + (f" · {cite['url']}" if cite.get("url") else ""), ""]
+        for key in PAPER_ITEMS:
+            entry = paper.get(key) if isinstance(paper.get(key), dict) else {}
+            md.append(f"- **{key.capitalize()}.** {entry.get('text', '')}")
+            md += [f"  - rests on: {c}" for c in entry.get("claims") or []]
+        md.append("")
+
     md += ["## Research questions", ""]
     md += [f"{n}. **{q['question']}** — {q.get('why', '')}"
            for n, q in enumerate(data["questions"], 1)]
@@ -1572,6 +1990,11 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
     p.add_argument("--user-agent", default=DEFAULT_USER_AGENT,
                    help="User-Agent for downloads; some media hosts ask for a "
                         "contact address on heavy use")
+    p.add_argument("--paper", metavar="REF",
+                   help="the paper the film explains: an http(s) URL, a DOI, an arXiv "
+                        "id or a local PDF, read first by the claude engine (WebFetch, "
+                        "or Read for a file; refused under YT_ENGINE=codex) and kept "
+                        "in idea.json")
     flags.fresh(p, help="redo every stage instead of reusing cached ones")
     p.set_defaults(run=run)
     return p
@@ -1579,6 +2002,14 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
 
 def run(args) -> int:
     idea, project = workspace.resolve(args)
+    asked = str(getattr(args, "paper", None) or "").strip()
+    if (asked or idea.paper) and (why := paper_refusal()):
+        print(f"error: {why}", file=sys.stderr)
+        return 2
+    if asked:
+        # Kept on the idea, so a later stage, or `yt run`, finds it there.
+        idea.paper = paper_to_keep(asked)
+        project.save_idea(idea)
     dossier = Dossier(project.root, idea, at=project.root)
     verbose = not args.quiet
     if verbose:
