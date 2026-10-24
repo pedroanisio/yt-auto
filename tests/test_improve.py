@@ -32,7 +32,7 @@ sys.path.insert(0, str(HERE))
 
 from claude_engine import Usage  # noqa: E402
 from ytstudio import (build, cli, harness, improve, keyframe, qa, script, sound,  # noqa: E402
-                      styles, vfx, workspace)
+                      spend, styles, vfx, workspace)
 from ytstudio.core import Idea, read_json, write_json  # noqa: E402
 
 ROOT = HERE.parent
@@ -1652,6 +1652,137 @@ class StoryReview(ImproveCase):
         self.assertEqual(runner.stages()[0], "script")
         self.assertIn("qa", runner.stages())
         self.assertNotEqual(record["stop"]["reason"], "story-review")
+
+
+class FactCheckRows(ImproveCase):
+    """AUTO-133: the scorecard's `accuracy.fact_check` rows are blocking
+    findings of their own: an open blocker goes back to the script by
+    lookup, one the writer kept with a reason is a human's, and a routed
+    script that still leaves one standing stops the pass by name."""
+
+    SHOT = {"n": 2, "label": "1.2", "problem": "the bolt count is not in the research",
+            "fix": "say a bolt", "kept": False}
+    WIDE = {"n": 0, "label": "script-wide", "problem": "the title overclaims",
+            "fix": "retitle it", "kept": False}
+    KEPT = {"n": 1, "label": "1.1", "problem": "the night is not in the research",
+            "fix": "drop the night", "kept": True}
+
+    def fact_card(self, rows, overall=5.0, **kw):
+        return dict(card(overall, **kw), accuracy={"fact_check": list(rows)})
+
+    def facts(self, found):
+        return [f for f in found if f["source"] == "fact-check"]
+
+    def test_collect_adds_one_blocking_row_per_entry(self):
+        found = self.facts(improve.collect(self.fact_card([self.SHOT, self.WIDE, self.KEPT])))
+        self.assertEqual([(f["shot"], f["owner"], f["severity"]) for f in found], [
+            ("1.2", "script", "blocking"), (None, "script", "blocking"),
+            ("1.1", improve.UPSTREAM, "blocking")])
+        self.assertIn("the bolt count is not in the research", found[0]["problem"])
+        self.assertEqual(found[0]["fix"], "say a bolt")
+        self.assertIn("the writer kept a fact-check blocker at 1.1 with a reason: correct "
+                      "the dossier, or set `resolved` on the flag in script.json by hand",
+                      found[2]["why"])
+        self.assertEqual(self.facts(improve.collect(card(5.0))), [])
+
+    def test_a_row_on_a_shot_the_script_lacks_reruns_the_screenplay(self):
+        # `shot 9` is no label --revise feedback could match (sent_back)
+        lost = {"n": 9, "label": "shot 9 (not in the script)", "problem": "p",
+                "fix": "f", "kept": False}
+        found = self.facts(improve.collect(self.fact_card([lost])))
+        self.assertEqual([(f["shot"], f["owner"]) for f in found], [(None, "script")])
+
+    def test_they_are_routed_by_lookup_whatever_the_model_says(self):
+        found = improve.collect(self.fact_card([self.SHOT, self.KEPT]))
+        FakeEngine.route = route_all_to("vfx")
+        h = harness.Harness(self.root, "improve", verbose=False)
+        routing = improve.route(h, found, name="route-pass-01")
+        self.assertEqual(list(routing["stages"]), ["script"])
+        self.assertEqual([r["route"] for r in routing["human"]], [improve.UPSTREAM])
+        self.assertIn("correct the dossier", routing["human"][0]["why_routed"])
+
+    def test_a_shot_row_revises_its_line_and_a_script_wide_row_the_whole_screenplay(self):
+        base = ["--project", str(self.root)]
+        shot, wide = improve.collect(self.fact_card([self.SHOT, self.WIDE]))
+        one = improve.stage_argvs(["script"], ["script"], base, quality="draft",
+                                  root=self.root, script_findings=[shot])[0]
+        self.assertEqual(one[one.index("--revise") + 1], "feedback")
+        whole = improve.stage_argvs(["script"], ["script"], base, quality="draft",
+                                    root=self.root, script_findings=[shot, wide])[0]
+        self.assertNotIn("--revise", whole)
+        # and the estimate prices the whole screenplay: the full run's
+        # --review parts are added, which a line revision does not ask
+        priced = {name: next(r for r in spend.stage_estimates(
+                      self.root, ["script"], extras={"script": argv[1:]})
+                      if r["stage"] == "script")
+                  for name, argv in (("one", one), ("whole", whole))}
+        self.assertIn("--review", priced["whole"]["source"])
+        self.assertNotIn("--review", priced["one"]["source"])
+        self.assertGreater(priced["whole"]["usd"], priced["one"]["usd"])
+
+    def test_a_card_holding_a_fact_check_row_has_not_reached_the_target(self):
+        self.assertTrue(improve.reached(card(9.5), 9.0))
+        self.assertFalse(improve.reached(self.fact_card([self.SHOT], 9.5), 9.0))
+
+    def test_a_kept_blocker_alone_stops_for_a_human(self):
+        self.start_pass(self.fact_card([self.KEPT]))
+        runner = FakeRunner(self.root, [])
+        record = self.improver(runner).run()
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(record["stop"]["reason"], "human")
+        md = (self.root / improve.REPORT_MD).read_text()
+        human = md.split("### Needs a human decision (not looped)", 1)[1].split("###", 1)[0]
+        self.assertIn("correct the dossier", human)
+
+    class Held(FakeRunner):
+        """A script that writes its record and exits 1: the blocker stands."""
+
+        def __call__(self, argv):
+            code = super().__call__(argv)
+            if argv[0] == "script":
+                write_json(self.root / "script.json", {
+                    "target_seconds": 15, "written_by": "the pass",
+                    "sections": [{"shots": [{"n": 2, "label": "1.2", "narration": "x"}]}],
+                    "check": {"flags": [{"n": 2, "severity": "blocker",
+                                         "problem": "still no count", "fix": "say a bolt"}]}})
+                return 1
+            return code
+
+    def test_a_routed_script_that_leaves_a_blocker_stops_on_the_fact_check(self):
+        self.start_pass(self.fact_card([self.SHOT]))
+        FakeEngine.route = route_all_to("script")
+        runner = self.Held(self.root, [card(6.0)])
+        record = self.improver(runner, max_passes=2, budget_usd=100).run()
+        self.assertEqual(runner.stages(), ["script"])
+        self.assertIn("--revise", runner.calls[0])
+        self.assertEqual(record["stop"]["reason"], "fact-check")
+        self.assertIn("1.2", record["stop"]["detail"])
+        self.assertEqual(record["passes"][0]["decision"], "stopped")
+        # the project goes back to the best pass; the attempt is kept
+        self.assertNotIn("written_by", read_json(self.root / "script.json"))
+        attempt = self.root / "improve" / "pass-01" / "attempt" / "script.json"
+        self.assertEqual(read_json(attempt)["written_by"], "the pass")
+
+    def test_any_other_script_failure_is_still_a_stage_failure(self):
+        self.start_pass(self.fact_card([self.SHOT]))
+        FakeEngine.route = route_all_to("script")
+        runner = FakeRunner(self.root, [card(6.0)], fail={"script": 1})
+        record = self.improver(runner, max_passes=2, budget_usd=100).run()
+        self.assertEqual(record["stop"]["reason"], "stage-failed")
+
+    def test_a_script_that_failed_before_writing_is_not_read_as_held(self):
+        # the record it left is the one the pass started from, blocker and all
+        write_json(self.root / "script.json", {
+            "target_seconds": 15,
+            "sections": [{"shots": [{"n": 2, "label": "1.2", "narration": "x"}]}],
+            "check": {"flags": [{"n": 2, "severity": "blocker", "problem": "p"}]}})
+        old = 1_000_000_000
+        os.utime(self.root / "script.json", (old, old))
+        self.start_pass(self.fact_card([self.SHOT]))
+        FakeEngine.route = route_all_to("script")
+        runner = FakeRunner(self.root, [card(6.0)], fail={"script": 1})
+        record = self.improver(runner, max_passes=2, budget_usd=100).run()
+        self.assertEqual(record["stop"]["reason"], "stage-failed")
 
 
 class RetentionFindings(ImproveCase):

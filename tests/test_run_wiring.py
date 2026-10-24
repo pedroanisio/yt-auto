@@ -102,6 +102,19 @@ class Pipeline(unittest.TestCase):
         self.assertNotIn("--reviewer-model", quick["script"])
         self.assertNotIn("--polish", quick["script"])
 
+    def test_quick_turns_the_default_fact_check_off_and_the_full_run_is_unchanged(self):
+        # AUTO-133: the script's fact-check is on by default with a dossier;
+        # --quick skips it as it always did, so it says --no-verify now.
+        parser = cli.build_parser()
+        base = ["--project", "work/x", "--model", "sonnet", "--quiet"]
+        quick = cli.run_extras(parser.parse_args(["run", "--title", "T", "--quick"]),
+                               redo=set())
+        self.assertIn("--no-verify", quick["script"])
+        self.assertIs(parser.parse_args(cli.stage_argv("script", base, quick)).verify, False)
+        full = cli.run_extras(parser.parse_args(["run", "--title", "T"]), redo=set())
+        self.assertEqual(full["script"], RUN_SCRIPT_ARGV)
+        self.assertIs(parser.parse_args(cli.stage_argv("script", base, full)).verify, True)
+
 
 class Estimates(unittest.TestCase):
     def test_the_stage_estimates_live_in_spend_and_improve_reads_them_there(self):

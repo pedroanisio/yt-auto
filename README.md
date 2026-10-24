@@ -698,6 +698,24 @@ support, then fixes them in the same run: each blocking or important line
 gets the smallest rewrite, or is kept with a reason (a kept flag still binds
 the picture), and only the revised shots are checked again, for at most two
 rounds. `--report-only` keeps the old report-without-fixing behaviour.
+`--verify` is on by default when the project has a dossier, and
+`--no-verify` turns it off (AUTO-133). The fact-check is read by
+`--reviewer-model` (default `opus`), never by the author, so `--model opus`
+with a dossier needs a reviewer of another family (`--reviewer-model
+<other family>`) or `--no-verify`, and is refused with exit 2 before
+anything is paid; the fact-check's revisions stay the author's. Verify
+decisions cached before this change are asked once more, by the new reader.
+A blocker still standing after the revisions leaves `narration.txt`
+unwritten and exits 1, naming the shot and the `yt script --revise <label>
+--why "..."` that clears it (a whole-script one, `script-wide`, names `yt
+script --verify --notes "..."`, as does one on a shot the screenplay no
+longer has); `--report-only` records it and goes on. `--revise` always
+fact-checks its changed lines when there is a dossier, and on a screenplay
+with statuses `--reviewer-model` reads their status again too, so it can
+clear a status blocker; `--no-verify` does not turn that off and is refused
+there with exit 2. `yt doctor`, `yt qa` and `yt improve` read the same list
+(`script.fact_blockers`); QA blocks on it without briefing it to the
+reviewer, so the scorecard prompt stays what it was.
 Each sourced shot also names the dossier claim it rests on (`c1`, `c2` ..)
 and how settled the line is (`established`, `hypothesis`, `speculation`,
 `what-if` or `none`); the code caps it at what the claim allows (a
@@ -2356,7 +2374,13 @@ family is refused with exit 2 before any stage runs, as `yt run` refuses it.
 A script the pass writes again whose story review rejects it stops the pass
 (`story-review`): the snapshot is restored, the rejected screenplay is kept
 under `attempt/`, and `improve.md` gives the verdict, before any voice or
-authoring is paid for. The published film's retention findings (`yt
+authoring is paid for. A fact-check blocker QA recorded (the scorecard's
+`accuracy.fact_check`) goes back to the script by lookup, its line alone
+when it names a shot and the whole screenplay when it is script-wide; one
+the writer kept with a reason goes to a human (`upstream-fact`: correct the
+dossier, or set `resolved` on the flag in script.json by hand); a script
+that still leaves one standing exits 1 and stops the pass (`fact-check`,
+with the labels), the snapshot restored. The published film's retention findings (`yt
 retention`, below) are routed beside QA's while `scene.xml` is the cut they
 measured. A pass that rebuilds the film cannot say whether a dip it was
 briefed on is gone, since no audience has watched the new cut: `improve.md`
@@ -2563,7 +2587,7 @@ read, and the run stops before `yt vfx` until the look is approved (`yt
 keyframe --approve`, then `yt run` again; a rejected look is authored again
 with the notes; `--skip keyframe` runs without one). `--redo stage[,stage]` or `--redo all` forces them, `--skip` leaves
 stages out, and `--quick` drops the quality passes (deliberation, polish,
-fact-check, plan review, listen-back) for a cheaper first draft and renders at draft
+fact-check, which it turns off with `--no-verify`, plan review, listen-back) for a cheaper first draft and renders at draft
 quality. `cli.run_extras` is the flags each stage gets (`--download` for
 research on every run, `--quick` included, with `--fresh` beside it on a
 `--redo` without `--quick`, so build and vfx have the vetted pictures and

@@ -197,5 +197,24 @@ class SkipAndRedo(RunCase):
         self.assertLess(self.order.index("sound:start"), self.order.index("keyframe:end"))
 
 
+class FactCheckStop(RunCase):
+    def test_a_script_held_by_a_fact_check_blocker_stops_the_run_before_voice(self):
+        # AUTO-133: the script exits 1 with narration.txt unwritten while a
+        # fact-check blocker stands; nothing after it is asked to read it,
+        # and the stage's error line is what the operator reads. This re-pins
+        # the run's stop on any failed stage, with the fake printing the
+        # script's line; the line itself, and that the real stage exits 1
+        # on it, are test_script_plan_review.FactGate's.
+        line = ("error: fact-check blocker at 1.2: the bolt count is not in the research; "
+                "narration.txt was not written.")
+        self.hooks["script"] = lambda: print(line, file=sys.stderr)
+        self.codes["script"] = 1
+        self.assertEqual(self.run_yt("--skip", "sound"), 1)
+        self.assertEqual(self.started("script"), ["script:start", "script:end"])
+        self.assertEqual(self.started("voice"), [])
+        self.assertEqual(self.started("build"), [])
+        self.assertIn(line, self.err)
+
+
 if __name__ == "__main__":
     unittest.main()

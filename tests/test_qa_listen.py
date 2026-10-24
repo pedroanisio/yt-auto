@@ -73,7 +73,8 @@ def _listen():
 OFF = {
     "prompt_sha": "42318a6de61bf11da1572d9ac814d38cfa57473ad832110ed337cf11c3d1632f",
     "role_sha": "689d58b15f4913baff9447748a32cf97acc8df4373fc2c61422df8ed4e03f951",
-    "card_keys": ["audio_basis", "audio_not_evidenced", "bar", "blocking", "capped", "comparison",
+    # `accuracy` (AUTO-133): the fact-check rows, [] on a film with none
+    "card_keys": ["accuracy", "audio_basis", "audio_not_evidenced", "bar", "blocking", "capped", "comparison",
                   "contact_sheet", "cut", "engine", "findings", "frames", "lines_unsampled",
                   "listening", "low_confidence", "mechanical", "not_evidenced", "overall",
                   "pass", "proof_note", "rationale", "rhythm", "samples", "scene_sha256",

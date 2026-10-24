@@ -37,6 +37,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from . import (env, gateway, house, keyframe, narrative, render, retention, rhythm, spend,
                workspace)
+from . import script as script_stage
 from .assets import kind_for, licence_tier
 from .core import read_json, timecode, write_json
 from .research import PARALLEL_DROPPED, PARALLEL_MIN_DEPTH, STORY_DROPPED
@@ -857,6 +858,31 @@ def fallback_palette(project: workspace.Project, build: dict | None
             _cmd("styles", project, "--rich") + ", then " + _cmd("build", project))
 
 
+def fact_evidence(project: workspace.Project) -> list[tuple[str, str]]:
+    """What the fact-check leaves between the narration and publication, as
+    (problem, fix) pairs (AUTO-133): every blocker of script.json's `check`
+    still standing (script.fact_blockers, the list the script gate reads),
+    and, with a dossier to hold the lines to, narrated shots no fact-check
+    ever read. A film without research has nothing to check against."""
+    path = project.source("script")
+    script = read_json(path, warn=False) if path and Path(path).is_file() else None
+    if not isinstance(script, dict):
+        return []
+    shots = [s for sec in script.get("sections") or [] if isinstance(sec, dict)
+             for s in sec.get("shots") or [] if isinstance(s, dict)]
+    check = script.get("check")
+    rows = [(f"fact-check blocker at {row['label']} stands: {row['problem']}",
+             script_stage.fact_command(row, "--project", str(project.root)))
+            for row in script_stage.fact_blockers(check, shots)]
+    dpath = project.source("dossier")
+    dossier = read_json(dpath, warn=False) if dpath and Path(dpath).is_file() else None
+    narrated = any(str(s.get("narration") or "").strip() for s in shots)
+    if dossier and narrated and not check:
+        rows.append(("the narration was never fact-checked against the dossier",
+                     _cmd("script", project, "--verify")))
+    return rows
+
+
 def delivery_evidence(project: workspace.Project, build: dict | None
                       ) -> list[tuple[str, str]]:
     """What stands between the rendered video and publication, as
@@ -867,7 +893,8 @@ def delivery_evidence(project: workspace.Project, build: dict | None
     the whole programme with nothing the engine warned about (what
     `--strict` guarantees, read from the report rather than from a flag), a
     technical gate that found it deliverable and a QA pass at the bar, both
-    judged after that render.
+    judged after that render, and no fact-check blocker standing on the
+    narration (fact_evidence, AUTO-133).
     """
     missing: list[tuple[str, str]] = []
     final = _cmd("render", project, "--quality", "final", "--strict")
@@ -904,6 +931,7 @@ def delivery_evidence(project: workspace.Project, build: dict | None
     palette = fallback_palette(project, built)
     if palette:
         missing.append(palette)
+    missing += fact_evidence(project)
 
     video = project.path("video")
     rendered_at = _mtime(video) if video.exists() else 0.0
@@ -1235,7 +1263,8 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
         check = script.get("check") or {}
         flags = [f for f in check.get("flags", []) if not f.get("resolved")]
         resolved = [f for f in check.get("flags", []) if f.get("resolved")]
-        blockers = [f for f in flags if f.get("severity") == "blocker"]
+        # The one list the script gate and QA's bar read too (AUTO-133).
+        blockers = script_stage.fact_blockers(check, shots)
         important = [f for f in flags if f.get("severity") == "important"]
         if resolved:
             # Whether the edited lines were re-recorded is the stale-take
@@ -1268,10 +1297,10 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
                            f"{'over' if planned > target else 'under'} the "
                            f"{timecode(target)} target by more than 15%",
                            _cmd("script", project, "--minutes", f"{target / 60:g}"))
-        for flag in blockers:
-            where = f"shot {flag['n']}" if flag.get("n") else "script-wide"
-            report.add("fail", "fact-check", f"{where}: {_clip(flag.get('problem', ''))}",
-                       _clip(flag.get("fix", "")))
+        for row in blockers:
+            where = f"shot {row['n']}" if row["n"] else script_stage.SCRIPT_WIDE
+            report.add("fail", "fact-check", f"{where}: {_clip(row['problem'])}",
+                       _clip(row["fix"]))
         if important:
             report.add("warn", "fact-check", f"{len(important)} important flag(s) "
                        "from --verify", "read the Fact-check section of script.md")
@@ -1315,9 +1344,6 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
                            "label rows of work/review-log.jsonl (reject, consider or "
                            "recommend), run `python -m ytstudio.narrative calibrate "
                            "tests/fixtures/narrative`, and until both hold drop --gate")
-        if dossier and not flags and not check:
-            report.add("note", "script", "written without --verify; no fact-check "
-                       "against the research", _cmd("script", project, "--verify"))
 
     # -- voice -------------------------------------------------------------
     voice = read_json(project.source("voice"), warn=False) if "voice" in done else None

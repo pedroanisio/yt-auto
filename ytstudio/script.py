@@ -2846,6 +2846,25 @@ STATUS_ROLE = (
 #: Why the status check is absent, recorded instead of a pass.
 STATUS_UNREAD = "status check needs a reviewer of another family (--review)"
 
+#: The fact-check's decisions (AUTO-133): `verify` and its re-checks
+#: `verify-<round>`, and `verify-labels`, `verify-labels-<round>` under
+#: `yt script --revise`. Never `verify-status` (its own reader, above) and
+#: never a `revise*` decision: the fact revision stays the author's.
+_FACT_NAME = re.compile(r"^verify(-labels)?(-\d+)?$")
+
+#: The fact-check's reader (AUTO-133): another family than the writer's, so
+#: the check that keeps a film off READY is not the author reading its own
+#: lines. It sees the brief, the research and the script, as the author's
+#: check did; the house is the channel's voice, which it does not judge.
+FACT_ROLE = (
+    "You are a fact-checker for factual YouTube. You did not write this "
+    "screenplay. You read every line against the research it was written from "
+    "and flag the ones the research does not support: a fact it does not "
+    "contain, a line stronger than its own cited source, a citation that does "
+    "not cover the line, a caveated or low-confidence claim told as settled. "
+    "You do not judge the style, and you do not rewrite: you say what is wrong "
+    "and the smallest change that makes the line defensible.")
+
 
 def quiz_problems(items) -> list[str]:
     """What makes a quiz's item set unusable, in words the author is asked
@@ -3211,6 +3230,7 @@ class Screenwriter:
                  jobs: int = 4, draft_effort: str | None = "medium",
                  reviewer_model: str | None = None,
                  reviewer: "reviewers.Resolved | None" = None,
+                 fact_reviewer_model: str | None = None,
                  review_budget_usd: float | None = None, rounds: int = 2,
                  samples: int = STORY_SAMPLES, fresh: bool = False,
                  review_log: Path | str | None = None,
@@ -3292,8 +3312,13 @@ class Screenwriter:
         #: under its gateway id; the author's harnesses above keep ENGINE.
         #: None (a CLI reviewer) builds exactly the harnesses it always did.
         self.pool_reviewer = reviewer
-        if reviewer is not None:
+        # The pool reviewer stands in for the reviewer each caller asked
+        # for: the story's with --review, the fact-check's with a dossier
+        # (AUTO-133). One not asked for builds nothing.
+        if reviewer is not None and reviewer_model:
             reviewer_model = reviewer.model
+        if reviewer is not None and fact_reviewer_model:
+            fact_reviewer_model = reviewer.model
         self._reviewer_kw = {k: v for k, v in reviewers.harness_kwargs(reviewer).items()
                              if k != "model"}
         #: The plan's reader (AUTO-92): another model family (the command
@@ -3314,6 +3339,17 @@ class Screenwriter:
             house=house, house_digest=self.house_digest, budget_usd=review_budget_usd,
             fresh=fresh, verbose=verbose, usage=self.usage, decisions=self.harness.decisions,
             lock=self.harness.lock, **self._reviewer_kw) if reviewer_model else None
+        #: The fact-check's reader (AUTO-133), another family than the
+        #: author's whether or not the story is reviewed: `verify*` goes to
+        #: it (`_FACT_NAME`), every revision stays the author's. On the same
+        #: books and decisions; no cap, as the author's check had none, so a
+        #: long script is not stopped half read. None builds nothing and the
+        #: check is the author's, as it always was.
+        self.fact_reviewer = harness.Harness(
+            root or ".", "script", model=fact_reviewer_model, role=FACT_ROLE,
+            house_digest=self.house_digest, fresh=fresh, verbose=verbose, usage=self.usage,
+            decisions=self.harness.decisions, lock=self.harness.lock,
+            **self._reviewer_kw) if fact_reviewer_model else None
         self.reviewer_model = reviewer_model
         self.review_budget_usd = review_budget_usd
         #: The story review's readers (AUTO-93), made when first asked: one
@@ -3379,6 +3415,11 @@ class Screenwriter:
             # Never the author's family (AUTO-132): verify_status asks only
             # where the command resolved a reviewer of another one.
             return self._reader("status").decide(name, prompt, schema)
+        if _FACT_NAME.match(name) and self.fact_reviewer is not None:
+            # The fact-check is read by another family (AUTO-133); its
+            # revise-N and the rule and picture flags of the same shape
+            # are not named so, and stay below.
+            return self.fact_reviewer.decide(name, prompt, schema)
         drafting = ("shots" in schema.get("properties", {}) and self.draft_effort
                     and not claude_engine.default_for("effort"))
         return (self._drafter if drafting else self.harness).decide(name, prompt, schema)
@@ -4269,6 +4310,9 @@ class Screenwriter:
         status_names = ((f"verify-status-{tag}", f"verify-status-{tag}-{{}}") if tag
                         else ("verify-status", "verify-status-{}"))
         check = self.verify(shots, name=names[0])
+        if check and self.fact_reviewer is not None:
+            # Who read it (AUTO-133); absent when it was the author's own check.
+            check["model"] = self.fact_reviewer.model
         # Whether each line is as sure as its research (AUTO-132), read by a
         # reviewer of another family; its flags join the fact-check's and go
         # back through the same revise.
@@ -5413,6 +5457,8 @@ class Screenwriter:
             status_read = (check or {}).get("status")
             if isinstance(status_read, dict) and status_read.get("model"):
                 status_read["reviewer"] = self.pool_reviewer.record()
+            if check and check.get("model") and self.fact_reviewer is not None:
+                check["reviewer"] = self.pool_reviewer.record()
         return {
             "idea": asdict(self.idea),
             "logline": plan.get("logline", ""),
@@ -6959,9 +7005,12 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                    help="your own instructions, which outrank everything else")
     p.add_argument("--polish", action="store_true",
                    help="reread the finished narration and tighten it")
-    p.add_argument("--verify", action="store_true",
-                   help="fact-check the script against the dossier, fix the "
-                        "important and blocking lines, and re-check them")
+    p.add_argument("--verify", action=argparse.BooleanOptionalAction, default=None,
+                   help="fact-check the script against the dossier, read by "
+                        "--reviewer-model (never the author's family), fix the "
+                        "important and blocking lines, and re-check them; a blocker "
+                        "left standing leaves narration.txt unwritten and exits 1. "
+                        "On by default when there is a dossier; --no-verify skips it")
     p.add_argument("--report-only", action="store_true",
                    help="report the findings without fixing them: the fact-check's "
                         "(with --verify), the narration rules' and the plan review's "
@@ -6988,7 +7037,8 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
     flags.fresh(p, help="ask every decision again instead of reusing the ones on disk")
     flags.reviewer_model(p, default=REVIEWER_MODEL,
                          help="the model that reviews the plan and the story with "
-                              f"--review, never the author's own (default {REVIEWER_MODEL})")
+                              "--review and reads the fact-check, never the author's "
+                              f"own (default {REVIEWER_MODEL})")
     flags.review_budget(p, default=REVIEW_USD,
                         help=f"what one review may cost (default {REVIEW_USD:g})")
     flags.rounds(p, default=2,
@@ -7024,21 +7074,6 @@ def run(args) -> int:
         for name, brief in sorted(CHANNEL_STYLES.items()):
             print(f"{name:<24} {brief}")
         return 0
-    # A model never grades its own work: refused before anything is paid.
-    # `pool` and `sdk:<id>` (AUTO-125) are resolved to one reviewer from
-    # another maker first, with the gateway's prerequisites; any other value
-    # is checked by family, as it always was.
-    pooled = None
-    if args.review:
-        try:
-            pooled = reviewers.resolve(args.model, args.reviewer_model)
-        except ValueError as exc:
-            print(str(exc), file=sys.stderr)
-            return 2
-    if args.review and pooled is None and (
-            own := flags.own_reviewer(args.model, args.reviewer_model)):
-        print(own, file=sys.stderr)
-        return 2
     # --gate reads the verdict of the review this run makes. Without
     # --review there is none, and --revise never reads the story again, so
     # it would gate changed lines on a verdict about the old ones.
@@ -7050,10 +7085,46 @@ def run(args) -> int:
 
     split = lambda s: [p.strip() for p in s.split(",") if p.strip()]  # noqa: E731
     idea, project = workspace.resolve(args, inputs=("dossier", "direction"))
-    if args.revise:
-        return run_revise(args, idea, project)
-
     dossier = read_json(project.source("dossier", args.dossier))
+    # The fact-check is on whenever there is research to hold the lines to
+    # (AUTO-133), off with --no-verify; --revise fact-checks its changed
+    # lines whenever there is a dossier, as it always did, so --no-verify is
+    # refused there rather than read as turning that off. With no dossier
+    # nothing is checked, so an explicit --verify needs no reviewer either.
+    verify = bool(dossier) if args.verify is None else bool(args.verify)
+    if args.revise and dossier and args.verify is False:
+        print("error: --revise always fact-checks the changed lines against the dossier; "
+              "--no-verify does not turn that off: drop it, and pass --reviewer-model "
+              "<other family> if --model is the reviewer's family", file=sys.stderr)
+        return 2
+    reads_facts = bool(dossier) and (bool(args.revise) or verify)
+    # A model never grades its own work: refused before anything is paid,
+    # and the fact-check is a reading of the author's work too. `pool` and
+    # `sdk:<id>` (AUTO-125) are resolved to one reviewer from another maker
+    # first, with the gateway's prerequisites; any other value is checked
+    # by family, as it always was.
+    pooled = None
+    if args.review or reads_facts:
+        try:
+            pooled = reviewers.resolve(args.model, args.reviewer_model)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+    if (args.review or reads_facts) and pooled is None and (
+            own := flags.own_reviewer(args.model, args.reviewer_model)):
+        if args.revise and not args.review:
+            own = (f"error: --revise fact-checks the changed lines against the dossier, "
+                   f"which needs a reviewer of another family than --model {args.model}: "
+                   "pass --reviewer-model <other family>")
+        elif args.verify is None and not args.review:
+            own = (f"error: the fact-check (on by default with a dossier) needs a reviewer "
+                   f"of another family than --model {args.model}: pass --reviewer-model "
+                   "<other family>, or --no-verify to skip it")
+        print(own, file=sys.stderr)
+        return 2
+    if args.revise:
+        return run_revise(args, idea, project, reviewer=pooled)
+
     direction = read_json(project.source("styles", args.direction))
     if args.verify and not dossier:
         print("warning: --verify needs research; nothing to check against",
@@ -7088,6 +7159,8 @@ def run(args) -> int:
         # The press the brief numbers N1.., for the headline cards (AUTO-149).
         press=press_items(dossier.get("assets") or []) if dossier else None,
         reviewer_model=args.reviewer_model if args.review else None, reviewer=pooled,
+        # The fact-check is read by --reviewer-model, never the author (AUTO-133).
+        fact_reviewer_model=args.reviewer_model if reads_facts else None,
         review_budget_usd=args.review_budget_usd, rounds=args.rounds,
         fresh=getattr(args, "fresh", False),
         review_log=review_log_path(args, project) if args.review else None,
@@ -7095,7 +7168,7 @@ def run(args) -> int:
 
     stopped = Path(project.out("script", args.json_out)).with_name(PLAN_REVIEW_FILE)
     try:
-        data = writer.run(do_polish=args.polish, do_verify=args.verify,
+        data = writer.run(do_polish=args.polish, do_verify=verify,
                           fix=not args.report_only, review=args.review)
     except ClaudeError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -7159,6 +7232,8 @@ def run(args) -> int:
             print(f"error: {gated}; narration.txt was not written (--gate). Run "
                   f"`{REPLAN_FIX}` with --notes saying what the review asks, or "
                   "drop --gate to record the verdict and go on.", file=sys.stderr)
+        for line in fact_gate_lines(fact_gate(args, data)):
+            print(line, file=sys.stderr)
         return 1
     verdict = (data.get("review") or {}).get("verdict")
     if verdict in ("reject", "not_evidenced"):
@@ -7184,6 +7259,90 @@ def story_gate(args, data: dict) -> str:
     return f"story review: {verdict}" if verdict in ("reject", "not_evidenced") else ""
 
 
+#: What a whole-script fact-check flag (n 0, the verify prompt's marker for a
+#: problem with the script as a whole) is called wherever a blocker is named.
+SCRIPT_WIDE = "script-wide"
+#: What follows the number of a flag whose shot the screenplay does not
+#: have (a stale check, or a reviewer's slip): it has no line to send back.
+NOT_IN_SCRIPT = " (not in the script)"
+
+
+def fact_blockers(check: dict | None, shots: list[dict]) -> list[dict]:
+    """The fact-check blockers that stand (AUTO-133): every flag of
+    script.json's `check` whose severity is blocker and that nobody marked
+    `resolved`, the whole-script ones (n 0) included. Each row is {n,
+    label, problem, fix, kept}: the shot's label, "script-wide" for n 0, or
+    "shot N (not in the script)" for a number no shot has, and whether the
+    writer kept the line with a reason. A kept blocker is still a blocker:
+    the writer is the author, and doctor fails on it.
+
+    The one definition the script gate, doctor, QA's bar and improve read,
+    so none of them can drift from the others. Important and minor flags
+    are never here: they stay warnings and context."""
+    labels = {_number(s.get("n")): str(s.get("label") or "") for s in shots or []
+              if isinstance(s, dict)}
+    rows = []
+    for f in (check or {}).get("flags") or []:
+        if not isinstance(f, dict) or f.get("severity") != "blocker" or f.get("resolved"):
+            continue
+        n = _number(f.get("n"))
+        rows.append({"n": n,
+                     "label": (SCRIPT_WIDE if not n
+                               else labels.get(n) or f"shot {n}{NOT_IN_SCRIPT}"),
+                     "problem": str(f.get("problem") or ""), "fix": str(f.get("fix") or ""),
+                     "kept": bool(f.get("kept"))})
+    return rows
+
+
+def fact_shot(row: dict) -> str:
+    """The label of the shot a fact_blockers row can send back on its own,
+    or "" for a script-wide row and one on a shot the screenplay does not
+    have, which no `--revise` spec or feedback row could name."""
+    label = str(row.get("label") or "")
+    return label if row.get("n") and not label.endswith(NOT_IN_SCRIPT) else ""
+
+
+def fact_command(row: dict, *where: str) -> str:
+    """The command that clears one fact_blockers row: a shot's line goes
+    back on its own (`--revise`, whose fact-check reads the changed line
+    again); a whole-script blocker, or one on a shot the screenplay lacks,
+    has no line to send, so the screenplay is checked again with the fix as
+    a note. `where` is the project flag a report names (doctor's
+    `--project <root>`)."""
+    fix = (row.get("fix") or "...").replace('"', "'")
+    if fact_shot(row):
+        return " ".join(["yt script", *where, "--revise", str(row["label"]),
+                         "--why", f'"{fix}"'])
+    return " ".join(["yt script", *where, "--verify", "--notes", f'"{fix}"'])
+
+
+def fact_gate(args, data: dict) -> list[dict]:
+    """What stops narration.txt on the fact-check (AUTO-133): every blocker
+    standing in `data["check"]` (fact_blockers), or none with --report-only,
+    which records them and goes on."""
+    if getattr(args, "report_only", False):
+        return []
+    return fact_blockers(data.get("check"), [s for sec in data.get("sections") or []
+                                             for s in sec.get("shots") or []])
+
+
+def fact_gate_lines(rows: list[dict]) -> list[str]:
+    """One error line per standing blocker, naming where it is and what clears it."""
+    out = []
+    for row in rows:
+        if fact_shot(row):
+            out.append(f"error: fact-check blocker at {row['label']}: {row['problem']}; "
+                       "narration.txt was not written. Run "
+                       f"`{fact_command(row)}` (the fact-check reads the changed lines "
+                       "again), or --report-only to record it and go on.")
+        else:
+            where = SCRIPT_WIDE if not row["n"] else row["label"]
+            out.append(f"error: fact-check blocker ({where}): {row['problem']}; "
+                       f"narration.txt was not written. Rerun `{fact_command(row)}`, or "
+                       "--report-only.")
+    return out
+
+
 def write_outputs(args, project, idea: Idea, data: dict, sections: list[Section],
                   *, wpm: int) -> tuple[list[str], bool]:
     """script.md, narration.txt, shotlist.csv and script.json from `data`.
@@ -7194,10 +7353,13 @@ def write_outputs(args, project, idea: Idea, data: dict, sections: list[Section]
     exits 1. --report-only records it and goes on. The story review's
     reject is an `error:` too, but it blocks only under `--gate`
     (story_gate): until the reviewer is calibrated it is evidence, not a
-    gate. Returns the standing rule errors and whether anything blocked."""
+    gate. A fact-check blocker still standing (fact_gate, AUTO-133) blocks
+    as a rule error does: a line the research does not hold is not read
+    aloud. Returns the standing rule errors and whether anything blocked."""
     errors = [f for f in data.get("findings", []) if str(f).startswith("error:")
               and not str(f).startswith("error: story review:")]
-    blocked = (bool(errors) and not args.report_only) or bool(story_gate(args, data))
+    blocked = ((bool(errors) and not args.report_only) or bool(story_gate(args, data))
+               or bool(fact_gate(args, data)))
     narration = project.out("narration", args.vo_out)
     for path, writer_fn in (
             (project.out("script_md", args.md_out),
@@ -7304,7 +7466,7 @@ def sent_back(spec: str, root: Path, why: str = "") -> tuple[str, list[dict], li
     return spec, rows, notes
 
 
-def run_revise(args, idea: Idea, project) -> int:
+def run_revise(args, idea: Idea, project, *, reviewer=None) -> int:
     """`yt script --revise`: one `revise-labels` decision over the named
     shots, then the narration rules on the changed shots only, and the
     fact-check of the changed lines (`verify-labels`) when there is
@@ -7366,6 +7528,15 @@ def run_revise(args, idea: Idea, project) -> int:
         claim_table=claim_table(dossier) if statused else None,
         press=press_items(dossier.get("assets") or []) if dossier else None,
         earlier=channel.for_project(workspace.work_dir(args), project),
+        # The changed lines' fact-check is read by --reviewer-model (AUTO-133);
+        # the revise itself is the author's. `reviewer` is the one `pool`
+        # resolved to, already checked against --model by run(). On a
+        # screenplay with statuses the same reviewer reads the changed lines'
+        # status again (verify-status-labels, AUTO-132): a status blocker is
+        # a fact-check blocker, and the gate tells the operator to clear it
+        # with this command, so this command must be able to read it away.
+        reviewer=reviewer, fact_reviewer_model=args.reviewer_model if dossier else None,
+        reviewer_model=args.reviewer_model if statused else None,
         verbose=not args.quiet)
     if statused:
         cap(shots, writer.claims)
@@ -7483,9 +7654,9 @@ def run_revise(args, idea: Idea, project) -> int:
         # are the new check's: they spoke of text that is gone.
         renewed = {s.n for s in moved}
         check = dict(data.get("check") or {})
-        # A status the revise's own check did not read again (no reviewer of
-        # another family is brought here) is still the last reading's: its
-        # flags on a changed line keep binding (AUTO-132).
+        # A status the revise's own check did not read again (its reading
+        # failed) is still the last reading's: its flags on a changed line
+        # keep binding (AUTO-132).
         restatus = again.get("status") if isinstance(again.get("status"), dict) else {}
         reread = bool(restatus) and "not_evidenced" not in restatus
         check["flags"] = ([f for f in check.get("flags") or []
@@ -7499,10 +7670,13 @@ def run_revise(args, idea: Idea, project) -> int:
         check["revisions"] = list(check.get("revisions") or []) + list(
             again.get("revisions") or [])
         check["recheck"] = again.get("recheck") or again.get("verdict", "")
+        if again.get("model"):
+            # who read the changed lines (AUTO-133)
+            check["model"] = again["model"]
         if restatus:
-            # No reviewer is brought here, so the changed lines' status is
-            # recorded as not evidenced, never as passed (AUTO-132), beside
-            # the reading the stage made, which stands.
+            # A reading that failed is recorded as not evidenced, never as
+            # passed (AUTO-132), beside the reading the stage made, which
+            # stands.
             last = check.get("status") if isinstance(check.get("status"), dict) else {}
             check["status"] = (restatus if reread or not last
                                else {**last, "recheck_labels": restatus})
@@ -7564,5 +7738,7 @@ def run_revise(args, idea: Idea, project) -> int:
                   "stand; narration.txt was not written. Revise those shots again "
                   "(--revise with --why), or --report-only to record them and go on.",
                   file=sys.stderr)
+        for line in fact_gate_lines(fact_gate(args, data)):
+            print(line, file=sys.stderr)
         return 1
     return 0

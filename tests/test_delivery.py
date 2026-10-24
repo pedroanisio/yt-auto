@@ -280,6 +280,64 @@ class FallbackDesign(DeliveryCase):
         self.assertTrue(self.report().metrics["delivery"]["ready"])
 
 
+class FactCheck(DeliveryCase):
+    """AUTO-133: a fact-check blocker that stands, or a narration never read
+    against the dossier, keeps delivery open, whatever QA said."""
+
+    SHOTS = [{"n": 1, "label": "1.1", "narration": "The bridge fell."},
+             {"n": 2, "label": "1.2", "narration": "One bolt held it."}]
+
+    def screenplay(self, check=None):
+        body = {"sections": [{"heading": "One", "shots": self.SHOTS}]}
+        if check is not None:
+            body["check"] = check
+        self.write("script.json", body)
+
+    def ready_otherwise(self):
+        self.rendered(); self.gated(); self.scored()
+
+    def evidence(self):
+        return doctor.delivery_evidence(workspace.Project(self.root), None)
+
+    def test_a_standing_blocker_is_a_delivery_row_with_the_revise_that_clears_it(self):
+        self.write("dossier.json", {"claims": [{"id": "C1", "claim": "a bolt"}]})
+        self.screenplay({"flags": [
+            {"n": 2, "severity": "blocker", "problem": "the bolt count is not in the research",
+             "fix": "say a bolt"},
+            {"n": 0, "severity": "blocker", "problem": "the title overclaims",
+             "fix": "retitle it"},
+            {"n": 1, "severity": "important", "problem": "overstated", "fix": "hedge"}]})
+        self.ready_otherwise()
+        where = f"--project {self.root}"
+        self.assertEqual(self.evidence(), [
+            ("fact-check blocker at 1.2 stands: the bolt count is not in the research",
+             f'yt script {where} --revise 1.2 --why "say a bolt"'),
+            ("fact-check blocker at script-wide stands: the title overclaims",
+             f'yt script {where} --verify --notes "retitle it"')])
+        self.assertFalse(self.report().metrics["delivery"]["ready"])
+
+    def test_a_narration_never_checked_against_the_dossier_is_a_delivery_row(self):
+        self.write("dossier.json", {"claims": [{"id": "C1", "claim": "a bolt"}]})
+        self.screenplay()
+        self.ready_otherwise()
+        self.assertEqual(self.evidence(), [
+            ("the narration was never fact-checked against the dossier",
+             f"yt script --project {self.root} --verify")])
+        # doctor's old note says it no more: the fail is the one row
+        self.assertFalse([f for f in self.report().findings
+                          if "written without --verify" in f.message])
+
+    def test_a_clean_check_or_no_dossier_adds_nothing(self):
+        self.screenplay()
+        self.ready_otherwise()
+        self.assertEqual(self.evidence(), [])
+        self.write("dossier.json", {"claims": [{"id": "C1", "claim": "a bolt"}]})
+        self.screenplay({"flags": [{"n": 1, "severity": "blocker", "problem": "p",
+                                    "fix": "f", "resolved": True}], "verdict": "defensible"})
+        self.assertEqual(self.evidence(), [])
+        self.assertTrue(self.report().metrics["delivery"]["ready"])
+
+
 class NextStep(unittest.TestCase):
     def test_the_next_script_command_has_its_plan_reviewed(self):
         # AUTO-92: doctor suggests the script as `yt run` would run it.
