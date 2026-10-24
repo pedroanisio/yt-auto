@@ -482,7 +482,10 @@ work/<slug>/qa/
 
 Keeping each pass makes "measurably improved" a comparison rather than an
 opinion, side by side at the same moments, and makes the regression check
-mechanical.
+mechanical. The scoring is blind to the pass before (AUTO-106): a reviewer
+shown the last scores files them again, so the deltas are computed from the
+two scorecards afterwards, and the old findings, when wanted as a checklist
+(`yt qa --recheck`), are asked after the scoring and score nothing.
 
 ---
 

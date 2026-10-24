@@ -271,5 +271,21 @@ class Flag(unittest.TestCase):
         self.assertEqual(qa.pass_usd(card), round(1.0 / 2 * qa.QA_SAMPLES + 0.1, 2))
 
 
+class Docs(unittest.TestCase):
+    ROOT = Path(__file__).resolve().parent.parent
+
+    def flat(self, rel):
+        return " ".join((self.ROOT / rel).read_text(encoding="utf-8").split())
+
+    def test_the_manual_the_readme_and_the_module_say_it(self):
+        for rel in ("ytstudio/SKILL.md", "README.md"):
+            text = self.flat(rel)
+            for needle in ("`--recheck`", "`<pass>-recheck`", "AUTO-106", "blind"):
+                self.assertIn(needle, text, rel)
+        self.assertIn("AUTO-106", qa.__doc__)
+        self.assertIn("--recheck", qa.__doc__)
+        self.assertIn("blind", self.flat("docs/production.md"))
+
+
 if __name__ == "__main__":
     unittest.main()
