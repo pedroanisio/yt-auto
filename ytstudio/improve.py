@@ -274,6 +274,9 @@ def collect(card: dict, *, gate: dict | None = None,
         add("mechanical", f)
     for f in card.get("findings") or []:
         add("qa", f, kind=None)
+    for f in (card.get("accuracy") or {}).get("fact_check") or []:
+        if isinstance(f, dict):
+            add("fact-check", fact_row(f), kind=None)
     if gate and gate.get("exit"):
         for b in (gate.get("triage") or {}).get("blocking") or []:
             add("gate", {"owner": b.get("owner", ""), "problem": b.get("what", ""),
@@ -298,6 +301,40 @@ def collect(card: dict, *, gate: dict | None = None,
     for n, row in enumerate(rows, 1):
         row["id"] = f"F{n}"
     return rows
+
+
+def fact_row(row: dict) -> dict:
+    """One finding for a fact-check blocker QA recorded under `accuracy`
+    (AUTO-133, script.fact_blockers). An open one is the script's: a shot's
+    line goes back on its own (`--revise feedback`, by_shot), a script-wide
+    one has no shot, so the screenplay is written again. One the writer kept
+    with a reason is not the writer's to change again: the dossier is
+    corrected, or a person marks the flag resolved."""
+    label = str(row.get("label") or "")
+    shot = label if row.get("n") else None
+    problem = f"fact-check blocker at {label}: {row.get('problem') or ''}"
+    if row.get("kept"):
+        return {"shot": shot, "owner": UPSTREAM, "severity": "blocking", "problem": problem,
+                "why": f"the writer kept a fact-check blocker at {label} with a reason: "
+                       "correct the dossier, or set `resolved` on the flag in script.json "
+                       "by hand",
+                "fix": str(row.get("fix") or "")}
+    return {"shot": shot, "owner": "script", "severity": "blocking", "problem": problem,
+            "why": "a line the research does not hold is not read aloud",
+            "fix": str(row.get("fix") or "")}
+
+
+def fact_stop(root: Path) -> list[str]:
+    """The labels of the fact-check blockers script.json holds now: what a
+    routed script that exited 1 left standing (AUTO-133), so the stop names
+    them instead of calling it a stage failure."""
+    from . import script as script_stage
+    data = read_json(Path(root) / "script.json", warn=False)
+    if not isinstance(data, dict):
+        return []
+    shots = [s for sec in data.get("sections") or [] if isinstance(sec, dict)
+             for s in sec.get("shots") or [] if isinstance(s, dict)]
+    return [row["label"] for row in script_stage.fact_blockers(data.get("check"), shots)]
 
 
 def doctor_rows(project: workspace.Project) -> list[tuple]:
@@ -531,7 +568,8 @@ def route(h: Harness, findings: list[dict], *, name: str,
     fixed = {f["id"]: f["owner"] for f in findings
              if (f.get("kind") in MECHANICAL_KINDS and f.get("owner") in ROUTABLE)
              or (f.get("source") == "qa" and f.get("owner") in ROUTES)
-             or (f.get("kind") == SCRATCH_TAKE and f.get("owner") in ROUTES)}
+             or (f.get("kind") == SCRATCH_TAKE and f.get("owner") in ROUTES)
+             or (f.get("source") == "fact-check" and f.get("owner") in ROUTES)}
     looked_up = {f["id"] for f in findings if f.get("source") == "qa"}
     prompt = _route_prompt(findings, fixed, context)
     answer = h.decide(name, prompt, ROUTE_SCHEMA)
@@ -554,11 +592,13 @@ def route(h: Harness, findings: list[dict], *, name: str,
         dup = dup if dup in by_id and dup != f["id"] else ""
         if f["id"] in fixed:
             by = ("owner" if f["id"] in looked_up else
-                  "doctor" if f.get("kind") == SCRATCH_TAKE else "mechanical")
+                  "doctor" if f.get("kind") == SCRATCH_TAKE else
+                  "fact-check" if f.get("source") == "fact-check" else "mechanical")
             why = {"owner": f"QA named {fixed[f['id']]} as the owner",
                    "doctor": (f"doctor's scratch take: {f.get('why')}" if f.get("why")
                               else "doctor's scratch take, which a real engine here redoes"),
-                   "mechanical": f"measured {f['kind']}, owned by {fixed[f['id']]}"}[by]
+                   "fact-check": str(f.get("why") or "a fact-check blocker stands"),
+                   "mechanical": f"measured {f.get('kind')}, owned by {fixed[f['id']]}"}[by]
             routes[f["id"]] = {"stage": fixed[f["id"]], "by": by, "why": why,
                                "duplicate_of": dup}
         else:
@@ -573,7 +613,7 @@ def route(h: Harness, findings: list[dict], *, name: str,
         if not primary:
             continue
         stage = routes[primary]["stage"]
-        if r["by"] in ("mechanical", "owner", "doctor") and stage != r["stage"]:
+        if r["by"] in ("mechanical", "owner", "doctor", "fact-check") and stage != r["stage"]:
             r["duplicate_of"] = ""
             continue
         r["stage"] = stage
@@ -1079,6 +1119,10 @@ def judge(best: dict, new: dict, *, tolerance: float = TOLERANCE) -> dict:
 
 
 def reached(card: dict, target: float) -> bool:
+    # A fact-check blocker standing is never reached (AUTO-133), whatever
+    # an older card's verdict said.
+    if (card.get("accuracy") or {}).get("fact_check"):
+        return False
     if card.get("verdict") == qa.READY:
         return True
     try:
@@ -1732,10 +1776,24 @@ class Improver:
                 entry["argv"].append(argv)
                 code = self._run(argv)
                 entry["exit"][stage] = code
+                # AUTO-133: the script wrote its record and left narration.txt
+                # alone on a blocker still standing. A script that failed
+                # before writing leaves the record the pass started from,
+                # which is no news about this attempt.
+                wrote = (_stamps(self.root).get(MANIFEST["script"])
+                         != before.get(MANIFEST["script"]))
+                held = (fact_stop(self.root)
+                        if stage == "script" and code == 1 and wrote else [])
+                if held:
+                    failed = rejected = (f"a fact-check blocker still stands at "
+                                         f"{', '.join(held)}; narration.txt was not written")
+                    rejected_by = "fact-check"
+                    break
                 if code:
                     failed = f"{stage} exited {code}"
                     break
                 rejected = story_rejected(self.root, stage, argv)
+                rejected_by = "story-review"
                 if rejected:
                     # AUTO-93: the screenplay the pass wrote was read and
                     # rejected; voicing and authoring it would spend the
@@ -1773,7 +1831,7 @@ class Improver:
                 restore(self.root, snap)
                 entry.update(decision="stopped" if rejected else "failed", reasons=[failed],
                              attempt=str(pdir / "attempt"))
-                record["stop"] = {"reason": "story-review" if rejected else "stage-failed",
+                record["stop"] = {"reason": rejected_by if rejected else "stage-failed",
                                   "detail": f"{failed}; the "
                                   "snapshot was restored (the attempt's files are in "
                                   f"{IMPROVE_DIR}/{name}/attempt/) and the notes left open"}
