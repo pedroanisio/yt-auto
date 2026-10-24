@@ -179,7 +179,8 @@ def run_extras(args, *, redo: set) -> dict[str, list[str]]:
     """The flags `yt run` adds to each stage: the quality passes unless
     --quick, a fresh research when it is redone, and the fetches that turn a
     design into files (props, the sound cues). The plan review (script
-    --review) is a quality pass, so --quick drops it with the others."""
+    --review) is a quality pass, so --quick drops it with the others, and
+    turns off the fact-check a dossier would otherwise switch on."""
     quick = getattr(args, "quick", False)
     # The reviewer flags go to the stages that review; unset, each keeps its default.
     # A pool reviewer (`pool`, `sdk:<id>`, AUTO-125) reads text only, so it goes
@@ -206,8 +207,11 @@ def run_extras(args, *, redo: set) -> dict[str, list[str]]:
                     + (["--fresh"] if redo & {"research", "all"} and not quick else [])
                     + paper,
         "styles": ["--rich"] + ([] if quick else ["--deliberate", "critique"]),
+        # The fact-check is on by default with a dossier (AUTO-133), so
+        # --quick, which skips it, says --no-verify.
         "script": ["--minutes", str(args.minutes)]
-                  + ([] if quick else ["--polish", "--verify", "--review"] + script_reviewer),
+                  + (["--no-verify"] if quick
+                     else ["--polish", "--verify", "--review"] + script_reviewer),
         "props": [],
         # The look is locked once per set of inputs; a redo means plan and
         # author the lead section again, not replay the cached one.
