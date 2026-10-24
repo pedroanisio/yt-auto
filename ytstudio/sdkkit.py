@@ -280,8 +280,19 @@ def engine_manifest(host: str = "") -> dict:
         return {"source": "none: no host answered and no checkout was found", "manifest": {}}
 
 
+def engine_version(host: str = "") -> str:
+    """The engine's version as `install` writes it into ENGINE.md (the host's
+    manifest, else the checkout's); "?" when neither answers. A lesson a run
+    learned is stamped with it (AUTO-111)."""
+    caps = engine_manifest(host).get("manifest") or {}
+    return str((caps.get("engine") or {}).get("version") or "?")
+
+
 def engine_facts() -> dict:
-    """The facts file: {"verified_on": version, "facts": [{topic, text, source}]}."""
+    """The facts file: {"verified_on": version, "facts": [{topic, text, source}]}.
+    A fact may carry its own `verified_on` (and `elements`): one an operator
+    promoted from a run's lessons (`yt vfx --promote-lesson`) is stamped with
+    the engine it was learned on, which need not be the file's."""
     try:
         data = json.loads(FACTS_FILE.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -290,18 +301,33 @@ def engine_facts() -> dict:
 
 
 def facts_lines(version: str, facts: dict) -> list[str]:
-    """ENGINE.md's facts section: each fact, stamped, flagged when the engine moved on."""
+    """ENGINE.md's facts section: each fact, stamped, flagged when the engine moved on.
+
+    A fact with its own `verified_on` is stamped and flagged against that
+    version; the others fall back to the file's. Every fact is printed, in
+    file order: retrieval by `elements` against a section's planned effects,
+    and grouping by topic, wait until the file holds more than about 40
+    facts, while ENGINE.md can still print them all."""
     rows = [f for f in facts.get("facts") or [] if isinstance(f, dict) and f.get("text")]
     if not rows:
         return []
     verified = str(facts.get("verified_on") or "?")
+    own = any(f.get("verified_on") for f in rows)
     lines = ["", "## Facts measured on the engine", "",
              f"Facts verified on {verified}"
+             + (", unless a fact names its own version" if own else "")
              + ("." if version == verified else
-                f"; this engine is {version}: re-check each one with a frame before relying "
-                "on it."), ""]
+                f"; this engine is {version}: re-check each one"
+                + (" that names no version of its own" if own else "")
+                + " with a frame before relying on it."), ""]
     for f in rows:
-        lines.append(f"- **{f.get('topic', '')}**: {f['text']} (source: {f.get('source', '?')})")
+        line = f"- **{f.get('topic', '')}**: {f['text']} (source: {f.get('source', '?')}"
+        stamp = str(f.get("verified_on") or "")
+        if stamp:
+            line += f"; verified on {stamp}" + (
+                "" if stamp == version else
+                f"; this engine is {version}: re-check it with a frame before relying on it")
+        lines.append(line + ")")
     return lines
 
 

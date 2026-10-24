@@ -948,7 +948,8 @@ hand-authored world showed the cost.
   every attribute the schema documents as renderer-dependent (the path
   tracer drops clearcoat, sheen, anisotropy, iridescence and dispersion) and
   the last probe run's scores; `kit/engine_facts.json`, those facts stamped
-  with the engine version they were verified on (flagged when it changes);
+  with the engine version they were verified on (flagged when it changes;
+  a fact promoted from a run carries its own `verified_on`);
   and `examples/`, programs that built,
   validated and rendered on the engine. Their values are placeholders.
   `kit.py precheck <doc or frame.png>` runs the mechanical part of the
@@ -1105,6 +1106,32 @@ hand-authored world showed the cost.
     (`kept_from`) gets the attempt back from `rounds/<stem>.attempt`, with the
     reason on its record (`taken`). On the Euler film the kept version of
     section 7 scored higher and could not be encoded on any 8 GB GPU.
+  - A gate error that a later round of the same section fixed (the later
+    round not cut off, with no error and a review; infra findings are the
+    host's) is a candidate engine lesson (`vfx.fixed_errors`, AUTO-111),
+    never a score gain or a verdict alone. The section's reviewer is asked
+    once for it (`lesson-<stem>`, booked with the section) from the fixed
+    findings, numbered, and the two rounds' kept programs and their diff (a
+    round whose build failed keeps its program alone under
+    `rounds/<stem>/rNN/`, never restored): topic, the SDK `elements`, one
+    sentence, `cause` (engine or authoring), the `finding` it answers (its
+    number, or its words with any spacing), `general`. An element the SDK
+    lacks, a colour, a style token, a palette, style or font name (whole
+    words, any case), or a finding that was not fixed, is asked once more
+    (the refused answer forgotten), then left as a `warning: lesson` finding
+    on the record; whatever fails in the step is that finding, never a
+    section without its record. A section whose budget cannot hold two asks
+    at `--review-budget-usd`, or a run asked to finish, is not asked (a
+    `note: lesson: not asked` finding). `yt keyframe`'s lead section is
+    authored by the same planner and logs its lessons too. A general lesson is
+    appended to `work/lessons-log.jsonl` with the engine version and
+    `label: null` (once per section and lesson, `--fresh` or not), and
+    `yt doctor` notes the log as evidence to copy out of `work/`.
+    `yt vfx --lessons` lists the rows; `yt vfx --promote-lesson
+    ROW[,ROW]` is the only way one reaches `ytstudio/kit/engine_facts.json`
+    (source `yt vfx <slug> section <n> r<from>-><to>`, its own
+    `verified_on`), so every later kit's `ENGINE.md` prints it. The author's
+    `kit.py` has no such command: a person decides what enters the repo.
   - `vfx.json` and `keyframe.json` record each document's `program` and
     `provenance`.
 - **`yt probe`.** `--list` shows the classes, `--only` picks some,

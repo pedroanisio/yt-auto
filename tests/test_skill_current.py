@@ -80,6 +80,14 @@ class Missing(unittest.TestCase):
         self.assertIn("kit/engine_facts.json", FLAT)
         self.assertIn(f"{sdkkit.STILL_BUDGET} s", FLAT)
 
+    def test_the_lessons_log_and_its_promotion_are_documented(self):
+        from ytstudio import vfx
+        self.assertIn(f"work/{vfx.LESSONS_LOG}", FLAT)
+        for needle in ("`yt vfx --promote-lesson", "`yt vfx --lessons`", "verified_on",
+                       "never a score", "cannot hold two asks", "`note: lesson: not asked`",
+                       "`yt keyframe`'s lead section"):
+            self.assertIn(needle, FLAT)
+
     def test_keyframe_approve_refuses_a_mixed_record(self):
         self.assertIn("refuses a record whose digests", FLAT)
 
