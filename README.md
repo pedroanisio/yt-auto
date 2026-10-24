@@ -209,10 +209,11 @@ it, else a price row (`GATEWAY_PRICES` first), and its row says which
 team or project's "budget exceeded", an API key's "Quota limit exceeded")
 is permanent: the call stops at the first one, with no retry, as it does on
 the engines' other permanent failures (a spent `--max-budget-usd`, a
-`--max-turns` stop, a refused sign-in). A 429 is retried as any transient failure is, within the engine's
-retries. Any other failure text, an exhausted credit balance's included
-(Vercel does not document its wording), is treated as transient and retried
-up to the engine's retries before the call fails.
+`--max-turns` stop, a refused sign-in). A 429 is retried as any transient
+failure is, within the engine's retries. Any other failure text, an
+exhausted credit balance's included (Vercel does not document its wording),
+is treated as transient and retried up to the engine's retries before the
+call fails.
 
 **Models.** A gateway id (`anthropic/claude-opus-5.5`, `openai/gpt-5`) is
 priced and judged for family as its direct name, so the reviewer still
@@ -2172,7 +2173,7 @@ environment (`CLAUDE_ENGINE_MODEL`, `CLAUDE_ENGINE_EFFORT`,
 | `auto_allow_tools` | allow-list whatever `tools` selected (default `True`) |
 | `strict_mcp_config` | ignore the user's MCP servers (default `True`) |
 | `max_turns_budget_usd` | hard spend cap per call |
-| `max_turns` | hard cap on agentic turns per call (`--max-turns`); the CLI's stop, `error_max_turns`, is a permanent error that names it. Codex has no equivalent: ignored, warned once |
+| `max_turns` | hard cap on agentic turns per call (`--max-turns`); the CLI's stop, `error_max_turns`, is a permanent error that names it. 1 or more; 0 is refused. Codex has no equivalent: ignored, warned once; the chat bridge refuses it |
 | `timeout`, `max_retries` | per-call wall clock and retry policy |
 | `cwd`, `add_dirs` | which directories the agent may touch |
 | `restricted`, `skip_permissions` | no code-running tools; or `--dangerously-skip-permissions` |

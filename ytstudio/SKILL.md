@@ -1184,8 +1184,9 @@ hand-authored world showed the cost.
 - **An inspection may be capped by turns.** `Harness.inspect(...,
   max_turns=N)` passes `--max-turns N` to the agent that looks
   (`EngineConfig.max_turns`, AUTO-116); its stop, `error_max_turns`, is a
-  permanent error and a failed, billed row, never retried or saved. No
-  stage sets a cap yet, and Codex has no equivalent (it runs uncapped).
+  permanent error and a failed, billed row, never retried or saved. N is
+  1 or more (0 is refused). No stage sets a cap yet; Codex has no
+  equivalent (it runs uncapped) and the chat bridge refuses one.
 
 ## Running a video as a govern lane
 
