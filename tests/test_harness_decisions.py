@@ -236,6 +236,11 @@ class ScriptTest(DecisionCase):
                 contextlib.redirect_stderr(io.StringIO()):
             script.run(args)
         record = json.loads((film / "script.json").read_text())
+        # AUTO-136: script.json carries the plan's hook and each section's
+        # rehook and escalation, as the plan answered them.
+        self.assertEqual(record["hook"], {"trigger": "question", "gap": "whether it moves"})
+        self.assertEqual({k: record["sections"][0][k] for k in ("rehook", "escalation")},
+                         {"rehook": "", "escalation": ""})
         self.assertEqual(record["house"]["sources"], ["ytstudio/house/default.md"])
         self.assertEqual(record["house"]["stage"], "script")
         self.assertEqual(record["house"], house.load(work, film).digest("script"))

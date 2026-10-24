@@ -396,11 +396,48 @@ class Trigger(unittest.TestCase):
         self.assertTrue(said[0].startswith("warning: story review:"), said[0])
         self.assertIn(script.REPLAN_FIX, said[0])
 
+    def test_a_heard_none_with_the_samples_own_hook_flag_is_still_one_warning(self):
+        # The samples also raise a whole-script hook flag, worded their own
+        # way: one fault, so one REPLAN_FIX warning stands for it.
+        whole = flag(n=0, section=0, criterion="hook", problem="the opening is a summary",
+                     fix="open on the comet", quote="")
+        other = flag(n=0, section=0, criterion="train", problem="the train names a topic",
+                     fix="name the obstacle", quote="")
+        w = writer()
+        faked(w, {f"review-r1-s{k}": sample("consider", {"hook": "Fair"},
+                                            flags=[whole, other], trigger=t)
+                  for k, t in enumerate(("none", "none", "question"), 1)})
+        data = w.run(review=True)
+        record = data["review"]
+        self.assertEqual(record["trigger"]["heard"], "none")
+        hooks = [f for f in record["unresolved"] if f.get("criterion") == "hook"]
+        self.assertEqual([f.get("by") for f in hooks], ["hook-trigger-match"],
+                         record["unresolved"])
+        # a whole-script flag on another criterion still stands
+        self.assertIn("the train names a topic",
+                      [f["problem"] for f in record["unresolved"]])
+        said = [f for f in data["findings"] if f.startswith("warning: story review:")
+                and "hook" in f]
+        self.assertEqual(len(said), 1, data["findings"])
+
+    def test_a_first_minute_that_is_not_an_object_is_not_evidenced(self):
+        # a drifted answer keeps first_minute as a string: no trigger, no crash
+        drifted = [{"first_minute": "question"}, {"first_minute": ["paradox"]},
+                   {"first_minute": {"trigger": "question"}}]
+        self.assertEqual(script.heard_trigger(drifted), "not_evidenced")
+        self.assertEqual(script.heard_trigger(drifted + [{"first_minute":
+                                                          {"trigger": "question"}}]),
+                         "question")
+
     def test_a_heard_trigger_other_than_the_planned_files_nothing(self):
         w = writer()
         faked(w, {"plan": planned("question"), **heard("paradox", "paradox", "question")})
-        record = w.run(review=True)["review"]
+        data = w.run(review=True)
+        record = data["review"]
         self.assertEqual(record["trigger"], {"planned": "question", "heard": "paradox"})
+        notes = [f for f in data["findings"] if f.startswith(
+            "note: story review: the opening was planned on question and heard on paradox")]
+        self.assertEqual(len(notes), 1, data["findings"])
         self.assertEqual(record["unresolved"], [])
         lines = script.story_review_lines(record)
         self.assertIn("hook trigger: planned question, heard paradox (differs)", lines)
@@ -409,8 +446,11 @@ class Trigger(unittest.TestCase):
     def test_not_evidenced_files_nothing_and_shows_no_difference(self):
         w = writer()
         faked(w, heard("question", "paradox", "unresolved_outcome"))
-        record = w.run(review=True)["review"]
+        data = w.run(review=True)
+        record = data["review"]
         self.assertEqual(record["trigger"]["heard"], "not_evidenced")
+        self.assertFalse([f for f in data["findings"] if "the opening was planned on" in f],
+                         data["findings"])
         self.assertEqual(record["unresolved"], [])
         lines = script.story_review_lines(record)
         self.assertIn("hook trigger: planned unexpected_observation, heard not_evidenced",

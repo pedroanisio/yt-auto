@@ -458,12 +458,29 @@ class OpeningAndTension(unittest.TestCase):
         found = checks(timed(["", "", "", ""], seconds=120))
         self.assertTrue([c for c in found if "over seven minutes" in c], found)
         self.assertFalse([c for c in found if "without a rehook" in c], found)
+        # the seven-minute line already asks for one where the opening hands
+        # over, so the section-2 line would be a second line for one fault
+        self.assertFalse([c for c in found if "section 2 has no rehook" in c], found)
 
     def test_an_empty_hook_gap_is_a_rule_line(self):
         plan = copy.deepcopy(PLAN)
         plan["hook"]["gap"] = "  "
         self.assertEqual(checks(plan), ["rule: hook.gap is empty: the opening names the "
                                         "specific gap it opens (attention 1)"])
+
+    def test_a_plan_with_no_hook_object_names_no_gap_either(self):
+        # a plan from before AUTO-136, kept in an older script.json, has no
+        # hook at all: it names no gap, so it gets the same rule: line
+        for hook in (None, "a question"):
+            plan = copy.deepcopy(PLAN)
+            if hook is None:
+                del plan["hook"]
+            else:
+                plan["hook"] = hook
+            with self.subTest(hook=hook):
+                self.assertEqual(checks(plan), ["rule: hook.gap is empty: the opening "
+                                                "names the specific gap it opens "
+                                                "(attention 1)"])
 
     def test_each_seeded_plan_carries_only_the_lines_of_its_own_fault(self):
         good = script.plan_prechecks(script.read_json(NARRATIVE / "good" / "plan.json"), 130)
