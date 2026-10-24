@@ -320,6 +320,17 @@ class TurnCap(HarnessCase):
         self.make().inspect("pass-01", "p", SCHEMA, cwd=self.cwd, max_turns=3)
         self.assertEqual(len(FakeEngine.stream_calls), 1)
 
+    def test_an_inspection_keeps_the_digest_it_had_before_caps(self):
+        # The digest develop gave this inspection before max_turns existed
+        # (aa8aacd), written out so that adding the cap to the digest, which
+        # would ask every saved inspection again, fails here first.
+        before = "e14a684f61e6d410"
+        for cap in (None, 3):
+            with self.subTest(max_turns=cap):
+                h = self.make()
+                h.inspect("pass-01", "p", SCHEMA, cwd=self.cwd, max_turns=cap)
+                self.assertEqual(h.report()["decisions"][0]["digest"], before)
+
 
 class Helpers(unittest.TestCase):
     def test_a_file_that_vanishes_while_digesting_is_left_out(self):
