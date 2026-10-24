@@ -279,7 +279,10 @@ author's error (the world is too heavy for any host). Then the model
 reviews the frames against the publication bar and scores them 0-10. Under
 `--bar` (7) the findings go back to the author, up to `--rounds`
 rounds (2). Each round of authoring lands in a new `vfx/vNN/`; nothing
-authored before is overwritten.
+authored before is overwritten. The reviewer also gets a copy of each frame
+with a labelled 8x6 grid (`frames/grid/`, a ruler only, never kept with a
+round) and may name the cells a finding is about; the author is then told
+those cells' pixels and the object3D ids in them.
 
 Rendering runs on other machines: `RS_RENDER_HOSTS=user@a,user@b` in `.env`.
 `yt render` probes each host once (engine, RAM, GPU) and routes by
@@ -390,6 +393,7 @@ work/
     ├── voice/       voice.json  narration.vtt  narration.srt  voice.wav
     ├── vfx/vNN/<section>.scene.xml     one authored world per section, per round
     │   ├── frames/                     the proof frames the gate and the review read
+    │   │   └── grid/                   the review's grid copies, a ruler, not evidence
     │   └── <section>.include.scene.xml the cleaned copy the build's <include> points at
     ├── vfx.json     vfx.md     vfx.csv  the plan, the active version, the review rounds
     ├── sound/       index.json          the fetched cue files, and which Freesound id each is
