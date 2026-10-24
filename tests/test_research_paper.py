@@ -198,6 +198,15 @@ class IdeaPaper(unittest.TestCase):
     def test_the_block_with_a_paper_ends_in_it(self):
         self.assertTrue(paper_idea().block().endswith(f"\nPaper: {ARXIV}"))
 
+    def test_the_block_names_a_local_paper_by_its_basename_only(self):
+        # Every stage sends idea.block() to a model; a folder must not travel.
+        for ref in ("/home/someone/papers/attention.pdf", "papers/attention.pdf",
+                    "~/attention.pdf"):
+            self.assertTrue(paper_idea(ref).block().endswith("\nPaper: file:attention.pdf"),
+                            ref)
+        for ref in (ARXIV, DOI, "1706.03762", "arXiv:1706.03762v5"):
+            self.assertTrue(paper_idea(ref).block().endswith(f"\nPaper: {ref}"), ref)
+
 
 # --------------------------------------------------------------------------- #
 # references

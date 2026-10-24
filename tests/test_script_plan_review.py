@@ -691,6 +691,32 @@ class PaperReview(unittest.TestCase):
         self.assertIn(f"- rule: {self.LINE}", prompt)
         self.assertIn(f"rule: {self.LINE}", data["plan_review"]["prechecks"])
 
+    def test_script_md_lists_the_paper_pre_check_under_plan_review(self):
+        w = paper_writer()
+        faked(w, [verdict("accept")], plan=self.MISORDERED)
+        data = w.run(review=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "script.md"
+            script.write_md(str(path), idea(), data, script.sections_of(data))
+            md = path.read_text()
+        review = md.split("## Plan review", 1)[1].split("\n## ", 1)[0]
+        self.assertIn(f"- pre-check: `rule` {self.LINE}", review)
+
+    def test_a_local_papers_folder_reaches_no_script_prompt(self):
+        folder = "/home/someone/papers"
+        w = script.Screenwriter(
+            script.Idea(title="Why the bridge fell", description="d", genre="explainer",
+                        paper=f"{folder}/attention.pdf"),
+            verbose=False, jobs=1, minutes=1, research="", reviewer_model="opus",
+            paper=PAPER_DIGEST, claims=PAPER_CLAIMS)
+        calls = faked(w, [verdict("accept")], plan=FRAMED)
+        w.run(review=True)
+        self.assertTrue(calls)
+        for call in calls:
+            self.assertNotIn(folder, call["prompt"], call["name"])
+        # The script names the paper by its digest's citation, never the idea's path.
+        self.assertTrue(any(PAPER_URL in c["prompt"] for c in calls))
+
     def test_run_records_the_rule_lines_as_findings_and_doctor_warns(self):
         plan = copy.deepcopy(self.MISORDERED)
         plan["framing"]["contribution"]["claims"] = [PAPER_CLAIMS[1]["claim"]]
