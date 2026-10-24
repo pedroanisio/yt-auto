@@ -507,13 +507,13 @@ the channel's `## format` sets one, otherwise each film's own, chosen from its
 subject and named in the plan's `persona`. Each section opens with a comment
 naming the corpus rules it states; comments never reach a prompt, and a test
 holds the ids to the corpus. The channel's file replaces a section by writing
-one of the same name. The keyframe, which has no section of its own, reads `## vfx` until a house
-writes `## keyframe`. A cached decision is keyed on its stage's block (`## all`
-and the sections that stage reads), so an edit to `## all` re-asks every
-decision in every project on its next run, an edit to one section re-asks
-only the stages that read it, and an edit to a comment re-asks nothing;
-`yt doctor` warns for each manifest whose block was decided under a different
-house digest.
+one of the same name. The keyframe, which has no section of its own, reads
+`## vfx` until a house writes `## keyframe`. A cached decision is keyed on its
+stage's block (`## all` and the sections that stage reads), so an edit to
+`## all` re-asks every decision in every project on its next run, an edit to
+one section re-asks only the stages that read it, and an edit to a comment
+re-asks nothing; `yt doctor` warns for each manifest whose block was decided
+under a different house digest.
 
 The order each stage sees is deliberate: its own system prompt says what it is,
 `house.md` says how this channel works, the dossier and the direction say what
