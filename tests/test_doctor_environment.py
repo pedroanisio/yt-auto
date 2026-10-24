@@ -8,6 +8,7 @@ No test opens a connection: subprocess.run is replaced, and hosts are built.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import tempfile
@@ -210,6 +211,59 @@ class RealEngines(unittest.TestCase):
             row = next(f for f in self.environment().findings if f.area == "voice")
         self.assertEqual(row.level, "ok")
         self.assertIn("engines usable: kokoro, stub", row.message)
+
+
+class ScratchRow(unittest.TestCase):
+    """Doctor's scratch-take warning counts the engine of each take, as QA's
+    blocker does (qa.scratch_blockers): a kokoro voice.json that still holds
+    stub takes is NOT READY in QA, so doctor says so too, and `yt improve`,
+    which routes doctor's row, has the finding to route (AUTO-152)."""
+
+    def rows(self, voice_doc):
+        from ytstudio import workspace
+        from ytstudio.core import write_json
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "a-film"
+            root.mkdir()
+            write_json(root / "idea.json", {"title": "A film", "genre": "g",
+                                            "description": "d"})
+            write_json(root / "voice.json", voice_doc)
+            report = doctor.check_project(workspace.Project(root))
+            return [f for f in report.findings if f.area == "voice"
+                    and "scratch take" in f.message], str(root)
+
+    def voice(self, engine, takes):
+        return {"engine": engine, "takes": [{"label": f"1.{n}", "text": "a line",
+                                             "engine": e} for n, e in enumerate(takes, 1)]}
+
+    def test_a_kokoro_voice_with_stub_takes_warns(self):
+        rows, root = self.rows(self.voice("kokoro", ["kokoro", "stub", "stub", "kokoro",
+                                                     "stub"]))
+        self.assertEqual(len(rows), 1, rows)
+        self.assertEqual(rows[0].level, "warn")
+        self.assertEqual(rows[0].message, "narration is a stub scratch take (3 of 5 takes), "
+                                          "not publishable")
+        self.assertEqual(rows[0].fix, f"yt voice --project {root} --engine auto")
+
+    def test_the_voice_engine_reads_a_take_that_names_none(self):
+        rows, _ = self.rows({"engine": "espeak", "takes": [{"label": "1.1"}, {"label": "1.2"}]})
+        self.assertEqual([r.message for r in rows],
+                         ["narration is an espeak scratch take (2 of 2 takes), not publishable"])
+
+    def test_a_real_read_and_a_wordless_film_do_not_warn(self):
+        self.assertEqual(self.rows(self.voice("kokoro", ["kokoro"] * 3))[0], [])
+        self.assertEqual(self.rows({"engine": "stub", "wordless": True, "takes": []})[0], [])
+
+    def test_doctor_and_qa_count_the_same_takes(self):
+        from ytstudio import qa
+        for doc in (self.voice("kokoro", ["kokoro", "stub"]),
+                    self.voice("espeak", ["espeak", "stub", "espeak"]),
+                    self.voice("elevenlabs", ["elevenlabs"])):
+            rows, _ = self.rows(doc)
+            said = [re.search(r"\(\d+ of \d+ takes\)", r.message).group() for r in rows]
+            blocked = [re.search(r"\(\d+ of \d+ takes\)", b).group()
+                       for b in qa.scratch_blockers(doc)]
+            self.assertEqual(said, blocked)
 
 
 if __name__ == "__main__":

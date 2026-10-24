@@ -1359,6 +1359,21 @@ class ScratchTake(ImproveCase):
         self.assertEqual(list(routing["stages"]), ["voice"])
         self.assertEqual(routing["human"], [])
 
+    def test_a_kokoro_voice_with_stub_takes_reaches_improve(self):
+        # QA blocks on the three stub takes; doctor's row now says so, so
+        # improve has a finding to route for that blocker
+        write_json(self.root / "voice.json", {"engine": "kokoro", "takes": [
+            {"label": f"1.{n}", "text": "a line", "engine": e}
+            for n, e in enumerate(["kokoro", "stub", "stub", "kokoro", "stub"], 1)]})
+        rows = improve.doctor_rows(workspace.Project(self.root))
+        with self.real([]):
+            found = improve.collect(card(5.0), doctor=rows)
+        scratch = [f for f in found if f.get("kind") == improve.SCRATCH_TAKE]
+        self.assertEqual(len(scratch), 1, found)
+        self.assertIn("stub scratch take (3 of 5 takes)", scratch[0]["problem"])
+        self.assertEqual((scratch[0]["owner"], scratch[0]["severity"]),
+                         (improve.EXTERNAL, "blocking"))
+
     def test_other_voice_rows_are_routed_as_before(self):
         rows = [("warn", "voice", "the read drifts +20s (15%) from the screenplay", "yt retime")]
         with self.real([]):

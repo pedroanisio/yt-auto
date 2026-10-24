@@ -2256,18 +2256,13 @@ def scratch_blockers(voice: dict | None, where: str = "") -> list[str]:
     """A narration read by a scratch engine (doctor.SCRATCH_ENGINES: stub,
     espeak) proves the timeline and is never published (AUTO-152). Each
     scratch engine in use, the voice's own or a take's, is one line naming
-    how many takes it read and the command doctor gives. A wordless film,
-    or none, has no narration to block on."""
-    from .doctor import SCRATCH_ENGINES
-    if not voice or not isinstance(voice, dict) or voice.get("wordless"):
-        return []
-    own = str(voice.get("engine") or "")
-    takes = [t for t in voice.get("takes") or [] if isinstance(t, dict)]
-    read_by = [str(t.get("engine") or own) for t in takes]
-    used = [e for e in dict.fromkeys([own, *read_by]) if e in SCRATCH_ENGINES]
+    how many takes it read and the command doctor gives; doctor.scratch_reads
+    counts them, for doctor's warning too. A wordless film, or none, has no
+    narration to block on."""
+    from .doctor import scratch_reads, scratch_take
     fix = _yt("voice --engine auto", where)
-    return [f"voice: narration is {'an' if e[:1] in 'aeiou' else 'a'} {e} scratch take "
-            f"({read_by.count(e)} of {len(takes)} takes); run {fix}" for e in used]
+    return [f"voice: narration is {scratch_take(*used)}; run {fix}"
+            for used in scratch_reads(voice)]
 
 
 def mechanical_blockers(build: dict, *, gate: dict | None, voice: dict | None = None,
@@ -2275,7 +2270,9 @@ def mechanical_blockers(build: dict, *, gate: dict | None, voice: dict | None = 
     """What the manifests already prove blocks publication, before anyone
     looks: build.json's placeholders, errors and editorial blockers, the
     fallback palette, a failed gate, and a scratch narration in voice.json
-    (`scratch_blockers`, read only when `voice` is given)."""
+    (`scratch_blockers`, read only when `voice` is given). qa.run asks
+    scratch_blockers on its own and adds it after the brief, so the
+    reviewer's "Blocking, already proven" stays what it was."""
     out = []
     for label in build.get("placeholders", []):
         out.append(f"placeholder card at shot {label} (disqualifying)")
@@ -4444,8 +4441,11 @@ def run(args) -> int:
         reach=(vfx_doc or {}).get("reach") if project.source("vfx") else None,
         rhythm=rhythm_block)
     where = "" if project.standalone else f"--project {project.root}"
-    blockers = (mechanical_blockers(build, gate=gate, voice=voice, where=where)
-                + vfx_blockers(vfx_doc) + problems)
+    # A scratch narration (AUTO-152) blocks the verdict but is not briefed:
+    # briefed under "Blocking, already proven" it would change the scorecard
+    # prompt of every stub or espeak film and ask its cached pass again.
+    blockers = mechanical_blockers(build, gate=gate) + vfx_blockers(vfx_doc) + problems
+    scratch = scratch_blockers(voice, where)
     previous = chosen
     for earlier in [] if named else reversed(_passes(home)):
         if earlier != pass_dir:
@@ -4632,8 +4632,8 @@ def run(args) -> int:
     # No score, the bar or the overall reads it.
     card["audio_basis"] = audio_basis(listening, silent=silent(build))
     card["not_evidenced"] += basis_lines(card["audio_basis"], where)
-    all_blocking = blockers + [str(b) for b in card.get("blocking", [])
-                               if str(b) not in blockers]
+    all_blocking = blockers + scratch
+    all_blocking += [str(b) for b in card.get("blocking", []) if str(b) not in all_blocking]
     all_blocking += [f"{f.get('problem')} at {f.get('timestamp')}s"
                      for f in card.get("findings", []) if f.get("severity") == "blocking"]
     all_blocking += [mechanical_line(f) for f in mechanical if f["severity"] == "blocking"]

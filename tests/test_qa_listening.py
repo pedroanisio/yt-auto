@@ -554,6 +554,14 @@ class BasisStage(unittest.TestCase):
         line = next(b for b in self.card["blocking"] if b.startswith("voice:"))
         self.assertIn("narration is an espeak scratch take (2 of 2 takes)", line)
         self.assertIn(f"run yt voice --project {self.root} --engine auto", line)
+        # a record, not a brief: the scorecard reviewer is asked what it
+        # would be asked of the same film read by a real engine, so no cached
+        # scorecard is asked again for it (AUTO-152's "no re-asked scorecards")
+        self.assertTrue(motion.FakeEngine.stream_calls)
+        for call in motion.FakeEngine.stream_calls:
+            self.assertNotIn("scratch take", call["prompt"])
+        self.assertEqual(json.loads((self.root / "qa.json").read_text())["verdict"],
+                         qa.NOT_READY)
 
 
 class Measured(unittest.TestCase):

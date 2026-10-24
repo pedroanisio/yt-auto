@@ -48,6 +48,30 @@ MARK = {"fail": "x", "warn": "!", "note": "·", "ok": "+"}
 SCRATCH_ENGINES = ("stub", "espeak")
 
 
+def scratch_reads(voice: dict | None) -> list[tuple[str, int, int]]:
+    """(engine, takes it read, takes) for each scratch engine a narration
+    used: the voice's own engine, and each take's (a take that names none
+    was read by the voice's). One rule for doctor's warning and QA's
+    blocker (qa.scratch_blockers, AUTO-152), so `yt improve`, which routes
+    doctor's row, has a finding for every scratch take QA blocks on, a
+    kokoro voice.json that kept stub takes included. A wordless film, or
+    none, has no narration and no scratch take."""
+    if not voice or not isinstance(voice, dict) or voice.get("wordless"):
+        return []
+    own = str(voice.get("engine") or "")
+    takes = [t for t in voice.get("takes") or [] if isinstance(t, dict)]
+    read_by = [str(t.get("engine") or own) for t in takes]
+    return [(e, read_by.count(e), len(takes)) for e in dict.fromkeys([own, *read_by])
+            if e in SCRATCH_ENGINES]
+
+
+def scratch_take(engine: str, read: int, takes: int) -> str:
+    """How doctor and QA name a scratch take: "an espeak scratch take (12 of
+    40 takes)"."""
+    return (f"{'an' if engine[:1] in 'aeiou' else 'a'} {engine} scratch take "
+            f"({read} of {takes} takes)")
+
+
 def real_engines() -> list[str]:
     """The narration engines usable on this machine that may be published:
     every voice.ENGINES entry whose probe says it is available, less the
@@ -1293,8 +1317,8 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
                     f"{r['section'] or '?'} {r['wpm']:.0f}"
                     + ("" if r["timing"] in rhythm.MEASURED else f" ({r['timing']})")
                     for r in rates))
-        if engine in SCRATCH_ENGINES:
-            report.add("warn", "voice", f"narration is a {engine} scratch take, "
+        for used in scratch_reads(voice):
+            report.add("warn", "voice", f"narration is {scratch_take(*used)}, "
                        "not publishable", _cmd("voice", project, "--engine", "auto"))
         if planned and abs(drift) > planned * DRIFT_LIMIT and not (script or {}).get("retimed_seconds"):
             report.add("warn", "voice", f"the read drifts {drift:+.0f}s "
