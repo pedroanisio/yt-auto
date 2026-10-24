@@ -4,7 +4,7 @@ No rubric existed: the script stage wrote against house prose and nothing
 graded the story before voice was paid for. This module is that rubric, in
 the shape docs/narrative/judging-narrative.md sets for a model judge:
 
-- eight criteria (`RUBRIC`), each a question with four labelled levels of
+- nine criteria (`RUBRIC`), each a question with four labelled levels of
   one line, a worked example, the strength of its lead rule from the
   corpus README's table and the corpus rules it is drawn from. Never a
   number: an unbounded or 1-100 score calibrates badly, four labels are read
@@ -22,8 +22,8 @@ doctor, improve and the operator read verdict strings, and "pass" there
 means the opposite.
 
 Four criteria decide a film: train, stakes, open loops and ending; hook,
-reveal setup, tension and honesty are the other four a reader can judge and
-a lint cannot. What a lint can measure (hook timing, sentence length, concrete
+reveal setup, tension, honesty and voice are the other five a reader can
+judge and a lint cannot. What a lint can measure (hook timing, sentence length, concrete
 before abstract by position) belongs to the deterministic checks, not here.
 
 Like `framecheck.CHECKLIST`, one tuple is meant to be rendered twice: into
@@ -44,9 +44,9 @@ here decides a verdict: it is schema and prompt text, `check_review` and
 (invariant 3), and `median` only reads the samples' own labels.
 
 A known gap: a criterion's strength is the README's word for its lead rule,
-and today none comes out `house`: seven lead with a practitioner rule and the
+and today none comes out `house`: seven lead with a practitioner rule, the
 hook with structure 10 (platform), although the hook's window is the
-house's choice. So the role's sentence that a Poor on a house-strength
+house's choice, and voice with attention 25 (peer-reviewed). So the role's sentence that a Poor on a house-strength
 criterion yields consider governs nothing yet; it stays because the
 calibration set (judging 10, AUTO-97) may show a criterion should be graded
 as a house prior.
@@ -114,6 +114,14 @@ LONGER = ("Longer is not better: a line, a beat or a section that adds length "
 #: Said to the reviewer: a house rule is a prior to tune, never a gate on its
 #: own (docs/narrative/README, strength of each rule).
 HOUSE_POOR = "a Poor on a house-strength criterion yields consider, never reject"
+
+#: Said to the story reviewer (AUTO-138): voice is graded like the rest but
+#: never decides a film, and its flag is a line's, so it reaches the writer
+#: as a shot to revise (`revise-story-N`), never as a plan to write again.
+VOICE_RULE = ("Voice is graded and flagged like every other criterion but is not one of "
+              "the four that decide a film: a Poor voice yields consider, never reject on "
+              "its own. A voice flag names the shot whose line reads as a lecture and "
+              "quotes it; never flag voice on shot 0.")
 
 
 @dataclass(frozen=True)
@@ -275,6 +283,35 @@ RUBRIC: tuple[Criterion, ...] = (
         "Excellent: \"Biermann's idea was doubted until a probe measured the wind.\"",
         "practitioner",
         ("attention 20", "attention 19")),
+    # AUTO-138: the brief asks for a narrator who sounds human, and until
+    # this row nothing graded the register before voice was paid for:
+    # rule:person only counts you/we words, at house tier. Not one of the
+    # four criteria that decide a film. Humour is graded only when it is
+    # there: no level asks for a joke, so a film with none loses nothing.
+    Criterion(
+        "voice",
+        "Does the narrator find things out alongside the viewer, rather than read a "
+        "lecture at them: speaking to them, asking aloud the question they are about to "
+        "ask, flagging the step most likely to lose them before it comes, and letting a "
+        "discovery land as a discovery; and does any humour serve the point being made?",
+        {"Excellent": "The narrator speaks to the viewer and finds out with them: asks "
+                      "aloud what they are about to ask, flags the hardest step before it "
+                      "comes, lets at least one discovery land as found, and any humour "
+                      "lands on the point being made.",
+         "Good": "Conversational and addressed to the viewer throughout; questions are "
+                 "asked, but the likeliest point of confusion passes unflagged or "
+                 "discoveries are stated rather than found.",
+         "Fair": "Correct but read like a lecture in stretches: conclusions asserted in an "
+                 "expert voice with no question or address to the viewer, or a joke or "
+                 "aside that serves no claim.",
+         "Poor": "An encyclopedia read aloud: impersonal throughout, never a question or a "
+                 "word to the viewer, nothing found out; or humour at the expense of the "
+                 "viewer or of people the subject harmed."},
+        "Poor: \"Comet tails are oriented anti-sunward owing to radiation pressure and the "
+        "solar wind.\" Excellent: \"A tail that leads? That looks backwards. Hold that "
+        "thought: the answer is blowing past you right now.\"",
+        "peer-reviewed",
+        ("attention 25", "attention 18", "direction 24", "attention 21")),
 )
 
 #: The criteria's keys, in rubric order.
@@ -411,6 +448,7 @@ def reviewer_role(*, window: str = OPENING_WINDOW, seed: int = 0, plan: bool = F
         "other line too. reject: it fails in most areas, or one of the four "
         "criteria that decide a film (train, stakes, open_loops, ending) is Poor; "
         f"but {HOUSE_POOR}, because a house rule is a prior to tune, not a gate. "
+        f"{VOICE_RULE} "
         "Longer is not better: never grade a draft up for its length.",
         "Read the first minute twice, once for whether it confirms what the title "
         "promised and once for its question and stakes, and say what each pass found. "
@@ -633,19 +671,33 @@ def check_plan_review(review: Any) -> list[str]:
     return found
 
 
-def check_review(review: Any) -> list[str]:
+def _shot_of(flag: Mapping) -> int | None:
+    """A flag's shot number, or None when it is not a number (the stage
+    names that broken answer itself)."""
+    try:
+        return int(flag.get("n", 0) or 0)
+    except (TypeError, ValueError):
+        return None
+
+
+def check_review(review: Any, drafted: bool | None = None) -> list[str]:
     """What a review says that its own rubric forbids, one line per problem.
 
     The harness checks the schema (fields, types, enums) and asks once
     more; these are the shapes a schema cannot refuse: a recommend that
     carries a Poor or a blocker, a consider with nothing to fix, and a flag
     on a criterion the rubric does not have (the harness lets an enum value
-    through after its retry), and a first minute that heard no trigger
-    (`none`) under a hook graded Excellent or Good, which the hook's own Fair
+    through after its retry), a voice flag on shot 0 of a drafted script
+    (the role ties voice to a named line), and a first minute that heard
+    no trigger (`none`) under a hook graded Excellent or Good, which the hook's own Fair
     describes; `not_heard` is no contradiction, since a review of the plan
-    alone grades the hook from the plan. The caller asks again once under its own
-    name (`<name>-again`), with these lines in the prompt, and records a
-    second failure; nothing here replaces the verdict."""
+    alone grades the hook from the plan. `drafted` False is a review of the
+    plan before any line exists (a calibration case, AUTO-97), where shot 0
+    is the only place a flag can go; None reads it from the review, as
+    drafted unless its first minute is `not_heard`. The caller asks again
+    once under its own name (`<name>-again`), with these lines in the
+    prompt, and records a second failure; nothing here replaces the
+    verdict."""
     if not isinstance(review, dict):
         return []
     found: list[str] = []
@@ -670,6 +722,19 @@ def check_review(review: Any) -> list[str]:
                      f"{'is' if len(unknown) == 1 else 'are'} no rubric criterion "
                      f"(the rubric has {', '.join(KEYS)})")
     first = review.get("first_minute") if isinstance(review.get("first_minute"), dict) else {}
+    if drafted is None:
+        drafted = first.get("trigger") != "not_heard"
+    # AUTO-138: a voice flag is a line's. On shot 0 it would leave a whole
+    # section or the plan for the writer to guess at, and send a register
+    # fault to a redraft or to planning again (REPLAN_FIX). A plan with no
+    # line yet has nowhere else to put it, so asking again there would only
+    # spend a call and lose the sample.
+    unplaced = [f for f in flags if isinstance(f, dict) and f.get("criterion") == "voice"
+                and _shot_of(f) == 0] if drafted else []
+    if unplaced:
+        found.append(f"a voice flag names the shot whose line reads as a lecture, and "
+                     f"{len(unplaced)} {'is' if len(unplaced) == 1 else 'are'} on shot 0: "
+                     "name the shot and quote its words")
     if first.get("trigger") == "none" and grades.get("hook") in ("Excellent", "Good"):
         found.append(f"a first minute whose three opening sentences pull no trigger "
                      f"(trigger none) is a Fair hook at best, and this one grades the hook "

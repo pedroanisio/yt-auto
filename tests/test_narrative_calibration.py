@@ -49,7 +49,7 @@ from tests import test_script_review as review_tests  # noqa: E402
 SEEDED = {"list-plan": "train", "topic-train": "train", "empty-payoff": "ending",
           "and-chain": "train", "reveal-first": "reveal_setup",
           "recap-ending": "ending", "hook-enumerates": "hook",
-          "flat-tension": "tension", "no-trigger": "hook"}
+          "flat-tension": "tension", "no-trigger": "hook", "lecture-voice": "voice"}
 
 #: The seeded faults only the cold read catches (judging 14): the story
 #: review is read on them and not judged.
@@ -414,7 +414,43 @@ class TensionAndTrigger(unittest.TestCase):
                 self.assertIn("none", failed[0])
 
 
+class LectureVoice(unittest.TestCase):
+    """AUTO-138: the good film read as a lecture, graded on voice."""
+
+    def test_judge_case_fails_a_reviewer_that_hears_no_lecture(self):
+        expected = load(FIXTURES / "lecture-voice" / "expected.json")
+        self.assertEqual(narrative.judge_case(expected, got_for("lecture-voice")), [])
+        failed = narrative.judge_case(expected, got_for("lecture-voice", verdict="recommend"))
+        self.assertTrue(any("recommend" in line for line in failed), failed)
+        for grade in ("Excellent", "Good"):
+            with self.subTest(grade=grade):
+                grades = dict(got_for("lecture-voice")["grades"], voice=grade)
+                failed = narrative.judge_case(expected, got_for("lecture-voice",
+                                                                grades=grades))
+                self.assertTrue(any(f"voice graded {grade}" in line for line in failed),
+                                failed)
+        unflagged = [f for f in got_for("lecture-voice")["flags"] if f["criterion"] != "voice"]
+        failed = narrative.judge_case(expected, got_for("lecture-voice", flags=unflagged))
+        self.assertTrue(any("no flag on voice" in line for line in failed), failed)
+
+    def test_its_voice_flags_name_shots_and_quote_them(self):
+        said = load(FIXTURES / "lecture-voice" / "expected.json")["review"]
+        voiced = [f for f in said["flags"] if f["criterion"] == "voice"]
+        self.assertTrue(voiced)
+        for f in voiced:
+            self.assertGreater(f["n"], 0, f)
+            self.assertTrue(f["quote"].strip(), f)
+        self.assertEqual(said["verdict"], "consider")
+
+
 class LengthAudit(unittest.TestCase):
+    def test_the_good_pair_at_the_ceiling_carries_voice_excellent(self):
+        good = load(FIXTURES / "good" / "expected.json")["review"]
+        top = {"verdict": "recommend", "grades": {k: "Excellent" for k in good["grades"]}}
+        self.assertEqual(sorted(top["grades"]), sorted(narrative.KEYS))
+        self.assertTrue(narrative.at_ceiling(top, top))
+        self.assertEqual(good["grades"]["voice"], "Excellent")
+
     def test_who_wins_a_pair(self):
         self.assertEqual(narrative.pair_winner(rated("consider"), rated("recommend")), "longer")
         self.assertEqual(narrative.pair_winner(rated("recommend"), rated("consider")), "shorter")
@@ -443,6 +479,10 @@ class LengthAudit(unittest.TestCase):
     def test_a_pair_at_the_ceiling_is_counted_and_an_audit_all_at_it_sees_nothing(self):
         top = rated("recommend", **{k: "Excellent" for k in narrative.KEYS})
         self.assertTrue(narrative.at_ceiling(top, top))
+        # AUTO-138: the ceiling is every row Excellent, voice too
+        self.assertEqual(len(top["grades"]), 9)
+        self.assertFalse(narrative.at_ceiling(top, dict(top, grades=dict(top["grades"],
+                                                                         voice="Good"))))
         self.assertFalse(narrative.at_ceiling(top, rated("recommend")))
         self.assertFalse(narrative.at_ceiling(rated("consider"), rated("consider")))
         tie = (rated("consider"), rated("consider"))
@@ -735,6 +775,27 @@ class PlanOnly(Hermetic):
         self.assertIn("review the plan above as the film it would make", flat)
         self.assertIn("shot 0", flat[flat.index("No section is drafted yet"):])
         self.assertNotIn("Section 1:", prompt)
+        # no line exists to quote, so voice is graded from the plan, never flagged
+        self.assertIn("with no narration drafted, voice is graded from the plan and "
+                      "never flagged", flat)
+
+    def test_a_voice_flag_on_a_plan_settles_the_sample_without_asking_again(self):
+        said = load(FIXTURES / "list-plan" / "expected.json")["review"]
+        voiced = copy.deepcopy(said)
+        voiced["flags"].append({"n": 0, "section": 0, "criterion": "voice",
+                                "problem": "the plan's beats read as a lecture",
+                                "severity": "minor", "fix": "ask what the viewer asks",
+                                "quote": ""})
+        asked = []
+
+        def ask(self_, name, prompt, schema):
+            asked.append(name)
+            return copy.deepcopy(voiced)
+        with mock.patch.object(script.Screenwriter, "_ask", ask):
+            rnd = self.writer().review_round([], load(FIXTURES / "list-plan" / "plan.json"), 1)
+        self.assertTrue(all(s["valid"] for s in rnd["samples"]), rnd["samples"])
+        self.assertFalse([n for n in asked if n.endswith("-again")], asked)
+        self.assertEqual(rnd["verdict"], said["verdict"])
 
     def test_a_flag_on_a_shot_the_plan_does_not_have_unsettles_the_sample(self):
         said = load(FIXTURES / "list-plan" / "expected.json")["review"]
@@ -918,6 +979,15 @@ class Docs(unittest.TestCase):
         self.assertIn("20", item)
         self.assertIn("length", item)
         self.assertRegex(item, r"about \$\d+")
+
+    def test_the_stated_cost_of_a_live_run_is_the_shipped_set_s(self):
+        # one case and one padded read each cost CALIBRATE_USD_PER_CASE; a new
+        # fixture moves the figure the docs state (AUTO-138)
+        reads = len(cases()) + sum(1 for p in cases().values() if (p / "padded.json").is_file())
+        want = f"about ${reads * narrative.CALIBRATE_USD_PER_CASE:g} for the shipped set"
+        for doc in (ROOT / "ytstudio" / "SKILL.md", ROOT / "docs" / "narrative" / "README.md"):
+            with self.subTest(doc=doc.name):
+                self.assertIn(want, " ".join(doc.read_text(encoding="utf-8").split()))
 
     def test_gate_when_names_the_calibration(self):
         self.assertIn("calibrate", script.GATE_WHEN)

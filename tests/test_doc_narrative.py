@@ -220,6 +220,38 @@ class Corpus(unittest.TestCase):
             self.assertIn(words, definition)
 
 
+class Humour(unittest.TestCase):
+    """AUTO-138: attention 21 cuts the joke that serves no claim, not every
+    joke, and attention 25 names the story review's voice row."""
+
+    def rule(self, rid: str) -> Rule:
+        return next(r for r in corpus() if r.id == rid)
+
+    def test_rule_21_cuts_only_jokes_that_serve_no_claim(self):
+        rule = self.rule("attention 21")
+        statement = " ".join(rule.text.split("**")[1].split())
+        self.assertIn("jokes that serve no claim", statement)
+        self.assertNotIn("anecdotes, jokes, inserts", statement)
+        for words in ("Humour is allowed, never required", "whose punchline is the mechanism",
+                      "names the confusion the viewer has", "is a seductive detail and is cut",
+                      "Never humour at the expense of the viewer or of people the subject "
+                      "harmed"):
+            self.assertIn(words, rule.check)
+
+    def test_rule_25_names_its_reviewer(self):
+        self.assertIn("`voice`", self.rule("attention 25").check)
+
+    def test_the_readme_says_what_of_humour_is_still_unread(self):
+        text = " ".join(README.read_text(encoding="utf-8").split())
+        gap = text[text.index("## What the corpus does not yet cover"):]
+        gap = gap[:gap.index("## ", 5)]
+        self.assertNotIn("humour and tone as retention devices;", gap)
+        self.assertIn("attention 21", gap)
+        item = text[text.index("3. **The narrative rubric.**"):text.index("4. **The evidence loop.**")]
+        self.assertIn("nine criteria", item)
+        self.assertIn("`rule:unexplained-term`", item)
+
+
 class Parser(unittest.TestCase):
     """The parser reads a missing part as missing, so the checks above can fail."""
 

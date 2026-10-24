@@ -1204,6 +1204,13 @@ class StoryFindings(ImproveCase):
         self.assertIn("even though it is expensive", prompt)
         self.assertIn(narrative.rubric_text("writer"), prompt)    # rendered, not retyped
         self.assertIn("the story (hook, stakes", prompt)        # DUTIES["script"]
+        # AUTO-138: the voice row, humour allowed when it makes the point
+        voice = narrative.criterion("voice")
+        self.assertIn(f"voice: {voice.question}", prompt)
+        self.assertIn("any humour lands on the point being made", prompt)
+        rule = (improve.ROUTE_SCHEMA["properties"]["briefs"]["items"]["properties"]["rules"]
+                ["items"]["properties"]["rule"])
+        self.assertIn("voice", rule["enum"])
 
     def test_a_finding_the_plan_contradicts_is_annotated_and_still_routed(self):
         self.plan_script()

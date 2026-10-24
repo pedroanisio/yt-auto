@@ -712,6 +712,13 @@ the plan's `hook.trigger`; only an opening heard to pull none is a flag, a
 whole-script hook flag left unresolved (`hook-trigger-match`, carrying the
 samples' own whole-script hook problem and fix). The `tension`
 row grades whether each middle section puts more at risk than the one before.
+The `voice` row (AUTO-138) grades whether the narrator finds things out with
+the viewer rather than lecturing: speaking to them, asking aloud what they are
+about to ask, flagging the step likeliest to lose them, letting a discovery
+land, and any humour serving the point (allowed, never required). A Poor
+voice is a consider, never a reject on its own, and a voice flag must name
+its shot and quote it: one on shot 0 is asked again, so a lecture-register
+line goes to `revise-story-1`.
 A consider sends its binding flags
 back: a shot's to `revise-story-1` (the line may be restructured, never given
 a new fact), a section's (shot 0) to `redraft-NN` (the section written again
@@ -856,12 +863,15 @@ unless it is left open on purpose), `rule:closed-unopened` (an answer
 before the question was raised), `rule:raises-nothing` (a section the
 ledger has open and close nothing, minor) and, with `--review`,
 `rule:unanswered-by-reader` (an answer a writer marked that the cold reader
-did not hear). The important ones go back to the writer with the figures
-said twice (`revise-ledger`; the reader's in `revise-ledger-2`), and the
-writer names the questions each flagged line answers as it leaves it
-(`closes`): a line that changed is no answer by itself. What stands is a
-warning, and script.json's `questions` names each question's `opened_at`
-and `closed_at` shot labels.
+did not hear) and `rule:unexplained-term` (AUTO-138: a term the cold reader
+needed and was never told, on the first line that says it; important on a
+lay plan, otherwise minor). The important ones go back to the writer with
+the figures said twice (`revise-ledger`; the reader's, questions and lay
+terms, in `revise-ledger-2`), and the writer names the questions each
+flagged line answers as it leaves it (`closes`): a line that changed is no
+answer by itself, except to a term, whose definition keeps the word. What
+stands is a warning, and script.json's `questions` names each question's
+`opened_at` and `closed_at` shot labels.
 
 After the polish the narration is measured against `script.RULES`, each a
 bound in `script.BOUNDS` with the corpus rule it comes from

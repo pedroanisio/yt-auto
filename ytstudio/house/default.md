@@ -54,11 +54,11 @@ The narration carries the message on first listen: a viewer who cannot rewind un
 - One emphasised word per sentence, and it is a word in the line. Every name or term whose pronunciation is not obvious gets a pronouncer with its stressed syllable.
 
 ## format
-<!-- rules: structure 36, 37; attention 18 -->
+<!-- rules: structure 36, 37; attention 18, 21, 25 -->
 <!-- Structure 37 also asks for a thumbnail grammar. That is a look, which
 is styles.json's under invariant 2, so it is left out here on purpose. -->
 The channel is a repeatable format. These are neutral defaults until the channel's own house file states its format.
-- Narrator: one persona across films, the viewer's proxy who is finding out, not the expert who already knows; expertise belongs to named sources.
+- Narrator: one persona across films, the viewer's proxy who is finding out, not the expert who already knows; expertise belongs to named sources. The narrator says 'you' and 'we', asks aloud the question the viewer is about to ask, warns before the step most likely to lose them, and may be funny when the joke makes the point.
 - Opening: the same device every film; with none set here, open on this film's question.
 - Ending: the same device every film; with none set here, end on the payoff.
 - Hand-off: when the channel or the plan names the next film, one spoken pointer to that film, which continues this film's question, never a generic invitation to watch more; with none named, no hand-off.

@@ -335,6 +335,20 @@ class TheShippedText(unittest.TestCase):
                 self.assertRegex(self.line("format", f"- {device}:"), r"\bnone\b")
         self.assertNotRegex(self.line("format", "- Hand-off:"), r"^- Hand-off: one spoken")
 
+    def test_the_narrator_talks_with_the_viewer_and_may_be_funny_on_the_point(self):
+        # AUTO-138: attention 25's conversational voice and attention 21's
+        # humour that serves a claim, in the format's one Narrator bullet
+        narrator = self.line("format", "- Narrator:")
+        for words in ("the viewer's proxy who is finding out", "says 'you' and 'we'",
+                      "asks aloud the question the viewer is about to ask",
+                      "warns before the step most likely to lose them",
+                      "may be funny when the joke makes the point"):
+            self.assertIn(words, narrator)
+        said = cited(COMMENT.search(self.raw["format"]).group(1))
+        for rule in (("attention", 18), ("attention", 21), ("attention", 25)):
+            self.assertIn(rule, said)
+        self.assertLess(len(self.raw["format"]), 1500)
+
     def test_the_strength_is_the_corpus_strength(self):
         # attention 8 says "whenever possible"; structure 19 lets a section
         # defer its answer to a named later one; structure 35 allows the one
