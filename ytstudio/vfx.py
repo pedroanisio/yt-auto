@@ -728,6 +728,36 @@ def constraint_lines(constraints: list[dict], labels: set[str] | None = None) ->
     return lines
 
 
+#: The effect types that hold a picture still (AUTO-144): an effect of one of
+#: these on a shot the picture-check says shows a process in one fixed state
+#: (`static_cover`) is asked for once more. "2d-diagram" is not one: a step
+#: build is a valid answer, and the motion audit after authoring catches a
+#: diagram that does not build.
+STATIC_TYPES = ("text-and-callout", "photo-composite", "stock-treatment")
+
+#: The prefix script.picture_flags writes on a static-process flag's problem.
+STATIC_PROCESS = "picture:static-process:"
+
+
+def static_cover(effects: list[dict], constraints: list[dict]) -> list[tuple[str, str]]:
+    """(effect id, shot label) for each effect of a STATIC_TYPES type whose
+    shots include a label a standing static-process flag binds: the plan
+    answered a process its picture-check says is frozen with a type that
+    keeps it still. Pure; nothing is judged here."""
+    frozen = {str(c.get("label") or "") for c in constraints or []
+              if isinstance(c, dict) and str(c.get("problem", "")).startswith(STATIC_PROCESS)}
+    frozen.discard("")
+    return [(str(e.get("id", "")), str(label)) for e in effects or []
+            if isinstance(e, dict) and e.get("type") in STATIC_TYPES
+            for label in e.get("shots") or [] if str(label) in frozen]
+
+
+def cover_warnings(effects: list[dict], constraints: list[dict]) -> list[str]:
+    """`static_cover` as the section plan's `warnings` lines."""
+    return [f"{eid} covers {label}, a process its picture-check says is shown static"
+            for eid, label in static_cover(effects, constraints)]
+
+
 #: A symbol may fall this far short of its shots before it is an error.
 TIMING_SLACK = 0.25
 
@@ -3306,18 +3336,44 @@ class VfxPlanner:
             "misleading. In `template` name the shared rig when one build "
             "serves several shots; same wording each time."
         )
-        answer = self._decide(f"plan-effects-{slugify(heading, 40) or 'section'}",
-                                prompt, EFFECTS_SCHEMA)
-        effects = answer.get("effects", [])
+        name = f"plan-effects-{slugify(heading, 40) or 'section'}"
         known = {s["label"] for s in shots}
-        for effect in effects:
-            effect["section"] = heading
-            effect["id"] = ident(slugify(f"{heading}-{effect['name']}", 48))
-            effect["shots"] = [s for s in effect.get("shots", []) if s in known]
+
+        def settled(answer: dict) -> list[dict]:
+            effects = answer.get("effects", [])
+            for effect in effects:
+                effect["section"] = heading
+                effect["id"] = ident(slugify(f"{heading}-{effect['name']}", 48))
+                effect["shots"] = [s for s in effect.get("shots", []) if s in known]
+            return effects
+
+        answer = self._decide(name, prompt, EFFECTS_SCHEMA)
+        effects = settled(answer)
+        # AUTO-144: a process the picture-check says is frozen, covered by a
+        # type that keeps it still, is asked once more; a second still answer
+        # stands, recorded as the plan's warning (the motion audit after
+        # authoring is the second gate), so the planner never stalls on it.
+        constraints = self.bundle.get("picture_check") or []
+        if cover := static_cover(effects, constraints):
+            by_id = {e["id"]: e for e in effects}
+            answer = self._decide(f"{name}-again", prompt + "\n\n" + "\n".join(
+                ["The picture-check found that these shots must show a change over time "
+                 "and their pictures show one fixed state; your answer covers them with a "
+                 "type that keeps the picture still:"]
+                + [f"- `{eid}` ({by_id[eid].get('type')}) covers shot {label}"
+                   for eid, label in cover]
+                + ["Answer the whole section again. The type of each effect named must let "
+                   "the viewer watch the change during those shots: the states built one "
+                   "per beat, a simulation, or a step animation, in whatever treatment "
+                   "this video chose."]), EFFECTS_SCHEMA)
+            effects = settled(answer)
         cuts = [c for c in answer.get("cuts", []) or []
                 if isinstance(c, dict) and c.get("before") in known]
-        return {"section": heading, "seconds": section.get("seconds", 0),
-                "effects": effects, "cuts": cuts}
+        out = {"section": heading, "seconds": section.get("seconds", 0),
+               "effects": effects, "cuts": cuts}
+        if warnings := cover_warnings(effects, constraints):
+            out["warnings"] = warnings
+        return out
 
     def effects(self, outline: dict, style: dict) -> list[dict]:
         sections = outline.get("sections", [])
@@ -3336,7 +3392,19 @@ class VfxPlanner:
                     except ClaudeError as exc:
                         self._say(f"    {section.get('heading', '')[:52]}: failed ({exc})")
                 return out
-        return self._stage("11-effects", work)
+        plan = self._stage("11-effects", work)
+        # A cached plan (or one made before AUTO-144) is read against the
+        # constraints as they stand now: its warnings are recomputed, pure,
+        # and nothing is asked again. A plan with none renders as before.
+        constraints = self.bundle.get("picture_check") or []
+        for group in plan if isinstance(plan, list) else []:
+            if not isinstance(group, dict):
+                continue
+            if warnings := cover_warnings(group.get("effects") or [], constraints):
+                group["warnings"] = warnings
+            else:
+                group.pop("warnings", None)
+        return plan
 
     # -- the author --------------------------------------------------------
 
@@ -4752,6 +4820,8 @@ def write_vfx(dossier: Dossier, data: dict) -> list[Path]:
     for section in data["sections"]:
         hours = sum(float(e.get("hours") or 0) for e in section["effects"])
         md += [f"### {section['section']} ({section['seconds']}s · {hours:.1f}h)", ""]
+        if section.get("warnings"):
+            md += [f"*warning: {w}*" for w in section["warnings"]] + [""]
         for effect in section["effects"]:
             stars = ("●" * int(effect.get("difficulty", 0))
                      + "○" * (5 - int(effect.get("difficulty", 0))))
