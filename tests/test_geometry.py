@@ -276,6 +276,112 @@ class Documents(unittest.TestCase):
                          ["s/floor", "s/desk"])
 
 
+#: AUTO-145: a section world with a text layer, a formula and a fading
+#: label, an inner symbol it instances, and a second file included whole
+#: that itself includes the first file's symbol. Key times are the symbol's
+#: own; the include and instance windows place them on the film.
+TEXT_WORLD = """<scene version="1.3">
+  <assets>
+    <text id="t-title" text="Rust eats the bolt" width="900" height="120"/>
+    <text id="t-span" width="900" height="120"><span>half</span><span> the load</span></text>
+    <formula id="f-law" tex="F = m a" width="400" height="120"/>
+    <text id="quote-1" text="we never saw it coming" width="900" height="120"/>
+  </assets>
+  <symbols>
+    <symbol id="world-a" width="1920" height="1080">
+      <layer id="l-title" asset="t-title" start="0" end="3"/>
+      <layer id="l-law" asset="f-law"/>
+      <group id="g-fade">
+        <layer id="l-span" asset="t-span">
+          <animate property="opacity"><key time="0" value="0"/><key time="2" value="1"/><key time="4" value="0"/></animate>
+        </layer>
+      </group>
+      <object3D id="hero-box" primitive="box" width="10" height="10" depth="10"/>
+      <instance id="use-inner" symbol="inner" start="1" end="5"/>
+    </symbol>
+    <symbol id="inner" width="1920" height="1080">
+      <text id="t-inner" text="inner words" width="400" height="80"/>
+    </symbol>
+  </symbols>
+</scene>
+"""
+
+TEXT_OUTER = """<scene version="1.3">
+  <composition>
+    <include id="deep" src="a.scene.xml" symbol="world-a" start="1" end="3"/>
+  </composition>
+</scene>
+"""
+
+TEXT_SCENE = """<scene version="1.3"><project width="1920" height="1080" fps="30" duration="20"/>
+  <composition>
+    <include id="shot-1.1" start="10" end="16" src="vfx/v01/a.scene.xml" symbol="world-a"/>
+    <include id="shot-2.1" start="16" end="20" src="vfx/v01/outer.scene.xml"/>
+  </composition>
+</scene>
+"""
+
+
+def text_project(root: Path) -> str:
+    """TEXT_SCENE and its files under `root`; returns the scene's text."""
+    (root / "vfx" / "v01").mkdir(parents=True, exist_ok=True)
+    (root / "vfx" / "v01" / "a.scene.xml").write_text(TEXT_WORLD, encoding="utf-8")
+    (root / "vfx" / "v01" / "outer.scene.xml").write_text(TEXT_OUTER, encoding="utf-8")
+    (root / "scene.xml").write_text(TEXT_SCENE, encoding="utf-8")
+    return TEXT_SCENE
+
+
+class TextNodes(unittest.TestCase):
+    """AUTO-145: the same walk yields the text and formula nodes a scene
+    draws, each with the window its includes and instances put it in."""
+
+    def test_text_and_formula_nodes_come_through_includes_instances_and_nesting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            scene = text_project(root)
+            rows = geometry._composed(scene, "", root, kinds=geometry.TEXT_KINDS)
+        by_id = {r["id"]: r for r in rows}
+        self.assertEqual(sorted(by_id), sorted([
+            "shot-1.1/l-title", "shot-1.1/l-law", "shot-1.1/l-span",
+            "shot-1.1/use-inner/t-inner",
+            "shot-2.1/deep/l-title", "shot-2.1/deep/l-law", "shot-2.1/deep/l-span",
+            "shot-2.1/deep/use-inner/t-inner"]))
+        title = by_id["shot-1.1/l-title"]
+        self.assertEqual((title["kind"], title["text"]), ("text", "Rust eats the bolt"))
+        self.assertEqual(title["window"], [10.0, 13.0])          # the layer's own 0-3
+        self.assertEqual(by_id["shot-1.1/l-law"]["kind"], "formula")
+        self.assertEqual(by_id["shot-1.1/l-law"]["text"], "F = m a")
+        self.assertEqual(by_id["shot-1.1/l-law"]["window"], [10.0, 16.0])
+        self.assertEqual(by_id["shot-1.1/l-span"]["text"], "half the load")
+        # the fade's keys on the film's clock
+        self.assertEqual(by_id["shot-1.1/l-span"]["fades"], [[[10.0, 0.0], [12.0, 1.0],
+                                                             [14.0, 0.0]]])
+        self.assertEqual(by_id["shot-1.1/use-inner/t-inner"]["window"], [11.0, 15.0])
+        # nested: shot-2.1 at 16, deep at +1..+3, the title's own 0-3
+        self.assertEqual(by_id["shot-2.1/deep/l-title"]["window"], [17.0, 19.0])
+        self.assertEqual(by_id["shot-2.1/deep/l-span"]["fades"], [[[17.0, 0.0], [19.0, 1.0],
+                                                                  [21.0, 0.0]]])
+        self.assertEqual(by_id["shot-2.1/deep/use-inner/t-inner"]["window"], [18.0, 19.0])
+        # quote-1 is an asset no layer draws: nothing on screen
+        self.assertFalse(any("quote-1" in r["id"] for r in rows))
+
+    def test_the_default_call_still_returns_the_same_objects(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            scene = text_project(root)
+            default = geometry._composed(scene, "", root)
+            named = geometry._composed(scene, "", root, kinds=("object3D",))
+            plain = geometry.scene_objects(scene, root)
+        self.assertEqual(default, plain)
+        self.assertEqual(named, plain)
+        self.assertEqual([r["id"] for r in plain],
+                         ["shot-1.1/hero-box", "shot-2.1/deep/hero-box"])
+        self.assertNotIn("window", plain[0])
+        self.assertEqual(geometry.document_objects(TEXT_WORLD, symbol="world-a", prefix="s/"),
+                         geometry.document_objects(TEXT_WORLD, symbol="world-a", prefix="s/",
+                                                   kinds=("object3D",)))
+
+
 class Penetration(unittest.TestCase):
     """The records: a merge deeper than the tolerance, never a resting contact."""
 

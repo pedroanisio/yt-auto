@@ -145,14 +145,147 @@ def _row(el, prefix: str) -> dict:
     return row
 
 
-def document_objects(doc_text: str, *, symbol: str | None = None, prefix: str = "") -> list[dict]:
+#: What `document_objects` and `_composed` read by default: the solids.
+OBJECT_KINDS = ("object3D",)
+#: The elements that put words on screen (AUTO-145): sdkkit has no other.
+#: `textStyle` is a style definition and is never drawn.
+TEXT_KINDS = ("text", "formula")
+#: How deep includes and instances are followed, one way for both.
+NEST_DEPTH = 3
+#: Elements of a document that hold definitions, not what is drawn.
+_UNDRAWN = ("assets", "symbols", "styles", "materials", "lights", "effects", "output",
+            "project", "metadata", "markers", "fonts", "audio")
+
+
+def _local(el) -> str:
+    return el.tag.rsplit("}", 1)[-1] if isinstance(el.tag, str) else ""
+
+
+def _span(lo: float | None, hi: float | None, start: float | None, end: float | None,
+          offset: float) -> tuple[float | None, float | None]:
+    """A window (None for an open end) narrowed by an element's own
+    start/end, given on its container's clock (`offset` on the film's)."""
+    if start is not None:
+        lo = round(offset + start, 3) if lo is None else max(lo, round(offset + start, 3))
+    if end is not None:
+        hi = round(offset + end, 3) if hi is None else min(hi, round(offset + end, 3))
+    return lo, hi
+
+
+def _fades(el, offset: float) -> list[list[list[float]]]:
+    """The element's opacity on the film's clock, as tracks of [time,
+    value] keys: each `<animate property="opacity">` child (a `local` time
+    base counts from the element's own start; a `normalized` one cannot be
+    placed without its duration and is left out), or a static opacity of 0
+    as one key at 0. Nothing when it has neither."""
+    out = []
+    for anim in el:
+        if _local(anim) != "animate" or anim.get("property") != "opacity":
+            continue
+        base = anim.get("timeBase") or "composition"
+        if base == "normalized":
+            continue
+        shift = offset + ((_float(el.get("start")) or 0.0) if base == "local" else 0.0)
+        keys = sorted([[round(shift + t, 3), v] for t, v in
+                       ((_float(k.get("time")), _float(k.get("value"))) for k in anim
+                        if _local(k) == "key") if t is not None and v is not None])
+        if keys:
+            out.append(keys)
+    if not out and _float(el.get("opacity")) == 0:
+        out.append([[0.0, 0.0]])
+    return out
+
+
+def _words_of(asset) -> str:
+    """What a text or formula element says: @text (else its spans) or @tex."""
+    if _local(asset) == "formula":
+        return " ".join((asset.get("tex") or "").split())
+    said = asset.get("text") or "".join(s.text or "" for s in asset if _local(s) == "span")
+    return " ".join(said.split())
+
+
+def _drawn_text(root, container, *, prefix: str, base: Path, kinds: tuple, offset: float,
+                window: tuple, fades: list, depth: int, out: list[dict]) -> None:
+    """The text and formula nodes `container` draws, in document order:
+    each `kinds` element placed in it, each `layer` drawing an asset of
+    those kinds, and what its includes and instances draw, followed one way
+    to NEST_DEPTH. An include or instance starts its content's clock at its
+    own start, and its window narrows its content's; a group's start and
+    end narrow it too, without moving the clock. Every ancestor's opacity
+    tracks ride along (`fades`)."""
+    assets = {el.get("id"): el for el in root.iter()
+              if _local(el) in kinds and el.get("id")}
+    for el in container:
+        tag = _local(el)
+        if tag in _UNDRAWN or tag in ("animate", "key"):
+            continue
+        start, end = _float(el.get("start")), _float(el.get("end"))
+        lo, hi = _span(*window, start, end, offset)
+        if lo is not None and hi is not None and hi <= lo:
+            continue
+        here = fades + _fades(el, offset)
+        ident = el.get("id") or ""
+        if tag in ("include", "instance"):
+            if depth >= NEST_DEPTH:
+                continue
+            sub = f"{prefix}{ident}/" if ident else prefix
+            clock = offset + (start or 0.0)
+            sym = el.get("symbol")
+            if tag == "include":
+                path = Path(base) / (el.get("src") or "")
+                if not el.get("src") or not path.is_file():
+                    continue
+                inner = _parse(path.read_text(encoding="utf-8", errors="replace"))
+                inner_base = path.parent
+            else:
+                inner, inner_base = root, base
+            if inner is None:
+                continue
+            if sym:
+                body = next((s for s in inner.iter("symbol") if s.get("id") == sym), None)
+            else:
+                body = next(inner.iter("composition"), inner)
+            if body is not None:
+                _drawn_text(inner, body, prefix=sub, base=inner_base, kinds=kinds,
+                            offset=clock, window=(lo, hi), fades=here, depth=depth + 1,
+                            out=out)
+            continue
+        asset = el if tag in kinds else assets.get(el.get("asset") or "") \
+            if tag == "layer" else None
+        if asset is not None:
+            out.append({"id": prefix + (ident or asset.get("id") or ""),
+                        "name": ident or asset.get("id") or "", "kind": _local(asset),
+                        "asset": asset.get("id") if asset is not el else "",
+                        "text": _words_of(asset), "window": [lo, hi], "fades": here})
+            continue
+        _drawn_text(root, el, prefix=prefix, base=base, kinds=kinds, offset=offset,
+                    window=(lo, hi), fades=here, depth=depth, out=out)
+
+
+def document_objects(doc_text: str, *, symbol: str | None = None, prefix: str = "",
+                     kinds: tuple = OBJECT_KINDS) -> list[dict]:
     """The object3D nodes of one `<symbol id=symbol>` (or, with no symbol,
     those drawn outside any symbol), typed, in document order, their ids and
     parents qualified by `prefix` (`shot-1.1/`, the include's id as eval
-    names them)."""
+    names them).
+
+    With `kinds` TEXT_KINDS (AUTO-145) they are instead the text and
+    formula nodes it draws (`_drawn_text`), each with its `kind`, its words
+    (`text`), its `window` and its opacity `fades` on the symbol's own
+    clock, instances followed."""
     root = _parse(doc_text)
     if root is None:
         return []
+    if tuple(kinds) != OBJECT_KINDS:
+        if symbol is None:
+            body = next(root.iter("composition"), root)
+        else:
+            body = next((s for s in root.iter("symbol") if s.get("id") == symbol), None)
+        out: list[dict] = []
+        if body is not None:
+            _drawn_text(root, body, prefix=prefix, base=Path("."), kinds=tuple(kinds),
+                        offset=0.0, window=(None, None), fades=[], depth=0, out=out)
+        return out
     if symbol is None:
         inside = {id(o) for s in root.iter("symbol") for o in s.iter("object3D")}
         elements = [o for o in root.iter("object3D") if id(o) not in inside]
@@ -162,10 +295,23 @@ def document_objects(doc_text: str, *, symbol: str | None = None, prefix: str = 
     return [_row(el, prefix) for el in elements if el.get("id")]
 
 
-def _composed(doc_text: str, prefix: str, base: Path, depth: int = 0) -> list[dict]:
+def _composed(doc_text: str, prefix: str, base: Path, depth: int = 0, *,
+              kinds: tuple = OBJECT_KINDS) -> list[dict]:
+    """What a scene draws through its includes and instances: the object3D
+    nodes by default, or with `kinds` TEXT_KINDS (AUTO-145) the text and
+    formula nodes, each carrying its window on the film's clock (an
+    include's start and end, an instance's, a layer's own) and its
+    opacity tracks, walked one way through includes, `<instance symbol>`
+    and nesting to NEST_DEPTH."""
     root = _parse(doc_text)
     if root is None:
         return []
+    if tuple(kinds) != OBJECT_KINDS:
+        found: list[dict] = []
+        _drawn_text(root, next(root.iter("composition"), root), prefix=prefix,
+                    base=Path(base), kinds=tuple(kinds), offset=0.0, window=(None, None),
+                    fades=[], depth=depth, out=found)
+        return found
     out: list[dict] = []
     for inc in root.iter("include"):
         src, sym, iid = inc.get("src"), inc.get("symbol"), inc.get("id") or ""
