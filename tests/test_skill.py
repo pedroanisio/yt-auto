@@ -159,6 +159,19 @@ class Skill(unittest.TestCase):
         self.assertIn("story review", loop)
         self.assertIn("`story-review`", loop)
 
+    def test_the_manual_names_the_viewer_quiz_as_a_measure(self):
+        # AUTO-115: a paragraph beside the cold reader's names the quiz's
+        # decisions, who sees what, and that it gates nothing
+        quiz = self.text[self.text.index("**The viewer quiz"):]
+        quiz = quiz[:quiz.index("\n\n")]
+        for needle in ("`quiz`", "`quiz-before`", "`quiz-after`", "`quiz-after-r2`",
+                       "`quiz-again`", "cold_read.quiz", "measure", "never sees the narration",
+                       "key", "prior", "--gate"):
+            self.assertIn(needle, quiz, needle)
+        script_row = next(line for line in self.text.splitlines()
+                          if line.startswith("| `yt script` |"))
+        self.assertIn("viewer quiz", script_row)
+
     def test_the_manual_keeps_the_delivery_order_and_the_bar(self):
         for needle in ("--quality final --strict", "READY TO PUBLISH", "9.0", "8.5",
                        "docs/production.md", "docs/compute.md", "RS_RENDER_HOSTS"):
