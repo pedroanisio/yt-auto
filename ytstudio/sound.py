@@ -57,7 +57,7 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 from claude_engine import ClaudeError, EngineConfig, Usage
-from .build import NORMALIZE_MODES
+from .build import BEAT_KINDS, BEATS_A_BAR, NORMALIZE_MODES
 from .core import (Idea, read_json, slugify, timecode, wrap,
                    write_json)
 from .ideas import CHANNEL_STYLES, style_brief
@@ -1324,8 +1324,8 @@ class Levels:
 # beat grids (AUTO-140): measured on the render host, worked out here
 # --------------------------------------------------------------------------- #
 
-#: The cue kinds whose files get a beat envelope and a `beat_grid`.
-BEAT_KINDS = ("music", "stinger")
+# BEAT_KINDS (the cue kinds whose files get an envelope and a `beat_grid`)
+# and BEATS_A_BAR (4/4 assumed, TO VERIFY) are build's, which lays the grid.
 #: The envelope's hop: BEAT_RATE samples a second in blocks of
 #: BEAT_HOP_SAMPLES, one RMS level per block (10 ms).
 BEAT_RATE, BEAT_HOP_SAMPLES = 8000, 80
@@ -1341,8 +1341,6 @@ BEAT_BPM = (60, 180)
 BEAT_CONFIDENCE = 0.3
 #: What a silent block (-inf) counts as, in dB.
 BEAT_FLOOR_DB = -120.0
-#: Beats a bar, for the downbeat: 4/4 is assumed. TO VERIFY.
-BEATS_A_BAR = 4
 
 
 def parse_envelope(text: str) -> list[float]:

@@ -439,7 +439,9 @@ def _voice_v1():
               _w(("the", 0.0), ("end", 0.4), ("of", 0.8), ("the", 1.1), ("line", 1.5)))]}
 
 
-class Anchors(_Project):
+class _Voiced(_Project):
+    """Three recorded shots, every one drawn, and the files the cues name."""
+
     def setUp(self):
         super().setUp()
         self.vfx = {"scene": {"by_label": {
@@ -474,6 +476,8 @@ class Anchors(_Project):
     def start(self, data, cue_id):
         return _checked(data).find(f"audioMix/audioTrack[@id='cue-{cue_id}']").get("start")
 
+
+class Anchors(_Voiced):
     def test_a_cue_follows_its_word_when_an_earlier_take_is_redone_longer(self):
         sheet = self.sheet(self.hit("S1", 5))
         self.assertEqual(sheet["cues"][0]["anchor"]["text"], "turns")
@@ -584,3 +588,109 @@ class Anchors(_Project):
         with contextlib.redirect_stdout(out):
             build.print_build(manifest)
         self.assertIn("cue anchors: 1 moved (S1), 1 lost (X1)", out.getvalue())
+
+
+# --------------------------------------------------------------------------- #
+# beat_sync (AUTO-140): how close the cuts land to the music, measured only
+# --------------------------------------------------------------------------- #
+
+GRID = {"bpm": 120.0, "period": 0.5, "first_beat": 0.1, "downbeat_first": 0.6,
+        "confidence": 0.9}
+
+
+def _shot(label, at, seconds=1.0, function=""):
+    return build.Placed(label=label, at=at, seconds=seconds, function=function,
+                        narration=f"line of {label}")
+
+
+def _row(cue_id="M1", start=2.0, length=20.0, loops=0, clip_out=10.0, grid=GRID):
+    return {"cue_id": cue_id, "start": start, "length": length, "loops": loops,
+            "clip_out": clip_out, "beat_grid": grid}
+
+
+class BeatSync(unittest.TestCase):
+    def test_cuts_at_known_offsets_from_a_known_grid(self):
+        # music 2..12 s, beats at 2.1 + k/2, downbeats at 2.6 + 2k
+        placed = [_shot("1", 0, 3.15), _shot("2", 3.15, 1.35), _shot("3", 4.5, 2.12),
+                  _shot("4", 6.62, 6.38, function="reveal"), _shot("5", 13.0)]
+        got = build.beat_sync(placed, [_row()])
+        self.assertEqual(got["cuts_in_music"], 3)
+        self.assertEqual(got["cuts_outside_music"], 1)
+        self.assertAlmostEqual(got["on_beat_share"], 0.67, places=2)
+        self.assertEqual(got["median_abs_offset_ms"], 50)
+        self.assertAlmostEqual(got["downbeat_share"], 0.33, places=2)
+        self.assertEqual(got["reveals"], [{"label": "4", "at": 6.62,
+                                           "downbeat_offset_ms": 20, "cue": "M1"}])
+        self.assertEqual(got["unmeasured"], [])
+        self.assertLessEqual(build.BEAT_TOLERANCE_S, 0.1)
+
+    def test_offsets_are_signed_cut_minus_beat(self):
+        placed = [_shot("1", 0, 4.5), _shot("2", 4.5)]
+        got = build.beat_sync(placed, [_row()])
+        self.assertEqual(got["cuts"], [{"at": 4.5, "cue": "M1", "beat_offset_ms": -100,
+                                        "downbeat_offset_ms": -100}])
+
+    def test_a_looped_row_restarts_its_grid_at_each_play(self):
+        # a 1.3 s file played three times from 0: beats 0.1 0.6 1.1 | 1.4 1.9 2.4 | 2.7 ...
+        row = _row(start=0.0, length=1.3, loops=2, clip_out=None)
+        got = build.beat_sync([_shot("1", 0, 1.4), _shot("2", 1.4, 2.6), _shot("3", 4.0)],
+                              [row])
+        self.assertEqual(got["cuts_in_music"], 1)
+        self.assertEqual(got["cuts"][0]["beat_offset_ms"], 0)
+        self.assertEqual(got["cuts_outside_music"], 1)          # 4.0 is past 3.9
+
+    def test_the_grid_ends_at_clip_out(self):
+        row = _row(start=0.0, length=20.0, clip_out=1.0)
+        got = build.beat_sync([_shot("1", 0, 1.1), _shot("2", 1.1)], [row])
+        self.assertEqual((got["cuts_in_music"], got["cuts_outside_music"]), (0, 1))
+
+    def test_cuts_under_unmeasured_music_are_listed_not_scored(self):
+        placed = [_shot("1", 0, 3.0), _shot("2", 3.0, 3.0), _shot("3", 6.0)]
+        got = build.beat_sync(placed, [_row(grid=None)])
+        self.assertEqual(got["unmeasured"], ["M1"])
+        self.assertEqual((got["cuts_in_music"], got["cuts_outside_music"]), (0, 0))
+        self.assertIsNone(got["on_beat_share"])
+        self.assertIsNone(got["median_abs_offset_ms"])
+
+
+class BeatSyncBuilt(_Voiced):
+    def sounding(self, grid=GRID):
+        _wav(self.root / "sound" / "bed.wav", 14)
+        cue = {"cue_id": "M1", "kind": "music", "at": 2, "seconds": 8,
+               "level": "-30 dBFS", "description": "a pulse", "fade_out": 1,
+               "file": "sound/bed.wav"}
+        if grid:
+            cue["beat_grid"] = grid
+        return {"runtime": 10, "cues": [cue, self.hit("S1", 5)]}
+
+    def test_the_mix_reports_its_music_rows(self):
+        builder = build.SceneBuilder(_idea(), _sections(), self.root, vfx=self.vfx,
+                                     voice=_voice_v1(), sound=self.sounding(), verbose=False)
+        seen = {}
+        mix = builder._mix
+        builder._mix = lambda *a: seen.setdefault("report", mix(*a))
+        builder.build()
+        rows = seen["report"]["music_rows"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["cue_id"], "M1")
+        self.assertEqual((rows[0]["start"], rows[0]["loops"], rows[0]["clip_out"]),
+                         (2.0, 0, 8.0))
+        self.assertAlmostEqual(rows[0]["length"], 14.0, places=2)
+        self.assertEqual(rows[0]["beat_grid"], GRID)
+
+    def test_the_manifest_carries_beat_sync_and_markers_beats_is_still_the_shot_count(self):
+        _, manifest = self.build_with(_voice_v1(), self.sounding())
+        sync = manifest["beat_sync"]
+        # the cuts at 4 and 7 s: beats at 2.1 + k/2, so 0.1 s before one each
+        self.assertEqual(sync["cuts_in_music"], 2)
+        self.assertEqual(sync["median_abs_offset_ms"], 100)
+        self.assertEqual(manifest["markers"]["beats"], 3)
+        self.assertTrue(manifest["publishable"])
+
+    def test_without_a_grid_the_music_is_unmeasured_and_nothing_fails(self):
+        _, manifest = self.build_with(_voice_v1(), self.sounding(grid=None))
+        self.assertEqual(manifest["beat_sync"]["unmeasured"], ["M1"])
+
+    def test_a_film_with_no_music_has_no_beat_sync(self):
+        _, manifest = self.build_with(_voice_v1(), {"runtime": 10, "cues": [self.hit("S1", 5)]})
+        self.assertNotIn("beat_sync", manifest)

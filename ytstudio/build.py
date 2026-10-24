@@ -1055,6 +1055,115 @@ def anchor_time(cue: dict, placed: list[Placed], voice: dict | None) -> tuple[fl
     return at, status
 
 
+# --------------------------------------------------------------------------- #
+# beat_sync (AUTO-140): how near the cuts land to the music, never moved to it
+# --------------------------------------------------------------------------- #
+
+#: The cue kinds whose files carry a beat grid (`yt sound` measures them).
+BEAT_KINDS = ("music", "stinger")
+#: Beats a bar, for the downbeat grid: 4/4 is assumed, as sound.beat_grid does.
+BEATS_A_BAR = 4
+#: How far from a beat a cut may land and count as on it: about 2.5 frames
+#: at 30 fps. TO VERIFY.
+BEAT_TOLERANCE_S = 0.083
+#: The shots whose cut is a reveal, by their screenplay role (script.FUNCTIONS).
+REVEAL_FUNCTIONS = ("reveal", "payoff")
+
+
+def _grid_ok(row: dict) -> bool:
+    grid = row.get("beat_grid")
+    try:
+        return isinstance(grid, dict) and float(grid.get("period") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _row_span(row: dict) -> tuple[float, float]:
+    """Where a music row sounds: from its start to its clip_out, or to the
+    end of its last play."""
+    start = float(row.get("start") or 0)
+    length = float(row.get("length") or 0)
+    plays = int(row.get("loops") or 0) + 1
+    clip = row.get("clip_out")
+    return start, start + (float(clip) if clip is not None else length * plays)
+
+
+def row_beats(row: dict, *, downbeats: bool = False) -> list[float]:
+    """The film times of a music row's beats (or downbeats): the grid from
+    each play's start, restarting at every loop and stopping at clip_out."""
+    grid = row["beat_grid"]
+    period = float(grid["period"]) * (BEATS_A_BAR if downbeats else 1)
+    first = float(grid.get("downbeat_first" if downbeats else "first_beat") or 0)
+    start, end = _row_span(row)
+    length = float(row.get("length") or 0) or (end - start)
+    out = []
+    for play in range(int(row.get("loops") or 0) + 1):
+        base = start + play * length
+        stop = min(end, base + length)
+        t = base + first
+        while t < stop - 1e-9:
+            out.append(round(t, 4))
+            t += period
+    return out
+
+
+def _nearest_ms(t: float, times: list[float]) -> int | None:
+    if not times:
+        return None
+    return round((t - min(times, key=lambda b: abs(t - b))) * 1000)
+
+
+def beat_sync(placed: list[Placed], music_rows: list[dict]) -> dict:
+    """How the cuts and reveals sit on the music: a measure, never a bar.
+
+    A cut is the incoming shot's `at` at every join, as built. For each cut
+    under a sounding music row with a `beat_grid`, the signed offset (cut
+    minus beat, ms) to the nearest beat and to the nearest downbeat; a cut
+    under music nobody measured is not scored, and its cue is listed under
+    `unmeasured`. Reveals are the shots whose role is in REVEAL_FUNCTIONS,
+    with their offset to the nearest downbeat. Cuts stay on the narration
+    (house rule); nothing here moves one."""
+    ordered = sorted(placed, key=lambda p: p.at)
+    unmeasured = list(dict.fromkeys(str(r.get("cue_id")) for r in music_rows
+                                    if not _grid_ok(r)))
+
+    def under(t: float):
+        here = [r for r in music_rows if _row_span(r)[0] <= t < _row_span(r)[1]]
+        return here, next((r for r in here if _grid_ok(r)), None)
+
+    cuts, outside = [], 0
+    for p in ordered[1:]:
+        here, row = under(p.at)
+        if not here:
+            outside += 1
+            continue
+        if row is None:
+            continue
+        cuts.append({"at": p.at, "cue": str(row.get("cue_id")),
+                     "beat_offset_ms": _nearest_ms(p.at, row_beats(row)),
+                     "downbeat_offset_ms": _nearest_ms(p.at, row_beats(row, downbeats=True))})
+    reveals = []
+    for p in ordered:
+        if p.function not in REVEAL_FUNCTIONS:
+            continue
+        _, row = under(p.at)
+        if row is not None:
+            reveals.append({"label": p.label, "at": p.at,
+                            "downbeat_offset_ms": _nearest_ms(
+                                p.at, row_beats(row, downbeats=True)),
+                            "cue": str(row.get("cue_id"))})
+    tol = round(BEAT_TOLERANCE_S * 1000)
+    offs = [abs(c["beat_offset_ms"]) for c in cuts if c["beat_offset_ms"] is not None]
+    downs = [abs(c["downbeat_offset_ms"]) for c in cuts if c["downbeat_offset_ms"] is not None]
+    share = (lambda xs: round(sum(1 for x in xs if x <= tol) / len(xs), 2) if xs else None)
+    import statistics
+    return {"cuts_in_music": len(cuts), "on_beat_share": share(offs),
+            "median_abs_offset_ms": round(statistics.median(offs)) if offs else None,
+            "downbeat_share": share(downs), "reveals": reveals,
+            "unmeasured": unmeasured, "cuts_outside_music": outside,
+            "tolerance_ms": tol, "cuts": cuts}
+
+
 #: Printed by `yt build` for a cue sheet spotted before anchors existed.
 NO_ANCHORS = ("cue sheet has no anchors: cues will not follow a redone voice "
               "(re-spot with yt sound --fresh)")
@@ -1418,13 +1527,14 @@ class SceneBuilder:
         """
         normalize, reason, normalize_from, said = self.normalize_mode()
         report = {"tracks": 0, "narration": 0, "buses": {}, "missing": [],
-                  "silence": 0, "unplaced": False, "findings": [],
+                  "silence": 0, "unplaced": False, "findings": [], "music_rows": [],
                   "normalize": normalize, "normalize_from": normalize_from,
                   "staging": {"bed_db": None, "headroom_db": None,
                               "shift_db": 0.0, "shifted": []}}
         if not self.audio:
             return report
         findings = report["findings"]
+        music_rows = report["music_rows"]
         if said:
             findings.append(said)
         if self.sound_rules_kept:
@@ -1547,6 +1657,7 @@ class SceneBuilder:
             track.bus = bus
             if role_of[bus]:
                 track.role = role_of[bus]
+            plays, clip_out = 1, None
             if cue.get("loop"):
                 if length:
                     plays = max(1, math.ceil(window / length))
@@ -1557,7 +1668,14 @@ class SceneBuilder:
                                     f"length of {file} could not be read; it plays "
                                     "once")
             elif length is None or length > window:
-                track.clipOut = window
+                track.clipOut = clip_out = window
+            if kind in BEAT_KINDS:
+                # What beat_sync lays the cue's beat grid over: where it starts,
+                # each play's length, how often it restarts, and where it stops.
+                music_rows.append({"cue_id": cue_id, "start": round(at, 3),
+                                   "length": round(length, 3) if length else window,
+                                   "loops": plays - 1, "clip_out": clip_out,
+                                   "beat_grid": cue.get("beat_grid") or None})
             def number(key: str) -> float:
                 try:
                     return float(cue.get(key) or 0)
@@ -2259,6 +2377,10 @@ class SceneBuilder:
             # Where each anchored cue was placed and whether its word moved;
             # only for a sheet with anchors, so an older one reads as before.
             **({"cue_anchors": sound["anchors"]} if "anchors" in sound else {}),
+            # How near the cuts and reveals land to the placed music's beats:
+            # a measure for the reviewers, never a bar; only with music.
+            **({"beat_sync": beat_sync(placed, sound["music_rows"])}
+               if sound.get("music_rows") else {}),
             "cues": cues,
             "markers": {"sections": len(self.sections), "beats": len(placed)},
             # The timings here are the measured ones, so this reading check
@@ -2474,6 +2596,14 @@ def print_build(manifest: dict) -> None:
             return f"{len(ids)} {status}" + (f" ({', '.join(ids[:12])})" if ids else "")
         print(f"  cue anchors: {named('moved')}, {named('lost')}, "
               f"{sum(1 for r in rows if r['status'] == 'kept')} kept")
+    sync = manifest.get("beat_sync")
+    if sync:
+        scored = (f"{sync['on_beat_share']:.0%} on a beat (±{sync['tolerance_ms']} ms), "
+                  f"median {sync['median_abs_offset_ms']} ms off, "
+                  f"{sync['downbeat_share']:.0%} on a downbeat"
+                  if sync.get("cuts_in_music") else "none scored")
+        print(f"  beat sync: {sync['cuts_in_music']} cut(s) under measured music, {scored}"
+              + (f"; unmeasured: {', '.join(sync['unmeasured'])}" if sync["unmeasured"] else ""))
     if manifest.get("audio_missing"):
         rows = manifest["audio_missing"]
         print(f"\n  {len(rows)} cue(s) with no file to place:")
