@@ -407,6 +407,16 @@ class JudgeCase(unittest.TestCase):
         # voice does not decide a film, so the case is a consider, not a reject
         self.assertIn("decide", expected["judging_10"])
 
+    def test_a_floor_that_names_no_level_fails_the_row(self):
+        # a typo such as "good" is no LEVELS label; the floor must fail the
+        # case rather than pass every grade, since a hand-added case run
+        # through calibrate on its own has no fixture test to catch it
+        expected = dict(load(FIXTURES / "claim-joke" / "expected.json"),
+                        at_least={"voice": "good"})
+        failed = narrative.judge_case(expected, read_of("claim-joke"))
+        self.assertEqual(len(failed), 1, failed)
+        self.assertIn("voice: at_least names no level (good)", failed[0])
+
     def test_a_case_without_at_least_is_judged_as_before(self):
         # `at_least` is opt-in: the good case sets none, so a Fair voice under
         # a recommend still passes it, as it did before AUTO-159
@@ -1131,6 +1141,9 @@ class Docs(unittest.TestCase):
                       "audit passes, and work/review-log.jsonl holds at least 20 rows with "
                       "a human `label`", flat)
         self.assertIn("gate on with N labelled verdicts (20 needed)", flat)
+        # AUTO-159: the condition is stated one way everywhere, the stage
+        # table's `yt script` row included
+        self.assertNotIn("the good one passes", flat)
 
     def test_the_manuals_last_two_faults_are_the_cold_read_cases(self):
         # "The last two faults have no rubric criterion": the list must end

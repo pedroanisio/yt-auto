@@ -1039,7 +1039,10 @@ def judge_case(expected: Mapping, got: Mapping) -> list[str]:
     grades that criterion below the level, or not at all, or flags it: the
     good script whose one joke makes the point must not be marked down for
     it, which its verdict alone cannot show, since a recommend may carry a
-    Fair. A case without `at_least` is judged as before. A plan
+    Fair; a level that is no LEVELS label fails the case. The failure line
+    gives the humour case's reason, the only `at_least` shipped; a floor on
+    another criterion would want a reason of its own. A case without
+    `at_least` is judged as before. A plan
     case's plan review must send a bad plan back and accept the good one; a
     cold-read case's reader must find the mismatch or the terms it hides. A
     case naming a `trigger` (AUTO-136) fails a round that heard another, or
@@ -1076,7 +1079,10 @@ def judge_case(expected: Mapping, got: Mapping) -> list[str]:
         flags = [f for f in got.get("flags") or [] if isinstance(f, dict)]
         for floor_key, floor in (expected.get("at_least") or {}).items():
             grade = (got.get("grades") or {}).get(floor_key)
-            if grade not in level or level[grade] > level.get(floor, len(LEVELS)):
+            if floor not in level:
+                # a typo would otherwise pass every grade; fail the row closed
+                failed.append(f"{floor_key}: at_least names no level ({floor})")
+            elif grade not in level or level[grade] > level[floor]:
                 failed.append(f"{floor_key} graded {grade or 'nothing'}; humour or colour "
                               f"that serves a claim is graded no lower than {floor}")
             if any(f.get("criterion") == floor_key for f in flags):
