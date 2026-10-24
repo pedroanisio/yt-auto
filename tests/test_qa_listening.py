@@ -265,6 +265,7 @@ class Stage(unittest.TestCase):
     """The whole stage, with a fake renderer and a fake reviewer."""
 
     def setUp(self):
+        motion.steady_cutting(self)              # AUTO-141: not what this tests
         self.tmp = Path(tempfile.mkdtemp(prefix="qa-listen-"))
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.work = self.tmp / "work"

@@ -11,15 +11,18 @@ silent film. No test renders on a host or asks the model.
 
 import argparse
 import json
+import os
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from PIL import Image, ImageDraw
 
 from claude_engine import Event, Usage
-from ytstudio import harness, qa
+from ytstudio import harness, qa, rhythm
 
 W, H = 640, 360
 
@@ -33,6 +36,17 @@ def _build(audio_tracks=0):
     return {"scene": {"duration": t, "fps": "30", "width": W, "height": H},
             "shots": shots, "placeholders": [], "findings": [],
             "audio_tracks": audio_tracks}
+
+
+def steady_cutting(case: unittest.TestCase) -> None:
+    """_build's four shots (3, 4, 4, 5.5 s) vary by CV 0.22, which direction
+    12 calls metronomic (AUTO-141), and their cut times and runtime are
+    pinned by the tests that read them. A test about something else lowers
+    the floor under that CV for itself, so its film is judged on what it
+    tests; RhythmStage and test_qa_rhythm keep the floor."""
+    patch = mock.patch.dict(rhythm.RHYTHM["cv_floor"], {"value": 0.2})
+    patch.start()
+    case.addCleanup(patch.stop)
 
 
 def _square(path: Path, x: int, *, size: int = 120, level: int = 255,
@@ -475,7 +489,9 @@ class FakeEngine:
         yield Event(type="result", raw={})
 
 
-class Stage(unittest.TestCase):
+class StageCase(unittest.TestCase):
+    """A project with a scene, a build, a render report and the fakes."""
+
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="qa-motion-"))
         self.work = self.tmp / "work"
@@ -522,6 +538,8 @@ class Stage(unittest.TestCase):
         base.update(kw)
         return argparse.Namespace(**base)
 
+
+class Stage(StageCase):
     def test_the_pass_carries_motion_evidence_and_the_model_is_capped(self):
         qa.RENDERER = self.renderer(frozen_hook=True)
         code = qa.run(self.args())
@@ -598,6 +616,209 @@ class Stage(unittest.TestCase):
         self.assertFalse(any(f["kind"] == "frozen" for f in card["mechanical"]))
         self.assertEqual(card["scores"]["visual_quality"], 9.2)   # nothing blocking: no cap
         self.assertEqual(len(self.jobs), rendered)
+
+
+# --------------------------------------------------------------------------- #
+# the rhythm step (AUTO-141)
+# --------------------------------------------------------------------------- #
+
+def _aligned_voice(build, wpm=170.0):
+    """voice.json with one exact take per shot, narrated from 0.2 s in to
+    0.2 s before the shot's end."""
+    takes = []
+    for shot in build["shots"]:
+        d, n = 60.0 / wpm, int((shot["seconds"] - 0.4) * wpm / 60.0)
+        words = [{"text": f"w{i}", "start": round(0.2 + i * d, 3),
+                  "end": round(0.2 + (i + 1) * d, 3)} for i in range(n)]
+        takes.append({"label": shot["label"], "section": shot["section"], "at": shot["at"],
+                      "seconds": shot["seconds"], "timing": "exact", "words": words,
+                      "text": " ".join(w["text"] for w in words)})
+    return {"engine": "kokoro", "takes": takes, "timing": ["exact"]}
+
+
+class RhythmStage(StageCase):
+    def setUp(self):
+        super().setUp()
+        self._scan = qa.RHYTHM_SCAN
+        self.scans = []
+        (self.root / "voice.json").write_text(json.dumps(_aligned_voice(_build())))
+        self.addCleanup(setattr, qa, "RHYTHM_SCAN", self._scan)
+
+    def current_cut(self):
+        video = self.root / "video.mp4"
+        video.write_bytes(b"not really an mp4")
+        scene_at = (self.root / "scene.xml").stat().st_mtime
+        os.utime(video, (scene_at + 10, scene_at + 10))
+        return video
+
+    def held_hook(self, cut, args, **kw):
+        """Scores with nothing changing over the first 9 s (the hook), the
+        picture changing every frame after it."""
+        self.scans.append(str(cut))
+        fps = rhythm.value("scan_fps")
+        scores = [(round(k / fps, 3), 0.0 if k / fps <= 9.0 else 0.05)
+                  for k in range(int(16.5 * fps))]
+        return {"scores": scores, "scan": {"host": "render-1", "fps": fps, "width": 320,
+                                           "upload": "sent", "upload_seconds": 0.4,
+                                           "upload_bytes": 17, "scan_seconds": 2.0}}
+
+    def test_a_blocking_hold_on_the_hook_blocks_and_caps(self):
+        self.current_cut()
+        qa.RENDERER = self.renderer(frozen_hook=False)
+        qa.RHYTHM_SCAN = self.held_hook
+        with mock.patch.dict(rhythm.RHYTHM["calibrated"], {"value": True}):
+            code = qa.run(self.args())
+        self.assertEqual(code, 1)
+        self.assertEqual(len(self.scans), 1)
+        pass_dir = self.root / "qa" / "pass-01"
+        card = json.loads((pass_dir / "scorecard.json").read_text())
+        hold = [f for f in card["mechanical"] if f["kind"] == "hold"]
+        self.assertEqual([(f["shot"], f["severity"]) for f in hold], [("1.1", "blocking")])
+        self.assertTrue(any("while the narration runs" in b for b in card["blocking"]),
+                        card["blocking"])
+        self.assertEqual(card["verdict"], qa.NOT_READY)
+        self.assertEqual(card["scores"]["editing_pacing"], qa.MECHANICAL_CAP)
+        self.assertEqual(card["scores"]["visual_quality"], qa.MECHANICAL_CAP)
+        self.assertIn("editing_pacing", card["capped"])
+        record = json.loads((pass_dir / "rhythm.json").read_text())
+        self.assertEqual(record["cv"]["basis"], "events")
+        self.assertEqual(record["longest_hold"]["shot"], "1.1")
+        self.assertIn("rate", record["opening"])
+        self.assertIn("median", record["opening"])
+        self.assertEqual([r["section"] for r in record["sections"]], ["One take"])
+        self.assertEqual(record["scan"]["upload_bytes"], 17)
+        self.assertTrue(record["scores"])
+        self.assertEqual(card["rhythm"]["cv"], record["cv"])
+        self.assertNotIn("scores", card["rhythm"])
+        # the reviewer is shown the numbers as measurements
+        prompt = FakeEngine.stream_calls[0]["prompt"]
+        self.assertIn("\"rhythm\"", prompt)
+        self.assertIn("not judged", prompt)
+        self.assertIn("caps editing_pacing", prompt)
+        self.assertIn("editing_pacing", (pass_dir / "findings.md").read_text())
+
+    def test_equal_shots_with_no_scan_are_not_ready_and_capped(self):
+        build = _build()
+        for n, shot in enumerate(build["shots"]):
+            shot["at"], shot["seconds"] = 4.0 * n, 4.0
+        build["scene"]["duration"] = 16.0
+        (self.root / "build.json").write_text(json.dumps(build))
+        (self.root / "render.json").unlink()            # no off-camera finding to cap
+        (self.root / "voice.json").write_text(json.dumps(_aligned_voice(build)))
+        qa.RENDERER = self.renderer(frozen_hook=False)
+        qa.RHYTHM_SCAN = lambda *a, **k: self.fail("scanned without a cut")
+        code = qa.run(self.args())
+        self.assertEqual(code, 1)
+        card = json.loads((self.root / "qa" / "pass-01" / "scorecard.json").read_text())
+        metronomic = [f for f in card["mechanical"] if f["kind"] == "metronomic"]
+        self.assertEqual([(f["basis"], f["severity"], f["owner"]) for f in metronomic],
+                         [("shots", "blocking", "script")])
+        self.assertLessEqual(card["scores"]["editing_pacing"], qa.MECHANICAL_CAP)
+        self.assertEqual(card["scores"]["visual_quality"], 9.2)
+        self.assertTrue(any("cuts and builds vary" in r for r in card["blocking"]))
+        self.assertTrue(any("blocking item" in r for r in card["bar"]), card["bar"])
+        # the bar names the rhythm finding that capped editing_pacing
+        self.assertTrue(any("editing_pacing" in r and "cuts and builds vary" in r
+                            for r in card["bar"]), card["bar"])
+
+    def test_the_bar_names_the_rhythm_finding_when_the_reviewer_was_already_under(self):
+        # The reviewer gave editing_pacing 5.0, so the cap lowers nothing;
+        # the bar still says which rhythm finding holds it there.
+        build = _build()
+        for n, shot in enumerate(build["shots"]):
+            shot["at"], shot["seconds"] = 4.0 * n, 4.0
+        build["scene"]["duration"] = 16.0
+        (self.root / "build.json").write_text(json.dumps(build))
+        (self.root / "render.json").unlink()
+        (self.root / "voice.json").write_text(json.dumps(_aligned_voice(build)))
+        qa.RENDERER = self.renderer(frozen_hook=False)
+        with mock.patch.dict(SCORECARD["scores"], {"editing_pacing": 5.0}):
+            qa.run(self.args())
+        card = json.loads((self.root / "qa" / "pass-01" / "scorecard.json").read_text())
+        self.assertEqual(card["scores"]["editing_pacing"], 5.0)
+        self.assertNotIn("editing_pacing", card["capped"])
+        self.assertTrue(any("editing_pacing" in r and "metronomic" in r
+                            and "cuts and builds vary" in r for r in card["bar"]), card["bar"])
+
+    def test_a_scan_the_link_dropped_is_not_evidenced(self):
+        # The real scan_remote, its ssh exiting 255 after half the film's
+        # scores, the hook held still in that half: nothing render-side is
+        # measured from it, and no hold is filed or passed.
+        from tests import hermetic
+        from ytstudio import render
+        self.current_cut()
+        hermetic.fake_remote(self, RS_RENDER_HOSTS="render-1")
+        half = "".join(f"frame:{k} pts:{k} pts_time:{k / 4:g}\n"
+                       f"lavfi.scene_score={0.0 if k < 36 else 0.05}\n" for k in range(33))
+
+        def run(argv, **kw):
+            if argv[0] == "ssh":
+                return subprocess.CompletedProcess(argv, 255, "", half)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        qa.RHYTHM_SCAN = rhythm.scan_remote
+        qa.RENDERER = self.renderer(frozen_hook=False)
+        with mock.patch.object(rhythm.subprocess, "run", run), \
+                mock.patch.object(render, "remote_host", lambda args, job: "render-1"), \
+                mock.patch.object(render, "remove_remote", lambda host, path, **k: None), \
+                mock.patch.dict(render._HOSTS, {"render-1": render.Host(
+                    addr="render-1", ffprobe="/opt/ff/ffprobe")}), \
+                mock.patch.dict(rhythm.RHYTHM["calibrated"], {"value": True}):
+            qa.run(self.args())
+        self.assert_render_measures_not_evidenced("exit 255")
+
+    def assert_render_measures_not_evidenced(self, why):
+        card = json.loads((self.root / "qa" / "pass-01" / "scorecard.json").read_text())
+        rows = card["rhythm"]["not_evidenced"]
+        self.assertEqual({r["measure"] for r in rows if r["measure"] != "wpm"},
+                         {"hold", "slow-opening"})
+        self.assertTrue(all(why in r["why"] for r in rows if r["measure"] != "wpm"), rows)
+        self.assertEqual(card["rhythm"]["cv"]["basis"], "shots")
+        self.assertIsNotNone(card["rhythm"]["cv"]["shots"])
+        self.assertEqual(card["rhythm"]["sections"][0]["timing"], "exact")
+        self.assertIsNotNone(card["rhythm"]["sections"][0]["wpm"])
+        self.assertTrue(any(n.startswith("rhythm:") for n in card["not_evidenced"]))
+        self.assertFalse([f for f in card["mechanical"] if f["kind"] in ("hold",
+                                                                        "slow-opening")])
+        return card
+
+    def test_under_no_remote_the_render_measures_are_not_evidenced(self):
+        self.current_cut()
+        qa.RENDERER = self.renderer(frozen_hook=False)
+        with mock.patch.dict(os.environ, {"YT_NO_REMOTE": "1"}):
+            qa.run(self.args())
+        self.assert_render_measures_not_evidenced("YT_NO_REMOTE")
+
+    def test_with_no_render_host_the_render_measures_are_not_evidenced(self):
+        self.current_cut()
+        qa.RENDERER = self.renderer(frozen_hook=False)
+        qa.RHYTHM_SCAN = lambda *a, **k: (_ for _ in ()).throw(rhythm.RhythmError(
+            "no render host configured (RS_RENDER_HOSTS or RS_RENDER_HOST)"))
+        qa.run(self.args())
+        self.assert_render_measures_not_evidenced("RS_RENDER_HOSTS")
+
+    def test_a_stale_cut_is_not_scanned(self):
+        video = self.current_cut()
+        scene_at = (self.root / "scene.xml").stat().st_mtime
+        os.utime(video, (scene_at - 10, scene_at - 10))
+        qa.RENDERER = self.renderer(frozen_hook=False)
+        qa.RHYTHM_SCAN = lambda *a, **k: self.fail("scanned a stale cut")
+        qa.run(self.args())
+        card = self.assert_render_measures_not_evidenced("predates scene.xml")
+        self.assertIn("yt render", card["rhythm"]["not_evidenced"][0]["command"])
+
+    def test_reuse_reads_rhythm_json_and_scans_nothing(self):
+        self.current_cut()
+        qa.RENDERER = self.renderer(frozen_hook=False)
+        qa.RHYTHM_SCAN = self.held_hook
+        qa.run(self.args())
+        first = json.loads((self.root / "qa" / "pass-01" / "rhythm.json").read_text())
+        qa.RENDERER = lambda args, scene: (lambda job: self.fail("rendered on --reuse"))
+        qa.RHYTHM_SCAN = lambda *a, **k: self.fail("scanned on --reuse")
+        qa.run(self.args(reuse="pass-01", fresh=True))
+        card = json.loads((self.root / "qa" / "pass-01" / "scorecard.json").read_text())
+        self.assertEqual(card["rhythm"]["cv"], first["cv"])
+        self.assertEqual(card["rhythm"]["longest_hold"], first["longest_hold"])
+        self.assertEqual(len(self.scans), 1)
 
 
 if __name__ == "__main__":

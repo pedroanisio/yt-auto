@@ -57,7 +57,12 @@ encode diagnostics from `render.json` (objects never inside the camera's
 view, per shot, with their ids). A mechanical finding is blocking when it
 sits on the hook or the ending or when the same defect is on more than one
 sampled shot, and while one stands the reviewer's visual_quality and
-animation_vfx cannot exceed `MECHANICAL_CAP`.
+animation_vfx cannot exceed `MECHANICAL_CAP`. The film's rhythm
+(`rhythm.py`, AUTO-141) files `hold`, `metronomic`, `slow-opening` and
+`wpm` findings beside them, from the timeline always and from the render's
+scene scores when video.mp4 is current and a render host scans it; a
+blocking one caps editing_pacing instead (a hold caps both), and the pass
+writes `rhythm.json` (CAP_RULE).
 
 Then the model reads the frames and the sheet, with the screenplay, the
 editorial decisions, the numbers and the mechanical findings beside each
@@ -219,6 +224,7 @@ from . import listen as listen_pass
 from .proofframes import (PROOF_DIFF, PROOF_LIMIT, mismatch_text,  # noqa: F401
                           proof_diff, proof_plan, ungraded)
 from . import render as render_stage
+from . import rhythm
 from .build import EVEN_SHOTS, shots_from_scene  # noqa: F401  (standalone sampling)
 from .core import read_json, timecode, write_json
 from .harness import Harness, HarnessError, _digest, brief
@@ -256,6 +262,16 @@ JUMP_RATIO, JUMP_MIN = 4.0, 4.0         # one step this far above the others' me
 #: While a blocking mechanical finding stands, the reviewer cannot award more.
 MECHANICAL_CAP = 6.0
 CAPPED = ("visual_quality", "animation_vfx")
+#: The rhythm findings (AUTO-141): measured from the timeline and the
+#: render's scene scores, a blocking one caps editing_pacing instead; a
+#: hold is also a picture that does not move, so it caps both.
+RHYTHM_KINDS = rhythm.KINDS
+RHYTHM_CAPPED = ("editing_pacing",)
+CAP_RULE = (f"a blocking one caps {' and '.join(CAPPED)} at {MECHANICAL_CAP:g}; a blocking "
+            f"rhythm finding ({', '.join(RHYTHM_KINDS)}) caps {' and '.join(RHYTHM_CAPPED)} "
+            f"at {MECHANICAL_CAP:g} instead, and a hold caps all three; a rhythm finding "
+            "that rests on the scan's thresholds is filed minor, and caps nothing, until "
+            "they are measured (TO VERIFY)")
 #: A film with no audio track scores this where sound would be judged.
 SILENT_SCORE = 2.0
 SILENT = ("sound_design", "music_score")
@@ -1481,7 +1497,8 @@ def reown_by_proof(mechanical: list[dict], proof_found: list[dict]) -> int:
     moved = 0
     for f in mechanical:
         world = by_shot.get(str(f.get("shot", "")))
-        if not world or f.get("kind") == "proof-mismatch" or f.get("owner") == "build":
+        if (not world or f.get("kind") == "proof-mismatch" or f.get("owner") == "build"
+                or f.get("kind") in RHYTHM_KINDS):
             continue
         f["owner"] = "build"
         f["reowned"] = f"world {world} fails its proof-frame check, so the build owns this"
@@ -1760,11 +1777,21 @@ def _mean(scores: dict) -> float:
 def cap_scores(scores: dict, overall: float, mechanical: list[dict]
                ) -> tuple[dict, float, list[str]]:
     """While a blocking mechanical finding stands the reviewer cannot award
-    more than MECHANICAL_CAP in the categories the frames measure; the
-    overall follows the capped mean when that is lower."""
+    more than MECHANICAL_CAP in the categories the frames measure; a
+    blocking rhythm finding caps RHYTHM_CAPPED instead, and a hold both
+    (CAP_RULE). The overall follows the capped mean when that is lower."""
     scores, capped = dict(scores), []
-    if any(f.get("severity") == "blocking" for f in mechanical):
-        for key in CAPPED:
+    keys: list[str] = []
+    for f in mechanical:
+        if f.get("severity") != "blocking":
+            continue
+        kind = f.get("kind")
+        hit = (RHYTHM_CAPPED + CAPPED if kind == "hold" else
+               RHYTHM_CAPPED if kind in RHYTHM_KINDS else CAPPED)
+        keys += [k for k in hit if k not in keys]
+    if keys:
+        for key in [k for k in CATEGORIES if k in keys] + [k for k in keys
+                                                           if k not in CATEGORIES]:
             try:
                 value = float(scores.get(key, 0))
             except (TypeError, ValueError):
@@ -1779,6 +1806,133 @@ def cap_scores(scores: dict, overall: float, mechanical: list[dict]
     if capped:
         overall = min(overall, _mean(scores))
     return scores, round(overall, 2), capped
+
+
+def mechanical_line(f: dict) -> str:
+    """One blocking mechanical finding as the card's `blocking` names it."""
+    where = f"shot {f.get('shot', '')}"
+    if f.get("section"):
+        where += f", section {f['section']}"
+    return (f"mechanical: {f.get('problem', '')} at {float(f.get('timestamp') or 0):g}s "
+            f"({where})")
+
+
+#: The render's scene scores, scanned on a render host (AUTO-141): a seam
+#: the tests replace, as RENDERER and GEOMETRY are.
+RHYTHM_SCAN = rhythm.scan_remote
+#: What the reviewer is shown of the rhythm block: the numbers, labelled.
+rhythm_brief = rhythm.brief_of
+
+
+def rhythm_while_up(args, project, into: dict):
+    """The callback `--watch` runs while its cut is on a render host
+    (watch.prepare_remote's `while_up`): the rhythm scan reads that cut
+    there, so the cut goes up once, and what it got (or why it failed) is
+    kept in `into` for rhythm_pass. `upload` is the watch's own measure of
+    that one upload, recorded as the scan's. It never raises: the watch
+    goes on."""
+    video = project.path("video")
+
+    def scan(host: str, path: str, upload: dict | None = None) -> None:
+        try:
+            into["got"] = RHYTHM_SCAN(video, args, slug=Path(project.root).name,
+                                      remote_cut=(host, path), upload=upload)
+        except rhythm.RhythmError as exc:
+            into["error"] = str(exc)
+    return scan
+
+
+def rhythm_pass(args, project, build: dict, voice: dict | None, pass_dir: Path, *,
+                reused: bool, shared: dict | None = None) -> dict:
+    """The film's rhythm for this pass, written to pass-NN/rhythm.json and
+    returned (the record; its `scores` stay out of the scorecard). The
+    timeline measures always run. The render's are scanned only when
+    video.mp4 is the cut scene.xml builds and a render host answers;
+    otherwise the hold and the opening are named under not_evidenced with
+    why and the command that evidences them, never scored as passing. A
+    reused pass measures the scores its first run recorded and scans
+    nothing. `shared` is what rhythm_while_up kept: a scan of the cut the
+    watch already sent, taken instead of sending it again."""
+    from . import doctor                     # doctor imports nothing of qa
+    record_file = pass_dir / rhythm.RECORD
+    takes = [t for t in (voice or {}).get("takes") or [] if isinstance(t, dict)]
+    scores = scan = unscanned = None
+    rerun = " ".join(["yt", "qa", "--project", str(project.root)])
+    earlier = read_json(record_file, warn=False) if reused and record_file.is_file() else None
+    video = project.path("video")
+    if reused:
+        if isinstance(earlier, dict) and earlier.get("scores"):
+            scores = [tuple(pair) for pair in earlier["scores"]]
+            scan = earlier.get("scan")
+        else:
+            unscanned = ("--reuse scores an earlier pass again and scans nothing; that "
+                         "pass recorded no scene scores", rerun)
+    elif not video.is_file():
+        unscanned = ("no video.mp4: the film is not rendered, so its scene scores cannot "
+                     "be read", " ".join(["yt", "render", "--project", str(project.root),
+                                          "--quality", "final", "--strict"]))
+    else:
+        stale = doctor.cut_problems(project, build)
+        if stale:
+            unscanned = stale[0]
+        else:
+            try:
+                got = (shared or {}).get("got") or RHYTHM_SCAN(
+                    video, args, slug=Path(project.root).name)
+                scores, scan = [tuple(pair) for pair in got["scores"]], got.get("scan")
+            except rhythm.RhythmError as exc:
+                unscanned = (str(exc), f"{rerun} (with a render host: RS_RENDER_HOSTS, "
+                                       "and without YT_NO_REMOTE)")
+    block = rhythm.measure(build, takes, scores, fps=(scan or {}).get("fps"), scan=scan,
+                           unscanned=unscanned,
+                           rescan=f"{rerun} (the scan stopped short; run it again)")
+    record = dict(block, scores=[list(pair) for pair in scores] if scores else None)
+    if not (reused and isinstance(earlier, dict)):
+        write_json(record_file, record)
+    return record
+
+
+def rhythm_lines(block: dict) -> list[str]:
+    """findings.md's "## Rhythm" section: the numbers and what is missing."""
+    cv, hold = block.get("cv") or {}, block.get("longest_hold")
+    opening = block.get("opening") or {}
+
+    def num(v, form="{:.2f}"):
+        return "n/a" if v is None else form.format(v)
+    # findings.md never says "calibrat": that word is the judge's (AUTO-156).
+    gate = ("the scan's thresholds measured" if block.get("calibrated") else
+            "the scan's thresholds not yet measured: TO VERIFY")
+    lines = ["## Rhythm", "",
+             f"Measured from build.json, voice.json and the render's scene scores ({gate}); "
+             "evidence for editing_pacing, not a score.", "",
+             f"- cuts and builds: CV {num(cv.get('shots'))} by shot, {num(cv.get('events'))} "
+             f"by change event (basis {cv.get('basis', '?')}, floor {cv.get('floor', '?')})",
+             "- longest hold under narration: " + (
+                 f"{hold['seconds']:.1f} s ({hold['start']:.1f}-{hold['end']:.1f} s, shot "
+                 f"{hold['shot']})" if hold else "none over the bound"
+                 if (block.get("scan") or {}).get("complete") else "not measured"),
+             f"- opening: {num(opening.get('rate'), '{:.1f}')} changes/min against a film "
+             f"median of {num(opening.get('median'), '{:.1f}')}"]
+    for row in block.get("sections") or []:
+        lines.append(f"- section {row.get('section', '')}: {num(row.get('wpm'), '{:.0f}')} "
+                     f"wpm ({row.get('timing', '?')} timing, {row.get('words', 0)} words)")
+    for row in block.get("not_evidenced") or []:
+        lines.append(f"- not evidenced: {row.get('measure')}"
+                     + (f" ({row['section']})" if row.get("section") else "")
+                     + f": {row.get('why', '')}"
+                     + (f"; run {row['command']}" if row.get("command") else ""))
+    return lines + [""]
+
+
+def rhythm_not_evidenced(block: dict) -> list[str]:
+    """The scorecard's not_evidenced lines for the rhythm measures it lacks."""
+    out = []
+    for row in block.get("not_evidenced") or []:
+        what = row.get("measure", "?") + (f" of section {row['section']}"
+                                          if row.get("section") else "")
+        out.append(f"rhythm: {what} not measured: {row.get('why', '')}"
+                   + (f"; run {row['command']}" if row.get("command") else ""))
+    return out
 
 
 def silent(build: dict) -> bool:
@@ -2670,7 +2824,7 @@ def findings_md(name: str, card: dict, samples: list[dict], diff: dict, *,
         lines += ["Why not ready:", *[f"- {r}" for r in reasons], ""]
     if card.get("capped"):
         lines += [f"**Capped:** {', '.join(card['capped'])} held at {MECHANICAL_CAP:g} "
-                  "while a blocking mechanical finding stands", ""]
+                  "while a blocking mechanical or rhythm finding stands", ""]
     scoring = card.get("scoring") or {}
     if scoring:
         lines += [f"**Scored from:** the median of {scoring.get('valid', 0)} valid of "
@@ -2745,8 +2899,8 @@ def findings_md(name: str, card: dict, samples: list[dict], diff: dict, *,
         from . import watch as watch_pass   # AUTO-127; absent without --watch
         lines += watch_pass.findings_lines(card)
     lines += ["## Mechanical", "",
-              "Measured from the stills, the bursts and the engine's diagnostics before "
-              f"the review; a blocking one caps {' and '.join(CAPPED)} at {MECHANICAL_CAP:g}.",
+              "Measured from the stills, the bursts, the engine's diagnostics and the "
+              f"film's rhythm before the review; {CAP_RULE}.",
               ""]
     if card.get("proof_note"):
         lines += [f"Note: {card['proof_note']}", ""]
@@ -2757,7 +2911,10 @@ def findings_md(name: str, card: dict, samples: list[dict], diff: dict, *,
                   f"[{row.get('severity', '?')}] {row.get('kind', '')}: "
                   f"{row.get('problem', '')} — owner **{row.get('owner', '?')}** — "
                   f"fix: {row.get('fix', '')}"]
-    lines += ["", "## Evidence sampled", ""]
+    lines.append("")
+    if card.get("rhythm"):
+        lines += rhythm_lines(card["rhythm"])
+    lines += ["## Evidence sampled", ""]
     for row in samples:
         line = (f"- {stamp(row['t'])} shot {row.get('label', '')} "
                 f"({row.get('section', '')}): {row.get('why', '')}")
@@ -3271,7 +3428,8 @@ def evidence_rows(samples: list[dict], script: dict, voice: dict | None, *, have
 
 
 def stage_measurements(build: dict, voice: dict | None, *, sound: dict, gate: dict | None,
-                       geometry: dict, styles: dict, reach: dict | None) -> dict:
+                       geometry: dict, styles: dict, reach: dict | None,
+                       rhythm: dict | None = None) -> dict:
     """The measurements and decisions of the stages, as the reviewer is shown
     them: the build's frame and findings, the narration, the cue sheet and
     mix, the gate's triage, the geometry check (`geometry`, its report),
@@ -3301,6 +3459,11 @@ def stage_measurements(build: dict, voice: dict | None, *, sound: dict, gate: di
     # (AUTO-140), for editing_pacing and music_score: only when the build
     # wrote them, so a film not rebuilt asks what it asked before.
     measurements.update({k: build[k] for k in BUILD_SOUND_MEASURES if k in build})
+    # The film's rhythm (AUTO-141), measured and labelled so: evidence for
+    # editing_pacing beside the reviewer's own judgement, never in place of
+    # it. Only when `yt qa` measured it, so calibrate asks what it asked.
+    if rhythm is not None:
+        measurements["rhythm"] = rhythm_brief(rhythm)
     return measurements
 
 
@@ -3361,8 +3524,8 @@ def review_prompt(*, title: str, pass_name: str, sheet_name: str, has_narration:
         brief("The screenplay's story, as the plan declared it", story)
         if story else "The screenplay declares no story fields (written before them).",
         brief("Frames and what each should show", evidence),
-        brief("Mechanical findings, measured before this review (a blocking one "
-              f"caps {' and '.join(CAPPED)} at {MECHANICAL_CAP:g})", mechanical),
+        brief(f"Mechanical findings, measured before this review ({CAP_RULE})",
+              mechanical),
         brief("Listening evidence: the reviews that heard the film's sound, each "
               "marked with what it heard (`heard`) and whether that is what the film "
               "carries (`current`); what a stale or absent one said is left out and "
@@ -4090,6 +4253,7 @@ def run(args) -> int:
     # --watch (AUTO-127): the gateway, the catalog, the model and a render
     # host, checked before a pass directory is made or anything renders.
     watching, watched = None, None
+    rhythm_shared: dict = {}      # the rhythm scan of the cut --watch sends (AUTO-141)
     if getattr(args, "watch", False):
         from . import watch as watch_pass   # it reads this module's owners and duties
         if not args.reuse and not (build or {}).get("shots"):
@@ -4124,7 +4288,8 @@ def run(args) -> int:
             rules_now, digest_now = house.for_args(args, project, "qa")
             watched = watch_pass.watch(project, pass_dir, watching, args, home=home,
                                        build=build, title=idea.title, treatment=treatment,
-                                       house=rules_now, house_digest=digest_now)
+                                       house=rules_now, house_digest=digest_now,
+                                       while_up=rhythm_while_up(args, project, rhythm_shared))
             if not args.quiet:
                 print(f"[qa] watch: {watched['status']}"
                       + (f" ({watched['reason']})" if watched.get("reason") else "")
@@ -4185,6 +4350,12 @@ def run(args) -> int:
         args, project, scene, vfx_doc, home, build.get("shots", []), pass_dir)
     mechanical += proof_found
     reowned = reown_by_proof(mechanical, proof_found)
+    # The film's rhythm (AUTO-141): after the re-owning, which never moves
+    # one of these, and filed beside the other mechanical findings.
+    rhythm_record = rhythm_pass(args, project, build, voice, pass_dir,
+                                reused=bool(args.reuse), shared=rhythm_shared)
+    rhythm_block = {k: v for k, v in rhythm_record.items() if k != "scores"}
+    mechanical += rhythm_block["findings"]
     if proof_note and not args.quiet:
         print(f"note: {proof_note}", file=sys.stderr)
     if reowned and not args.quiet:
@@ -4199,7 +4370,8 @@ def run(args) -> int:
     # -- what the reviewer sees beside each frame ----------------------------
     measurements = stage_measurements(
         build, voice, sound=sound, gate=gate, geometry=geometry_report, styles=styles,
-        reach=(vfx_doc or {}).get("reach") if project.source("vfx") else None)
+        reach=(vfx_doc or {}).get("reach") if project.source("vfx") else None,
+        rhythm=rhythm_block)
     blockers = mechanical_blockers(build, gate=gate) + vfx_blockers(vfx_doc) + problems
     previous = chosen
     for earlier in [] if named else reversed(_passes(home)):
@@ -4378,13 +4550,14 @@ def run(args) -> int:
                                      capped=capped)
     if capped and not args.quiet:
         print(f"note: {', '.join(capped)} capped at {MECHANICAL_CAP:g}: a blocking "
-              "mechanical finding stands", file=sys.stderr)
+              "mechanical or rhythm finding stands", file=sys.stderr)
+    card["not_evidenced"] = list(card.get("not_evidenced") or []) + rhythm_not_evidenced(
+        rhythm_block)
     all_blocking = blockers + [str(b) for b in card.get("blocking", [])
                                if str(b) not in blockers]
     all_blocking += [f"{f.get('problem')} at {f.get('timestamp')}s"
                      for f in card.get("findings", []) if f.get("severity") == "blocking"]
-    all_blocking += [f"mechanical: {f['problem']} at {f['timestamp']}s (shot {f['shot']})"
-                     for f in mechanical if f["severity"] == "blocking"]
+    all_blocking += [mechanical_line(f) for f in mechanical if f["severity"] == "blocking"]
     if evidenced:
         # The bar reads the median scores, never one sample's.
         verdict, reasons = verdict_of(card.get("scores", {}), float(card.get("overall", 0)),
@@ -4394,6 +4567,16 @@ def run(args) -> int:
         verdict, reasons = NOT_EVIDENCED, [
             f"fewer than two of the {card['scoring']['asked']} scoring samples were valid "
             f"({card['scoring']['valid']}): nothing is scored on one reading"]
+    if evidenced:
+        # The bar names the rhythm finding that holds editing_pacing down,
+        # whether the cap lowered the reviewer's score or it was already
+        # under: either way that finding is why the category cannot pass.
+        held = [f for f in mechanical if f["severity"] == "blocking"
+                and f.get("kind") in RHYTHM_KINDS]
+        for key in RHYTHM_CAPPED if held else ():
+            how = "capped at" if key in capped else "held at or under"
+            reasons.append(f"{key} {how} {MECHANICAL_CAP:g} by {held[0]['kind']}: "
+                           f"{held[0]['problem']}")
     if evidenced and card.get("verdict") != verdict and not args.quiet:
         print(f"note: the reviewer said {card.get('verdict')!r}; the bar says "
               f"{verdict!r} ({'; '.join(reasons)})", file=sys.stderr)
@@ -4402,6 +4585,7 @@ def run(args) -> int:
                          "scene_sha256": seen,
                          "blocking": all_blocking, "frames": sorted(have),
                          "samples": samples, "mechanical": mechanical, "capped": capped,
+                         "rhythm": rhythm_block,
                          "proof_note": proof_note, "listening": listening,
                          "cut": cut, "side_by_side": side,
                          "contact_sheet": sheet.name, "engine": reviewer.report(),

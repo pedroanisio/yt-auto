@@ -35,7 +35,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-from . import env, gateway, house, keyframe, narrative, render, retention, spend, workspace
+from . import (env, gateway, house, keyframe, narrative, render, retention, rhythm, spend,
+               workspace)
 from .assets import kind_for, licence_tier
 from .core import read_json, timecode, write_json
 
@@ -1273,6 +1274,15 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
             report.add("ok", "voice", f"{engine} · {len(voice.get('takes', []))} takes · "
                        f"spoken {timecode(voice.get('spoken_seconds', 0) or 0)} · "
                        f"drift {drift:+.0f}s")
+            # Words a minute per section (AUTO-141), before any render: the
+            # same rhythm.section_wpm `yt qa` files its wpm findings from.
+            rates = [r for r in rhythm.section_wpm(voice.get("takes") or [])
+                     if r.get("wpm") is not None]
+            if rates:
+                report.add("note", "voice", "wpm by section: " + " · ".join(
+                    f"{r['section'] or '?'} {r['wpm']:.0f}"
+                    + ("" if r["timing"] in rhythm.MEASURED else f" ({r['timing']})")
+                    for r in rates))
         if engine in SCRATCH_ENGINES:
             report.add("warn", "voice", f"narration is a {engine} scratch take, "
                        "not publishable", _cmd("voice", project, "--engine", "auto"))

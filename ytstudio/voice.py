@@ -48,7 +48,7 @@ import wave
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
-from . import design, house, spend, workspace
+from . import design, house, rhythm, spend, workspace
 from .harness import Harness, HarnessError, brief
 from .core import Idea, read_json, timecode, write_json
 from .script import (Section, has_marks, load_script, mark_at, mark_tokens,
@@ -1315,8 +1315,22 @@ def spoken_note(takes: list[Take]) -> str:
     return f" ({sent} sent to the engine)" if sent != chars else ""
 
 
+#: What the director's retakes brief reads of a by_section row: the drift.
+DRIFT_KEYS = ("planned", "spoken", "takes", "drift")
+
+
+def drift_by_section(by_section: dict) -> dict:
+    """by_section as it was before each row carried its words a minute, so
+    the director's retakes brief (and its cache key) is unchanged."""
+    return {name: {k: row[k] for k in DRIFT_KEYS if k in row}
+            for name, row in by_section.items()}
+
+
 def summarise(takes: list[Take], *, layout: str) -> dict:
-    """Totals and drift, measured rather than asked for."""
+    """Totals and drift, measured rather than asked for. Each section's row
+    also carries its words a minute and the timing that rate rests on, by
+    rhythm.section_wpm, the same function `yt qa` files its wpm findings
+    from (AUTO-141)."""
     spoken = sum(t.seconds for t in takes)
     planned = sum(t.planned_seconds for t in takes)
     end = max((t.at + t.seconds for t in takes), default=0.0)
@@ -1330,6 +1344,9 @@ def summarise(takes: list[Take], *, layout: str) -> dict:
     for row in sections.values():
         row["drift"] = round(row["spoken"] - row["planned"], 2)
         row["planned"], row["spoken"] = round(row["planned"], 2), round(row["spoken"], 2)
+    for rate in rhythm.section_wpm([asdict(t) for t in takes]):
+        if rate["section"] in sections:
+            sections[rate["section"]].update(wpm=rate["wpm"], timing=rate["timing"])
     hot = [{"label": t.label, "cps": round(t.cps, 1), "seconds": t.seconds,
             "text": t.text[:80]} for t in takes if t.cps > CPS_LIMIT]
     rows = sorted(takes, key=lambda t: t.at)
@@ -1606,8 +1623,10 @@ def print_voice(data: dict, takes: list[Take]) -> None:
         if take.section != section:
             section = take.section
             row = data["by_section"][section]
+            rate = (f", {row['wpm']:.0f} wpm ({row.get('timing', '?')})"
+                    if row.get("wpm") is not None else "")
             print(f"\n  {section}  [{row['spoken']:.1f}s spoken vs "
-                  f"{row['planned']:.0f}s planned, {row['drift']:+.1f}s]")
+                  f"{row['planned']:.0f}s planned, {row['drift']:+.1f}s{rate}]")
         flag = "  !" if take.cps > CPS_LIMIT else ""
         print(f"    {take.label:<6} {timecode(int(take.at))}  "
               f"{take.seconds:>5.1f}s  {take.cps:>4.1f} cps{flag}  "
@@ -2090,7 +2109,7 @@ def run(args) -> int:
                     "text": t.text[:160],
                     **{k: t.delivery[k] for k in ("emphasis", "pauses", "pronounce", "section_note")
                        if marked and (t.delivery or {}).get(k)}} for t in takes]),
-            brief("Drift by section", data["by_section"]),
+            brief("Drift by section", drift_by_section(data["by_section"])),
             brief("Overlaps", data["overlaps"])]), RETAKE_SCHEMA)
     except HarnessError as exc:
         print(f"error: {exc}", file=sys.stderr)

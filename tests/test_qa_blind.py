@@ -52,6 +52,7 @@ class Blind(Pass):
 
     def setUp(self):
         super().setUp()
+        motion.steady_cutting(self)              # AUTO-141: not what this tests
         seen = self.seen
         seen["rechecks"] = []
         #: The recheck's answer: a callable of its prompt, or an exception.

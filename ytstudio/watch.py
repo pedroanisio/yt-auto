@@ -61,11 +61,12 @@ import math
 import re
 import shlex
 import subprocess
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from . import doctor, gateway, models, qa, render
 from .core import read_json, write_json
@@ -508,12 +509,18 @@ def plan_remote(cut: Path, host: str, slug: str, segments: list[Segment],
         dest=str(dest))
 
 
-def prepare_remote(prep: WatchPrep, dest: Path | None = None) -> list[dict]:
+def prepare_remote(prep: WatchPrep, dest: Path | None = None, *,
+                   while_up: Callable[[str, str, dict], None] | None = None) -> list[dict]:
     """Run the prep: the cut up once (rsync streams it from disk), one ssh,
     the segments back, the host's directory removed whatever happened. Each
     segment as {n, path, bytes, seconds}. WatchError when the host has no
     ffmpeg, a segment failed, is over WATCH_MAX_BYTES, or is more than SLACK
-    seconds off its plan: nothing is sent then."""
+    seconds off its plan: nothing is sent then. `while_up(host, path,
+    upload)`, when given, runs once the cut is on the host and before
+    anything else, so `yt qa`'s rhythm scan (AUTO-141) reads the cut this
+    upload sent instead of sending it again; `upload` is that upload's
+    seconds and bytes, so rhythm.json records the one transfer that
+    happened. It must not raise."""
     dest = Path(dest or prep.dest)
     dest.mkdir(parents=True, exist_ok=True)
     try:
@@ -522,10 +529,15 @@ def prepare_remote(prep: WatchPrep, dest: Path | None = None) -> list[dict]:
         raise WatchError(str(exc)) from exc
     try:
         try:
+            started = time.monotonic()
             up = subprocess.run(prep.up, capture_output=True, text=True)
             if up.returncode != 0:
                 raise WatchError(f"the cut could not be sent to {prep.host}: "
                                  f"{(up.stderr or '').strip()[-300:]}")
+            if while_up is not None:
+                while_up(prep.host, f"{prep.root}/cut.mp4", {
+                    "upload_seconds": round(time.monotonic() - started, 2),
+                    "upload_bytes": Path(prep.cut).stat().st_size})
             render.refuse_remote()
             done = subprocess.run(render.ssh_argv(prep.host, prep.script),
                                   capture_output=True, text=True, timeout=PREPARE_TIMEOUT)
@@ -884,10 +896,12 @@ def _earlier(home: Path, pass_dir: Path, want: dict) -> dict | None:
 
 def watch(project, pass_dir: Path, prepared: Prepared, args, *, home: Path, build: dict,
           title: str, treatment: Any = None, house: str = "",
-          house_digest: dict | None = None, harness: _Watcher | None = None) -> dict:
+          house_digest: dict | None = None, harness: _Watcher | None = None,
+          while_up: Callable[[str, str, dict], None] | None = None) -> dict:
     """Plan, prepare, ask, check, record: the watch's record, also written
     to `pass_dir/watch.json`. A watch that cannot run is recorded with its
-    reason and its not_evidenced line; it never stops the review."""
+    reason and its not_evidenced line; it never stops the review.
+    `while_up` goes to prepare_remote: it runs only when the cut is sent."""
     pass_dir = Path(pass_dir)
     where = _where(project)
     base = {"pass": pass_dir.name, "model": prepared.model,
@@ -942,7 +956,7 @@ def watch(project, pass_dir: Path, prepared: Prepared, args, *, home: Path, buil
         try:
             prep = plan_remote(video, prepared.host, Path(project.root).name, segments,
                                pass_dir / SEGMENTS)
-            rows = [dict(r, audio=False) for r in prepare_remote(prep)]
+            rows = [dict(r, audio=False) for r in prepare_remote(prep, while_up=while_up)]
         except (WatchError, ValueError) as exc:
             base["plan"] = {"kind": kind, "segments": [
                 {"n": n, "start": s.start, "end": s.end, "scale": s.scale}

@@ -51,6 +51,7 @@ def finding(problem, t=2.0, severity="minor", owner="vfx"):
 
 class Samples(unittest.TestCase):
     def setUp(self):
+        motion.steady_cutting(self)              # AUTO-141: not what this tests
         self.tmp = Path(tempfile.mkdtemp(prefix="qa-samples-"))
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.work = self.tmp / "work"
@@ -472,7 +473,7 @@ class Samples(unittest.TestCase):
         measurements = qa.stage_measurements(
             build, voice, sound=sound, gate=None,
             geometry={"status": "skipped", "why": "a fake geometry check"}, styles={},
-            reach=None)
+            reach=None, rhythm=card["rhythm"])           # AUTO-141: run()'s block
         self.assertIsNone(reach.summary(None))
         direct = qa.score_evidence(
             reviewer, here, title="one take", build=build, script=script, voice=voice,
