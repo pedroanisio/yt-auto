@@ -503,7 +503,10 @@ class ReviseLabels(unittest.TestCase):
         self.assertIn("yt voice --redo 1.3 ", self.said)
 
     def test_labels_fact_fix_of_super_written(self):
-        self.with_super()
+        # The wrong super is already in script.json and the first revise
+        # rewrites only 2.1's line, so only the fact revise's own row can
+        # carry the corrected super back into the record.
+        self.with_super(text=("Forty lanes",))
         self.research()
         before = shots_of(json.loads(self.before))
         self.fixes = {3: FIXED, 4: "The paint hid the rust from the four lanes of inspectors."}
@@ -511,7 +514,6 @@ class ReviseLabels(unittest.TestCase):
                          "problem": "the on-screen text says forty lanes; the research "
                                     "says four"}],
                        []]
-        self.supers = {4: ["Forty lanes"]}
         self.fact_supers = {4: ["Four lanes"]}
         self.assertEqual(self.run_stage("--revise", "1.3,2.1"), 0, self.said)
         self.assertEqual([c[0] for c in self.calls], [
