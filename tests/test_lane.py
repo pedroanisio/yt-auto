@@ -112,6 +112,22 @@ class Check(unittest.TestCase):
         ok, _ = self.check("styles")
         self.assertTrue(ok)
 
+    def test_a_film_in_the_fallback_palette_leaves_the_styles_stage_done(self):
+        # AUTO-155: before a render the fallback is a styles warn, never a
+        # fail, so the lane (and `yt run`) does not loop on the styles stage
+        from ytstudio import doctor
+        write_json(self.root / "styles.json", {"styles": []})
+        (self.root / "scene.xml").write_text("<scene/>")
+        write_json(self.root / "build.json", {
+            "findings": [], "layers": {}, "timeline": {},
+            "design": {"treatment": "", "source": "fallback", "roles": {},
+                       "fallback": "styles.json lists no treatment"}})
+        rows = [f for f in doctor.check_project(workspace.Project(self.root)).findings
+                if "fallback palette" in f.message]
+        self.assertEqual([(f.level, f.area) for f in rows], [("warn", "styles")])
+        ok, lines = self.check("styles")
+        self.assertTrue(ok, lines)
+
     def test_a_fail_in_the_stages_area_keeps_it_open(self):
         write_json(self.root / "scene.xml", {})
         write_json(self.root / "build.json", {"findings": ["error: the include is missing"],

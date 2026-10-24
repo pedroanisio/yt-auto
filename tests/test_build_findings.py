@@ -13,7 +13,11 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 from tests.test_build_audio import _idea, _sections, _wav
-from ytstudio import build
+from tests.test_keyframe import STYLES
+from ytstudio import build, design
+
+#: A treatment whose palette is words only: what a plain `yt styles` writes.
+HEXLESS = {"styles": [{"name": "x", "palette": "warm earth tones"}]}
 
 
 class _Project(unittest.TestCase):
@@ -208,3 +212,66 @@ class Story(_Project):
         prompt = build.edit_prompt(builder.brief())
         self.assertNotIn("payoff", prompt)
         self.assertNotIn("function", prompt)
+
+
+class DesignFallback(_Project):
+    """A film in design.py's house fallback palette builds, publishable as
+    before, with one warning naming why (AUTO-155): the stages after it
+    refuse it, not the build."""
+
+    def design_findings(self, manifest):
+        return [f for f in manifest["findings"] if f.startswith("warning: design:")]
+
+    def test_no_styles_warns_and_stays_publishable(self):
+        _, manifest = self.build(_edit(), audio=False, styles=None)
+        found = self.design_findings(manifest)
+        self.assertEqual(len(found), 1, manifest["findings"])
+        self.assertIn("no styles.json", found[0])
+        self.assertIn("yt styles --rich", found[0])
+        self.assertEqual(manifest["design"]["source"], "fallback")
+        self.assertEqual(manifest["design"]["fallback"], "no styles.json")
+        _, styled = self.build(_edit(), audio=False, styles=STYLES)
+        self.assertEqual(manifest["publishable"], styled["publishable"])
+
+    def test_a_palette_without_hex_names_that_cause(self):
+        _, manifest = self.build(_edit(), audio=False, styles=HEXLESS)
+        found = self.design_findings(manifest)
+        self.assertEqual(len(found), 1, manifest["findings"])
+        self.assertIn("names no hex code", found[0])
+        self.assertIn("names no hex code", manifest["design"]["fallback"])
+
+    def test_an_empty_styles_list_names_that_cause(self):
+        _, manifest = self.build(_edit(), audio=False, styles={"styles": []})
+        found = self.design_findings(manifest)
+        self.assertEqual(len(found), 1, manifest["findings"])
+        self.assertIn("styles.json lists no treatment", found[0])
+        self.assertEqual(manifest["design"]["fallback"], "styles.json lists no treatment")
+
+    def test_a_styles_palette_adds_nothing(self):
+        _, manifest = self.build(_edit(), audio=False, styles=STYLES)
+        self.assertEqual([f for f in manifest["findings"] if "design:" in f], [])
+        self.assertNotIn("fallback", manifest["design"])
+        self.assertEqual(manifest["design"]["source"], "styles.json")
+
+    def test_the_warning_is_printed_once_however_many_findings(self):
+        import contextlib
+        import io
+        _, manifest = self.build(_edit(), audio=False, styles=None)
+        manifest["findings"] = [f"warning: other {n}" for n in range(20)] + manifest["findings"]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            build.print_build(manifest)
+        head, sdk = out.getvalue().split("the SDK raised", 1)
+        self.assertIn("warning: design:", head)          # above the cut at 12
+        self.assertNotIn("warning: design:", sdk)
+
+    def test_design_fallback_is_pure(self):
+        for styles, why in ((None, "no styles.json"),
+                            ({"styles": []}, "styles.json lists no treatment"),
+                            ({}, "styles.json lists no treatment"),
+                            (HEXLESS, "the primary treatment's palette in styles.json "
+                                      "names no hex code"),
+                            (STYLES, "")):
+            with self.subTest(styles=styles):
+                self.assertEqual(build.design_fallback(
+                    styles, design.Design.from_styles(styles)), why)

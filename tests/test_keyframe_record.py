@@ -4,13 +4,15 @@ binding picture findings reach the author's brief (AUTO-8)."""
 
 from __future__ import annotations
 
+import contextlib
 import copy
+import io
 import json
 import unittest
 from pathlib import Path
 
 from tests.test_keyframe import FakeEngine, ProjectCase, SCRIPT, KEYFRAME_DOC
-from ytstudio import harness, keyframe
+from ytstudio import cli, doctor, harness, keyframe, workspace
 from ytstudio.core import write_json
 
 LOW = {"seen": "a grey box", "scores": {c: 5 for c in keyframe.CATEGORIES},
@@ -106,6 +108,85 @@ class Record(ProjectCase):
             record.pop(key, None)
         write_json(keyframe.record_path(self.root), record)
         self.assertEqual(keyframe.approve(self.root)["approval"]["state"], "approved")
+
+
+class FallbackPalette(ProjectCase):
+    """A look authored on design.py's house fallback palette cannot be
+    approved (AUTO-155): every film that falls back has the same colours.
+    The refusal is apart from approvable(), so `yt run` does not author the
+    look again and again while styles.json is what needs fixing."""
+
+    def test_a_fallback_look_is_refused(self):
+        (self.root / "styles.json").unlink()
+        record = self.run_stage()
+        self.assertEqual(record["palette_source"], "fallback")
+        self.assertEqual(keyframe.load_record(self.root)["palette_source"], "fallback")
+        with self.assertRaises(keyframe.KeyframeError) as ctx:
+            keyframe.approve(self.root)
+        self.assertIn("yt styles --rich", str(ctx.exception))
+        self.assertIn("fallback palette", str(ctx.exception))
+        self.assertNotEqual(keyframe.load_record(self.root)["approval"]["state"], "approved")
+        sheet = (self.root / "keyframe.md").read_text(encoding="utf-8")
+        self.assertNotIn("--approve", sheet)
+        self.assertIn("yt styles --rich", sheet)
+        args = cli.build_parser().parse_args(
+            ["keyframe", "--project", str(self.root), "--approve", "--quiet"])
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(args.run(args), 1)
+        self.assertIn("yt styles --rich", err.getvalue())
+
+    def test_doctor_names_the_styles_fix_not_the_approval(self):
+        (self.root / "styles.json").unlink()
+        self.run_stage()
+        rows = [f for f in doctor.check_project(workspace.Project(self.root)).findings
+                if f.area == "keyframe"]
+        self.assertEqual(len(rows), 1, rows)
+        self.assertIn("fallback palette", rows[0].message)
+        # palette_source is frozen in keyframe.json and `yt keyframe` keeps a
+        # pending look, so the fix names the fresh look as well
+        self.assertEqual(rows[0].fix, f"yt styles --project {self.root} --rich, then "
+                                      f"yt keyframe --project {self.root} --fresh")
+
+    def test_doctor_vfx_warning_names_the_styles_fix_not_the_approval(self):
+        (self.root / "styles.json").unlink()
+        self.run_stage()
+        write_json(self.root / "vfx.json", {"authored": [{"n": 1, "file": "x"}]})
+        rows = [f for f in doctor.check_project(workspace.Project(self.root)).findings
+                if f.area == "vfx" and "without an approved keyframe" in f.message]
+        self.assertEqual(len(rows), 1, rows)
+        self.assertNotIn("--approve", rows[0].fix)
+        self.assertTrue(rows[0].fix.startswith(
+            f"yt styles --project {self.root} --rich, then "
+            f"yt keyframe --project {self.root} --fresh, then "), rows[0].fix)
+
+    def test_a_partial_palette_still_approves(self):
+        # STYLES names five hexes; the roles it leaves open are filled from
+        # the fallback, but the palette is the film's own
+        record = self.run_stage()
+        self.assertEqual(record["palette_source"], "styles.json")
+        self.assertEqual(keyframe.palette_refusal(record), "")
+        self.assertEqual(keyframe.approve(self.root)["approval"]["state"], "approved")
+
+    def test_an_old_record_without_palette_source_approves(self):
+        (self.root / "styles.json").unlink()
+        self.run_stage()
+        record = keyframe.load_record(self.root)
+        record.pop("palette_source")
+        write_json(keyframe.record_path(self.root), record)
+        self.assertEqual(keyframe.approve(self.root)["approval"]["state"], "approved")
+
+    def test_look_needs_redo_ignores_the_palette(self):
+        (self.root / "keyframe").mkdir(exist_ok=True)
+        (self.root / "keyframe" / "keyframe.scene.xml").write_text(KEYFRAME_DOC)
+        record = {"source": "section", "section": 1, "document": "keyframe/keyframe.scene.xml",
+                  "frame": "keyframe/keyframe.png", "errors": [], "findings": [],
+                  "palette_source": "fallback",
+                  "approval": {"state": "pending", "notes": "", "digest": "", "at": ""}}
+        write_json(keyframe.record_path(self.root), record)
+        self.assertEqual(keyframe.approvable(record), "")
+        self.assertTrue(keyframe.palette_refusal(record))
+        self.assertFalse(keyframe.look_needs_redo(self.root))
 
 
 class PictureFindings(ProjectCase):

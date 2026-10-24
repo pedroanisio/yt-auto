@@ -1612,6 +1612,7 @@ class SceneBuilder:
         # The design system, read from styles.json: its tokens are what the
         # authored effects paint with, and the manifest records the roles.
         design = designer.Design.from_styles(self.styles, height=self.height)
+        fallback_why = design_fallback(self.styles, design)
 
         placeholders = []
         placed_srcs: set[str] = set()      # images the build placed itself
@@ -2042,6 +2043,12 @@ class SceneBuilder:
                     + pinner.errors)
         reparse += [f"warning: blocking (editorial): {x}" for x in edit["blocking"]]
         reparse += self.script_findings
+        if fallback_why:
+            # A warning, never an error: build and render still run, and qa
+            # and doctor's delivery verdict are what refuse the film.
+            reparse.append(f"warning: design: the film is in design.py's house fallback "
+                           f"palette ({fallback_why}), not its own; run yt styles --rich, "
+                           "then yt build")
         manifest = {
             "idea": asdict(self.idea),
             "scene": {"version": version,
@@ -2082,7 +2089,8 @@ class SceneBuilder:
             "design": {"treatment": design.treatment, "source": design.source,
                        "roles": {r: design.role(r) for r in
                                  ("background", "object", "choice", "positive",
-                                  "negative", "muted", "ink")}},
+                                  "negative", "muted", "ink")}}
+                      | ({"fallback": fallback_why} if fallback_why else {}),
             "placeholders": placeholders,
             "hoisted": {"lights": hoist_lights, "tokens": len(tokens),
                         "text_styles": len(text_styles),
@@ -2111,6 +2119,20 @@ class SceneBuilder:
             "shots": [asdict(p) | {"words": len(p.words)} for p in placed],
         }
         return data, manifest
+
+
+def design_fallback(styles: dict | None, design) -> str:
+    """Why the film is in design.py's house fallback palette, or "" when its
+    palette is its own (AUTO-155). Every film that falls back has the same
+    colours, so the build says why; keyframe approval, QA and delivery are
+    what refuse it, while the build and the render still run."""
+    if design.source != "fallback":
+        return ""
+    if styles is None:
+        return "no styles.json"
+    if not (styles.get("styles") if isinstance(styles, dict) else None):
+        return "styles.json lists no treatment"
+    return "the primary treatment's palette in styles.json names no hex code"
 
 
 # --------------------------------------------------------------------------- #
@@ -2287,6 +2309,10 @@ def print_build(manifest: dict) -> None:
           f"{layers['image']} from "
           f"real files, {layers['placeholder']} placeholder cards")
     print(f"  publishable: {'yes' if manifest.get('publishable') else 'NO'}")
+    # Printed here, once, so a long findings list cannot push it past the cut.
+    for finding in manifest.get("findings") or []:
+        if str(finding).startswith("warning: design:"):
+            print(f"  {finding}")
     buses = manifest.get("buses") or {}
     print(f"  {manifest['audio_tracks']} audio tracks "
           f"({manifest.get('narration_tracks', 0)} narration) on "
@@ -2347,9 +2373,10 @@ def print_build(manifest: dict) -> None:
         for row in manifest["legibility"][:8]:
             print(f"    {row['label']:<6} {row['cps']} cps, needs "
                   f"{row['needs_seconds']}s and has {row['seconds']}s")
-    if manifest["findings"]:
-        print(f"\n  the SDK raised {len(manifest['findings'])} finding(s):")
-        for finding in manifest["findings"][:12]:
+    rest = [f for f in manifest["findings"] if not str(f).startswith("warning: design:")]
+    if rest:
+        print(f"\n  the SDK raised {len(rest)} finding(s):")
+        for finding in rest[:12]:
             print(f"    {finding}")
 
 

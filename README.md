@@ -871,6 +871,14 @@ stops before `yt vfx` while a look awaits approval. On the Euler film the
 separate style frame this replaces took 51 minutes and $20 for a frame the
 film never used.
 
+A look authored on `design.py`'s house fallback palette (no `styles.json`,
+or a primary treatment whose palette names no hex code: `keyframe.json`'s
+`palette_source` is `fallback`) cannot be approved: `--approve` exits 1
+naming `yt styles --rich`, then `yt keyframe --fresh`, and `yt run` stops
+before `yt vfx` naming the same in place of `--approve` (`--skip keyframe`
+runs without a look). `yt build` and `yt render` still run on such a film,
+but `yt qa` blocks READY and `yt doctor` refuses delivery (AUTO-155).
+
 `--section` · `--jobs` · `--budget-usd` · `--fresh` · `--approve` ·
 `--reject` · `--sheet` · `--inspo` · `--per-section` · `--width` · `--height`
 

@@ -263,7 +263,9 @@ class ProofCheck(_Project):
         self.assertTrue(manifest["publishable"])
         # the manifest says so, not only the record: a heavy world whose still
         # ran out of memory or time is otherwise a silent pass
-        warned = [f for f in manifest["findings"] if f.startswith("warning")]
+        # (the house-fallback palette warning, AUTO-155, is another matter)
+        warned = [f for f in manifest["findings"] if f.startswith("warning")
+                  and not f.startswith("warning: design:")]
         self.assertEqual(len(warned), 1, manifest["findings"])
         self.assertIn("fx-1-1 not compared with its proof frame", warned[0])
         self.assertIn("the engine fell over", warned[0])

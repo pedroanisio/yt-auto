@@ -224,6 +224,62 @@ class Delivery(DeliveryCase):
         self.assertTrue(any("--quality final --strict" in s for s in steps), steps)
 
 
+class FallbackDesign(DeliveryCase):
+    """A film in design.py's house fallback palette renders, but is not
+    delivered (AUTO-155): one fail row at delivery once rendered, one styles
+    warning before, each naming `yt styles --rich`."""
+
+    def setUp(self):
+        super().setUp()
+        self.styled("fallback")
+
+    def styled(self, source: str) -> None:
+        design = {"treatment": "", "source": source, "roles": {}}
+        if source == "fallback":
+            design["fallback"] = "no styles.json"
+        self.write("build.json", {"scene": {"duration": 30.0}, "publishable": True,
+                                  "findings": [], "layers": {}, "timeline": {"shots": 9},
+                                  "audio_tracks": 4, "design": design})
+
+    def about_palette(self, level=None):
+        return [f for f in self.report().findings if "fallback palette" in f.message
+                and (level is None or f.level == level)]
+
+    def test_a_final_render_in_the_fallback_is_not_delivery(self):
+        self.rendered(); self.gated(); self.scored()
+        fails = self.fails_about("fallback palette")
+        self.assertEqual(len(fails), 1, fails)
+        self.assertIn("no styles.json", fails[0].message)
+        self.assertIn(f"yt styles --project {self.root} --rich", fails[0].fix)
+        self.assertIn("yt build", fails[0].fix)
+        self.assertFalse(self.report().metrics["delivery"]["ready"])
+        self.assertEqual(len(self.about_palette("fail")), 1)
+        self.assertEqual(self.about_palette("warn"), [])
+        self.assertEqual(self.delivery("ok"), [])
+
+    def test_a_draft_render_is_unaffected_otherwise(self):
+        self.rendered(quality="draft"); self.gated(); self.scored()
+        self.assertEqual(len(self.fails_about("draft")), 1)
+        self.assertEqual(len(self.fails_about("fallback palette")), 1)
+        report = self.report()
+        self.assertFalse([f for f in report.findings if f.area in ("build", "render")
+                          and "palette" in f.message])
+
+    def test_before_render_it_is_a_styles_warning(self):
+        self.write("scene.xml", b"<scene/>")          # built, not yet rendered
+        warns = self.about_palette("warn")
+        self.assertEqual(len(warns), 1, warns)
+        self.assertEqual(warns[0].area, "styles")
+        self.assertIn("--rich", warns[0].fix)
+        self.assertEqual(self.about_palette("fail"), [])
+
+    def test_a_styled_build_is_ready(self):
+        self.styled("styles.json")
+        self.rendered(); self.gated(); self.scored()
+        self.assertEqual(self.about_palette(), [])
+        self.assertTrue(self.report().metrics["delivery"]["ready"])
+
+
 class NextStep(unittest.TestCase):
     def test_the_next_script_command_has_its_plan_reviewed(self):
         # AUTO-92: doctor suggests the script as `yt run` would run it.

@@ -352,6 +352,20 @@ def approvable(record: dict) -> str:
     return ""
 
 
+def palette_refusal(record: dict) -> str:
+    """"" unless the look was authored on design.py's house fallback palette
+    (AUTO-155), else why it cannot be approved. Apart from approvable() on
+    purpose: look_needs_redo and reusable() read that one, and `yt run` would
+    author the look again on every run while styles.json stays as it is. Only
+    Design.source counts: a palette of the film's own whose open roles were
+    filled from the fallback is approvable, and a record from before
+    `palette_source` is not judged."""
+    if record.get("palette_source") != "fallback":
+        return ""
+    return ("it was authored on design.py's house fallback palette, not this film's: "
+            "run `yt styles --rich`, then `yt keyframe --fresh`")
+
+
 def _record_for_approval(root: Path) -> tuple[dict, Path]:
     record = load_record(root)
     doc = Path(root) / (record.get("document") or f"{KEYFRAME_DIR}/{DOC_NAME}")
@@ -386,6 +400,9 @@ def approve(root: Path) -> dict:
     refused = approvable(record)
     if refused:
         raise KeyframeError(f"the look cannot be approved: {refused}; run `yt keyframe` again")
+    refused = palette_refusal(record)
+    if refused:
+        raise KeyframeError(f"the look cannot be approved: {refused}")
     record["approval"] = {"state": "approved", "notes": "", "digest": document_digest(doc),
                           "at": _now()}
     write_json(record_path(root), record)
@@ -1052,6 +1069,7 @@ class KeyframeStage:
                       "treatment": chosen["treatment"], "hero": chosen["hero"],
                       "camera": chosen["camera"], "notes_for_author": chosen["notes_for_author"],
                       "elements": chosen["elements"], **result,
+                      "palette_source": palette_roles(self.direction)[1],
                       "operator_notes": self.notes,
                       "approval": {"state": "pending", "notes": "",
                                    "digest": document_digest(self.root / result["document"])
@@ -1240,6 +1258,10 @@ class SectionLook:
                   "rounds": rec.get("rounds") or [], "score": None,
                   "treatment": style.get("look", ""), "camera": style.get("camera_language", ""),
                   "hero": "", "elements": [], "operator_notes": self.notes,
+                  # the styles document the planner read, --in-styles included
+                  "palette_source": design.Design.from_styles(read_json(
+                      self.project.source("styles", workspace.override(self.args, "styles")),
+                      warn=False)).source,
                   "cost_usd": round(self.usage.cost_usd, 4),
                   "usage": spend.from_usage(self.usage, getattr(self.args, "model", "")),
                   "document_digest": document_digest(doc),
@@ -1316,10 +1338,14 @@ def write_sheet(root: Path, record: dict) -> Path:
     if notes:
         lines += ["", "## Operator's notes", ""] + [f"- ({n.get('at', '')}) {n['notes']}"
                                                    for n in notes]
-    lines += ["", "## Commands", "",
-              f"    yt keyframe --project {root} --approve",
-              f"    yt keyframe --project {root} --reject \"what is wrong, in your words\"",
-              f"    yt keyframe --project {root} --fresh      # pick and compose again", ""]
+    palette = palette_refusal(record)
+    if palette:
+        lines += ["", f"**This look cannot be approved: {palette}.**"]
+    lines += ["", "## Commands", ""]
+    if not palette:
+        lines += [f"    yt keyframe --project {root} --approve",
+                  f"    yt keyframe --project {root} --reject \"what is wrong, in your words\""]
+    lines += [f"    yt keyframe --project {root} --fresh      # pick and compose again", ""]
     path = Path(root) / "keyframe.md"
     path.write_text("\n".join(lines), encoding="utf-8")
     return path
@@ -1358,8 +1384,11 @@ def _write_section_sheet(root: Path, record: dict, lines: list[str]) -> Path:
     refused = approvable(record)
     if refused:
         lines += ["", f"**This look cannot be approved: {refused}.** Run `yt keyframe` again."]
+    palette = palette_refusal(record)
+    if palette:
+        lines += ["", f"**This look cannot be approved: {palette}.**"]
     lines += ["", "## Commands", ""]
-    if not refused:
+    if not refused and not palette:
         lines += [f"    yt keyframe --project {root} --approve",
                   f"    yt keyframe --project {root} --reject \"what is wrong, in your words\""]
     lines += [f"    yt keyframe --project {root} --fresh      # plan and author the section again",

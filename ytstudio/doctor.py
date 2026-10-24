@@ -799,6 +799,20 @@ def cut_problems(project: workspace.Project, build: dict | None) -> list[tuple[s
     return partial + _stale_video(project)
 
 
+def fallback_palette(project: workspace.Project, build: dict | None
+                     ) -> tuple[str, str] | None:
+    """(problem, fix) when build.json says the film is in design.py's house
+    fallback palette, else None (AUTO-155). The build only warned: this is
+    a delivery row once rendered and a styles warning before, never a build
+    error, which the build section would report a second time."""
+    design = (build or {}).get("design") or {}
+    if design.get("source") != "fallback":
+        return None
+    why = design.get("fallback") or "source fallback"
+    return (f"the film is in design.py's house fallback palette ({why}), not its own",
+            _cmd("styles", project, "--rich") + ", then " + _cmd("build", project))
+
+
 def delivery_evidence(project: workspace.Project, build: dict | None
                       ) -> list[tuple[str, str]]:
     """What stands between the rendered video and publication, as
@@ -843,6 +857,9 @@ def delivery_evidence(project: workspace.Project, build: dict | None
         missing.append(("the programme has no audio: no narration and no placed cue",
                         _cmd("sound", project, "--fetch", "--synth") + ", then "
                         + _cmd("build", project)))
+    palette = fallback_palette(project, built)
+    if palette:
+        missing.append(palette)
 
     video = project.path("video")
     rendered_at = _mtime(video) if video.exists() else 0.0
@@ -1315,11 +1332,20 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
     # approval is information, a rejected or changed one needs a look, and
     # an animation authored without an approved look inherited nothing.
     look = keyframe.approval_state(project.root)
+    palette = (keyframe.palette_refusal(keyframe.load_record(project.root))
+               if look["state"] == "pending" else "")
+    # palette_source is frozen in keyframe.json and `yt keyframe` keeps a
+    # pending look, so the palette fix is followed by a fresh look (AUTO-155)
+    repaint = _cmd("styles", project, "--rich") + ", then " + _cmd("keyframe", project, "--fresh")
     if look["state"] != "none":
         score = look.get("score")
         shown = f"{score:g}/10" if isinstance(score, (int, float)) else "unscored"
         report.metrics["keyframe"] = {"state": look["state"], "score": score, "at": look["at"]}
-        if look["state"] == "pending":
+        if palette:
+            # approval would be refused: the fix is the palette, not --approve
+            report.add("note", "keyframe", f"the keyframe ({shown}) cannot be approved: "
+                       f"{palette}", repaint)
+        elif look["state"] == "pending":
             report.add("note", "keyframe", f"the keyframe ({shown}) awaits approval: "
                        f"look at {look['frame'] or 'keyframe/keyframe.png'}, then "
                        f"{_cmd('keyframe', project, '--approve')}",
@@ -1342,7 +1368,8 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
         # --relook; --fresh would replan and author its section again too.
         section_look = keyframe.load_record(project.root).get("source") == "section"
         if look["state"] != "approved":
-            first = (_cmd("keyframe", project, "--approve")
+            first = (repaint if palette
+                     else _cmd("keyframe", project, "--approve")
                      if look["state"] == "pending" and section_look else _cmd("keyframe", project))
             report.add("warn", "vfx", "the animation was authored without an approved "
                        "keyframe; no look was locked for it to inherit",
@@ -1446,6 +1473,12 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
                 and not build.get("timeline", {}).get("from_voice")):
             report.add("warn", "build", "the scene was built from screenplay "
                        "estimates, but a narration exists", _cmd("build", project))
+        # Before a render it is the styles stage's to fix, and a warn, so the
+        # styles lane does not fail and `yt run` does not loop on it; once
+        # rendered, delivery_evidence fails it instead (AUTO-155).
+        palette = fallback_palette(project, build)
+        if palette and "render" not in done:
+            report.add("warn", "styles", *palette)
     if "render" in done:
         video = project.path("video")
         size = video.stat().st_size if video.exists() else 0
