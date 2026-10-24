@@ -1594,10 +1594,95 @@ def calibrate(directory: Any, *, work: Any, model: str = "sonnet",
               "cases": rows, "audit": audit,
               "passed": all(r["passed"] for r in rows) and audit["passed"],
               "verdicts": len(log), "labelled": count, "agreed": agreed,
+              # which rubric the cases were judged under (AUTO-148): a
+              # calibration of another rubric does not turn --gate on
+              "rubric_sha256": rubric_digest(),
               "cost_usd": round(sum(w.usage.cost_usd for w in writers), 4)}
     (work / "calibration").mkdir(parents=True, exist_ok=True)
     write_json(work / "calibration" / "calibration.json", report)
     return report
+
+
+#: The shipped calibration cases: the only set a calibration turns --gate
+#: on over (gate_ready). A set of one's own can say what it likes.
+FIXTURES = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "narrative"
+
+
+def rubric_digest() -> str:
+    """The sha256 of the rubric as data (every criterion, its levels and
+    rules), recorded by `calibrate` as `rubric_sha256`: a reviewer
+    calibrated under another rubric is not calibrated under this one."""
+    import dataclasses
+    import hashlib
+    rows = [dataclasses.asdict(c) for c in RUBRIC]
+    return hashlib.sha256(json.dumps(rows, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _same_dir(named: Any, wanted: Path) -> bool:
+    """Whether a calibration's `directory` is `wanted`: resolved from where
+    the command ran, or from the repository root when relative."""
+    if not named:
+        return False
+    path = Path(str(named))
+    tries = [path] if path.is_absolute() else [path, wanted.parents[2] / path]
+    return any(t.resolve() == wanted.resolve() for t in tries)
+
+
+def gate_ready(work: Any, reviewer: str) -> tuple[bool, str]:
+    """Whether `yt script --gate` may be turned on for `reviewer`, and the
+    first reason it may not (AUTO-148). Pure: it reads
+    `<work>/calibration/calibration.json` and `<work>/review-log.jsonl` and
+    asks nothing. True only when the calibration passed over every case of
+    the shipped tests/fixtures/narrative (each ran and passed) under today's
+    rubric (`rubric_sha256`), by a reviewer of `reviewer`'s family (a pool
+    reviewer, `sdk:<id>`, is compared with the calibration's `reviewer`
+    record), and GATE_LABELLED rows of the log carry a person's label on a
+    verdict that reviewer's family wrote: labels count for the reviewer that
+    wrote the row, never for another."""
+    from . import flags, reviewers, script       # script imports this module
+    work = Path(work)
+    path = work / "calibration" / "calibration.json"
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        report = None
+    if not isinstance(report, dict):
+        return False, (f"no {path}: run `python -m ytstudio.narrative calibrate "
+                       f"tests/fixtures/narrative --work {work} --reviewer-model {reviewer}`")
+    if not report.get("passed"):
+        return False, "the reviewer did not pass this calibration"
+    if not FIXTURES.is_dir():
+        return False, "the narrative fixtures are not here"
+    if not _same_dir(report.get("directory"), FIXTURES):
+        return False, (f"calibrated over {report.get('directory') or 'no directory'}, not "
+                       "the shipped tests/fixtures/narrative")
+    cases = {str(c.get("name")): c for c in report.get("cases") or [] if isinstance(c, dict)}
+    short = [c["name"] for c in calibration_cases(FIXTURES)
+             if not (cases.get(c["name"]) or {}).get("ran")
+             or not (cases.get(c["name"]) or {}).get("passed")]
+    if short:
+        return False, f"not every shipped case ran and passed: {', '.join(short)}"
+    if report.get("rubric_sha256") != rubric_digest():
+        return False, ("calibrated under another rubric (rubric_sha256 "
+                       f"{'differs' if report.get('rubric_sha256') else 'missing'}); "
+                       "calibrate again")
+    if reviewers.is_gateway(reviewer):
+        record = report.get("reviewer")
+        if not isinstance(record, dict) or not record.get("model"):
+            return False, "pool reviewer not calibrated"
+        calibrated = str(record["model"])
+    else:
+        calibrated = str(report.get("reviewer_model") or "")
+    family = flags.model_family(str(reviewer))
+    if flags.model_family(calibrated) != family:
+        return False, f"calibrated {calibrated or 'no reviewer'}, not {reviewer}"
+    log = work / script.REVIEW_LOG
+    count = labelled(r for r in read_review_log(log)
+                     if flags.model_family(str(r.get("model") or "")) == family)
+    if count < GATE_LABELLED:
+        return False, (f"{count} labelled verdicts by {reviewer} in {log}, "
+                       f"{GATE_LABELLED} needed")
+    return True, ""
 
 
 def calibration_lines(report: Mapping) -> list[str]:
