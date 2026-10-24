@@ -1623,11 +1623,15 @@ def _framed_whatif(shot: Shot, lang: str) -> bool | None:
 
 
 def _doubt(status: str) -> int:
-    """How far a status is from established: 0 for established, up to 3 for
-    what-if; -1 for none or no status, which no revise may move a line to
-    as a weakening, since none on a cited line states a fact."""
-    order = (*LADDER, "what-if")
-    return order.index(status) if status in order else -1
+    """How far a line read at `status` is from established, for the
+    fact-check's revise, which may only weaken it: 0 for established up to
+    4 for what-if. A line read at none (or with no status) states no fact
+    by its label, so it sits below established and hypothesis, which would
+    lift it, and above speculation and what-if, which say it is unsure.
+    none is never a weakening to move a line to: on a cited line it states
+    a fact, so the revise does not offer it as one (`revise`)."""
+    order = ("established", "hypothesis", "none", "speculation", "what-if")
+    return order.index(status) if status in order else order.index("none")
 
 
 def effective_status(shot: Shot, lang: str = "") -> str:
@@ -3873,7 +3877,7 @@ class Screenwriter:
             if given_status and given_status != shot.status:
                 before, read_at = shot.status, effective_status(shot, self.lang)
                 shot.status = given_status
-                if given_status in STATUSES and \
+                if given_status in STATUSES and given_status != "none" and \
                         _doubt(effective_status(shot, self.lang)) > _doubt(read_at):
                     row |= {"status_before": before, "status_after": given_status}
                 else:
@@ -5027,7 +5031,11 @@ class Screenwriter:
         self.findings += rule_lines(flags, kept, self.lang, revised=fix, sections=sections)
         # A status check that did not read the film is said so, never
         # counted as passed (AUTO-132).
-        unread = (check.get("status") or {}).get("not_evidenced") if check else None
+        # A fact-check that failed asked no status either (verify_status
+        # runs on its reading), so a film whose lines carry one says that.
+        unread = ((check.get("status") or {}).get("not_evidenced") if check
+                  else "fact-check failed" if do_verify and self._statused(written)
+                  else None)
         if unread:
             self.findings.append(f"not_evidenced: verify-status ({unread})")
         # The claims the lines cite, with what capped them, for script.md
@@ -5629,6 +5637,15 @@ def _flag(rule: str, shot: Shot | None, problem: str, fix: str) -> dict:
             "fix": fix}
 
 
+def _how_read(status: str) -> str:
+    """How a line came to be read below its label, for a flag: a LADDER
+    label the ceiling lowered was capped; a what-if, none or off-list label
+    on a cited line was never a strength to lower, so it is read at its
+    claim's ceiling instead (AUTO-132)."""
+    return (f"capped from {status}" if status in LADDER
+            else f"labelled {status}, read at its claim's ceiling")
+
+
 def _status_flags(voiced: list[tuple], lex: dict, lang: str, on: dict,
                   claims: dict | None) -> list[dict]:
     """rule:unframed-status and rule:uncited-claim (AUTO-132) over the
@@ -5650,7 +5667,7 @@ def _status_flags(voiced: list[tuple], lex: dict, lang: str, on: dict,
                 cause = (f"{cid}: {ceiling_reason((claims or {}).get(cid))}"
                          if cid and claims is not None else
                          f"{cid}: capped at {shot.ceiling}" if cid else "an unsourced line")
-                why = f" (capped from {status}; {cause})"
+                why = f" ({_how_read(status)}; {cause})"
             out.append(_flag("rule:unframed-status", shot,
                              f"a {effective} line with no framing cue in its narration "
                              f"or on-screen text{why}",
@@ -6118,8 +6135,11 @@ def status_line(shot: Shot, data: dict) -> str:
     claim = claim if isinstance(claim, dict) else None
     where = (f"{cid}, {(claim or {}).get('standing') or ceiling_reason(claim)}" if cid
              else "no claim")
-    return (f"{read_at} ({where})"
-            + (f", capped from {shot.status}" if read_at != shot.status else ""))
+    if read_at == shot.status:
+        return f"{read_at} ({where})"
+    if shot.status in LADDER:
+        return f"{read_at} ({where}), capped from {shot.status}"
+    return f"{read_at} ({where}), read at its claim's ceiling, labelled {shot.status}"
 
 
 def print_script(idea: Idea, data: dict, sections: list[Section]) -> None:
@@ -6861,7 +6881,13 @@ def run_revise(args, idea: Idea, project) -> int:
         # A status the fact-check's revise weakened (AUTO-132).
         if s.n in changed and s.status and s.status != raw[s.label].get("status"):
             raw[s.label]["status"] = s.status
-            raw[s.label]["ceiling"] = s.ceiling
+    if statused:
+        # The ceiling is the dossier's, set on load (AUTO-132): a stored one
+        # that is stale or hand-edited is corrected on every shot, so the
+        # record says what the lines were read at. It touches no take.
+        for s in shots:
+            if raw[s.label].get("ceiling", "") != s.ceiling:
+                raw[s.label]["ceiling"] = s.ceiling
 
     # The rules on the changed shots only: their old flags go, what the
     # new text breaks comes in; every other flag stands as it was recorded.
@@ -6896,8 +6922,14 @@ def run_revise(args, idea: Idea, project) -> int:
         # are the new check's: they spoke of text that is gone.
         renewed = {s.n for s in moved}
         check = dict(data.get("check") or {})
+        # A status the revise's own check did not read again (no reviewer of
+        # another family is brought here) is still the last reading's: its
+        # flags on a changed line keep binding (AUTO-132).
+        restatus = again.get("status") if isinstance(again.get("status"), dict) else {}
+        reread = bool(restatus) and "not_evidenced" not in restatus
         check["flags"] = ([f for f in check.get("flags") or []
-                           if int(f.get("n", 0) or 0) not in renewed]
+                           if int(f.get("n", 0) or 0) not in renewed
+                           or (f.get("check") == "status" and not reread)]
                           + [f for f in again.get("flags") or []
                              if int(f.get("n", 0) or 0) in renewed])
         check["kept"] = ([k for k in check.get("kept") or []
@@ -6906,10 +6938,18 @@ def run_revise(args, idea: Idea, project) -> int:
         check["revisions"] = list(check.get("revisions") or []) + list(
             again.get("revisions") or [])
         check["recheck"] = again.get("recheck") or again.get("verdict", "")
-        if again.get("status"):
+        if restatus:
             # No reviewer is brought here, so the changed lines' status is
-            # recorded as not evidenced, never as passed (AUTO-132).
-            check["status"] = again["status"]
+            # recorded as not evidenced, never as passed (AUTO-132), beside
+            # the reading the stage made, which stands.
+            last = check.get("status") if isinstance(check.get("status"), dict) else {}
+            check["status"] = (restatus if reread or not last
+                               else {**last, "recheck_labels": restatus})
+            if not reread:
+                unread = (f"not_evidenced: {restatus.get('name') or 'verify-status'} "
+                          f"({restatus['not_evidenced']})")
+                data["findings"] = [line for line in data.get("findings") or []
+                                    if line != unread] + [unread]
         check["unresolved"] = [f for f in check["flags"]
                                if f.get("severity") in REVISABLE and not f.get("kept")]
         data["check"] = check

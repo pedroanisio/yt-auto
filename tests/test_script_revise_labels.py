@@ -417,5 +417,105 @@ class ReviseLabels(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
 
+
+# --------------------------------------------------------------------------- #
+# AUTO-132: a screenplay with statuses, revised by label
+# --------------------------------------------------------------------------- #
+
+#: c1 a settled finding; c2 a claim the research rates low.
+STATUS_DOSSIER = {"claims": [
+    {"claim": "the bolt was painted over", "detail": "", "source_title": "NTSB",
+     "source_url": "u", "source_kind": "primary", "confidence": "high",
+     "standing": "established"},
+    {"claim": "the crack grew for decades", "detail": "", "source_title": "NTSB",
+     "source_url": "u", "source_kind": "secondary", "confidence": "low",
+     "standing": "established"}]}
+
+#: A status blocker the other-family reviewer wrote on shot 1.3 under
+#: `yt script --verify --review`.
+BLOCKER = {"n": 3, "severity": "blocker", "check": "status",
+           "problem": "presented as proven on a claim the research rates low",
+           "fix": "say it is a guess"}
+
+
+def status_screenplay() -> dict:
+    """The screenplay above as written with claim ids: shot 1.3 says it is
+    established on c2 and stores the ceiling established, which the dossier
+    does not allow; the other shots cite c1."""
+    data = screenplay()
+    for sec in data["sections"]:
+        for shot in sec["shots"]:
+            shot.update(claim="c1", status="established", ceiling="established",
+                        source="NTSB")
+    third = data["sections"][0]["shots"][2]
+    third.update(claim="c2")
+    data["check"] = {"flags": [dict(BLOCKER)], "verdict": "defensible",
+                     "status": {"name": "verify-status", "model": "gpt-5",
+                                "verdict": "shot 3 overclaims"},
+                     "unresolved": [dict(BLOCKER)], "revisions": [], "kept": []}
+    return data
+
+
+class ReviseStatus(unittest.TestCase):
+    """`yt script --revise` on a screenplay with statuses: the ceiling is the
+    dossier's on load, and a status blocker on a changed line is never
+    dropped by a revise that brought no reviewer to read it again."""
+
+    fake, run_stage, record = ReviseLabels.fake, ReviseLabels.run_stage, ReviseLabels.record
+
+    def setUp(self):
+        ReviseLabels.setUp(self)
+        write_json(self.film / "script.json", status_screenplay())
+        write_json(self.film / "dossier.json", STATUS_DOSSIER)
+        self.before = (self.film / "script.json").read_bytes()
+
+    def test_the_revise_reads_the_claim_ids_and_the_capped_status(self):
+        self.assertEqual(self.run_stage("--revise", "1.3"), 0, self.said)
+        prompt = self.calls[0][1]
+        self.assertEqual(self.calls[0][0], "revise-labels")
+        self.assertIn("- c1: the bolt was painted over", prompt)
+        # the stored ceiling is not trusted: c2 is low, so speculation
+        self.assertIn("[status: speculation, claim c2]", prompt)
+        record = self.record()
+        self.assertEqual(shots_of(record)["1.3"]["ceiling"], "speculation")
+        self.assertTrue(any("rule:unframed-status: shot 1.3" in f
+                            for f in record["findings"]), record["findings"])
+
+    def test_a_status_blocker_on_a_changed_line_still_binds(self):
+        self.assertEqual(self.run_stage("--revise", "1.3"), 0, self.said)
+        self.assertEqual([c[0] for c in self.calls], ["revise-labels", "verify-labels"])
+        check = self.record()["check"]
+        self.assertIn(BLOCKER, [{k: f[k] for k in BLOCKER} for f in check["flags"]])
+        self.assertIn(3, [f["n"] for f in check["unresolved"]])
+        # the reading the reviewer made stands; the revise's is beside it
+        self.assertEqual(check["status"]["verdict"], "shot 3 overclaims")
+        self.assertEqual(check["status"]["model"], "gpt-5")
+        self.assertEqual(check["status"]["recheck_labels"]["not_evidenced"],
+                         script.STATUS_UNREAD)
+        self.assertIn("not_evidenced: verify-status-labels "
+                      f"({script.STATUS_UNREAD})", self.record()["findings"])
+
+    def test_the_doctor_still_fails_the_blocker(self):
+        from ytstudio import doctor, workspace
+        self.assertEqual(self.run_stage("--revise", "1.3"), 0, self.said)
+        report = doctor.check_project(workspace.Project(self.film))
+        failed = [f.message for f in report.findings
+                  if f.level == "fail" and f.area == "fact-check"]
+        self.assertTrue(any("shot 3" in m and "proven" in m for m in failed), failed)
+
+
+class ReviseOlderScreenplay(unittest.TestCase):
+    fake, run_stage, record = ReviseLabels.fake, ReviseLabels.run_stage, ReviseLabels.record
+    setUp = ReviseLabels.setUp
+
+    def test_an_older_screenplay_with_a_dossier_asks_what_it_always_did(self):
+        write_json(self.film / "dossier.json", STATUS_DOSSIER)
+        self.assertEqual(self.run_stage("--revise", "1.3"), 0, self.said)
+        prompt = self.calls[0][1]
+        self.assertNotIn("c1: ", prompt)
+        self.assertNotIn("status", prompt)
+        self.assertNotIn("not_evidenced: verify-status", " ".join(self.record()["findings"]))
+
+
 if __name__ == "__main__":
     unittest.main()

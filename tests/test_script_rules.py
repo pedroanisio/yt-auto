@@ -846,6 +846,13 @@ class UnframedStatus(unittest.TestCase):
         low = framed(status_shot("The core is liquid.", "hypothesis", "c7"))
         self.assertIn("c7: low confidence", low[0]["problem"])
 
+    def test_a_cited_what_if_read_at_its_ceiling_is_not_called_capped(self):
+        flags = framed(status_shot("The sea boils away.", "what-if", "c7"))
+        self.assertEqual([f["rule"] for f in flags], ["rule:unframed-status"])
+        self.assertNotIn("capped from", flags[0]["problem"])
+        self.assertIn("labelled what-if, read at its claim's ceiling", flags[0]["problem"])
+        self.assertIn("c7: low confidence", flags[0]["problem"])
+
     def test_ordinary_words_the_lexicon_leaves_out_are_no_hedge(self):
         for line in ("If you heat it, it melts.", "the theory of relativity says so.",
                      "It could not explain the result.", "In May 1953 it was found."):

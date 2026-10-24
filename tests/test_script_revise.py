@@ -1251,6 +1251,22 @@ class StatusRevise(unittest.TestCase):
             self.assertEqual(result["applied"], [], kw)
             self.assertIsNot(seen[0], script.FACT_REVISE_SCHEMA, kw)
 
+    def test_a_line_read_at_none_is_never_raised_to_established(self):
+        # none ranks below established in _doubt, so "weaker than none" must
+        # not let the fact-check's revise lift an uncited none line.
+        for given, applied in (("established", False), ("hypothesis", False),
+                               ("speculation", True), ("what-if", True)):
+            shots = [shot(1, "And then the lights went out.", status="none", claim="",
+                          source="P")]
+            script.cap(shots, TABLE)
+            w = status_writer()
+            w._ask = lambda name, prompt, schema, given=given: {"fixes": [
+                {"n": 1, "action": "fix", "narration": shots[0].narration,
+                 "status": given, "why": "w"}]}
+            result = w.revise(shots, [flag(1)], name="revise-1")
+            self.assertEqual(shots[0].status, given if applied else "none", given)
+            self.assertEqual(bool(result["applied"]), applied, given)
+
     def test_a_rules_fix_for_an_unframed_status_may_label_the_screen(self):
         shots = status_shots()
         w = status_writer()
@@ -1295,6 +1311,60 @@ class StatusDrafting(unittest.TestCase):
         self.assertTrue(any("rule:unframed-status: shot 1.3" in f
                             for f in data["findings"]), data["findings"])
 
+    def test_the_run_caps_what_the_draft_hands_it(self):
+        # write_section caps its own shots; the run caps them again, so a
+        # shot that reached it uncapped (or with a stored ceiling) is the
+        # dossier's.
+        plan = {"sections": [{"heading": "A", "seconds": 10, "beats": []}]}
+        w = status_writer(reviewer_model=None)
+        StatusCheck.asked(StatusCheck(), w)
+        w.plan = lambda: plan
+        w.write_section = lambda *a, **k: [
+            shot(1, "The core might be liquid.", status="established", claim="c4",
+                 source="P", ceiling="established"),
+            shot(2, "It may rain iron.", status="hypothesis", claim="c99", source="P")]
+        data = w.run(do_verify=True)
+        self.assertEqual([s["ceiling"] for s in data["sections"][0]["shots"]],
+                         ["hypothesis", "speculation"])
+
+    def test_the_pool_reviewers_record_goes_on_the_status_reading(self):
+        from ytstudio import reviewers
+        pool = reviewers.Resolved(model="openai/gpt-5.5", maker="openai",
+                                  providers=("openai",), has=(), price={},
+                                  price_source="pinned", fetched_at=None)
+        plan = {"sections": [{"heading": "A", "seconds": 10, "beats": []}]}
+        w = status_writer(reviewer=pool)
+        StatusCheck.asked(StatusCheck(), w)
+        w.plan = lambda: plan
+        w.write_section = lambda *a, **k: status_shots()
+        data = w.run(do_verify=True)
+        self.assertEqual(data["check"]["status"]["model"], "openai/gpt-5.5")
+        self.assertEqual(data["check"]["status"]["reviewer"], pool.record())
+
+    def test_a_failed_fact_check_says_the_status_was_not_read(self):
+        plan = {"sections": [{"heading": "A", "seconds": 10, "beats": []}]}
+        w = status_writer()
+
+        def ask(name, prompt, schema):
+            if name.startswith("verify"):
+                raise script.ClaudeError("timed out")
+            return {"fixes": []}
+        w._ask = ask
+        w.plan = lambda: plan
+        w.write_section = lambda *a, **k: status_shots()
+        data = w.run(do_verify=True)
+        self.assertIn("not_evidenced: verify-status (fact-check failed)", data["findings"])
+
+    def test_a_film_with_no_status_notes_no_unread_status(self):
+        plan = {"sections": [{"heading": "A", "seconds": 10, "beats": []}]}
+        w = writer()
+        w._ask = lambda name, prompt, schema: (_ for _ in ()).throw(
+            script.ClaudeError("timed out")) if name.startswith("verify") else {"fixes": []}
+        w.plan = lambda: plan
+        w.write_section = lambda *a, **k: [shot(1, "Plain.")]
+        data = w.run(do_verify=True)
+        self.assertFalse([f for f in data["findings"] if "verify-status" in f])
+
     def test_a_status_off_the_list_is_noted(self):
         plan = {"sections": [{"heading": "A", "seconds": 10, "beats": []}]}
         w = status_writer(reviewer_model=None)
@@ -1306,6 +1376,29 @@ class StatusDrafting(unittest.TestCase):
         data = w.run()
         self.assertTrue(any(f.startswith("note: shot 1.1: status 'proven'")
                             for f in data["findings"]), data["findings"])
+
+
+class StatusLine(unittest.TestCase):
+    def test_a_lowered_status_says_capped(self):
+        s = script.Shot(narration="x", n=1, status="established", claim="c4", source="P",
+                        ceiling="hypothesis")
+        line = script.status_line(s, {"cited_claims": TABLE})
+        self.assertEqual(line, "hypothesis (c4, limitation), capped from established")
+
+    def test_a_label_read_at_its_ceiling_is_not_called_capped(self):
+        for status in ("what-if", "none"):
+            s = script.Shot(narration="The sea boils away.", n=1, status=status,
+                            claim="c7", source="P", ceiling="hypothesis")
+            line = script.status_line(s, {"cited_claims": TABLE})
+            self.assertNotIn("capped", line, status)
+            self.assertEqual(line, f"hypothesis (c7, hypothesis), read at its claim's "
+                                   f"ceiling, labelled {status}")
+
+    def test_an_unchanged_status_says_nothing_more(self):
+        s = script.Shot(narration="x", n=1, status="hypothesis", claim="c7", source="P",
+                        ceiling="hypothesis")
+        self.assertEqual(script.status_line(s, {"cited_claims": TABLE}),
+                         "hypothesis (c7, hypothesis)")
 
 
 if __name__ == "__main__":
