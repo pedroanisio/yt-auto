@@ -899,6 +899,19 @@ blocking editorial note. It is not a delivery verdict. The order is:
    family than every recorded author of the film is a `vfx continuity:`
    blocker, whatever it scores; the fix is `yt vfx --sections N`, which
    judges continuity again.
+   READY is filed only over a deliverable technical gate on the same bytes
+   (AUTO-148): QA reads gate.json with doctor's own rule
+   (`doctor.gate_problem`: none, frames only, another video's or scene's
+   digest, a gate.json without digests older than them, or not
+   `deliverable`), records the reason, or "", as `gate_evidence` in the
+   scorecard and qa.json, and a reason is a bar line, `delivery gate:
+   <reason>`, so the verdict is NOT READY. Standalone QA (`--scene`, no
+   project) reads the gate.json beside the scene, the video's check skipped
+   when no video.mp4 is there. A story review that rejected the screenplay
+   or could not judge it (`not_evidenced`) is a `script: story review ...`
+   blocking row (`qa.script_blockers`, `doctor.story_problem`, the rule
+   doctor's delivery rows read), counted in the verdict but not briefed,
+   as the fact-check rows are.
    A blocking mechanical finding (flat, clipped, frozen, a jump, an
    off-camera object on the hook, the ending, the payoff shot or more than
    one sampled shot) blocks on its own and caps `visual_quality` and
@@ -956,7 +969,10 @@ blocking editorial note. It is not a delivery verdict. The order is:
    stale and a replaced one is; the gate hashes them before it runs, and
    doctor reads the project's `video.mp4` whole each time, so a gate run on
    `--video` another file reads as judging a different video), or a video
-   older than `scene.xml`. Only with none of them does doctor
+   older than `scene.xml`, or a story review in script.json that rejected
+   the screenplay or could not judge it (`doctor.story_problem`, AUTO-148;
+   the fix is `yt script --fresh --review --notes ...`). The gate rows are
+   `doctor.gate_problem`, the rule QA reads. Only with none of them does doctor
    print `delivery: READY TO PUBLISH`.
 
 The frame has three bands at 1920x1080, measured from the top: supers and
@@ -1064,7 +1080,12 @@ re-measured" until a new publish and `yt retention` measure it.
   (AUTO-128); a snapshot holding no `video.mp4` is noted on the pass
   (`compare`) and QA compares stills; a model the gateway engine cannot ask,
   or one of `--model`'s family, exits 2 before any stage.
-- **Stops** at READY TO PUBLISH (or `--target` with nothing blocking), at
+- **Stops** at READY TO PUBLISH (AUTO-148: QA's verdict is the bar, so a
+  category under 8.5 or not evidenced, a blocker or a delivery-gate reason
+  never stops it "ready"; `--target` above 9.0 also asks for that overall,
+  and under 9.0 changes nothing), with `gate-evidence` (exit 1, nothing
+  run) when the evidence card's `gate_evidence` is set and no finding is
+  routable, since no stage owns it and `yt gate` on the render host does, at
   `--max-passes` (3), when the next pass's estimate exceeds what is left of
   `--budget-usd` (15) -- `spend.stage_estimates` prices each stage of the
   pass from its own report (`measured`), else from a like project (`like`),

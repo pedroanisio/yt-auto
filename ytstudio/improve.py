@@ -53,7 +53,8 @@ loop as code:
    A pass whose stages all ran but whose QA filed nothing (a render host
    down) is `unjudged`: its outputs and snapshot stay, and the next run
    scores and judges it before anything else.
-6. **Stop** at READY TO PUBLISH (or `--target` with nothing blocking), at
+6. **Stop** at READY TO PUBLISH (with `--target` above 9.0, at READY and that
+   overall; the bar itself is QA's verdict alone), at
    `--max-passes`, when the next pass's estimate exceeds what is left of
    `--budget-usd`, when a defect survives `SURVIVOR_PASSES` passes that
    were briefed on it (the approach is wrong, not the parameters), or when
@@ -1121,16 +1122,26 @@ def judge(best: dict, new: dict, *, tolerance: float = TOLERANCE) -> dict:
 
 
 def reached(card: dict, target: float) -> bool:
+    """Whether a kept pass ends the loop "ready": QA filed READY TO PUBLISH
+    and its overall is at `target` (AUTO-148). The bar lives in
+    qa.verdict_of alone: a category not evidenced or under 8.5, a blocker
+    or a delivery-gate reason makes the verdict NOT READY, so the loop
+    never stops ready on one. `--target` raises the stop above READY's own
+    bar; under 9.0 it changes nothing, since READY already needs 9.0."""
     # A fact-check blocker standing is never reached (AUTO-133), whatever
     # an older card's verdict said.
     if (card.get("accuracy") or {}).get("fact_check"):
         return False
-    if card.get("verdict") == qa.READY:
-        return True
+    if card.get("verdict") != qa.READY:
+        return False
     try:
-        return float(card.get("overall", 0)) >= target and not card.get("blocking")
+        return float(card.get("overall", 0)) >= target
     except (TypeError, ValueError):
         return False
+
+
+#: How a loop stopped on a delivery-gate reason no stage owns says what to run.
+GATE_EVIDENCE_FIX = "run `yt gate` (on the render host: --host or RS_RENDER_HOSTS)"
 
 
 # --------------------------------------------------------------------------- #
@@ -1165,7 +1176,8 @@ class Improver:
                  doctor: Callable[[workspace.Project], list[tuple]] | None = None,
                  house_rules: str = "", house_digest: dict | None = None,
                  say: Callable[[str], None] | None = None,
-                 compare_model: str | None = None) -> None:
+                 compare_model: str | None = None,
+                 qa_model: str | None = None) -> None:
         self.project = project
         self.root = Path(project.root)
         self.idea = idea
@@ -1187,6 +1199,9 @@ class Improver:
         #: The gateway video model QA compares the kept cut with the new one
         #: through (`yt qa --against`, AUTO-128); None: no video comparison.
         self.compare_model = compare_model
+        #: The model `yt qa` scores and `yt gate` triages with, in place of
+        #: --model (AUTO-148); None: --model, as before.
+        self.qa_model = qa_model
         self.h = Harness(self.root, "improve", model=model, effort=effort,
                          fallback_model=fallback_model, role=ROLE, house=house_rules,
                          house_digest=house_digest or {}, verbose=not quiet)
@@ -1213,6 +1228,16 @@ class Improver:
             argv += ["--fallback-model", self.fallback_model]
         if self.quiet:
             argv.append("--quiet")
+        return argv
+
+    @property
+    def judge_base(self) -> list[str]:
+        """The flags `yt gate` and `yt qa` are handed: `base` with --qa-model
+        in place of --model when it is set, so the film is scored and
+        triaged by another model than the one whose passes made it."""
+        argv = list(self.base)
+        if self.qa_model:
+            argv[argv.index("--model") + 1] = self.qa_model
         return argv
 
     def _run(self, argv: list[str]) -> int:
@@ -1248,7 +1273,7 @@ class Improver:
         changed anything, it hands QA the kept cut that snapshot holds
         (`--against <snap>/video.mp4 --compare-model M`, AUTO-128); a
         snapshot without one is noted on `entry` and QA compares stills."""
-        argv = ["qa", *self.base]
+        argv = ["qa", *self.judge_base]
         if best and best.get("pass") and best.get("verdict") != qa.NOT_EVIDENCED:
             argv += ["--previous", str(best["pass"])]
         if self.compare_model and snap is not None:
@@ -1380,8 +1405,8 @@ class Improver:
         video's gate.json, whose blocking rows QA would read as this
         video's; it is set aside, so the pass is judged on its own evidence.
         A revert puts it back from the snapshot."""
-        entry["argv"].append(["gate", *self.base])
-        entry["exit"]["gate"] = self._run(["gate", *self.base])
+        entry["argv"].append(["gate", *self.judge_base])
+        entry["exit"]["gate"] = self._run(["gate", *self.judge_base])
         gate = self.root / "gate.json"
         if gate.is_file() and stamps.get("gate.json") == gate.stat().st_mtime_ns:
             pdir.mkdir(parents=True, exist_ok=True)
@@ -1697,6 +1722,13 @@ class Improver:
             findings = self.findings.get(evidence["pass"]) or self._evidence_findings(evidence)
             if evidence["pass"] not in self.assigned:
                 self._assign(evidence["pass"], findings, set())
+            if evidence.get("gate_evidence") and not any(
+                    f.get("owner") in ROUTABLE for f in findings):
+                # The delivery gate does not hold for these bytes and no stage
+                # owns a finding (AUTO-148): no pass can settle it, `yt gate` can.
+                record["stop"] = {"reason": "gate-evidence", "detail":
+                                  f"{evidence['gate_evidence']}; {GATE_EVIDENCE_FIX}"}
+                break
             routing = route(self.h, findings, name=f"route-{evidence['pass']}", context={
                 "title": self.idea.title, "pass": evidence["pass"],
                 "verdict": evidence.get("verdict"), "overall": evidence.get("overall"),
@@ -1741,7 +1773,7 @@ class Improver:
                                   "routed": self._routed(routing, findings),
                                   "routes": routing["routes"], "stages": stages,
                                   "sections": sections,
-                                  "argv": argvs + [["gate", *self.base], qa_argv],
+                                  "argv": argvs + [["gate", *self.judge_base], qa_argv],
                                   "estimates": rows, "estimate_usd": guess}
                 record["stop"] = {"reason": "dry-run", "detail": "routed and briefed; "
                                   "nothing run"}
@@ -2171,8 +2203,9 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
     p.add_argument("--budget-usd", type=float, default=15.0, dest="budget_usd",
                    help="spend cap for the whole loop, stages included (default 15)")
     p.add_argument("--target", type=float, default=9.0,
-                   help="stop when a kept pass reaches this overall with nothing "
-                        "blocking, or READY TO PUBLISH (default 9.0)")
+                   help="stop when a kept pass is READY TO PUBLISH at this overall or "
+                        "above: it raises the stop above READY's own bar, so a value "
+                        "under 9.0 changes nothing (default 9.0)")
     p.add_argument("--dry-run", action="store_true", dest="dry_run",
                    help="route the findings and write the feedback, run no stage, "
                         "print the plan and its estimated cost")
@@ -2191,6 +2224,10 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                         "snapshot's kept cut and each pass's new one whole, wherever "
                         "the loop runs QA (yt qa --against); default "
                         f"${cutcompare.MODEL_ENV}, else no video comparison (AUTO-128)")
+    p.add_argument("--qa-model", metavar="MODEL", dest="qa_model",
+                   help="the model the loop's `yt gate` triages and `yt qa` scores "
+                        "with, never --model's family; default --model, as before. "
+                        "`yt run` hands its tail reviewer here (AUTO-148)")
     p.set_defaults(run=run)
     return p
 
@@ -2203,6 +2240,12 @@ def run(args) -> int:
     from .vfx import REVIEWER_MODEL
     if own := flags.own_reviewer(args.model, REVIEWER_MODEL):
         print(own, file=sys.stderr)
+        return 2
+    # The gate's triage and QA's score under --qa-model (AUTO-148) judge
+    # what --model made, so the author's family is refused for them too.
+    qa_model = getattr(args, "qa_model", None)
+    if qa_model and (own := flags.own_reviewer(args.model, qa_model)):
+        print(own.replace("--reviewer-model", "--qa-model"), file=sys.stderr)
         return 2
     # The video comparison's model (AUTO-128) watches what --model made, so
     # it is refused here too, not by the first `yt qa` of a paid pass.
@@ -2228,7 +2271,8 @@ def run(args) -> int:
                         target=args.target, dry_run=args.dry_run, from_pass=args.from_pass,
                         resume=args.resume, rejudge=args.rejudge,
                         quality=args.quality, quiet=args.quiet, house_rules=rules,
-                        house_digest=digest, compare_model=compare_model)
+                        house_digest=digest, compare_model=compare_model,
+                        qa_model=qa_model)
     try:
         record = improver.run()
     except HarnessError as exc:

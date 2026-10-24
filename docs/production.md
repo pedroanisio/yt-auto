@@ -115,6 +115,10 @@ never passed.
 - nothing left that a normal viewer would notice
 - no fact-check blocker standing (resolved by a revision, or marked
   `resolved` by hand)
+- a deliverable technical gate on the same video and scene QA judged
+  (`doctor.gate_problem`; qa.json's `gate_evidence` names what is missing)
+- a story review that neither rejected the screenplay nor failed to judge it
+  (`not_evidenced`)
 
 A 9 is not "nothing is broken". A 9 is work that would not look out of place
 on a channel people subscribe to. Score 8 for competent and unremarkable, 6

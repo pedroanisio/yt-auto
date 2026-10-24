@@ -1463,6 +1463,86 @@ class Cli(unittest.TestCase):
         self.assertIn("yt improve", readme)
 
 
+class RealBar(ImproveCase):
+    """AUTO-148: improve stops "ready" only on a READY card, so the bar is
+    verdict_of's alone (a category under 8.5, one not evidenced, a blocker,
+    a delivery-gate reason), and --target only raises it."""
+
+    def test_reached_needs_the_verdict(self):
+        under = card(9.2, scores={"voiceover": 8.0}, verdict=qa.NOT_READY)
+        self.assertFalse(improve.reached(under, 9.0))
+        gated = dict(card(9.4, verdict=qa.NOT_READY),
+                     gate_evidence="no delivery gate has run on this render")
+        self.assertFalse(improve.reached(gated, 9.0))
+        unheard = card(9.2, scores={"music": None}, verdict=qa.NOT_READY)
+        self.assertFalse(improve.reached(unheard, 9.0))
+
+    def test_target_raises_the_stop_above_ready(self):
+        self.assertTrue(improve.reached(card(9.2), 9.0))
+        self.assertFalse(improve.reached(card(9.2), 9.5))
+        self.assertTrue(improve.reached(card(9.2), 8.0))
+
+    def test_a_gate_reason_with_nothing_to_route_stops_before_routing(self):
+        why = "the gate judged a different video.mp4 than the one now rendered"
+        self.start_pass(dict(card(9.4, verdict=qa.NOT_READY), gate_evidence=why,
+                             bar=[f"delivery gate: {why}"]))
+        runner = FakeRunner(self.root, [])
+        record = self.improver(runner).run()
+        self.assertEqual(record["stop"]["reason"], "gate-evidence")
+        self.assertIn(why, record["stop"]["detail"])
+        self.assertIn("run `yt gate` (on the render host: --host or RS_RENDER_HOSTS)",
+                      record["stop"]["detail"])
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(FakeEngine.json_calls, [])       # nothing was routed
+
+    def test_a_gate_reason_beside_a_routable_finding_routes_as_today(self):
+        self.start_pass(dict(card(5.0, mechanical=[mech()]),
+                             gate_evidence="no delivery gate has run on this render"))
+        record = self.improver(FakeRunner(self.root, []), dry_run=True).run()
+        self.assertEqual(record["stop"]["reason"], "dry-run")
+
+    def test_the_qa_model_scores_and_triages_in_place_of_the_author(self):
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        plain = self.improver(FakeRunner(self.root, []), dry_run=True).run()
+        gate_argv, qa_argv = plain["plan"]["argv"][-2:]
+        self.assertEqual(gate_argv, ["gate", "--project", str(self.root), "--model", "sonnet",
+                                     "--quiet"])
+        self.assertEqual(qa_argv[:6], ["qa", "--project", str(self.root), "--model", "sonnet",
+                                       "--quiet"])
+        judged = self.improver(FakeRunner(self.root, []), dry_run=True,
+                               qa_model="gpt-5").run()
+        gate_argv, qa_argv = judged["plan"]["argv"][-2:]
+        self.assertEqual(gate_argv, ["gate", "--project", str(self.root), "--model", "gpt-5",
+                                     "--quiet"])
+        self.assertEqual(qa_argv[:6], ["qa", "--project", str(self.root), "--model", "gpt-5",
+                                       "--quiet"])
+        # the passes' stages are still the author's
+        self.assertIn("sonnet", judged["plan"]["argv"][0])
+
+    def test_the_qa_model_reaches_the_gate_and_qa_a_pass_runs(self):
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        runner = FakeRunner(self.root, [card(9.3)])
+        self.improver(runner, qa_model="gpt-5").run()
+        judged = [c for c in runner.calls if c[0] in ("gate", "qa")]
+        self.assertTrue(judged)
+        for argv in judged:
+            self.assertEqual(argv[argv.index("--model") + 1], "gpt-5", argv)
+        for argv in runner.calls:
+            if argv[0] not in ("gate", "qa", "render"):
+                self.assertEqual(argv[argv.index("--model") + 1], "sonnet", argv)
+
+    def test_a_qa_model_of_the_authors_family_is_refused(self):
+        args = cli.build_parser().parse_args(
+            ["improve", "--title", "x", "--model", "sonnet", "--qa-model",
+             "claude-sonnet-4-5"])
+        with patch.object(improve.workspace, "resolve",
+                          side_effect=AssertionError("resolved")), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(improve.run(args), 2)
+        self.assertIn("does not grade its own work", err.getvalue())
+        self.assertIsNone(cli.build_parser().parse_args(["improve", "--title", "x"]).qa_model)
+
+
 class OwnerRouting(ImproveCase):
     """QA's owner is a stage, upstream-fact or external; routing is a lookup."""
 

@@ -172,6 +172,27 @@ class Bar(unittest.TestCase):
         verdict, reasons = qa.verdict_of(self.scores(), 9.5, blocking=["a placeholder"])
         self.assertEqual(verdict, qa.NOT_READY)
 
+    def test_a_gate_problem_is_a_reason_and_keeps_ready_out_of_reach(self):
+        # AUTO-148: perfect scores over a frames-only gate are not READY
+        why = "the last gate checked decoded frames only; delivery needs the technical gate"
+        verdict, reasons = qa.verdict_of(self.scores(), 9.5, blocking=[], gate_problem=why)
+        self.assertEqual(verdict, qa.NOT_READY)
+        self.assertEqual(reasons, [f"delivery gate: {why}"])
+        self.assertEqual(qa.verdict_of(self.scores(), 9.5, blocking=[], gate_problem="")[0],
+                         qa.READY)
+
+    def test_script_blockers_name_a_story_review_that_rejected_or_could_not_judge(self):
+        reject = {"review": {"verdict": "reject",
+                             "unresolved": [{"problem": "the train never leaves"}]}}
+        self.assertEqual(qa.script_blockers(reject), [
+            "script: story review rejected the screenplay (the train never leaves)"])
+        self.assertEqual(qa.script_blockers({"review": {"verdict": "not_evidenced"}}), [
+            "script: story review could not judge the screenplay (not_evidenced: fewer "
+            "than two valid samples)"])
+        for script in ({"review": {"verdict": "consider"}},
+                       {"review": {"verdict": "recommend"}}, {"sections": []}, None):
+            self.assertEqual(qa.script_blockers(script), [], script)
+
     def test_mechanical_blockers_come_from_the_manifests(self):
         blockers = qa.mechanical_blockers(_build(), gate={"exit": 1, "triage": {
             "blocking": [{"what": "loudness -16 LUFS"}]}})
@@ -956,6 +977,85 @@ def _texted(label, nodes, t=None):
 
 def _dense(rows, **kw):
     return [f for f in qa.mechanical_findings(rows, **kw) if f["kind"] == "text-dense"]
+
+
+class DeliveryGateStage(unittest.TestCase):
+    """AUTO-148: QA files READY only over a deliverable gate on the same
+    bytes (doctor.gate_problem), and never over a screenplay its story
+    reviewer rejected or could not judge (script_blockers)."""
+
+    setUp = StoryStage.setUp
+    args = StoryStage.args
+    run_qa = StoryStage.run_qa
+
+    def qa_json(self, home=None):
+        return json.loads(((home or self.root) / "qa.json").read_text())
+
+    def card(self, home=None):
+        return json.loads(((home or self.root) / "qa" / "pass-01" / "scorecard.json")
+                          .read_text())
+
+    def sealed(self, home, scene):
+        (home / "gate.json").write_text(json.dumps({
+            "mode": "technical", "exit": 0,
+            "triage": {"verdict": "deliverable", "blocking": []},
+            "scene_sha256": doctor.scene_digest(scene)}))
+
+    def test_no_gate_is_not_ready_and_says_why(self):
+        self.run_qa()
+        why = "no delivery gate has run on this render"
+        record = self.qa_json()
+        self.assertEqual(record["verdict"], qa.NOT_READY)
+        self.assertEqual(record["gate_evidence"], why)
+        self.assertEqual(self.card()["gate_evidence"], why)
+        self.assertIn(f"delivery gate: {why}", record["reasons"])
+        findings = (self.root / "qa" / "pass-01" / "findings.md").read_text()
+        self.assertIn(why, findings)
+
+    def test_a_gate_on_these_bytes_is_not_a_reason(self):
+        self.sealed(self.root, self.root / "scene.xml")
+        self.run_qa()
+        self.assertEqual(self.qa_json()["gate_evidence"], "")
+        self.assertFalse(any(r.startswith("delivery gate") for r in self.qa_json()["reasons"]))
+
+    def test_a_frames_only_gate_is_named_in_doctors_words(self):
+        (self.root / "gate.json").write_text(json.dumps({"mode": "frames", "exit": 0}))
+        self.run_qa()
+        self.assertEqual(self.qa_json()["gate_evidence"],
+                         "the last gate checked decoded frames only; delivery needs "
+                         "the technical gate")
+        self.assertEqual(self.qa_json()["verdict"], qa.NOT_READY)
+
+    def test_a_rejected_screenplay_is_a_blocking_row(self):
+        path = self.root / "script.json"
+        script = json.loads(path.read_text())
+        script["review"] = {"verdict": "reject",
+                            "unresolved": [{"problem": "the train never leaves"}]}
+        path.write_text(json.dumps(script))
+        self.sealed(self.root, self.root / "scene.xml")
+        self.run_qa()
+        blocking = self.card()["blocking"]
+        self.assertIn("script: story review rejected the screenplay (the train never "
+                      "leaves)", blocking)
+        self.assertEqual(self.qa_json()["verdict"], qa.NOT_READY)
+        # not briefed: the reviewer's prompt is what it was
+        self.assertNotIn("story review rejected", self.seen["prompt"])
+
+    def test_standalone_qa_needs_a_gate_beside_the_scene(self):
+        loose = self.tmp / "loose"
+        loose.mkdir()
+        scene = loose / "cut.xml"
+        scene.write_text((self.root / "scene.xml").read_text())
+        argv = dict(project=None, scene=str(scene), in_build=str(self.root / "build.json"),
+                    in_script=str(self.root / "script.json"))
+        self.run_qa(**argv)
+        self.assertEqual(self.qa_json(loose)["verdict"], qa.NOT_READY)
+        self.assertEqual(self.qa_json(loose)["gate_evidence"],
+                         "no delivery gate has run on this render")
+        # no video.mp4 beside it: the scene's digest is what the gate must hold
+        self.sealed(loose, scene)
+        self.run_qa(**argv)
+        self.assertEqual(self.qa_json(loose)["gate_evidence"], "")
 
 
 class ScreenText(unittest.TestCase):

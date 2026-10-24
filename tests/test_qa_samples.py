@@ -13,6 +13,7 @@ engine answers each inspection in turn, as in test_qa.StoryStage.
 
 import argparse
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -250,8 +251,18 @@ class Samples(unittest.TestCase):
         self.assertEqual(record["verdict"], qa.NOT_EVIDENCED)
         self.assertNotEqual(record["verdict"], qa.READY)
 
+    def gated(self):
+        """A deliverable gate on this scene (AUTO-148): READY is filed only
+        over one. Not in setUp: the gate is in the reviewer's brief, and the
+        prompt pinned by the seam test has none."""
+        (self.root / "gate.json").write_text(json.dumps({
+            "mode": "technical", "exit": 0,
+            "triage": {"verdict": "deliverable", "blocking": []},
+            "scene_sha256": hashlib.sha256(b"<scene/>").hexdigest()}))
+
     def test_the_verdict_reads_the_median_scores(self):
         # one sample under the bar everywhere is out-voted by the two above it
+        self.gated()
         self.answers[:] = [sample(9.4), sample(7.0), sample(9.3)]
         code = self.run_qa()
         card = self.card()
@@ -262,6 +273,7 @@ class Samples(unittest.TestCase):
     def test_a_ready_pass_counts_the_film_in_the_channel_record(self):
         # AUTO-137: work/channel.json is refreshed when qa.json is written,
         # so the stored row says counted as soon as the film is READY.
+        self.gated()
         self.answers[:] = [sample(9.4), sample(7.0), sample(9.3)]
         self.assertEqual(self.run_qa(), 0)
         rows = json.loads((self.work / "channel.json").read_text())["films"]
@@ -312,6 +324,7 @@ class Samples(unittest.TestCase):
         self.answers[:] = [sample(9.5, findings=[flat],
                                   blocking=["the hook frame is flat at 2.0s"]),
                            sample(9.5), sample(9.5)]
+        self.gated()
         code = self.run_qa()
         card = self.card()
         self.assertEqual(card["blocking"], [])

@@ -2286,9 +2286,14 @@ explainer scores under the bar there, and the reviewer names what reads as
 generic, never a look of its own.
 
 The bar is applied mechanically on top: READY TO PUBLISH needs an overall of
-9.0, no category under 8.5 and nothing blocking, where blocking includes what
+9.0, no category under 8.5, nothing blocking and a deliverable technical gate
+on the same bytes (AUTO-148: `doctor.gate_problem`, doctor's own rule; with
+none, a frames-only gate or one of an earlier video, the verdict is NOT READY,
+`delivery gate: <reason>` is a bar line and qa.json's `gate_evidence` names
+it in doctor's words), where blocking includes what
 the manifests already prove (a placeholder, a build error, a failed gate, a
-blocking mechanical finding) and each vfx continuity break marked `blocking`
+blocking mechanical finding, a story review that rejected the screenplay or
+could not judge it: `script: story review ...`, not briefed) and each vfx continuity break marked `blocking`
 whose recorded reviewer is of another family than every recorded author
 (`vfx continuity: section N (<heading>): <problem>` in `scorecard.json`'s
 `blocking`). A verdict by the author's own family, or one that does not say
@@ -2441,7 +2446,8 @@ report printing the older pass's cell empty); a change smaller than the scoring
 samples' spread is no change, so a gain inside it is not kept and a drop
 inside it is no regression. Otherwise the snapshot in `improve/pass-NN/snapshot/` is
 restored. A QA pass that is `not_evidenced` leaves the pass unjudged, and
-the next run scores it again first. QA's finding owner is one of the stages, `upstream-fact` or `external`, so routing is a lookup, and `--resume` and `--rejudge` carry the earlier passes and survivor counts forward in `improve.json`. It stops at READY TO PUBLISH, at the pass or budget limit, or when
+the next run scores it again first. QA's finding owner is one of the stages, `upstream-fact` or `external`, so routing is a lookup, and `--resume` and `--rejudge` carry the earlier passes and survivor counts forward in `improve.json`. It stops at READY TO PUBLISH (QA's verdict alone is the bar, AUTO-148), at
+`gate-evidence` when QA's `gate_evidence` names a gate reason and no stage owns a finding (run `yt gate` on the render host), at the pass or budget limit, or when
 a defect survives three briefed passes, and writes `improve.json` and an
 `improve.md` in the shape of the §11 report. The estimate is per stage, read from
 each stage's own report (else a like project's) and marked measured, like or
@@ -2463,7 +2469,10 @@ yt improve --title X --dry-run                      # the routing, the briefs, t
 yt improve --title X --max-passes 1 --budget-usd 15
 ```
 
-`--max-passes N` (3) · `--budget-usd B` (15) · `--target` (9.0) · `--from-pass
+`--max-passes N` (3) · `--budget-usd B` (15) · `--target` (9.0; it raises the
+stop above READY's own bar, so under 9.0 it changes nothing) · `--qa-model MODEL`
+(the model the loop's `yt gate` triages and `yt qa` scores with, never `--model`'s
+family, exit 2 otherwise; unset, `--model` as before) · `--from-pass
 pass-NN` · `--quality draft|preview|final` (final) · `--dry-run` · `--resume` (run
 the last failed pass again from the stage that failed, once its cause is fixed) ·
 `--rejudge` (put the last pass's kept files back, render, gate and score it again on

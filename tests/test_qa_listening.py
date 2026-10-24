@@ -13,6 +13,7 @@ judged", never as a low number. No model is called and nothing renders.
 
 import argparse
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -273,6 +274,12 @@ class Stage(unittest.TestCase):
         self.root = self.work / "one-take"
         self.root.mkdir(parents=True)
         (self.root / "scene.xml").write_text("<scene/>")
+        # A deliverable gate on this scene (AUTO-148): READY is filed only
+        # over one, and these tests are about the scores, not the gate.
+        (self.root / "gate.json").write_text(json.dumps({
+            "mode": "technical", "exit": 0,
+            "triage": {"verdict": "deliverable", "blocking": []},
+            "scene_sha256": hashlib.sha256(b"<scene/>").hexdigest()}))
         saved = harness.ENGINE, qa.RENDERER, qa.GEOMETRY
         self.addCleanup(setattr, qa, "GEOMETRY", saved[2])
         self.addCleanup(setattr, qa, "RENDERER", saved[1])

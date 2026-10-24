@@ -77,15 +77,18 @@ def _listen():
 OFF = {
     "prompt_sha": "5d9150ece60f0720c72565a7b2708ab9e63fa5b624b5f753fd4578c119d93424",
     "role_sha": "f9c618c038398a450476d6fbd5dd0a241f41e6a7cf7da926513bbd519104c19b",
-    # `accuracy` (AUTO-133): the fact-check rows, [] on a film with none
+    # `accuracy` (AUTO-133): the fact-check rows, [] on a film with none;
+    # `gate_evidence` (AUTO-148): why the delivery gate does not hold, or ""
     "card_keys": ["accuracy", "audio_basis", "audio_not_evidenced", "bar", "blocking", "capped", "comparison",
-                  "contact_sheet", "cut", "engine", "findings", "frames", "lines_unsampled",
+                  "contact_sheet", "cut", "engine", "findings", "frames", "gate_evidence",
+                  "lines_unsampled",
                   "listening", "low_confidence", "mechanical", "not_evidenced", "overall",
                   "pass", "proof_note", "rationale", "rhythm", "samples", "scene_sha256",
                   "scores",
                   "scoring", "side_by_side", "spread", "story", "unsampled", "usage",
                   "verdict"],
-    "qa_keys": ["audio_basis", "audio_not_evidenced", "blocking", "capped", "findings", "house", "idea",
+    "qa_keys": ["audio_basis", "audio_not_evidenced", "blocking", "capped", "findings",
+                "gate_evidence", "house", "idea",
                 "judge_calibration", "low_confidence", "mechanical", "overall", "pass", "reasons", "regressions",
                 "scene_sha256", "scorecard", "scores", "scoring", "side_by_side", "spread",
                 "usage", "verdict"],
