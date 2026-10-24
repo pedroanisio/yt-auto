@@ -841,13 +841,18 @@ judge. Four tiers:
   numerals in one sentence), `rule:hook-subject` (no content word of the
   title said or shown in the first 30 seconds; the title's verb counts, since
   telling the key noun from it needs a parser), `rule:hook-answer` (the payoff said in
-  those 30 seconds) and `rule:payoff-last` (the payoff line not in the last
-  section).
+  those 30 seconds), `rule:payoff-last` (the payoff line not in the last
+  section) and `rule:marks` (a shot's delivery mark on a word its line does
+  not say, two emphasis words in one sentence, or a pronouncer with an
+  empty `say`; AUTO-139).
 - **house**, the house's own prior, recorded and never revised:
   `rule:clause`, `rule:passive` (English only), `rule:person`, `rule:pace`
   (the words do not fit the shots at `--wpm`: consistency with the planned
-  read, not the corpus's 170-190 wpm band), `rule:density`, `rule:hook-promise`, `rule:hook-stakes`, `rule:end-signal`
-  and `rule:recap`.
+  read, not the corpus's 170-190 wpm band), `rule:density`, `rule:hook-promise`, `rule:hook-stakes`, `rule:end-signal`,
+  `rule:recap` and `rule:pronouncer` (one warning per section listing the
+  capitalised names said mid-sentence with no pronouncer; English and
+  Portuguese, and only in a screenplay that carries marks: one with none
+  records `not_evidenced: rule:pronouncer (pre-marks script)`).
 - **minor**: `rule:last-line` (a last sentence over 20 words).
 
 The error and important flags go to one revision (`revise-rules`, a second
@@ -1006,6 +1011,69 @@ takes to record again and, per take, may ask for a `speed` (clamped to
 the next run applies them to those takes alone, each in its own call, and
 they are part of that take's cache key. A rate limit is waited out, not
 fatal: finished takes come from cache, so nothing is paid twice.
+
+The screenplay's delivery marks reach the engine that can take them
+(AUTO-139, direction 27 and 28). Each shot may carry `emphasis` (the word
+to stress in each sentence), `pauses` (the words a beat lands before) and
+`pronounce` (`{term, say}`, `say` one hyphenated token with the stressed
+syllable in capitals, `SHROH-ding-er`). `voice.MARK_SUPPORT` says what
+each engine takes: espeak the pronouncer, the pause (`<break
+time="300ms"/>`) and emphasis as SSML read with `-m`, and speed; ElevenLabs
+the pronouncer, speed and settings (its break tag is not used until it is
+checked); kokoro the pronouncer and speed; chatterbox the pronouncer; the
+stub nothing. A pronouncer is sent lowercased with its hyphens
+(`shroh-ding-er`), so it is never read as an initialism, and one word of
+the line is always one word sent. What an engine cannot take is kept on the
+take as `recorded_only`. The take's `spoken` is what was sent and is part
+of its cache key; an unmarked take keeps today's key and argv. Captions,
+cps and caption timing stay on the line as written: ElevenLabs' alignment
+of the sent text is mapped back word for word, and where the counts differ
+the caption words are estimated from the line (`caption_mismatch` on the
+take), never the respelling.
+
+The casting director's per-section delivery notes become engine settings:
+a `delivery` row names a section by its heading (or its number) and may
+give that section its own `speed` (0.85-1.15) and, for ElevenLabs,
+`settings`. The layering is the cast's, then the section's, then a named
+retake's; a speed replaces, never multiplies (espeak scales `--wpm` by it).
+ElevenLabs makes one call per distinct settings value, in film order, and
+a film with no section settings makes today's calls. A row that names no
+section reaches no take and is listed in voice.json `delivery.unmatched`;
+`delivery` also counts what was applied and what was only recorded, by kind.
+
+A screenplay with no marks (a pre-marks screenplay, written before them) is
+asked the casting and retake questions as before, word for word: its kept
+cast serves with no model call, the director's section notes stay notes (no
+section speed or settings), and its ElevenLabs calls, scenes.json, audio and
+captions are today's. A marked screenplay is asked the new questions (the
+shots' notes in the Sections brief, a per-section speed and settings
+offered), so its cast is a new decision: a model call, and where the voice,
+speed or settings come back different, re-billed takes, each changed take
+also re-billing the takes after it in its call (the kit's cache key holds
+the neighbours' text and request ids). Before that paid run, pin the voice
+with `--voice`, cap the spend with `--max-chars`, and compare voice.json
+`casting` with the one before; `--dry-run` does not cast and cannot show
+it. The marks come from the screenplay, and the first `yt script` after the
+marks landed asks each section with the new schema, so an existing
+project's sections are drafted again rather than served from their kept
+answers, and the new lines make the paid voice stale; `yt script --revise
+LABELS` changes only the lines it names.
+
+`yt voice --draft` is direction 29's read-aloud before any voice is paid
+for: kokoro, else espeak-ng, reads the screenplay sentence by sentence with
+its marks, with no casting and no model call (elevenlabs and the stub are
+refused). Each sentence's trimmed WAV is its measured length;
+`voice-draft/` holds the takes and `voice-draft.json` the `engine`, the
+`script_sha` of the lines and marks read, per sentence `seconds`, `words`
+and `wpm`, the per-section drift and the findings: a sentence over 10 s
+fails (a practitioner number, not calibrated), a numeral said again in a
+later sentence warns, and the drift is info. `listened` stays "not
+evidenced"; no stage reads the draft as the voice. A paid (elevenlabs) run
+then checks it: no draft, or one of another script, is a warning naming
+rule 29; a current draft with a fail stops the run before casting unless
+`--accept-draft`. voice.json records `draft: {status, fails}`
+(current, stale, missing or accepted); local engines and `--dry-run` are
+not gated and get no `draft` key.
 
 Writes `voice/` (one file per shot), `voice.json`, `narration.vtt` and
 `narration.srt`, plus `voice.wav` with `--stitch`. `--layout sequential` (the

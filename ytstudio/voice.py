@@ -11,6 +11,7 @@ voice is the only thing that knows the truth.
     yt voice --title monty --engine chatterbox --reference my-voice.wav
     yt voice --title monty --engine elevenlabs --voice VOICE_ID --lang pt
     yt voice --title monty --dry-run                # characters, cost, no audio
+    yt voice --title monty --draft                  # free read-aloud (rule 29)
 
 Four engines, in the order `--engine auto` prefers them:
 
@@ -37,6 +38,7 @@ import importlib.util
 import json
 import math
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -49,7 +51,8 @@ from pathlib import Path
 from . import design, house, spend, workspace
 from .harness import Harness, HarnessError, brief
 from .core import Idea, read_json, timecode, write_json
-from .script import Section, load_script
+from .script import Section, has_marks, load_script, mark_at, mark_tokens, shot_marks
+from .script import sentences as split_sentences
 
 #: Caption rule the delivery gate enforces: 17 characters per second.
 CPS_LIMIT = 17.0
@@ -122,12 +125,42 @@ CAST_SCHEMA = {
                                     "style": {"type": "number"}}},
         "delivery": {"type": "array",
                      "items": {"type": "object",
-                               "properties": {"section": {"type": "string"},
-                                              "note": {"type": "string"}},
+                               "properties": {
+                                   "section": {"type": "string",
+                                               "description": "the section's heading"},
+                                   "note": {"type": "string"},
+                                   # AUTO-139: optional, for a section whose
+                                   # tone needs a read of its own.
+                                   "speed": {"type": "number",
+                                             "description": "0.85 to 1.15, this section "
+                                                            "alone; omit to keep the cast's"},
+                                   "settings": {
+                                       "type": "object",
+                                       "description": "ElevenLabs voice settings, this "
+                                                      "section alone",
+                                       "properties": {"stability": {"type": "number"},
+                                                      "similarity_boost": {"type": "number"},
+                                                      "style": {"type": "number"}}}},
                                "required": ["section", "note"]}},
         "why": {"type": "string"},
     },
     "required": ["voice", "speed", "why"],
+}
+
+#: The casting question a screenplay with no delivery marks is asked: the
+#: one asked before AUTO-139, delivery as {section, note}. Its digest is
+#: today's, so a project voiced before the marks keeps its kept cast (the
+#: voice, speed and settings its takes were billed under) and is not cast
+#: again; a marked screenplay is a new script and gets CAST_SCHEMA.
+CAST_SCHEMA_PRE_MARKS = {
+    **CAST_SCHEMA,
+    "properties": {
+        **CAST_SCHEMA["properties"],
+        "delivery": {"type": "array",
+                     "items": {"type": "object",
+                               "properties": {"section": {"type": "string"},
+                                              "note": {"type": "string"}},
+                               "required": ["section", "note"]}}},
 }
 
 RETAKE_SCHEMA = {
@@ -186,6 +219,142 @@ GATE_LINES = design.CAPTION_LINES
 GATE_CPS = design.CAPTION_CPS
 
 
+#: The delivery controls each engine takes (AUTO-139): the screenplay's
+#: marks (pronounce, pause, emphasis) and the director's per-section speed
+#: and settings. A control an engine is not listed for is kept on the take as
+#: `recorded_only`, never silently dropped. ElevenLabs' break tag is not
+#: listed until it is checked against the kit's model (TO VERIFY).
+MARK_SUPPORT = {
+    "espeak": frozenset({"pronounce", "pause", "emphasis", "speed"}),
+    "elevenlabs": frozenset({"pronounce", "speed", "settings"}),
+    "kokoro": frozenset({"pronounce", "speed"}),
+    "chatterbox": frozenset({"pronounce"}),
+    "stub": frozenset(),
+}
+
+#: The silence a pause mark puts before its word, per engine that takes
+#: one: direction 27's 300 ms, as espeak-ng's SSML says it.
+BREAKS = {"espeak": '<break time="300ms"/>'}
+
+#: Engines read SSML: the line is escaped and wrapped in <speak>.
+SSML_ENGINES = ("espeak",)
+
+#: What is stripped from a token's ends to find the word a mark names.
+_EDGE = ".,;:!?\"'()[]{}“”‘’…—–"
+
+
+def _xml(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def respell(say: str, engine: str, *, stress: bool = True) -> str:
+    """The engine's form of a human pronouncer: lowercased with its hyphens
+    kept, so "SHROH-ding-er" is never read as an initialism or shouted. For
+    an SSML engine it is XML-escaped and, with `stress`, its stressed
+    (capitalised) syllables are wrapped in <emphasis>; a word already
+    emphasised as a whole is not stressed inside. Always one token."""
+    parts = str(say or "").split("-")
+    if engine in SSML_ENGINES:
+        return "-".join(f"<emphasis>{_xml(p.lower())}</emphasis>"
+                        if stress and p and p.upper() == p and p.lower() != p
+                        else _xml(p.lower())
+                        for p in parts)
+    return "-".join(p.lower() for p in parts)
+
+
+def _split_token(token: str) -> tuple[str, str, str, str]:
+    """A token as (leading punctuation, word, possessive, trailing
+    punctuation): "(Schrödinger's," is ("(", "Schrödinger", "'s", ",")."""
+    word = token.strip(_EDGE)
+    if not word:
+        return token, "", "", ""
+    lead = token[:token.index(word)]
+    tail = token[len(lead) + len(word):]
+    poss = ""
+    for mark in ("'s", "’s"):
+        if word.endswith(mark) and len(word) > len(mark):
+            word, poss = word[:-len(mark)], mark
+            break
+    return lead, word, poss, tail
+
+
+def render_marks(text: str, marks: dict, engine: str) -> tuple[str, list[dict], list[dict]]:
+    """The line as `engine` is to say it, from the shot's marks: (spoken,
+    applied, recorded_only). `spoken` is "" when it would equal `text`.
+
+    A pronouncer replaces each occurrence of its one-word term with the
+    respelling, so one source token is always one spoken token; a pause puts
+    the engine's break before its word; emphasis wraps its word, each in the
+    first place at or after the previous one's. For espeak the line is
+    XML-escaped and wrapped in <speak>. A mark the engine cannot take, or one
+    on a word the line does not say, comes back in `recorded_only` with why.
+    """
+    support = MARK_SUPPORT.get(engine, frozenset())
+    tokens = str(text or "").split()
+    keys = mark_tokens(text)
+    applied: list[dict] = []
+    recorded: list[dict] = []
+    said: dict[int, str] = {}
+    stressed: set[int] = set()
+    before: set[int] = set()
+
+    def record(row: dict, why: str) -> None:
+        recorded.append(row | {"why": why})
+
+    for row in (marks or {}).get("pronounce") or []:
+        term, say = str(row.get("term") or ""), str(row.get("say") or "")
+        entry = {"kind": "pronounce", "term": term, "say": say}
+        where = [i for i in range(len(keys)) if mark_at(term, keys, i) == i]
+        if "pronounce" not in support:
+            record(entry, f"{engine} takes no pronouncer")
+        elif not where:
+            record(entry, "not a word of the line")
+        elif not say.strip():
+            record(entry, "no say")
+        elif len(term.split()) != 1:
+            record(entry, "a term of more than one word would change the word count")
+        else:
+            said.update({i: say for i in where})
+            applied.append(entry)
+    for key, kind, into in (("emphasis", "emphasis", stressed), ("pauses", "pause", before)):
+        cursor = 0
+        for word in (marks or {}).get(key) or []:
+            entry = {"kind": kind, "word": str(word)}
+            at = mark_at(word, keys, cursor)
+            at = at if at >= 0 else mark_at(word, keys, 0)
+            if kind not in support:
+                record(entry, f"{engine} takes no {kind}")
+            elif at < 0:
+                record(entry, "not a word of the line")
+            else:
+                into.add(at)
+                applied.append(entry)
+                cursor = at + 1
+    if not applied:
+        return "", [], recorded
+
+    ssml = engine in SSML_ENGINES
+    esc = _xml if ssml else (lambda s: s)
+    out = []
+    for i, token in enumerate(tokens):
+        lead, word, poss, tail = _split_token(token)
+        if i in said:
+            word = respell(said[i], engine, stress=i not in stressed)
+        else:
+            word = esc(word)
+        word += esc(poss)
+        if i in stressed and ssml:
+            word = f"<emphasis>{word}</emphasis>"
+        piece = esc(lead) + word + esc(tail)
+        if i in before and engine in BREAKS:
+            piece = BREAKS[engine] + piece
+        out.append(piece)
+    spoken = " ".join(out)
+    if ssml:
+        spoken = f"<speak>{spoken}</speak>"
+    return ("" if spoken == text else spoken), applied, recorded
+
+
 def directions_from(retakes) -> dict[str, dict]:
     """What the director asked of each retake, as the recorder can apply it:
     label -> {"speed": within SPEED_RANGE, "settings": the known keys}. Rows
@@ -194,22 +363,95 @@ def directions_from(retakes) -> dict[str, dict]:
     for row in retakes if isinstance(retakes, list) else []:
         if not isinstance(row, dict) or not str(row.get("label") or "").strip():
             continue
-        direction: dict = {}
-        try:
-            speed = float(row["speed"])
-            direction["speed"] = round(min(SPEED_RANGE[1], max(SPEED_RANGE[0], speed)), 3)
-        except (KeyError, TypeError, ValueError):
-            pass
-        settings = row.get("settings")
-        if isinstance(settings, dict):
-            kept = {k: float(v) for k, v in settings.items()
-                    if k in ("stability", "similarity_boost", "style")
-                    and isinstance(v, (int, float))}
-            if kept:
-                direction["settings"] = kept
+        direction = _clamped_direction(row)
         if direction:
             out[str(row["label"]).strip()] = direction
     return out
+
+
+def _clamped_direction(row: dict) -> dict:
+    """A director's row as the recorder can apply it: `speed` within
+    SPEED_RANGE, `settings` the known ElevenLabs keys; either left out when
+    it is not usable."""
+    direction: dict = {}
+    try:
+        speed = float(row["speed"])
+        direction["speed"] = round(min(SPEED_RANGE[1], max(SPEED_RANGE[0], speed)), 3)
+    except (KeyError, TypeError, ValueError):
+        pass
+    settings = row.get("settings")
+    if isinstance(settings, dict):
+        kept = {k: float(v) for k, v in settings.items()
+                if k in ("stability", "similarity_boost", "style")
+                and isinstance(v, (int, float))}
+        if kept:
+            direction["settings"] = kept
+    return direction
+
+
+def _fold_heading(text) -> str:
+    return " ".join(str(text or "").split()).casefold()
+
+
+def delivery_from(cast: dict, sections: list[Section]) -> tuple[dict[str, dict], list[dict]]:
+    """The director's per-section delivery as the recorder applies it:
+    heading -> {note, speed?, settings?}, and the rows that match no section.
+    A row matches a heading after whitespace and case folding, else a number
+    is read as the 1-based section index. An unmatched row applies to no
+    take; voice.json lists it."""
+    rows = (cast or {}).get("delivery")
+    by_heading: dict[str, dict] = {}
+    unmatched: list[dict] = []
+    headings = {_fold_heading(s.heading): s.heading for s in sections}
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        asked = str(row.get("section") or "").strip()
+        heading = headings.get(_fold_heading(asked))
+        if heading is None and asked.isdigit() and 1 <= int(asked) <= len(sections):
+            heading = sections[int(asked) - 1].heading
+        if heading is None:
+            unmatched.append({"section": asked, "note": str(row.get("note") or "")})
+            continue
+        by_heading[heading] = {"note": str(row.get("note") or "").strip(),
+                               **_clamped_direction(row)}
+    return by_heading, unmatched
+
+
+def notes_only(cast: dict) -> dict:
+    """A cast whose delivery rows keep their section and note alone: what a
+    pre-marks screenplay's cast is used for, since its question offered no
+    per-section speed or settings (an answer that gives one anyway would
+    move takes into new calls, and re-bill them)."""
+    rows = (cast or {}).get("delivery")
+    return dict(cast or {}, delivery=[
+        {"section": row.get("section", ""), "note": row.get("note", "")}
+        for row in (rows if isinstance(rows, list) else []) if isinstance(row, dict)])
+
+
+def casting_delivery(cast: dict) -> list[dict]:
+    """casting.delivery as voice.json keeps it: each row's section and note
+    as the director wrote them, with its speed and settings clamped."""
+    rows = (cast or {}).get("delivery")
+    return [{"section": row.get("section", ""), "note": row.get("note", ""),
+             **_clamped_direction(row)}
+            for row in (rows if isinstance(rows, list) else []) if isinstance(row, dict)]
+
+
+def delivery_summary(takes, unmatched: list[dict]) -> dict:
+    """voice.json's `delivery`: how many controls the engine applied and
+    how many it could only record, by kind, and the unmatched rows."""
+    by_kind: dict[str, dict] = {}
+    totals = {"applied": 0, "recorded_only": 0}
+    for take in takes:
+        delivery = (take.delivery if hasattr(take, "delivery") else take.get("delivery")) or {}
+        for where in ("applied", "recorded_only"):
+            for row in delivery.get(where) or []:
+                kind = by_kind.setdefault(row.get("kind", "?"),
+                                          {"applied": 0, "recorded_only": 0})
+                kind[where] += 1
+                totals[where] += 1
+    return {**totals, "by_kind": by_kind, "unmatched": list(unmatched or [])}
 
 
 #: What the take review hears of a take: its words, the recording and how
@@ -315,15 +557,20 @@ def require_voice(engine: str, voice: str, offered: list[dict]) -> None:
            "account reachable?)") + ".")
 
 
-def cast_instruction(engine: str, lang: str) -> str:
-    """The first paragraph of the casting brief: what `voice` may be."""
+def cast_instruction(engine: str, lang: str, *, marked: bool = True) -> str:
+    """The first paragraph of the casting brief: what `voice` may be. A
+    screenplay with no delivery marks (`marked` false) is asked it as it
+    was before them, word for word, so its kept cast still serves."""
     default = ("the engine has no default: `voice` must be one of the candidate ids"
                if engine not in ENGINES_WITH_DEFAULT else
                "empty keeps the engine's default")
     return (f"Cast the narrator for this film and set the read. Engine: {engine}; "
             f"language: {lang or 'unspecified'}. Choose `voice` from the "
             f"candidates ({default}), `speed` within {SPEED_RANGE}, and one "
-            "delivery note per section.")
+            + ("delivery note per section, naming it by its heading; give a section "
+               "its own `speed` (and, for elevenlabs, `settings`) only where its tone "
+               "needs a different read from the cast's." if marked else
+               "delivery note per section."))
 
 
 def apply_cast(cast: dict, offered: list[dict], *, engine: str,
@@ -455,19 +702,41 @@ class Word:
 
 def words_from_alignment(path: Path) -> list[Word]:
     """Character timings from ElevenLabs, folded into words."""
+    return _fold(_read_alignment(path))
+
+
+def _read_alignment(path: Path) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return []
-    block = data.get("alignment") or data.get("normalized_alignment") or {}
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _fold(data: dict, *, strip_tags: bool = False) -> list[Word]:
+    """An alignment's character timings folded into words. `strip_tags`
+    drops every <...> tag's characters first, so a break or SSML tag in the
+    text that was sent counts as no word."""
+    block = (data or {}).get("alignment") or (data or {}).get("normalized_alignment") or {}
     chars = block.get("characters") or []
     starts = block.get("character_start_times_seconds") or []
     ends = block.get("character_end_times_seconds") or []
     if not (chars and len(chars) == len(starts) == len(ends)):
         return []
+    rows = list(zip(chars, starts, ends))
+    if strip_tags:
+        kept, inside = [], False
+        for row in rows:
+            if row[0] == "<":
+                inside = True
+            if not inside:
+                kept.append(row)
+            if row[0] == ">":
+                inside = False
+        rows = kept
     out: list[Word] = []
     buf, first, last = "", None, None
-    for ch, a, b in zip(chars, starts, ends):
+    for ch, a, b in rows:
         if ch.isspace():
             if buf:
                 out.append(Word(buf, first, last))
@@ -496,6 +765,31 @@ def words_estimated(text: str, seconds: float) -> list[Word]:
     return out
 
 
+def caption_words(take: Take, aligned: dict) -> tuple[list[Word], str]:
+    """The caption words of a take from the engine's alignment, and their
+    timing. An unmarked take is folded as it always was. A take sent as
+    `spoken` has its tags stripped from the alignment and its aligned words
+    mapped by position onto the line as written, one spoken token per source
+    token, each keeping its timing; when the counts still differ the words
+    are estimated over the take from `text`, timing "estimated", and the
+    take's delivery records `caption_mismatch`. A spoken token never reaches
+    a caption."""
+    if not take.spoken:
+        words = _fold(aligned)
+        return words, ("exact" if words else "none")
+    folded = _fold(aligned, strip_tags=True)
+    source = take.text.split()
+    if folded and len(folded) == len(source):
+        return [Word(src, w.start, w.end) for src, w in zip(source, folded)], "exact"
+    take.delivery = dict(take.delivery or {},
+                         caption_mismatch={"spoken": len(folded), "text": len(source)})
+    seconds = take.seconds or (folded[-1].end if folded else 0.0)
+    words = words_estimated(take.text, seconds)
+    # Nothing aligned and no length to spread the line over: no words, as
+    # an unmarked take with no alignment has, not words of no duration.
+    return words, ("estimated" if words else "none")
+
+
 # --------------------------------------------------------------------------- #
 # the take
 # --------------------------------------------------------------------------- #
@@ -518,6 +812,13 @@ class Take:
     chars: int = 0
     cached: bool = False
     words: list[Word] = field(default_factory=list)
+    # What the engine was sent when the marks changed it ("" when it is
+    # `text`), its length, and the delivery: the section's note, the shot's
+    # performance note, the marks, what the engine `applied` and what it
+    # could only record (`recorded_only`). Captions and cps stay on `text`.
+    spoken: str = ""
+    spoken_chars: int = 0
+    delivery: dict = field(default_factory=dict)
 
     @property
     def cps(self) -> float:
@@ -613,7 +914,10 @@ def _synth_espeak(text: str, out: Path, *, voice: str, rate: int,
     # read as an option and the take fails.
     script_file = out.with_suffix(".txt")
     script_file.write_text(text, encoding="utf-8")
+    # -m reads SSML, which only a marked take is (AUTO-139): an unmarked
+    # take's argv is as it was.
     cmd = ["espeak-ng", "-v", voice or "en-us", "-s", str(opts.get("wpm", 165)),
+           *(["-m"] if text.startswith("<speak>") else []),
            "-w", str(out), "-f", str(script_file)]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     script_file.unlink(missing_ok=True)
@@ -698,6 +1002,7 @@ class VoiceOver:
                  section_gap: float = SECTION_GAP, normalise: bool = True,
                  trim: bool = True, redo: set[str] | None = None,
                  directions: dict[str, dict] | None = None,
+                 delivery: dict[str, dict] | None = None,
                  verbose: bool = True) -> None:
         self.idea = idea
         self.sections = sections
@@ -716,6 +1021,8 @@ class VoiceOver:
         self.trim = trim
         self.redo = redo or set()
         self.directions = dict(directions or {})
+        #: The director's per-section delivery, by heading (`delivery_from`).
+        self.delivery = dict(delivery or {})
         self.verbose = verbose
         self.cache = self.dir / ".cache"
 
@@ -733,11 +1040,27 @@ class VoiceOver:
                 text = " ".join(shot.narration.split())
                 if not text:
                     continue
+                marks = shot_marks(shot)
+                spoken, applied, recorded = render_marks(text, marks, self.engine)
+                directed = self.delivery.get(section.heading) or {}
+                support = MARK_SUPPORT.get(self.engine, frozenset())
+                for kind in ("speed", "settings"):
+                    if kind in directed:
+                        row = {"kind": kind, "value": directed[kind]}
+                        if kind in support:
+                            applied.append(row)
+                        else:
+                            recorded.append(row | {"why": f"{self.engine} takes no {kind}"})
                 out.append(Take(n=shot.n, label=shot.label,
                                 section=section.heading, text=text,
                                 planned_at=shot.at,
                                 planned_seconds=shot.seconds,
-                                chars=len(text)))
+                                chars=len(text), spoken=spoken,
+                                spoken_chars=len(spoken or text),
+                                delivery={"section_note": directed.get("note", ""),
+                                          "performance": shot.note or "", **marks,
+                                          "applied": applied,
+                                          "recorded_only": recorded}))
         return out
 
     def _named(self, take: Take) -> bool:
@@ -748,19 +1071,39 @@ class VoiceOver:
         """The director's speed/settings for a named retake; nothing otherwise."""
         return self.directions.get(take.label, {}) if self._named(take) else {}
 
+    def _section(self, take: Take) -> dict:
+        """The director's speed/settings for this take's section, if any,
+        as far as the engine takes them (MARK_SUPPORT): one it cannot take
+        is only recorded on the take, and never moves its cache key."""
+        row = self.delivery.get(take.section) or {}
+        support = MARK_SUPPORT.get(self.engine, frozenset())
+        return {k: row[k] for k in ("speed", "settings") if k in row and k in support}
+
     def _opts_for(self, take: Take) -> dict:
+        """The engine options for one take: the cast's, then its section's
+        delivery, then a named retake's direction, which wins. A section or
+        retake speed replaces the cast's speed, never multiplies it."""
         opts = dict(self.opts)
-        direction = self._direction(take)
-        if "speed" in direction:
-            opts["speed"] = direction["speed"]
-        if "settings" in direction:
-            opts["settings"] = (opts.get("settings") or {}) | direction["settings"]
+        set_speed = None
+        for layer in (self._section(take), self._direction(take)):
+            if "speed" in layer:
+                opts["speed"] = set_speed = layer["speed"]
+            if "settings" in layer:
+                opts["settings"] = (opts.get("settings") or {}) | layer["settings"]
+        if self.engine == "espeak" and set_speed is not None:
+            # espeak-ng takes a rate, not a speed: it is scaled by the asked
+            # speed over the cast's, and only when one is asked, so a film
+            # with no section or retake speed sends today's -s.
+            cast = float(self.opts.get("speed") or 1.0)
+            opts["wpm"] = round(float(self.opts.get("wpm", 165)) * set_speed / cast)
         return opts
 
     def _fingerprint(self, take: Take) -> str:
         parts = [self.engine, self.voice, self.lang, str(self.rate),
                  json.dumps(self._opts_for(take), sort_keys=True, default=str),
-                 take.text]
+                 # What the engine hears: an unmarked take keeps today's key,
+                 # so its cached WAV still serves.
+                 take.spoken or take.text]
         return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
 
     # -- recording ---------------------------------------------------------
@@ -774,7 +1117,7 @@ class VoiceOver:
                 take.cached = True
             else:
                 self._say(f"  {take.label} {len(take.text):>4} chars")
-                synth(take.text, cached, voice=self.voice, rate=self.rate,
+                synth(take.spoken or take.text, cached, voice=self.voice, rate=self.rate,
                       opts=self._opts_for(take) | {"lang": self.engine_lang})
             frames, rate, channels = read_wav(cached)
             if self.trim:
@@ -814,8 +1157,10 @@ class VoiceOver:
     def _record_elevenlabs(self, takes: list[Take]) -> None:
         kit = _kit()
         client = kit.Client(kit.api_key())
-        scenes = [{"id": f"{t.n:03d}-{t.label.replace('.', '-')}", "text": t.text}
-                  for t in takes]
+        # The engine is sent what the marks made of the line (AUTO-139); an
+        # unmarked take sends its text, as before.
+        scenes = [{"id": f"{t.n:03d}-{t.label.replace('.', '-')}",
+                   "text": t.spoken or t.text} for t in takes]
         self.dir.mkdir(parents=True, exist_ok=True)
         fmt = self.opts.get("format") or f"pcm_{self.rate}"
         base = self.opts.get("settings") or None
@@ -840,23 +1185,44 @@ class VoiceOver:
         # The kit takes one force flag per call, so the named takes are
         # recorded apart: the accepted ones are served from its cache (not
         # paid, not replaced) and a retake costs only itself.
-        kept = [i for i, t in enumerate(takes) if not self._named(t)]
-        plain = [i for i, t in enumerate(takes)
-                 if self._named(t) and not self._direction(t)]
-        send(kept, force=False, settings=base)
-        send(plain, force=True, settings=base)
+        # The takes not named and the named ones without a direction are
+        # grouped by the settings their section gives them (AUTO-139), one
+        # call per distinct value in film order: with no section delivery
+        # every take has the cast's settings and the calls are as before.
+        # The cast's speed is never sent; a section's or a retake's is,
+        # inside the settings of its takes alone.
+        def effective(take: Take):
+            section = self._section(take)
+            if not section:
+                return base
+            settings = (base or {}) | section.get("settings", {})
+            if "speed" in section:
+                settings = settings | {"speed": section["speed"]}
+            return settings or None
+
+        for force, members in ((False, [i for i, t in enumerate(takes) if not self._named(t)]),
+                               (True, [i for i, t in enumerate(takes)
+                                       if self._named(t) and not self._direction(t)])):
+            groups: dict[str, tuple] = {}
+            for i in members:
+                settings = effective(takes[i])
+                key = json.dumps(settings, sort_keys=True)
+                groups.setdefault(key, (settings, []))[1].append(i)
+            for settings, group in groups.values():
+                send(group, force=force, settings=settings)
         for i, take in enumerate(takes):
             direction = self._direction(take)
             if direction:
                 settings = self._opts_for(take).get("settings") or {}
-                if "speed" in direction:
-                    settings = settings | {"speed": direction["speed"]}
+                speed = direction.get("speed", self._section(take).get("speed"))
+                if speed is not None:
+                    settings = settings | {"speed": speed}
                 send([i], force=True, settings=settings or None)
         for take, scene in zip(takes, scenes):
             raw = self.dir / f"{scene['id']}.mp3"
+            align = self.dir / f"{scene['id']}.alignment.json"
             take.engine, take.voice = self.engine, self.voice
-            take.words = words_from_alignment(
-                self.dir / f"{scene['id']}.alignment.json")
+            take.words = [] if take.spoken else words_from_alignment(align)
             take.timing = "exact" if take.words else "none"
             if fmt.startswith("pcm_") and raw.exists():
                 # PCM comes back headerless, under the kit's own .mp3 name;
@@ -878,6 +1244,16 @@ class VoiceOver:
             else:
                 take.file = raw.name
                 take.seconds = round(take.words[-1].end, 3) if take.words else 0.0
+            if take.spoken:
+                # The alignment is of what was sent: the captions take the
+                # line's own words at its timings, or estimate them.
+                aligned = _read_alignment(align)
+                if not take.seconds:
+                    folded = _fold(aligned, strip_tags=True)
+                    take.seconds = round(folded[-1].end, 3) if folded else 0.0
+                take.words, take.timing = caption_words(take, aligned)
+                if not take.words:
+                    take.timing = "none"
 
     def run(self) -> dict:
         takes = self.takes()
@@ -885,7 +1261,8 @@ class VoiceOver:
             raise RuntimeError("no narration in the screenplay to record")
         self._say(f"[voice] {self.engine}"
                   + (f" · {self.voice}" if self.voice else "")
-                  + f" · {len(takes)} takes · {sum(t.chars for t in takes)} chars")
+                  + f" · {len(takes)} takes · {sum(t.chars for t in takes)} chars"
+                  + spoken_note(takes))
         self.dir.mkdir(parents=True, exist_ok=True)
         self.cache.mkdir(parents=True, exist_ok=True)
         if self.engine == "elevenlabs":
@@ -909,6 +1286,15 @@ class VoiceOver:
                 "engine_lang": self.engine_lang, "layout": self.layout,
                 "takes": [asdict(t) for t in takes],
                 **summarise(takes, layout=self.layout)}
+
+
+def spoken_note(takes: list[Take]) -> str:
+    """" (N sent to the engine)" when the marks made what the engine is
+    sent longer or shorter than the lines; "" otherwise, so an unmarked
+    film prints as it did."""
+    chars = sum(t.chars for t in takes)
+    sent = sum(t.spoken_chars or t.chars for t in takes)
+    return f" ({sent} sent to the engine)" if sent != chars else ""
 
 
 def summarise(takes: list[Take], *, layout: str) -> dict:
@@ -1183,11 +1569,19 @@ def print_voice(data: dict, takes: list[Take]) -> None:
     print(f"\n{data['idea']['title']} — NARRATION")
     print(f"{data['engine']}"
           + (f" · {data['voice']}" if data.get("voice") else "")
-          + f" · {len(takes)} takes · timing: {', '.join(data['timing'])}")
+          + f" · {len(takes)} takes · timing: {', '.join(data['timing'])}"
+          + (f" · {sum(t.chars for t in takes)} chars{spoken_note(takes)}"
+             if spoken_note(takes) else ""))
     print(f"spoken {timecode(data['spoken_seconds'])} · "
           f"planned {timecode(data['planned_seconds'])} · "
           f"drift {data['drift_seconds']:+.1f}s · "
           f"voice ends {data['voice_end']:.1f}s")
+    told = data.get("delivery") or {}
+    if told.get("applied") or told.get("recorded_only") or told.get("unmatched"):
+        print(f"delivery: {told.get('applied', 0)} applied · "
+              f"{told.get('recorded_only', 0)} recorded only"
+              + (f" · {len(told['unmatched'])} note(s) naming no section"
+                 if told.get("unmatched") else ""))
 
     section = None
     for take in takes:
@@ -1207,6 +1601,203 @@ def print_voice(data: dict, takes: list[Take]) -> None:
               "(the delivery gate rejects these):")
         for row in data["too_fast_for_captions"]:
             print(f"    {row['label']}  {row['cps']} cps  {row['text']}")
+
+
+# --------------------------------------------------------------------------- #
+# the read-aloud draft (direction 29)
+# --------------------------------------------------------------------------- #
+
+#: Where `yt voice --draft` writes, under the project. No stage reads it as
+#: the voice: it is the free read the paid one is gated on.
+DRAFT_DIR, DRAFT_FILE = "voice-draft", "voice-draft.json"
+#: The free readers, best first. A draft never pays and is never silence.
+DRAFT_READERS = ("kokoro", "espeak")
+#: Direction 29's number: a sentence that takes longer than this to read
+#: aloud is longer than a listener holds. Practitioner, not calibrated.
+DRAFT_SENTENCE_LIMIT = 10.0
+_DRAFT_NUMERAL = re.compile(r"\d(?:[\d,.]*\d)?")
+
+
+def script_sha(sections: list[Section]) -> str:
+    """The hash of what the voice stage reads: each narrated shot's label,
+    words and delivery marks. A draft of another script is stale."""
+    rows = []
+    for section in sections:
+        for shot in section.shots:
+            text = " ".join(shot.narration.split())
+            if not text:
+                continue
+            marks = shot_marks(shot)
+            rows.append([shot.label, text, marks["emphasis"], marks["pauses"],
+                         [{"term": r.get("term", ""), "say": r.get("say", "")}
+                          for r in marks["pronounce"]]])
+    # In film order: a moved shot is another read, and the draft's drift
+    # per section no longer describes it.
+    blob = json.dumps(rows, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def sentence_marks(parts: list[str], marks: dict) -> list[dict]:
+    """A shot's marks shared out over its sentences: each emphasis and pause
+    to the sentence that says its word, walking in order as the line does;
+    a pronouncer to every sentence that says its term."""
+    keys = [mark_tokens(p) for p in parts]
+    out = [{"emphasis": [], "pauses": [], "pronounce": []} for _ in parts]
+    for name in ("emphasis", "pauses"):
+        at_part, at_token = 0, 0
+        for word in (marks or {}).get(name) or []:
+            hit = None
+            for i in range(at_part, len(parts)):
+                found = mark_at(word, keys[i], at_token if i == at_part else 0)
+                if found >= 0:
+                    hit = (i, found)
+                    break
+            if hit is None:
+                hit = next(((i, mark_at(word, keys[i])) for i in range(len(parts))
+                            if mark_at(word, keys[i]) >= 0), None)
+                if hit is None:
+                    continue
+            out[hit[0]][name].append(word)
+            at_part, at_token = hit[0], hit[1] + 1
+    for row in (marks or {}).get("pronounce") or []:
+        for i in range(len(parts)):
+            if mark_at(str(row.get("term") or ""), keys[i]) >= 0:
+                out[i]["pronounce"].append(dict(row))
+    return out
+
+
+def draft_findings(rows: list[dict], by_section: dict | None = None) -> list[dict]:
+    """What the free read shows: a sentence over DRAFT_SENTENCE_LIMIT
+    seconds fails; a numeral said again in a later sentence warns (the
+    corpus fails it, but a callback repeats a number on purpose and the
+    draft is not calibrated); each section's drift is info."""
+    found = []
+    seen: dict[str, str] = {}
+    for row in rows:
+        seconds = float(row.get("seconds") or 0.0)
+        if seconds > DRAFT_SENTENCE_LIMIT:
+            found.append({"severity": "fail", "rule": "direction 29",
+                          "strength": "practitioner", "label": row.get("label", ""),
+                          "section": row.get("section", ""), "seconds": seconds,
+                          "detail": f"one sentence reads for {seconds:.1f}s, over "
+                                    f"{DRAFT_SENTENCE_LIMIT:.0f}s: "
+                                    f"{str(row.get('text', ''))[:80]}"})
+        said = list(dict.fromkeys(_DRAFT_NUMERAL.findall(str(row.get("text") or ""))))
+        for number in said:
+            if number in seen:
+                found.append({"severity": "warn", "rule": "direction 29",
+                              "strength": "practitioner", "label": row.get("label", ""),
+                              "section": row.get("section", ""),
+                              "detail": f"{number} is said again (first in "
+                                        f"{seen[number]}); keep it only as a callback"})
+        for number in said:
+            seen.setdefault(number, str(row.get("label", "")))
+    for heading, row in (by_section or {}).items():
+        found.append({"severity": "info", "rule": "direction 29", "section": heading,
+                      "spoken": row.get("spoken"), "planned": row.get("planned"),
+                      "drift": row.get("drift"),
+                      "detail": f"read aloud {row.get('spoken')}s against "
+                                f"{row.get('planned')}s planned"})
+    return found
+
+
+def draft_engine(wanted: str) -> tuple[str, str]:
+    """The free reader --draft uses, or why there is none: (engine, error)."""
+    if wanted == "elevenlabs":
+        return "", "--draft never pays: it reads with kokoro or espeak-ng"
+    if wanted == "stub":
+        return "", "--draft reads aloud, and silence is not a read: use kokoro or espeak"
+    if wanted in DRAFT_READERS:
+        ok, hint = ENGINES[wanted].available()
+        return (wanted, "") if ok else ("", f"--draft: {wanted} is not usable here: {hint}")
+    if wanted != "auto":
+        return "", f"--draft reads with kokoro or espeak-ng, not {wanted}"
+    for name in DRAFT_READERS:
+        if ENGINES[name].available()[0]:
+            return name, ""
+    return "", "--draft needs kokoro or espeak-ng; neither is available"
+
+
+def draft_gate(path: Path, sha: str, *, accept: bool) -> dict:
+    """voice.json's `draft`: is there a read-aloud draft of this script, and
+    did it fail? current|stale|missing, or accepted when --accept-draft
+    lets a current draft's fails through."""
+    data = read_json(path, warn=False) if Path(path).exists() else None
+    if not isinstance(data, dict):
+        return {"status": "missing", "fails": 0}
+    fails = sum(1 for f in data.get("findings") or []
+                if isinstance(f, dict) and f.get("severity") == "fail")
+    if data.get("script_sha") != sha:
+        return {"status": "stale", "fails": fails}
+    if fails and accept:
+        return {"status": "accepted", "fails": fails}
+    return {"status": "current", "fails": fails}
+
+
+def run_draft(args, idea: Idea, project, sections: list[Section]) -> int:
+    """`yt voice --draft`: every sentence read by a free local engine, its
+    trimmed length measured, into voice-draft/ and voice-draft.json. No
+    casting, no model, nothing paid."""
+    engine, error = draft_engine(args.engine)
+    if error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    if not any(sh.narration.strip() for sec in sections for sh in sec.shots):
+        print("error: --draft: the screenplay has no narration to read", file=sys.stderr)
+        return 1
+    lang = engine_lang(engine, args.lang)
+    voice_id = args.voice or DEFAULT_VOICES.get(engine, {}).get(lang or "", "")
+    out_dir = project.root / DRAFT_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    synth = SYNTH[engine]
+    rows: list[dict] = []
+    by_section: dict[str, dict] = {}
+    for section in sections:
+        for shot in section.shots:
+            text = " ".join(shot.narration.split())
+            if not text:
+                continue
+            totals = by_section.setdefault(section.heading,
+                                           {"planned": 0.0, "spoken": 0.0, "sentences": 0})
+            totals["planned"] += shot.seconds
+            parts = split_sentences(text)
+            shared = sentence_marks(parts, shot_marks(shot))
+            for k, (part, marks) in enumerate(zip(parts, shared), start=1):
+                spoken, _, _ = render_marks(part, marks, engine)
+                target = out_dir / f"{shot.n:03d}-{shot.label.replace('.', '-')}-{k}.wav"
+                synth(spoken or part, target, voice=voice_id, rate=args.rate,
+                      opts={"wpm": args.wpm, "speed": 1.0, "lang": lang,
+                            "lang_id": args.lang or None})
+                frames, rate, channels = read_wav(target)
+                frames = trim_silence(frames, rate)
+                write_wav(target, frames, rate, channels)
+                seconds = round(len(frames) / 2 / channels / rate, 3)
+                words = len(part.split())
+                rows.append({"label": shot.label, "section": section.heading,
+                             "text": part, "file": target.name, "seconds": seconds,
+                             "words": words,
+                             "wpm": round(words / seconds * 60, 1) if seconds else 0.0})
+                totals["spoken"] += seconds
+                totals["sentences"] += 1
+    for row in by_section.values():
+        row["drift"] = round(row["spoken"] - row["planned"], 2)
+        row["planned"], row["spoken"] = round(row["planned"], 2), round(row["spoken"], 2)
+    findings = draft_findings(rows, by_section)
+    data = {"idea": {"title": idea.title}, "engine": engine, "voice": voice_id,
+            "script_sha": script_sha(sections), "sentences": rows,
+            "by_section": by_section, "findings": findings,
+            "listened": "not evidenced"}
+    path = write_json(project.root / DRAFT_FILE, data)
+    print(f"draft: {len(rows)} sentence(s) read with {engine} · "
+          f"{sum(r['seconds'] for r in rows):.1f}s against "
+          f"{sum(r['planned'] for r in by_section.values()):.1f}s planned")
+    for finding in findings:
+        if finding["severity"] in ("fail", "warn"):
+            print(f"{finding['severity']}: {finding.get('label', '')} {finding['detail']}",
+                  file=sys.stderr)
+    print(f"wrote {path} (no stage reads it as the voice; heard by no one yet)",
+          file=sys.stderr)
+    return 0
 
 
 # --------------------------------------------------------------------------- #
@@ -1260,6 +1851,14 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                    help="cast again even if the screenplay did not change")
     p.add_argument("--dry-run", action="store_true", dest="dry_run",
                    help="count characters and estimate, synthesise nothing")
+    p.add_argument("--draft", action="store_true",
+                   help="read the screenplay aloud, sentence by sentence, with a "
+                        "free local engine (kokoro, else espeak-ng) into "
+                        "voice-draft/ and voice-draft.json (direction 29); no "
+                        "casting, no model, nothing paid")
+    p.add_argument("--accept-draft", action="store_true", dest="accept_draft",
+                   help="record a paid voice although the current read-aloud "
+                        "draft has a fail")
     p.add_argument("--list-engines", action="store_true",
                    help="print the engines and whether each one is usable here")
     p.set_defaults(run=run)
@@ -1326,6 +1925,8 @@ def run(args) -> int:
         args.lang = str(script["lang"])
         if not args.quiet:
             print(f"language {args.lang} from the screenplay", file=sys.stderr)
+    if getattr(args, "draft", False):
+        return run_draft(args, idea, project, sections)
     takes_planned = sum(1 for s in sections for sh in s.shots if sh.narration.strip())
     if not takes_planned:
         return run_wordless(args, idea, project, sections)
@@ -1359,7 +1960,7 @@ def run(args) -> int:
                          voice=args.voice, lang=args.lang, opts=opts,
                          verbose=False).takes()
         chars = sum(t.chars for t in rows)
-        print(f"{len(rows)} takes · {chars} characters · engine {engine}")
+        print(f"{len(rows)} takes · {chars} characters{spoken_note(rows)} · engine {engine}")
         print(f"estimated speech at 14 chars/s: "
               f"{timecode(round(chars / 14))} against "
               f"{timecode(sum(t.planned_seconds for t in rows))} planned")
@@ -1369,6 +1970,24 @@ def run(args) -> int:
         print("(--dry-run: nothing cast, nothing recorded)", file=sys.stderr)
         return 0
 
+    # Direction 29: a paid voice is recorded only after a free read of this
+    # script. Local engines are free and are not gated.
+    draft = None
+    if not ENGINES[engine].local:
+        draft = draft_gate(project.root / DRAFT_FILE, script_sha(sections),
+                           accept=getattr(args, "accept_draft", False))
+        if draft["status"] in ("missing", "stale"):
+            print(f"warning: {'no' if draft['status'] == 'missing' else 'a stale'} "
+                  "read-aloud draft of this screenplay; direction rule 29 asks for "
+                  "a free take before any voice is paid for -- run `yt voice "
+                  "--draft` first", file=sys.stderr)
+        elif draft["status"] == "current" and draft["fails"]:
+            print(f"error: the read-aloud draft of this screenplay has "
+                  f"{draft['fails']} fail(s) (direction rule 29; see {DRAFT_FILE}). "
+                  "Fix the script and run `yt voice --draft` again, or pass "
+                  "--accept-draft to pay for the voice anyway", file=sys.stderr)
+            return 1
+
     # Casting and direction are the model's; --voice is the operator's veto.
     rules, digest = house.for_args(args, project, "voice")
     director = Harness(project.root, "voice", model=args.model, role=ROLE,
@@ -1376,9 +1995,13 @@ def run(args) -> int:
                        fresh=getattr(args, "fresh", False), verbose=not args.quiet)
     offered = candidates(engine, engine_lang(engine, args.lang))
     styles = read_json(project.source("styles"), warn=False) or {}
+    # A screenplay with no marks was written before them (or by a writer
+    # that gave none): it is asked today's casting and retake questions, so
+    # a project voiced before AUTO-139 keeps its kept answers and its bill.
+    marked = has_marks(sections)
     try:
         cast = director.decide("casting", "\n\n".join([
-            cast_instruction(engine, args.lang),
+            cast_instruction(engine, args.lang, marked=marked),
             brief("Film", {"title": idea.title, "premise": idea.description,
                            "genre": idea.genre,
                            "treatment": (styles.get("styles") or [{}])[0].get("name", "")
@@ -1386,8 +2009,11 @@ def run(args) -> int:
             brief("Candidates", offered),
             brief("Sections", [{"heading": sec.heading, "purpose": sec.purpose,
                                 "opening_line": next((sh.narration for sh in sec.shots
-                                                      if sh.narration.strip()), "")[:200]}
-                               for sec in sections])]), CAST_SCHEMA)
+                                                      if sh.narration.strip()), "")[:200],
+                                **({"notes": [sh.note for sh in sec.shots if sh.note][:8]}
+                                   if marked else {})}
+                               for sec in sections])]),
+            CAST_SCHEMA if marked else CAST_SCHEMA_PRE_MARKS)
     except HarnessError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -1401,6 +2027,13 @@ def run(args) -> int:
     if not args.quiet:
         print(f"cast: {voice_id or 'engine default'} at {opts['speed']}x -- "
               f"{str(cast.get('why', ''))[:120]}", file=sys.stderr)
+    if not marked:
+        cast = notes_only(cast)
+    by_heading, unmatched = delivery_from(cast, sections)
+    if unmatched:
+        print(f"warning: {len(unmatched)} delivery note(s) name no section and "
+              f"reach no take: {', '.join(r['section'] or '?' for r in unmatched[:4])}",
+              file=sys.stderr)
     recorder = VoiceOver(
         idea, sections, project.root / "voice", engine=engine, voice=voice_id,
         lang=args.lang, rate=args.rate, opts=opts, layout=args.layout,
@@ -1410,7 +2043,7 @@ def run(args) -> int:
         directions=directions_from(
             ((read_json(project.out("voice"), warn=False) or {})
              .get("review") or {}).get("retakes")),
-        verbose=not args.quiet)
+        delivery=by_heading, verbose=not args.quiet)
 
     try:
         data = recorder.run()
@@ -1424,7 +2057,10 @@ def run(args) -> int:
              for row in data["takes"]]
     data["casting"] = {"voice": voice_id, "speed": opts["speed"],
                        "settings": opts.get("settings"),
-                       "delivery": cast.get("delivery", []), "why": cast.get("why", "")}
+                       "delivery": casting_delivery(cast), "why": cast.get("why", "")}
+    data["delivery"] = delivery_summary(takes, unmatched)
+    if draft is not None:
+        data["draft"] = draft
     print_voice(data, takes)
 
     # The director hears the measurements and names what to record again.
@@ -1436,7 +2072,9 @@ def run(args) -> int:
                   f"over {CPS_LIMIT:.0f})",
                   [{"label": t.label, "section": t.section, "seconds": t.seconds,
                     "planned": t.planned_seconds, "cps": round(t.cps, 1),
-                    "text": t.text[:160]} for t in takes]),
+                    "text": t.text[:160],
+                    **{k: t.delivery[k] for k in ("emphasis", "pauses", "pronounce", "section_note")
+                       if marked and (t.delivery or {}).get(k)}} for t in takes]),
             brief("Drift by section", data["by_section"]),
             brief("Overlaps", data["overlaps"])]), RETAKE_SCHEMA)
     except HarnessError as exc:

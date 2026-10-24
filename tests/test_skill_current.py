@@ -88,6 +88,19 @@ class Missing(unittest.TestCase):
                        "`yt keyframe`'s lead section"):
             self.assertIn(needle, FLAT)
 
+    def test_delivery_reaches_the_voice(self):
+        from ytstudio import voice
+        para = next(l for l in TEXT.splitlines()
+                    if l.startswith("**Delivery reaches the voice"))
+        for needle in ("`voice.MARK_SUPPORT`", "`yt voice --draft`", "`--accept-draft`",
+                       "`voice-draft.json`", "`script.prune_marks`", "`voice.caption_words`",
+                       "`--max-chars`"):
+            self.assertIn(needle, para)
+        for engine in voice.MARK_SUPPORT:
+            self.assertIn(engine, para)
+        self.assertIn("voice-draft.json", row("| `yt voice`"))
+        self.assertIn("pre-marks screenplay", para)
+
     def test_keyframe_approve_refuses_a_mixed_record(self):
         self.assertIn("refuses a record whose digests", FLAT)
 

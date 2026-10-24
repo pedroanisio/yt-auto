@@ -117,6 +117,12 @@ class ProductionDoc(unittest.TestCase):
         self.assertIn("retention", text)
         self.assertIn("screenplay", text)
 
+    def test_the_voice_json_row_names_the_delivery_fields(self):
+        row = next(l for l in DOC.read_text().splitlines() if l.startswith("| `voice.json`"))
+        for key in ("`spoken`", "`spoken_chars`", "`delivery`", "`draft:", "`voice-draft.json`",
+                    "`unmatched`", "`recorded_only`"):
+            self.assertIn(key, row, key)
+
     def test_captions_are_a_sidecar_unless_burned(self):
         text = _section("### The frame, in bands")
         self.assertIn("sidecar", text)

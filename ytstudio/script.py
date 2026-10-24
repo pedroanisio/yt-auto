@@ -221,6 +221,29 @@ PLAN_FIELDS_SCHEMA = {
 }
 
 
+#: The shot's delivery marks (AUTO-139), as the writer and `revise-rules`
+#: answer them. `say` is the human pronouncer, stored as written; the voice
+#: stage lowercases it for the engine.
+MARK_SCHEMA = {
+    "emphasis": {"type": "array", "items": {"type": "string"}, "description": (
+        "the one word to stress in each sentence of the narration, verbatim, in "
+        "sentence order")},
+    "pauses": {"type": "array", "items": {"type": "string"}, "description": (
+        "a word of the line that a beat lands just before (direction 27: before "
+        "the key term or number), verbatim")},
+    "pronounce": {"type": "array", "description": (
+        "a pronouncer for every name or term whose pronunciation is not obvious"),
+        "items": {"type": "object",
+                  "properties": {
+                      "term": {"type": "string", "description": "verbatim from the line"},
+                      "say": {"type": "string", "description": (
+                          "one hyphenated token with the stressed syllable in "
+                          "capitals, e.g. SHROH-ding-er")}},
+                  "required": ["term", "say"]}},
+}
+MARK_FIELDS = tuple(MARK_SCHEMA)
+
+
 def section_schema(sourced: bool) -> dict:
     """Shots for one section. `sourced` makes the citation mandatory."""
     props = {
@@ -237,6 +260,10 @@ def section_schema(sourced: bool) -> dict:
                      "description": "what the shot does in the story. " + _ENUM_DRIFT},
         "shows": {"type": "string", "description": (
             "one clause: what the picture demonstrates of this line's claim")},
+        # Delivery marks (direction 27, 28; AUTO-139): optional, so an older
+        # screenplay still loads and a writer that gives none is not asked
+        # again. The voice stage renders them for the engine that takes them.
+        **MARK_SCHEMA,
     }
     required = ["visual", "narration", "seconds", "asset", "style", "function", "shows"]
 
@@ -326,6 +353,12 @@ RULE_REVISE_SCHEMA = {
                                            "screen (rule:legibility, "
                                            "rule:unspoken-number); omit to leave them "
                                            "as they are")},
+                    # Read only for a shot rule:marks flagged; an empty list
+                    # is the field left alone (AUTO-139).
+                    **{key: dict(value, description=value["description"] + (
+                        "; the shot's whole list after the fix, read only for "
+                        "rule:marks; omit to leave it as it is"))
+                       for key, value in MARK_SCHEMA.items()},
                 },
                 "required": ["n", "action", "narration", "why"],
             },
@@ -498,11 +531,18 @@ class Shot:
     # mark follows it through every revision, redraft and renumbering.
     opens: list[str] = field(default_factory=list)
     closes: list[str] = field(default_factory=list)
+    # Delivery marks (direction 27, 28; AUTO-139): the word to stress in
+    # each sentence, the words a pause lands before, and {term, say}
+    # pronouncers. Empty in a screenplay written before them.
+    emphasis: list[str] = field(default_factory=list)
+    pauses: list[str] = field(default_factory=list)
+    pronounce: list[dict] = field(default_factory=list)
 
     @classmethod
     def from_raw(cls, raw: dict) -> Shot:
         known = {f.name for f in fields(cls)}
         clean = {k: v for k, v in raw.items() if k in known and v is not None}
+        clean |= clean_marks(clean)
         for key in ("visual", "narration", "on_screen", "asset", "style",
                     "source", "note", "function", "shows"):
             if key in clean:
@@ -564,6 +604,142 @@ class Section:
     @property
     def actual_seconds(self) -> int:
         return sum(shot.seconds for shot in self.shots)
+
+
+# -- delivery marks (direction 27, 28; AUTO-139) ---------------------------- #
+
+#: What is stripped from either end of a token before a mark is matched to
+#: it: punctuation and quotes, never a hyphen inside a word.
+_MARK_PUNCT = ".,;:!?\"'()[]{}“”‘’…—–"
+
+
+def mark_key(word: str) -> str:
+    """A word as a mark is matched to the line: its punctuation stripped,
+    case folded and a possessive 's dropped, so "Schrödinger's," in the line
+    is the "Schrödinger" a pronouncer names."""
+    core = str(word or "").strip(_MARK_PUNCT).casefold()
+    for tail in ("'s", "’s"):
+        if core.endswith(tail) and len(core) > len(tail):
+            core = core[:-len(tail)]
+    return core
+
+
+def mark_tokens(text: str) -> list[str]:
+    """The line's words as marks are matched against them, in order."""
+    return [mark_key(t) for t in str(text or "").split()]
+
+
+def mark_at(term: str, tokens: list[str], start: int = 0) -> int:
+    """Where `term` (one word, or several in a row) first occurs in `tokens`
+    at or after `start`; -1 when the line does not say it."""
+    want = mark_tokens(term)
+    if not want or not all(want):
+        return -1
+    for i in range(max(0, start), len(tokens) - len(want) + 1):
+        if tokens[i:i + len(want)] == want:
+            return i
+    return -1
+
+
+def clean_marks(raw: dict) -> dict:
+    """The mark fields of a raw shot, as Shot keeps them: words stripped and
+    blanks dropped; a pronouncer kept only with a term and a `say` of at most
+    one token (an empty `say` stays, for rule:marks to name). Only the fields
+    the raw shot has are returned, so an older shot gains nothing."""
+    out: dict = {}
+    for key in ("emphasis", "pauses"):
+        if key in raw and raw[key] is not None:
+            given = raw[key] if isinstance(raw[key], (list, tuple)) else [raw[key]]
+            out[key] = [" ".join(str(w).split()) for w in given
+                        if w is not None and str(w).strip()]
+    if "pronounce" in raw and raw["pronounce"] is not None:
+        rows = raw["pronounce"] if isinstance(raw["pronounce"], (list, tuple)) else []
+        out["pronounce"] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            term = " ".join(str(row.get("term") or "").split())
+            say = str(row.get("say") or "").strip()
+            if term and len(say.split()) <= 1:
+                out["pronounce"].append({"term": term, "say": say})
+    return out
+
+
+def shot_marks(shot: Shot) -> dict:
+    """A shot's marks as one dict, the shape the voice stage renders."""
+    return {"emphasis": list(shot.emphasis or []), "pauses": list(shot.pauses or []),
+            "pronounce": [dict(r) for r in shot.pronounce or []]}
+
+
+def has_marks(sections: list[Section]) -> bool:
+    """Does any shot carry a delivery mark? A screenplay that has none was
+    written before them, or by a writer that gave none: rule:pronouncer is
+    then not evidenced rather than run."""
+    return any(shot.emphasis or shot.pauses or shot.pronounce
+               for section in sections for shot in section.shots)
+
+
+def prune_marks(shot: Shot) -> list[dict]:
+    """Drop every mark whose word the line no longer says, and return what
+    was dropped. Polish and revise call it after a rewrite, so a mark never
+    points at a word that is gone (direction 28: it must be a word in the
+    line)."""
+    tokens = mark_tokens(spoken(shot.narration))
+    dropped: list[dict] = []
+    for key, kind in (("emphasis", "emphasis"), ("pauses", "pause")):
+        kept = []
+        for word in getattr(shot, key) or []:
+            if mark_at(word, tokens) >= 0:
+                kept.append(word)
+            else:
+                dropped.append({"kind": kind, "word": word})
+        setattr(shot, key, kept)
+    rows = []
+    for row in shot.pronounce or []:
+        if mark_at(row.get("term", ""), tokens) >= 0:
+            rows.append(row)
+        else:
+            dropped.append({"kind": "pronounce", **row})
+    shot.pronounce = rows
+    return dropped
+
+
+def mark_problems(shot: Shot) -> list[str]:
+    """What rule:marks finds on one shot: a mark on a word the line does not
+    say, two emphasis words in one sentence, a pronouncer with nothing to
+    say. Emphasis words are read in sentence order, each in the first
+    sentence at or after the last one's that says it."""
+    text = spoken(shot.narration)
+    tokens = mark_tokens(text)
+    out = []
+    for word in shot.emphasis or []:
+        if mark_at(word, tokens) < 0:
+            out.append(f"emphasis \"{word}\" is not a word of the line")
+    for word in shot.pauses or []:
+        if mark_at(word, tokens) < 0:
+            out.append(f"the pause before \"{word}\" is on a word the line does not say")
+    for row in shot.pronounce or []:
+        if mark_at(row.get("term", ""), tokens) < 0:
+            out.append(f"the pronouncer for \"{row.get('term')}\" names a word the line "
+                       "does not say")
+        if not str(row.get("say") or "").strip():
+            out.append(f"the pronouncer for \"{row.get('term')}\" has an empty say")
+    said = [mark_tokens(s) for s in sentences(text)]
+    per: dict[int, list[str]] = {}
+    cursor = 0
+    for word in shot.emphasis or []:
+        at = next((i for i in range(cursor, len(said)) if mark_at(word, said[i]) >= 0), -1)
+        if at < 0:
+            at = next((i for i in range(len(said)) if mark_at(word, said[i]) >= 0), -1)
+        if at < 0:
+            continue
+        per.setdefault(at, []).append(word)
+        cursor = at + 1
+    for at, words in sorted(per.items()):
+        if len(words) > 1:
+            out.append(f"two emphasis words in sentence {at + 1} "
+                       f"({', '.join(words)}); one a sentence")
+    return out
 
 
 #: How a silent shot is listed to the review stages. It is a mark in the
@@ -974,7 +1150,8 @@ def sections_of(data: dict) -> list[Section]:
     for raw in (data or {}).get("sections", []):
         sections.append(Section.from_spec(raw, [
             Shot(**{**{k: v for k, v in shot.items() if k in known},
-                    "narration": spoken(shot.get("narration", ""))})
+                    "narration": spoken(shot.get("narration", "")),
+                    **clean_marks(shot)})
             for shot in raw.get("shots", [])]))
     return sections
 
@@ -1933,6 +2110,9 @@ class Screenwriter:
         #: What the stage recorded instead of deciding: a value the model gave
         #: outside a schema list, kept as written and read as no role.
         self.findings: list[str] = []
+        #: The lines the polish rewrote, each with the marks it dropped
+        #: (AUTO-139); `polish` itself still returns the count.
+        self.polish_applied: list[dict] = []
         #: Drafting at its own effort, on the same books as the fact-check.
         self._drafter = harness.Harness(
             root or ".", "script", model=model, role=SYSTEM, effort=draft_effort,
@@ -2397,7 +2577,16 @@ class Screenwriter:
             "the viewer; payoff: it pays the film's promise)\n"
             "- shows: one clause saying what the picture demonstrates of this "
             "line's claim: the picture proves the words, it does not decorate "
-            "them")
+            "them\n"
+            "- emphasis: the one word to stress in each sentence of the "
+            "narration, verbatim, in sentence order (direction 28)\n"
+            "- pauses: the words of the line a beat lands just before -- "
+            "before the sentence's key term or number (direction 27) -- "
+            "verbatim, or an empty list\n"
+            "- pronounce: for every name or term whose pronunciation is not "
+            "obvious, its term verbatim from the line and how to say it as "
+            "one hyphenated token with the stressed syllable in capitals, "
+            "e.g. SHROH-ding-er (direction 28)")
         if sourced:
             parts.append("- source: the source backing this shot's claim, as "
                          "given in the research. Put the word UNSOURCED where "
@@ -2440,6 +2629,10 @@ class Screenwriter:
             if shot is None or not line or line == shot.narration:
                 continue
             shot.narration, shot.revised = line, str(edit.get("why", "")).strip()
+            # A mark on a word the rewrite took out goes, and is named
+            # (AUTO-139): it never points at a word that is not said.
+            self.polish_applied.append({"n": shot.n, "label": shot.label,
+                                        "marks_dropped": prune_marks(shot)})
             applied += 1
         self._say(f"[polish] rewrote {applied} line(s)")
         return applied
@@ -2573,6 +2766,16 @@ class Screenwriter:
                      "not a law: when the line is right as written, answer keep "
                      "and say why in one clause. Answer for every flagged number "
                      "and no other."]
+            marked = [by_n[n] for n, fs in sorted(todo.items())
+                      if any(f.get("rule") == "rule:marks" for f in fs)]
+            if marked:
+                # rule:marks (AUTO-139): the writer sees the marks it is
+                # asked to fix and answers each list whole.
+                parts.append(harness.brief(
+                    "The delivery marks of the lines rule:marks flagged; answer "
+                    "emphasis, pauses or pronounce whole where the fix changes "
+                    "them, each a word the line says",
+                    [{"n": s.n, "label": s.label, **shot_marks(s)} for s in marked]))
         elif back:
             # Direction 29: after the read, rewrite the line that stumbles,
             # runs out of breath or buries its point. Judging 15: that pass
@@ -2651,9 +2854,23 @@ class Screenwriter:
                 result["kept"].append({"n": n, "label": shot.label, "why": why})
                 continue
             row = {"n": n, "label": shot.label, "why": why}
+            marks_before = shot_marks(shot)
             if line and line != shot.narration:
                 row |= {"before": shot.narration, "after": line}
                 shot.narration, shot.revised = line, why
+                dropped = prune_marks(shot)
+                if dropped:
+                    row["marks_dropped"] = dropped
+            # The marks are rewritten only for a shot rule:marks flagged, and
+            # an empty or absent list is the field left alone (AUTO-139).
+            if rules and any(f.get("rule") == "rule:marks" for f in todo[n]):
+                given_marks = clean_marks({k: fix[k] for k in MARK_FIELDS
+                                           if isinstance(fix.get(k), list)})
+                for key, value in given_marks.items():
+                    if value:
+                        setattr(shot, key, value)
+                if shot_marks(shot) != marks_before:
+                    row |= {"marks_before": marks_before, "marks_after": shot_marks(shot)}
             # The screen is changed only where a rule measured it, or where
             # the line was sent back and the answer names new supers: an
             # optional `[]` beside a narration fix is the field left empty,
@@ -3675,7 +3892,7 @@ class Screenwriter:
                                self.wpm, self.lang) if written else [])
         kept = ruled["kept"]
         self.findings += self.ledger_lines(plan, sections, cold, fix=fix)
-        self.findings += rule_lines(flags, kept, self.lang, revised=fix)
+        self.findings += rule_lines(flags, kept, self.lang, revised=fix, sections=sections)
 
         if self.pool_reviewer is not None:
             # Which pool reviewer read it, served by whom, priced from where.
@@ -3699,6 +3916,9 @@ class Screenwriter:
             "wpm": self.wpm,
             "sections": [asdict(s) for s in sections],
             "polished": polished,
+            # The lines the polish rewrote and the marks each lost (AUTO-139).
+            **({"polish": {"applied": list(self.polish_applied)}}
+               if self.polish_applied else {}),
             "failed_sections": failures,
             "lang": self.lang,
             "house": self.house_digest,
@@ -3949,6 +4169,18 @@ BOUNDS: dict[str, dict] = {
     "last_line": {
         "value": 20, "unit": "words in the film's last narrated sentence",
         "corpus": ("structure 33",), "strength": "practitioner"},
+    # The delivery marks' (AUTO-139): what the voice stage renders must
+    # point at words the line says.
+    "marks": {
+        "value": "every emphasis, pause and pronounce mark is a word of its line, "
+                 "at most one emphasis a sentence, and every pronouncer says something",
+        "corpus": ("direction 28",), "strength": "practitioner"},
+    "pronouncer": {
+        "value": "a pronouncer for every capitalised name said mid-sentence",
+        "corpus": ("direction 28",), "strength": "practitioner",
+        "note": "a warning only: which names are not obvious to say is a judgement "
+                "the lint cannot make; run only where the screenplay carries marks, "
+                "and not where every noun is capitalised"},
     # The question ledger's (AUTO-96): counted from the plan, the writers'
     # marks and the cold reader's answers, never from a line's words.
     "open_loop": {
@@ -4015,6 +4247,8 @@ RULES: tuple[Rule, ...] = (
     Rule("rule:end-signal", "house", _LEXICAL, "end_signal"),
     Rule("rule:recap", "house", _LEXICAL, "recap"),
     Rule("rule:last-line", "minor", (), "last_line"),
+    Rule("rule:marks", "important", (), "marks"),
+    Rule("rule:pronouncer", "house", _LEXICAL, "pronouncer"),
 )
 
 #: The question ledger's rules (AUTO-96, `question_findings`), apart from
@@ -4104,11 +4338,17 @@ def _applies(rule: Rule, lang: str) -> bool:
     return not rule.langs or rule_lang(lang) in rule.langs
 
 
-def not_evidenced(lang: str) -> list[str]:
+def not_evidenced(lang: str, sections: list[Section] | None = None) -> list[str]:
     """One line for each rule the film's language takes out of reach: the
-    rule is not run, and the record says so rather than staying silent."""
+    rule is not run, and the record says so rather than staying silent.
+    Given the `sections`, a screenplay with no delivery mark on any shot
+    also records rule:pronouncer as not evidenced (AUTO-139)."""
     shown = str(lang or "").strip() or "en"
-    return [f"not_evidenced: {r.id} ({shown})" for r in RULES if not _applies(r, lang)]
+    out = [f"not_evidenced: {r.id} ({shown})" for r in RULES if not _applies(r, lang)]
+    if sections is not None and _applies(_RULE["rule:pronouncer"], lang) \
+            and not has_marks(sections):
+        out.append("not_evidenced: rule:pronouncer (pre-marks script)")
+    return out
 
 
 def sentences(text: str) -> list[str]:
@@ -4353,6 +4593,41 @@ def rule_findings(plan: dict, sections: list[Section], wpm: int = DEFAULT_WPM,
                                  "numerals and new names per 100 words",
                                  "thin the facts, or give them more time"))
 
+    # -- delivery marks (AUTO-139): marks, pronouncer -----------------------
+    for _, shot, _ in timed:
+        problems = mark_problems(shot)
+        if problems:
+            out.append(_flag("rule:marks", shot, "; ".join(problems),
+                             "point each mark at a word the line says, one emphasis a "
+                             "sentence, and give every pronouncer its say"))
+    # Which names are hard to say is a judgement: this only lists the
+    # capitalised words said mid-sentence that the shot gives no pronouncer,
+    # once per section, and only in a screenplay that carries marks at all.
+    if on["rule:pronouncer"] and has_marks(sections):
+        for section in sections:
+            unmarked: dict[str, str] = {}      # mark_key -> the word as shown
+            first = None
+            for shot in section.shots:
+                named = {mark_key(r.get("term", "")) for r in shot.pronounce or []}
+                for sentence in sentences(spoken(shot.narration)):
+                    for token in sentence.split()[1:]:
+                        # "Bohr's," "[Bohr]" and "Bohr—" are one name, shown bare
+                        key = mark_key(token)
+                        word = token.strip(_MARK_PUNCT)
+                        for tail in ("'s", "’s"):
+                            if word.endswith(tail) and len(word) > len(tail):
+                                word = word[:-len(tail)]
+                        if word and word != "I" and _CAPITALISED.match(word) \
+                                and key not in named and key not in unmarked:
+                            unmarked[key] = word
+                            first = first or shot
+            if unmarked:
+                out.append(_flag("rule:pronouncer", first,
+                                 f"section \"{section.heading}\" says "
+                                 f"{', '.join(unmarked.values())} with no pronouncer",
+                                 "give each name that is not obvious to say a pronouncer "
+                                 "(term, say: SHROH-ding-er); an obvious one needs none"))
+
     # -- the film as a whole: passive ---------------------------------------
     if on["rule:passive"]:
         said = [(shot, s) for _, shot, _ in voiced for s in sentences(spoken(shot.narration))]
@@ -4420,13 +4695,14 @@ def rule_findings(plan: dict, sections: list[Section], wpm: int = DEFAULT_WPM,
 
 
 def rule_lines(flags: list[dict], kept: dict | None = None, lang: str = "",
-               *, revised: bool = True) -> list[str]:
+               *, revised: bool = True, sections: list[Section] | None = None) -> list[str]:
     """script.json's `findings` for the rules, in sdkkit's prefixes: an
     error-tier flag still standing is `error: rule:x`, the important and
     minor ones `warning: rule:x`, a house one `warning: house:rule:x`; a
     flag the revision kept carries its reason. Then a `not_evidenced:` line
-    for each rule the language takes out."""
-    return flag_lines(flags, kept, revised=revised) + not_evidenced(lang)
+    for each rule the language takes out, and, given the `sections`, for
+    rule:pronouncer on a screenplay with no marks."""
+    return flag_lines(flags, kept, revised=revised) + not_evidenced(lang, sections)
 
 
 def flag_lines(flags: list[dict], kept: dict | None = None, *,
@@ -5264,6 +5540,12 @@ def run_revise(args, idea: Idea, project) -> int:
             raw[s.label]["revised"] = s.revised
         if s.n in screen:
             raw[s.label]["on_screen_text"] = list(s.on_screen_text or [])
+        # A mark the rewrite left pointing at nothing went with it
+        # (AUTO-139); a shot that never had marks gains no keys.
+        if s.n in changed:
+            for key, value in shot_marks(s).items():
+                if key in raw[s.label] or value:
+                    raw[s.label][key] = value
 
     # The rules on the changed shots only: their old flags go, what the
     # new text breaks comes in; every other flag stands as it was recorded.
