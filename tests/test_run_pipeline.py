@@ -386,11 +386,68 @@ class Tail(RunCase):
             self.assertEqual(self.run_yt(), 0)
             self.assertEqual(self.tail(), ["qa", "doctor"], card)
 
-    def test_an_improve_refusal_is_returned_as_is(self):
+    def test_a_qa_older_than_the_gate_or_the_video_runs_again(self):
+        # A deliverable gate the tail does not rerun (say a `yt gate` by hand
+        # after the last QA), or a video written after it: QA scored before
+        # them is not reused, whatever its digest says.
+        for newer in ("gate.json", "video.mp4"):
+            self.rendered()
+            (self.root / "gate.json").write_text(json.dumps(self.gate_json()))
+            (self.root / "qa.json").write_text(json.dumps(self.qa_json(qa.READY)))
+            scored = (self.root / "qa.json").stat().st_mtime
+            for name in ("scene.xml", "video.mp4", "gate.json"):
+                os.utime(self.root / name, (scored - 10, scored - 10))
+            os.utime(self.root / newer, (scored + 5, scored + 5))
+            self.order.clear()
+            self.assertEqual(self.run_yt(), 0)
+            self.assertEqual(self.tail(), ["qa", "doctor"], newer)
+
+    def test_an_improve_refusal_is_returned_with_the_verdict_last(self):
         self.qa_verdict = qa.NOT_READY
+        self.delivered = False
         self.codes["improve"] = 2
         self.assertEqual(self.run_yt(), 2)
-        self.assertNotIn("doctor:start", self.order)
+        self.assertEqual(self.tail(), ["gate", "qa", "improve", "doctor"])
+        self.assertIn("improve refused", self.err)
+        self.assertTrue(self.err.rstrip().endswith("yt improve --project film"), self.err)
+
+
+class TailVerdict(RunCase):
+    """The tail against doctor's real delivery_evidence (no fake doctor):
+    what the fake stages write is what doctor joins."""
+
+    tail = Tail.tail
+
+    def setUp(self):
+        super().setUp()
+        patch = mock.patch.object(doctor, "check_project", self.real_check)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.records["build"] = {"scene": {"duration": 30.0}, "publishable": True,
+                                 "findings": [], "layers": {}, "timeline": {"shots": 9},
+                                 "audio_tracks": 4}
+        self.render_at("final")
+
+    real = staticmethod(doctor.check_project)
+
+    def real_check(self, project, work=None):
+        self.order.append("doctor:start")
+        return TailVerdict.real(project, work)
+
+    def render_at(self, quality: str):
+        self.records["render"] = {"ok": True, "exit_code": 0, "result": {"outputs": [{
+            "quality": quality, "range": [0.0, 30.0], "frames": 900, "warnings": [],
+            "findings": [], "unsupported": [], "evaluation_warnings": []}]}}
+
+    def test_a_final_render_gated_and_ready_on_the_same_bytes_exits_0(self):
+        self.assertEqual(self.run_yt(), 0, self.err)
+        self.assertEqual(self.tail(), ["gate", "qa", "doctor"])
+        self.assertIn("doctor: deliverable", self.err)
+
+    def test_a_render_at_another_tier_is_not_delivered(self):
+        self.render_at("draft")
+        self.assertEqual(self.run_yt(), cli.UNDELIVERED, self.err)
+        self.assertIn("rendered at draft quality", self.err)
 
 
 class TailBudget(RunCase):

@@ -520,8 +520,8 @@ def deliver_tail(project: workspace.Project, run_stage, *, refused, paid, say,
     `refused(stage)` asks the cap, `paid()` is what the run has spent.
 
     0 only when delivery is ready; UNDELIVERED when it is not; gate's code
-    when it did not run on this render; improve's refusal (2) as is;
-    retime.UNSETTLED when the budget stops a stage."""
+    when it did not run on this render; improve's refusal (2) as is, after
+    the verdict; retime.UNSETTLED when the budget stops a stage."""
     gate_file, qa_file = project.path("gate"), project.path("qa")
     held = doctor.gate_problem(read_json(gate_file, warn=False) or None, gate_file=gate_file,
                                video=project.path("video"), scene=project.path("scene"))
@@ -566,14 +566,22 @@ def deliver_tail(project: workspace.Project, run_stage, *, refused, paid, say,
         say(f"\n== improve: QA is {verdict}")
         code = run_stage("improve", argv)
         if code == 2:
+            # A refusal spends nothing; doctor's verdict is still the last word.
             say("\nimprove refused (exit 2); stopping here")
+            delivery_verdict(project, say)
             return code
+    return 0 if delivery_verdict(project, say) else UNDELIVERED
+
+
+def delivery_verdict(project: workspace.Project, say) -> bool:
+    """Print doctor's delivery section, the run's last word, and say whether
+    the film is deliverable."""
     report = doctor.check_project(project)
     delivery = report.metrics.get("delivery") or {"ready": False,
                                                   "missing": ["no render to judge"]}
     if delivery.get("ready"):
         say(f"\n== delivery: {qa.READY} (doctor: deliverable)")
-        return 0
+        return True
     say("\n== delivery: not deliverable")
     rows = [f for f in report.findings if f.area == "delivery" and f.level == "fail"]
     for f in rows:
@@ -581,7 +589,7 @@ def deliver_tail(project: workspace.Project, run_stage, *, refused, paid, say,
     if not rows:
         for missing in delivery.get("missing") or []:
             say(f"  - {missing}")
-    return UNDELIVERED
+    return False
 
 
 def _run_pipeline(args) -> int:
