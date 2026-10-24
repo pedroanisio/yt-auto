@@ -143,7 +143,22 @@ class FallbackPalette(ProjectCase):
                 if f.area == "keyframe"]
         self.assertEqual(len(rows), 1, rows)
         self.assertIn("fallback palette", rows[0].message)
-        self.assertEqual(rows[0].fix, f"yt styles --project {self.root} --rich")
+        # palette_source is frozen in keyframe.json and `yt keyframe` keeps a
+        # pending look, so the fix names the fresh look as well
+        self.assertEqual(rows[0].fix, f"yt styles --project {self.root} --rich, then "
+                                      f"yt keyframe --project {self.root} --fresh")
+
+    def test_doctor_vfx_warning_names_the_styles_fix_not_the_approval(self):
+        (self.root / "styles.json").unlink()
+        self.run_stage()
+        write_json(self.root / "vfx.json", {"authored": [{"n": 1, "file": "x"}]})
+        rows = [f for f in doctor.check_project(workspace.Project(self.root)).findings
+                if f.area == "vfx" and "without an approved keyframe" in f.message]
+        self.assertEqual(len(rows), 1, rows)
+        self.assertNotIn("--approve", rows[0].fix)
+        self.assertTrue(rows[0].fix.startswith(
+            f"yt styles --project {self.root} --rich, then "
+            f"yt keyframe --project {self.root} --fresh, then "), rows[0].fix)
 
     def test_a_partial_palette_still_approves(self):
         # STYLES names five hexes; the roles it leaves open are filled from

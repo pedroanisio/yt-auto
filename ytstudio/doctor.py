@@ -1332,16 +1332,19 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
     # approval is information, a rejected or changed one needs a look, and
     # an animation authored without an approved look inherited nothing.
     look = keyframe.approval_state(project.root)
+    palette = (keyframe.palette_refusal(keyframe.load_record(project.root))
+               if look["state"] == "pending" else "")
+    # palette_source is frozen in keyframe.json and `yt keyframe` keeps a
+    # pending look, so the palette fix is followed by a fresh look (AUTO-155)
+    repaint = _cmd("styles", project, "--rich") + ", then " + _cmd("keyframe", project, "--fresh")
     if look["state"] != "none":
         score = look.get("score")
         shown = f"{score:g}/10" if isinstance(score, (int, float)) else "unscored"
         report.metrics["keyframe"] = {"state": look["state"], "score": score, "at": look["at"]}
-        palette = (keyframe.palette_refusal(keyframe.load_record(project.root))
-                   if look["state"] == "pending" else "")
         if palette:
             # approval would be refused: the fix is the palette, not --approve
             report.add("note", "keyframe", f"the keyframe ({shown}) cannot be approved: "
-                       f"{palette}", _cmd("styles", project, "--rich"))
+                       f"{palette}", repaint)
         elif look["state"] == "pending":
             report.add("note", "keyframe", f"the keyframe ({shown}) awaits approval: "
                        f"look at {look['frame'] or 'keyframe/keyframe.png'}, then "
@@ -1365,7 +1368,8 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
         # --relook; --fresh would replan and author its section again too.
         section_look = keyframe.load_record(project.root).get("source") == "section"
         if look["state"] != "approved":
-            first = (_cmd("keyframe", project, "--approve")
+            first = (repaint if palette
+                     else _cmd("keyframe", project, "--approve")
                      if look["state"] == "pending" and section_look else _cmd("keyframe", project))
             report.add("warn", "vfx", "the animation was authored without an approved "
                        "keyframe; no look was locked for it to inherit",
