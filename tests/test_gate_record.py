@@ -64,7 +64,7 @@ class GateRecord(unittest.TestCase):
         harness.ENGINE = self._engine
         self._tmp.cleanup()
 
-    def run_gate(self, *, host: str | None) -> dict:
+    def run_gate(self, *, host: str | None, during=lambda: None) -> dict:
         args = argparse.Namespace(
             title="A film", project=str(self.root), scene=None, video=None, render=None,
             captions=[], voice=None, build=None, voice_end=15.0, tools_dir=None,
@@ -76,10 +76,15 @@ class GateRecord(unittest.TestCase):
 
         def remote(plan, report, root, **kw):
             ran.append(plan.host)
+            during()
+            return passed
+
+        def local(*a, **k):
+            during()
             return passed
 
         with patch.object(gate, "inputs", lambda project, a, host="": (self.found, [])), \
-                patch.object(gate.subprocess, "run", lambda *a, **k: passed), \
+                patch.object(gate.subprocess, "run", local), \
                 patch.object(gate, "run_remote", remote), \
                 patch.object(gate, "GEOMETRY", lambda *a: {"status": "skipped", "why": "stub"}), \
                 patch.object(gate.house, "for_args", lambda *a, **k: ("", "")), \
@@ -101,6 +106,23 @@ class GateRecord(unittest.TestCase):
         data = self.run_gate(host="root@h")
         self.assertEqual(data["video_sha256"], self.sha("video.mp4"))
         self.assertEqual(data["scene_sha256"], self.sha("scene.xml"))
+
+    def test_a_file_replaced_while_the_gate_runs_is_not_the_one_recorded(self):
+        # the gate and its triage take minutes; a `yt render` that lands in
+        # them must not be recorded as judged
+        judged_video, judged_scene = self.sha("video.mp4"), self.sha("scene.xml")
+
+        def replace():
+            (self.root / "video.mp4").write_bytes(b"a newer cut")
+            (self.root / "scene.xml").write_bytes(b"<scene judged='no'/>")
+
+        for host in (None, "root@h"):
+            with self.subTest(host=host):
+                (self.root / "video.mp4").write_bytes(b"\x00\x01video bytes")
+                (self.root / "scene.xml").write_bytes(b"<scene judged='yes'/>")
+                data = self.run_gate(host=host, during=replace)
+                self.assertEqual(data["video_sha256"], judged_video)
+                self.assertEqual(data["scene_sha256"], judged_scene)
 
     def test_the_hash_is_doctors_byte_hash(self):
         self.assertEqual(doctor.scene_digest(self.root / "video.mp4"), self.sha("video.mp4"))
