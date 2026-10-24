@@ -283,9 +283,8 @@ GRID_CELLS_SCHEMA = {"type": "array", "items": {"type": "string",
 #: What a reviewer is told about the grid copies: a ruler for saying where,
 #: never the picture judged, and no rule about where anything belongs.
 GRID_NOTE = (
-    "Each frame has a grid copy beside it (`grid`): the same picture with a labelled "
-    "grid drawn over it, columns A-H left to right and rows 1-6 top to bottom, so a "
-    "cell reads `C4`. Judge the clean frame, never the copy; open the copy only to say "
+    "A grid copy is the same picture with a labelled grid drawn over it, columns A-H "
+    "left to right and rows 1-6 top to bottom, so a cell reads `C4`. Judge the clean frame, never the copy; open the copy only to say "
     "where a finding is, and list the cells it covers in the finding's `cells`. A "
     "finding about the whole frame (the grade, continuity) leaves `cells` empty.")
 
@@ -295,13 +294,15 @@ GRID_DIR = "grid"
 
 def grid_copy(png: Path) -> Path | None:
     """Write `png`'s grid copy to grid/<name> beside it and return its path;
-    None when the frame cannot be read. Made for a review and made again for
-    the next one, never kept with a round: a viewing aid, not evidence. The
-    copy lands by one rename, as every writer in a shared tree does, so an
+    None when the frame cannot be read, or when this python has no Pillow
+    (`python3 -m ytstudio` runs without it, and the review ran without it
+    before the copies came). Made for a review and made again for the next
+    one, never kept with a round: a viewing aid, not evidence. The copy
+    lands by one rename, as every writer in a shared tree does, so an
     inspection's digest never reads half of it."""
     try:
         data = framecheck.grid_overlay(Path(png).read_bytes())
-    except (OSError, ValueError, SyntaxError):
+    except (ImportError, OSError, ValueError, SyntaxError):
         return None
     out = Path(png).parent / GRID_DIR / Path(png).name
     out.parent.mkdir(exist_ok=True)
@@ -311,12 +312,22 @@ def grid_copy(png: Path) -> Path | None:
     return out
 
 
+def finding_cells(finding: dict) -> list[str]:
+    """The grid cells a finding names, in its order. `cells` that is not a
+    list names none: inspect's enum check reads only a list's items, so a
+    string such as "C3,C4" gets this far and must not be read letter by letter."""
+    cells = finding.get("cells")
+    if not isinstance(cells, list):
+        return []
+    return [c for c in cells if c in framecheck.GRID_CELLS]
+
+
 def located(finding: dict, frame: tuple[int, int]) -> str:
     """The part of a listing line that says where a finding is: its cells,
     the one pixel rectangle that holds them and, when the review was
     located (`objects`), the object3D ids in them or why there are none.
     Empty for a finding that names no cell."""
-    cells = [c for c in finding.get("cells") or [] if c in framecheck.GRID_CELLS]
+    cells = finding_cells(finding)
     rect = framecheck.cells_rect(cells, frame)
     if rect is None:
         return ""
@@ -2635,11 +2646,17 @@ class Workspace:
         files[f"{self.rel}/{name}"] = text.encode("utf-8")
         files[proof_path] = proof_document(name, text, symbol, frame, fact["duration"],
                                            fact["background"]).encode("utf-8")
-        run = runner if runner is not None else EVAL_RUNNER(proof_path, files=files)
-        if run is None:
-            return None, ("no engine reachable to evaluate the frame "
-                          "(RS_RENDER_HOSTS, or RS_RENDER_BIN)")
-        got = run([float(t)]) or []
+        # The review this locates is already paid for: a host that refuses
+        # (YT_NO_REMOTE), an rsync that fails or an ssh that cannot start
+        # loses the objects, never the review.
+        try:
+            run = runner if runner is not None else EVAL_RUNNER(proof_path, files=files)
+            if run is None:
+                return None, ("no engine reachable to evaluate the frame "
+                              "(RS_RENDER_HOSTS, or RS_RENDER_BIN)")
+            got = run([float(t)]) or []
+        except (subprocess.SubprocessError, OSError, render.RemoteRefused) as exc:
+            return None, f"the engine's eval at {float(t):g}s failed: {str(exc)[:160]}"
         evaluated = got[0] if got else None
         if not isinstance(evaluated, dict) or evaluated.get("ok") is False:
             return None, f"the engine's eval at {float(t):g}s failed"
@@ -3029,12 +3046,13 @@ class VfxPlanner:
         for stale in grid_dir.glob(f"{stem}__*.png") if grid_dir.is_dir() else []:
             stale.unlink(missing_ok=True)
         by_world = {w["id"]: w for w in worlds}
-        evidence = []
+        evidence, copies = [], 0
         for png in pngs:
             sid, t = self._frame_place(png.name)
             shot = next((s for s in by_world.get(sid, {}).get("shots", [])
                          if s["at"] <= t < s["at"] + s["seconds"]), None)
             copy = grid_copy(png)
+            copies += bool(copy)
             evidence.append({"frame": f"frames/{png.name}",
                              **({"grid": f"frames/{GRID_DIR}/{copy.name}"} if copy else {}),
                              "symbol": sid, "at": t,
@@ -3050,7 +3068,10 @@ class VfxPlanner:
             "same size, colour and material; the same room and light; one camera on one "
             "path. Then give a provisional score 0-10 for the section as it would read in "
             "the finished film, by the publication bar.",
-            GRID_NOTE,
+            # Said only when a copy was made: no Pillow, or no frame it could
+            # read, and the reviewer is not sent to look for one.
+            *([f"A frame listed with a `grid` path has a grid copy beside it. {GRID_NOTE}"]
+              if copies else []),
             harness.brief("Frames to Read, and what each should show", evidence),
             harness.brief("The section's shots (label, offset, length, picture)",
                           [{"label": s["label"], "at": s["at"], "seconds": s["seconds"],
@@ -3150,20 +3171,20 @@ class VfxPlanner:
         for fr in review.get("frames") or []:
             if not isinstance(fr, dict):
                 continue
-            found = [f for f in fr.get("findings") or [] if isinstance(f, dict) and f.get("cells")]
+            found = [f for f in fr.get("findings") or [] if isinstance(f, dict) and finding_cells(f)]
             if not found:
                 continue
             sid, t = self._frame_place(fr.get("frame") or "")
             if not sid or not Path(str(fr.get("frame") or "")).name.startswith(f"{stem}__"):
                 mapping, why = None, "the finding's frame is not one of this section's proof frames"
             else:
-                cells = list(dict.fromkeys(c for f in found for c in f["cells"]))
+                cells = list(dict.fromkeys(c for f in found for c in finding_cells(f)))
                 mapping, why = self.ws.locate(name, sid, t, cells, frame)
             for f in found:
                 if mapping is None:
                     f["objects"], f["unmapped"] = None, why
                 else:
-                    f["objects"] = list(dict.fromkeys(o for c in f["cells"]
+                    f["objects"] = list(dict.fromkeys(o for c in finding_cells(f)
                                                       for o in mapping.get(c, [])))
 
     #: Findings about these are the ones the author keeps answering with

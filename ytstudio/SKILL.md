@@ -339,7 +339,10 @@ against `framecheck.GRID_CELLS` like `category`, so a bad name fails the
 review); a whole-frame finding names none. The next round's brief gives the
 cells, their pixel rectangle and, for vfx, the object3D ids in them from one
 eval of that frame on the host (`Workspace.cell_objects`; 2D text has no
-box), or why there are none; the finding keeps them as `objects`.
+box), or why there are none; the finding keeps them as `objects`. With no
+Pillow, or a frame it cannot read, no copy is made and the reviewer is not
+told of one; an eval that fails or a host that refuses (`YT_NO_REMOTE`)
+leaves the review standing, with `objects` null and the reason.
 
 **The research's assets.** `yt research` fills its shot list from every
 catalogue in `--asset-sources` (default all of `assets.SOURCES`): NASA
