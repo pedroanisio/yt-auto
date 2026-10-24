@@ -485,6 +485,47 @@ CONTINUITY_SCHEMA = {
     "required": ["one_film", "score", "breaks", "monotony", "summary"],
 }
 
+
+def owner_section_n(owner: str, authored: list) -> int | None:
+    """The number of the authored section a continuity row names, or None.
+    The review names a section by its heading (its frames are labelled with
+    `doc["section"]`), so the row joins to `authored[].section`: exactly
+    first, then with case folded and whitespace collapsed, since a model may
+    retype a heading. Two sections may share a heading; a name that fits
+    more than one section, or none, places nothing, and the caller names the
+    row as written instead of guessing a section to re-author."""
+    owner = str(owner or "")
+    rows = [r for r in authored or [] if isinstance(r, dict)
+            and isinstance(r.get("n"), int) and not isinstance(r.get("n"), bool)]
+    if not owner.strip():
+        return None
+    for key in (str, lambda s: " ".join(s.casefold().split())):
+        hits = {r["n"] for r in rows if key(str(r.get("section") or "")) == key(owner)}
+        if hits:
+            return hits.pop() if len(hits) == 1 else None
+    return None
+
+
+def judged_apart(continuity: dict | None) -> bool:
+    """Whether a continuity verdict records a reviewer of another family than
+    every author of the film it judged, by the rule every reviewing stage
+    applies before it pays (flags.own_reviewer). Only such a verdict may
+    block QA: one by an author's own family, or one that does not say who
+    gave it (every vfx.json written before `continuity.reviewer`), stays a
+    doctor warn. `authors` matters after `--sections`: the sections carried
+    from an earlier version may have another author than this run's
+    `--model`, and the reviewer may be of theirs. A carried section with no
+    recorded author (None) is not shown to be apart, so it never blocks."""
+    rec = (continuity or {}).get("reviewer") if isinstance(continuity, dict) else None
+    if not isinstance(rec, dict):
+        return False
+    model = str(rec.get("model") or "").strip()
+    authors = [rec.get("author"), *(rec.get("authors") or [])]
+    if not model or any(not isinstance(a, str) or not a.strip() for a in authors):
+        return False
+    return all(flags.own_reviewer(a.strip(), model) == "" for a in authors)
+
+
 #: Effect families, roughly cheapest to most expensive to refine by hand.
 EFFECT_TYPES = ("text-and-callout", "2d-diagram", "data-animation", "map-move",
                 "photo-composite", "stock-treatment", "2d-character",
@@ -3848,6 +3889,12 @@ class VfxPlanner:
                     "worlds": world_rows(worlds),
                     "revisions": revisions, "rounds": rounds, "best_round": best_round_no,
                     "score": chosen["score"] if chosen else None,
+                    # the bar the score was reviewed against: doctor warns
+                    # under it, and a carry keeps it with the score
+                    "bar": self.author_bar,
+                    # who wrote it: a carry keeps it, so continuity can tell
+                    # every author of the film from this run's --model
+                    "author": self.model,
                     "review": chosen["review"] if chosen else None,
                     "cost_usd": round(engine.usage.cost_usd + reviewer.usage.cost_usd, 4),
                     "budget": self.spend.row(n), "stopped": self.spend.stopped.get(n),
@@ -4389,6 +4436,7 @@ class VfxPlanner:
                 "worlds": world_rows(worlds),
                 "revisions": 0, "rounds": [], "best_round": None, "score": None,
                 "review": None, "cost_usd": round(self.spend.spent(n), 4),
+                "author": self.model,
                 "inputs_sha256": self._inputs_sha256(section, group),
                 **self._provenance(n, ["error"])}
 
@@ -4420,7 +4468,21 @@ class VfxPlanner:
         size or a grade that shifts at every boundary passes every section
         review, and so does a film that never leaves one set; this is the
         review that sees both. It runs on the reviewer's model (AUTO-143):
-        the author's model never grades its own film."""
+        the author's model never grades its own film. Every form of the
+        result, skipped and failed too, records who judged it (`reviewer`):
+        QA lets a blocking break stop the film only when that record shows a
+        reviewer of another family than the author (`judged_apart`)."""
+        # Every author of the film judged: a carried section keeps the model
+        # that wrote it, and one carried from before authors were kept is
+        # None, which judged_apart reads as not shown apart.
+        named = {str(d["author"]) for d in authored if d.get("author")}
+        authors = sorted(named) + ([None] if any(not d.get("author") for d in authored) else [])
+        # This harness names no engine of its own (Harness.engine None), so it
+        # runs on the stage's engine, ENGINE_NAME; once built, the record is
+        # read off it, so a reviewer harness given its own engine would say so.
+        who = {"model": self.reviewer_model, "author": self.model, "authors": authors,
+               "engine": harness.ENGINE_NAME}
+
         def work() -> dict:
             frames: list[dict] = []
             cwd: Path | None = None
@@ -4449,7 +4511,7 @@ class VfxPlanner:
                                    "frame": f"frames/{png.name}"})
             if len({f["section"] for f in frames}) < 2:
                 return {"skipped": "fewer than two sections have proof frames",
-                        "frames": frames, "breaks": []}
+                        "frames": frames, "breaks": [], "reviewer": who}
             # Capped as each section review on this model is: it reads about
             # as many frames as a section review does, and no document.
             reviewer = harness.Harness(self.ws.root, "vfx", model=self.reviewer_model,
@@ -4457,6 +4519,7 @@ class VfxPlanner:
                                        house_digest=self.house_digest, fresh=self.fresh,
                                        verbose=self.verbose, timeout=1800.0,
                                        budget_usd=self.review_budget_usd)
+            who["engine"] = reviewer.engine or harness.ENGINE_NAME
             prompt = "\n\n".join([
                 f"Read every PNG listed under `frames/` -- one proof frame from each "
                 f"world of each section of \"{self.idea.title}\", in film order, each "
@@ -4477,7 +4540,8 @@ class VfxPlanner:
                                           CONTINUITY_SCHEMA, cwd=cwd)
             except harness.HarnessError as exc:
                 self._say(f"  continuity review failed: {exc}")
-                return {"error": str(exc)[:300], "frames": frames, "breaks": []}
+                return {"error": str(exc)[:300], "frames": frames, "breaks": [],
+                        "reviewer": who}
             finally:
                 self._account(reviewer.usage)
             breaks = result.get("breaks") or []
@@ -4485,7 +4549,7 @@ class VfxPlanner:
                       f"{'one film' if result.get('one_film') else 'not one film'}, "
                       f"{len(breaks)} break(s), "
                       f"{len(result.get('monotony') or [])} run(s) in one setting")
-            return dict(result, frames=frames,
+            return dict(result, frames=frames, reviewer=who,
                         cost_usd=round(reviewer.usage.cost_usd, 4))
         return self._stage("12-continuity", work)
 
@@ -4796,6 +4860,12 @@ class VfxPlanner:
                 "revisions": max(numbers) if numbers else 0, "rounds": rounds,
                 "best_round": chosen["round"] if chosen else None,
                 "score": best["score"] if best else None,
+                # These rounds were authored by this version's run, which
+                # --recover and --take-attempt repeat: its model and bar. A
+                # record without its author would turn the continuity gate off
+                # for the whole film (judged_apart), and one without its bar
+                # would be measured against whatever bar the next run passes.
+                "bar": self.author_bar, "author": self.model,
                 "review": best["review"] if best else None,
                 "cost_usd": round(sum(r["cost_usd"] for r in rounds), 4),
                 "inputs_sha256": self._inputs_sha256(section, group),

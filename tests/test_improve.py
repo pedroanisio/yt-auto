@@ -1760,5 +1760,42 @@ class JudgeCalibration(unittest.TestCase):
         self.assertNotIn("judge_calibration", source)
 
 
+class VfxDoctorRowsRoute(ImproveCase):
+    """AUTO-153: doctor's continuity and under-bar rows name their section in
+    the fix (`--sections N`), so improve re-authors that section alone through
+    the `section_n` doctor rows already carry (AUTO-144); no other route."""
+
+    def rows(self, **vfx_json):
+        from ytstudio import doctor
+        write_json(self.root / "vfx.json", dict({
+            "authoring": {"version": "v01", "versions": ["v01"], "author_bar": 7.0},
+            "totals": {}, "plan": {},
+            "authored": [{"n": n, "section": h, "score": 8, "bar": 7.0, "review": {},
+                          "findings": []}
+                         for n, h in ((1, "Open"), (2, "Later"), (3, "End"))]}, **vfx_json))
+        report = doctor.check_project(workspace.Project(self.root))
+        found = [(f.level, f.area, f.message, f.fix) for f in report.findings
+                 if f.area == "vfx" and f.level == "warn"]
+        return improve.collect({}, doctor=found)
+
+    def test_doctor_continuity_row_routes_one_section(self):
+        rows = self.rows(continuity={
+            "one_film": False, "score": 3, "summary": "s", "monotony": [],
+            "reviewer": {"model": "opus", "author": "sonnet", "engine": "claude"},
+            "breaks": [{"sections": ["Open", "Later"], "owner_section": "Later",
+                        "problem": "the hero doubles", "fix": "f", "severity": "blocking"}]})
+        rows = [r for r in rows if r["problem"].startswith("continuity")]
+        self.assertEqual([r["section_n"] for r in rows], [2])
+        self.assertEqual(improve.routed_sections(self.root, rows), [2])
+
+    def test_doctor_under_bar_row_routes_one_section(self):
+        authored = [{"n": n, "section": h, "score": 6 if n == 3 else 8, "bar": 7.0,
+                     "review": {}, "findings": [], "stopped": "budget"}
+                    for n, h in ((1, "Open"), (2, "Later"), (3, "End"))]
+        rows = [r for r in self.rows(authored=authored) if "under its bar" in r["problem"]]
+        self.assertEqual([r["section_n"] for r in rows], [3])
+        self.assertEqual(improve.routed_sections(self.root, rows), [3])
+
+
 if __name__ == "__main__":
     unittest.main()

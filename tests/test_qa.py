@@ -15,7 +15,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ytstudio import harness, narrative, qa
+from ytstudio import doctor, harness, narrative, qa, workspace
 from tests import test_qa_motion as motion
 from tests.test_harness_decisions import blank
 
@@ -664,6 +664,48 @@ class StoryStage(unittest.TestCase):
         self.run_qa()
         card = json.loads((self.root / "qa" / "pass-01" / "scorecard.json").read_text())
         self.assertFalse(any("satisfaction" in n for n in card["not_evidenced"]))
+
+    # AUTO-153: a blocking continuity break from a reviewer of another family
+    # keeps the film off READY; the same verdict from the author's family is
+    # doctor's warn alone.
+
+    def continuity_break(self, author):
+        (self.root / "vfx.json").write_text(json.dumps({
+            "authored": [{"n": 1, "section": "One"}, {"n": 2, "section": "Two"}],
+            "continuity": {"one_film": False, "score": 3, "summary": "two films",
+                           "monotony": [], "reviewer": {"model": "opus", "author": author,
+                                                        "engine": "claude"},
+                           "breaks": [{"sections": ["One", "Two"], "owner_section": "Two",
+                                       "problem": "the hero is twice the size",
+                                       "fix": "scale it", "severity": "blocking"}]}}))
+
+    def scorecard(self, n: int) -> dict:
+        return json.loads((self.root / "qa" / f"pass-{n:02d}" / "scorecard.json").read_text())
+
+    def test_qa_run_with_a_blocking_continuity_break_is_not_ready(self):
+        line = "vfx continuity: section 2 (Two): the hero is twice the size"
+        self.run_qa()                   # pass-01: no vfx.json, the baseline
+        base = self.scorecard(1)
+        self.continuity_break("sonnet")
+        self.run_qa()
+        card = self.scorecard(2)
+        self.assertEqual(card["verdict"], qa.NOT_READY)
+        self.assertIn(line, card["blocking"])
+        self.assertEqual(len(card["blocking"]), len(base["blocking"]) + 1)
+        self.assertIn(f"{len(card['blocking'])} blocking item(s)", card["bar"])
+        # delivery stays open on that scorecard: doctor reads qa.json's verdict
+        project = workspace.Project(self.root)
+        said = [p for p, _ in doctor.delivery_evidence(project, None)
+                if p.startswith("QA pass-02 says")]
+        self.assertEqual(len(said), 1, said)
+        self.assertIn(qa.NOT_READY, said[0])
+        # the author's own family: the break changes nothing QA files
+        self.continuity_break("opus")
+        self.run_qa()
+        same = self.scorecard(3)
+        self.assertNotIn(line, same["blocking"])
+        self.assertEqual((same["verdict"], len(same["blocking"])),
+                         (base["verdict"], len(base["blocking"])))
 
     # AUTO-156: qa.json says whether the judge is the one the QA fixtures
     # passed, and a line under the verdict says so; nothing reads it to gate.

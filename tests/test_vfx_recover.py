@@ -72,6 +72,7 @@ class Recover(Case):
         self.assertEqual(FakeEngine.stream_calls, [])
         self.assertEqual(taken[1]["score"], 5.0)
         self.assertEqual(taken[1]["taken"]["over"], "v01")
+        self.assertEqual((taken[1]["author"], taken[1]["bar"]), ("sonnet", 7.0))
         self.assertIn("cannot encode", taken[1]["taken"]["why"])
         self.assertIn("#BBBBBB", (self.root / taken[1]["file"]).read_text())
         self.assertEqual(taken[2], kept[2])                       # the others untouched
@@ -105,6 +106,19 @@ class Recover(Case):
         self.assertIn("#AAAAAA", (self.root / rebuilt[1]["file"]).read_text())
         self.assertEqual((rebuilt[2]["best_round"], rebuilt[2]["score"]), (0, 7))
         self.assertIn("#AAAAAA", (self.root / rebuilt[2]["file"]).read_text())
+
+    def test_a_section_rebuilt_from_rounds_names_its_author_and_bar(self):
+        # no record.json for this version: the rounds were authored by this
+        # version's run, so the rebuilt record names its model and bar, and a
+        # reviewer of another family is still judged apart from it (AUTO-153)
+        ws = vfx.Workspace(self.root, version="v01")
+        self.keep(ws, "01-open.scene.xml", 0, WORLD_DOC, {"frames": [], "score": 5, "summary": "a"})
+        self.keep(ws, "02-two.scene.xml", 0, TWO_DOC, {"frames": [], "score": 7, "summary": "b"})
+        planner = self.planner(recover=True, reviewer_model="opus")
+        rebuilt = planner.recovered(OUTLINE, GROUPS)
+        self.assertEqual([(r["author"], r["bar"]) for r in rebuilt],
+                         [("sonnet", 7.0), ("sonnet", 7.0)])
+        self.assertTrue(vfx.judged_apart(planner.continuity(rebuilt)))
 
     def test_a_partial_record_folds_in_a_reviewed_round_kept_after_it(self):
         # killed between keep_round(1) and the record's write: the round the
