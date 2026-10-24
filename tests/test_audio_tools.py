@@ -9,6 +9,8 @@ it; none needs the engine, a network or a host.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import math
 import os
 import random
@@ -66,6 +68,24 @@ ASTATS = """\
 [Parsed_astats_1 @ 0x55] DC offset: 0.015506
 """
 
+ASTATS_RMS = """\
+[Parsed_astats_1 @ 0x55] Channel: 1
+[Parsed_astats_1 @ 0x55] DC offset: 0.000012
+[Parsed_astats_1 @ 0x55] RMS level dB: -20.500000
+[Parsed_astats_1 @ 0x55] Channel: 2
+[Parsed_astats_1 @ 0x55] DC offset: 0.000000
+[Parsed_astats_1 @ 0x55] RMS level dB: -inf
+[Parsed_astats_1 @ 0x55] Overall
+[Parsed_astats_1 @ 0x55] RMS level dB: -23.510000
+"""
+
+PHASE = """\
+frame:0    pts:0       pts_time:0
+lavfi.aphasemeter.phase=-0.910156
+frame:1    pts:1024    pts_time:0.02133
+lavfi.aphasemeter.phase=1.000000
+"""
+
 SILENCE = """\
 [silencedetect @ 0x55] silence_start: 0
 [silencedetect @ 0x55] silence_end: 0.5 | silence_duration: 0.5
@@ -114,6 +134,18 @@ def write_wav(path: Path, samples: list[float], rate: int = RATE) -> Path:
     return path
 
 
+def write_stereo_wav(path: Path, left: list[float], right: list[float], rate: int = RATE) -> Path:
+    """Two channels, interleaved; write_wav is mono only."""
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(b"".join(
+            struct.pack("<hh", *(max(-32768, min(32767, round(x * 32767))) for x in pair))
+            for pair in zip(left, right)))
+    return path
+
+
 def tone(seconds: float, hz: float, level_db: float, rate: int = RATE) -> list[float]:
     a = 10 ** (level_db / 20)
     return [a * math.sin(2 * math.pi * hz * n / rate) for n in range(int(seconds * rate))]
@@ -157,6 +189,13 @@ class Parsing(unittest.TestCase):
     def test_silences_close_at_the_end_when_the_file_ends_in_one(self):
         self.assertEqual(lib.parse_silences(SILENCE, 12.0),
                          [(0.0, 0.5), (3.5, 6.25), (9.75, 12.0)])
+
+    def test_rms_per_channel_without_the_overall_row(self):
+        self.assertEqual(lib.parse_channel_rms(ASTATS_RMS), [-20.5, lib.FLOOR_DB])
+
+    def test_phase_values_pass_through_the_metadata_parser_unchanged(self):
+        rows = lib.parse_ametadata(PHASE, "lavfi.aphasemeter.phase")
+        self.assertEqual(rows, [(0.0, -0.910156), (0.02133, 1.0)])
 
     def test_ametadata_values(self):
         rows = lib.parse_ametadata(AMETADATA, "lavfi.astats.Overall.RMS_level")
@@ -293,6 +332,128 @@ class AudioCheck(unittest.TestCase):
         self.assertIn("loudness", out[0])
 
 
+class ChannelsAndPhase(unittest.TestCase):
+    """The muted-channel and phase checks (eko/qc's two audio rows the gate lacked)."""
+
+    BASE = dict(true_peak=-3, dc=[0.0, 0.0], silences=[], duration=20.0, spans=[], short_term=[])
+
+    def findings(self, **kw):
+        return lib.audio_findings(**{**self.BASE, **kw})
+
+    @staticmethod
+    def phase(values, step=0.1):
+        return [(round(step * n, 3), v) for n, v in enumerate(values)]
+
+    def test_the_thresholds(self):
+        self.assertEqual(lib.MUTED_CHANNEL_DB, -90.0)
+        self.assertEqual(lib.MUTED_CARRIER_DB, -60.0)
+        self.assertEqual((lib.PHASE_MEAN_FLOOR, lib.PHASE_RUN_FLOOR, lib.PHASE_RUN_S), (0.0, -0.5, 1.0))
+
+    def test_a_silent_channel_beside_a_live_one_is_a_finding(self):
+        out = self.findings(channels=[-20.0, -120.0])
+        self.assertEqual(out, ["channel 2 is silent (-120.0 dBFS RMS) while channel 1 carries the programme"])
+
+    def test_both_channels_silent_is_left_to_the_silence_check(self):
+        self.assertEqual(self.findings(channels=[-120.0, -120.0]), [])
+
+    def test_a_quiet_but_live_channel_is_not_muted(self):
+        self.assertEqual(self.findings(channels=[-20.0, -70.0]), [])
+
+    def test_a_mono_file_has_no_channel_or_phase_finding(self):
+        self.assertEqual(self.findings(channels=[-20.0], phase=[]), [])
+
+    def test_the_defaults_keep_the_old_callers_working(self):
+        self.assertEqual(self.findings(), [])
+
+    def test_a_negative_mean_correlation_cancels_in_mono(self):
+        out = self.findings(channels=[-20.0, -20.0], phase=self.phase([-0.4] * 5))
+        self.assertEqual(out, ["stereo phase correlation averages -0.40; the mix cancels in mono"])
+
+    def test_a_positive_correlation_passes(self):
+        self.assertEqual(self.findings(channels=[-20.0, -20.0], phase=self.phase([0.6] * 200)), [])
+
+    def test_a_run_out_of_phase_inside_a_positive_programme_is_named_with_its_times(self):
+        values = [0.8] * 100 + [-0.8] * 15 + [0.8] * 85
+        out = self.findings(channels=[-20.0, -20.0], phase=self.phase(values))
+        self.assertEqual(out, ["stereo out of phase (<= -0.5) 10.0-11.5 s"])
+
+    def test_a_short_run_is_not_a_finding(self):
+        values = [0.8] * 100 + [-0.8] * 5 + [0.8] * 95
+        self.assertEqual(self.findings(channels=[-20.0, -20.0], phase=self.phase(values)), [])
+
+    def test_a_failure_stops_the_gate_on_the_sound_stage(self):
+        # no gate logic changes: sr-audiocheck's exit 1 is already owned by `yt sound`
+        line = self.findings(channels=[-20.0, -120.0])[0]
+        stop = gate.stopped_by("NOT READY: Check failed (exit 1): /x/tools/audio/sr-audiocheck /p video.mp4\n"
+                               f"FAIL sr-audiocheck: {line}")
+        self.assertEqual((stop["requirement"], stop["owner"]), ("sr-audiocheck", "sound"))
+
+    def test_a_run_that_reaches_the_end_counts_to_the_end(self):
+        values = [0.8] * 100 + [-0.8] * 12
+        out = self.findings(channels=[-20.0, -20.0], phase=self.phase(values))
+        self.assertEqual(out, ["stereo out of phase (<= -0.5) 10.0-11.2 s"])
+
+
+class MeasurePasses(unittest.TestCase):
+    """audiocheck_measure runs the phase pass only on stereo: aphasemeter
+    silently downmixes any other layout, so its number would mean nothing."""
+
+    def run_with(self, channels):
+        rows = "".join(f"[Parsed_astats_1 @ 0x1] Channel: {n}\n"
+                       f"[Parsed_astats_1 @ 0x1] DC offset: 0.0\n"
+                       f"[Parsed_astats_1 @ 0x1] RMS level dB: -20.0\n" for n in range(1, channels + 1))
+        loud = EBUR128 + rows + "[Parsed_astats_1 @ 0x1] Overall\n[Parsed_astats_1 @ 0x1] RMS level dB: -20.0\n"
+        seen = []
+
+        def fake(args):
+            seen.append(args)
+            chain = args[args.index("-af") + 1]
+            if chain.startswith("ebur128"):
+                return subprocess.CompletedProcess(args, 0, "", loud)
+            if chain.startswith("aphasemeter"):
+                return subprocess.CompletedProcess(args, 0, PHASE, "")
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        with mock.patch.object(lib, "run_ffmpeg", fake):
+            m = lib.audiocheck_measure(Path("/f.mp4"))
+        return m, [a[a.index("-af") + 1] for a in seen]
+
+    def test_stereo_gets_the_phase_pass(self):
+        m, chains = self.run_with(2)
+        self.assertIn("aphasemeter=video=0,ametadata=print:key=lavfi.aphasemeter.phase:file=-", chains)
+        self.assertEqual(m["channels"], [-20.0, -20.0])
+        self.assertEqual(m["phase"], [(0.0, -0.910156), (0.02133, 1.0)])
+
+    def test_mono_and_surround_do_not(self):
+        for n in (1, 6):
+            with self.subTest(channels=n):
+                m, chains = self.run_with(n)
+                self.assertFalse([c for c in chains if "aphasemeter" in c])
+                self.assertEqual(m["phase"], [])
+                self.assertEqual(len(m["channels"]), n)
+
+    def test_the_summary_line_prints_each_channels_rms_and_the_mean_phase(self):
+        m = {"true_peak": -3.0, "integrated": -14.0, "dc": [0.0, 0.0], "frames": [],
+             "duration": 10.0, "silences": [], "channels": [-20.0, -21.5],
+             "phase": [(0.0, 0.5), (0.1, 0.7)]}
+        out = io.StringIO()
+        with mock.patch.object(lib, "audiocheck_measure", return_value=m), \
+                contextlib.redirect_stdout(out):
+            code = lib.audiocheck_main(["/p", "/p/video.mp4"])
+        self.assertEqual(code, 0)
+        self.assertIn("channel RMS -20.0, -21.5 dBFS", out.getvalue())
+        self.assertIn("mean phase 0.60", out.getvalue())
+
+    def test_a_mono_summary_says_phase_was_not_measured(self):
+        m = {"true_peak": -3.0, "integrated": -14.0, "dc": [0.0], "frames": [],
+             "duration": 10.0, "silences": [], "channels": [-20.0], "phase": []}
+        out = io.StringIO()
+        with mock.patch.object(lib, "audiocheck_measure", return_value=m), \
+                contextlib.redirect_stdout(out):
+            lib.audiocheck_main(["/p", "/p/video.mp4"])
+        self.assertIn("mean phase n/a (not stereo)", out.getvalue())
+
+
 class Sibilance(unittest.TestCase):
     def test_a_burst_over_the_takes_level_is_flagged_when_sustained(self):
         band = [-30.0] * 40 + [-8.0] * 4 + [-30.0] * 40
@@ -356,6 +517,53 @@ class RealFfmpeg(unittest.TestCase):
         samples = noise(3, -24) + [0.0] * (RATE * 3) + noise(3, -24, seed=2)
         found = lib.audiocheck_file(write_wav(self.dir / "gap.wav", samples), spans=[])
         self.assertTrue(any("silence" in f for f in found), found)
+
+    def aac(self, wav: Path) -> Path:
+        """The delivery encode's audio (render.py: AAC 192k), as the gate measures it."""
+        encoders = subprocess.run([FFMPEG, "-hide_banner", "-encoders"], capture_output=True, text=True).stdout
+        if not any(line.split()[1:2] == ["aac"] for line in encoders.splitlines() if line.strip()):
+            self.skipTest("this ffmpeg has no aac encoder")
+        out = wav.with_suffix(".m4a")
+        subprocess.run([FFMPEG, "-nostdin", "-v", "error", "-y", "-i", str(wav), "-c:a", "aac",
+                        "-b:a", "192k", str(out)], check=True)
+        return out
+
+    def test_a_muted_channel_is_flagged_in_the_wav_and_after_the_aac_encode(self):
+        left = noise(4, -24)
+        wav = write_stereo_wav(self.dir / "muted.wav", left, [0.0] * len(left))
+        for path in (wav, self.aac(wav)):
+            with self.subTest(file=path.name):
+                found = lib.audiocheck_file(path, spans=[])
+                self.assertTrue(any("channel 2 is silent" in f for f in found), found)
+
+    def test_inverted_stereo_is_flagged_in_the_wav_and_after_the_aac_encode(self):
+        left = noise(4, -24)
+        wav = write_stereo_wav(self.dir / "anti.wav", left, [-x for x in left])
+        for path in (wav, self.aac(wav)):
+            with self.subTest(file=path.name):
+                found = lib.audiocheck_file(path, spans=[])
+                self.assertTrue(any("phase" in f for f in found), found)
+
+    def test_identical_stereo_and_clean_mono_pass(self):
+        left = noise(4, -24)
+        stereo = write_stereo_wav(self.dir / "dual.wav", left, list(left))
+        mono = write_wav(self.dir / "mono.wav", left)
+        self.assertEqual(lib.audiocheck_file(stereo, spans=[]), [])
+        self.assertEqual(lib.audiocheck_file(self.aac(stereo), spans=[]), [])
+        self.assertEqual(lib.audiocheck_file(mono, spans=[]), [])
+
+    def test_the_tool_exits_0_on_clean_stereo_and_1_on_each_new_finding(self):
+        left = noise(4, -24)
+        files = {"dual": (list(left), 0), "muted": ([0.0] * len(left), 1),
+                 "anti": ([-x for x in left], 1)}
+        for name, (right, code) in files.items():
+            wav = write_stereo_wav(self.dir / f"{name}.wav", left, right)
+            with self.subTest(file=name):
+                proc = subprocess.run([sys.executable, str(TOOLS / "sr-audiocheck"), str(self.dir), str(wav)],
+                                      capture_output=True, text=True)
+                self.assertEqual(proc.returncode, code, proc.stdout + proc.stderr)
+                self.assertIn("channel RMS", proc.stdout)
+                self.assertIn("mean phase", proc.stdout)
 
     def test_sibilance_flags_a_hissy_take_and_not_a_dull_one(self):
         rng = random.Random(3)
