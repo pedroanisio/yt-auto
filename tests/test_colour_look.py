@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.test_keyframe import STYLES
 from ytstudio import build
 from ytstudio.core import Idea
 from ytstudio.script import Section, Shot
@@ -64,7 +65,9 @@ class Applied(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_one_colour_management_with_one_look_that_passes_the_check(self):
-        data, manifest = _builder(self.root, build.clean_look(LOOK)).build()
+        # a palette of its own, so the house-fallback warning (AUTO-155) is
+        # not among the findings this asserts empty
+        data, manifest = _builder(self.root, build.clean_look(LOOK), styles=STYLES).build()
         text = data.decode()
         self.assertEqual(text.count("<colorManagement"), 1)
         self.assertEqual(text.count("<look "), 1)
