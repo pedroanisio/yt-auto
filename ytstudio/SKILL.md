@@ -513,13 +513,23 @@ words, a numeral with its separators counted as one, or more than four
 words of its own line printed verbatim: direction 2's check, AUTO-98), `rule:numbers`, `rule:hook-subject`,
 `rule:hook-answer`, `rule:payoff-last`, `rule:marks` (a delivery mark on a
 word its line does not say, two emphasis words in a sentence, an empty
-pronouncer; AUTO-139). The house tier, recorded as
+pronouncer; AUTO-139), `rule:unframed-status` (AUTO-132: a voiced line
+whose effective status is hypothesis or speculation with no hedge phrase in
+its narration or on-screen text, or a what-if with no what-if phrase; the
+problem names the claim id and why when the ceiling lowered it; English and
+Portuguese, word-boundary phrases, bare "if", "could", "may" and "theory"
+excluded; a label on screen such as "Hypothesis" frames it, so
+`revise-rules` may answer with the supers). The house tier, recorded as
 `warning: house:rule:x` and never revised: `rule:clause`, `rule:passive`
 (English only), `rule:person`, `rule:pace`, `rule:density`,
 `rule:hook-promise`, `rule:hook-stakes`, `rule:end-signal`, `rule:recap`,
 `rule:pronouncer` (a section's mid-sentence capitalised names with no
 pronouncer, one flag per section; run only where some shot carries a mark,
-else `not_evidenced: rule:pronouncer (pre-marks script)`).
+else `not_evidenced: rule:pronouncer (pre-marks script)`),
+`rule:uncited-claim` (AUTO-132: an established or hypothesis line that
+cites a source but no claim id; not a cap). Both status rules run only
+where some shot carries a status, so a screenplay written before AUTO-132
+or with no dossier is measured as before.
 The minor tier: `rule:last-line`. A greeting that says a word of the
 title is the first content sentence, not filler; `rule:hook-subject` takes
 any content word of the title, its verb included; `rule:pace` is
@@ -527,7 +537,7 @@ consistency with `--wpm`, not direction 25's band. A rule outside the film's lan
 `not_evidenced: rule:x (lang)`. The error and important flags go to one
 revision (`revise-rules`, `revise-rules-2` for a line still breaking its
 rule), which fixes the line, or its on-screen text for `rule:legibility`,
-`rule:unspoken-number` and `rule:wall-of-text` only, or keeps it with a reason; the rules are read again on the final text and what
+`rule:unspoken-number`, `rule:wall-of-text` and `rule:unframed-status` only, or keeps it with a reason; the rules are read again on the final text and what
 stands goes to script.json's `findings`, `error:` for the error tier and
 `warning:` for the rest. A standing `error:` exits 1 and leaves
 `narration.txt` unwritten unless `yt script --report-only`; `yt doctor`

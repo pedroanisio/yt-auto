@@ -50,5 +50,146 @@ class ResearchBlock(unittest.TestCase):
         self.assertNotIn("weak one", text)
 
 
+# --------------------------------------------------------------------------- #
+# AUTO-132: claim ids, the claim table, and the ceiling a claim puts on a line
+# --------------------------------------------------------------------------- #
+
+def rated(confidence="high", kind="secondary", standing=None, caveat=""):
+    row = {"claim": "x", "detail": "", "source_title": "s", "source_url": "u",
+           "source_kind": kind, "confidence": confidence, "caveat": caveat}
+    if standing is not None:
+        row["standing"] = standing
+    return row
+
+
+class ClaimIds(unittest.TestCase):
+    def block(self, data, **kw):
+        with contextlib.redirect_stderr(io.StringIO()):
+            return script.research_block(data, **kw)
+
+    def test_each_claim_is_listed_by_its_place_in_the_dossier(self):
+        claims = [claim("first fact"), claim("second fact"), claim("third fact", "low")]
+        data = {"claims": claims,
+                "outline": {"sections": [{"claims_used": ["third fact"]}]}}
+        text = self.block(data)
+        lines = [line for line in text.splitlines() if line.startswith("- c")]
+        # the outline's claim is listed first, and keeps its dossier id
+        self.assertTrue(lines[0].startswith("- c3: third fact"), lines)
+        self.assertTrue(lines[1].startswith("- c1: first fact"), lines)
+        self.assertTrue(lines[2].startswith("- c2: second fact"), lines)
+
+    def test_a_claims_standing_is_shown_where_it_has_one(self):
+        data = {"claims": [dict(claim("a limit"), standing="limitation"),
+                           claim("older claim")]}
+        text = self.block(data)
+        self.assertIn("standing limitation", text)
+        self.assertEqual(text.count("standing"), 1)
+
+    def test_without_ids_the_block_is_todays(self):
+        data = {"claims": [claim("first fact"), dict(claim("x"), standing="hypothesis")]}
+        text = self.block(data, ids=False)
+        self.assertIn("- first fact", text)
+        self.assertNotIn("c1:", text)
+        self.assertNotIn("standing", text)
+
+    def test_the_claim_table_has_the_same_ids_with_standing(self):
+        data = {"claims": [claim("first fact"),
+                           dict(claim("second"), standing="hypothesis", caveat="US only")]}
+        table = script.claim_table(data)
+        self.assertEqual(list(table), ["c1", "c2"])
+        self.assertEqual(table["c2"], {"standing": "hypothesis", "confidence": "high",
+                                       "caveat": "US only", "source_kind": "primary"})
+        self.assertEqual(table["c1"]["standing"], "")
+        self.assertEqual(script.claim_table({}), {})
+
+
+class Ceiling(unittest.TestCase):
+    def test_a_scope_caveat_leaves_an_established_finding_established(self):
+        self.assertEqual(script.ceiling(rated("high", standing="established",
+                                              caveat="US only")), "established")
+
+    def test_medium_confidence_alone_never_caps_a_claim_with_standing(self):
+        self.assertEqual(script.ceiling(rated("medium", standing="established")),
+                         "established")
+
+    def test_a_hypothesis_is_a_hypothesis_at_any_confidence(self):
+        for confidence in ("high", "medium"):
+            self.assertEqual(script.ceiling(rated(confidence, standing="hypothesis")),
+                             "hypothesis")
+
+    def test_a_limitation_is_a_hypothesis(self):
+        self.assertEqual(script.ceiling(rated(standing="limitation")), "hypothesis")
+
+    def test_low_confidence_or_unsourced_is_speculation_whatever_the_standing(self):
+        for standing in ("established", "hypothesis", None):
+            self.assertEqual(script.ceiling(rated("low", standing=standing)),
+                             "speculation")
+            self.assertEqual(script.ceiling(rated("high", "unsourced", standing)),
+                             "speculation")
+
+    def test_an_older_claim_is_judged_from_confidence_and_caveat(self):
+        self.assertEqual(script.ceiling(rated("high")), "established")
+        self.assertEqual(script.ceiling(rated("high", caveat="disputed")), "hypothesis")
+        self.assertEqual(script.ceiling(rated("medium")), "hypothesis")
+
+    def test_a_standing_off_the_list_is_read_as_none(self):
+        self.assertEqual(script.ceiling(rated("high", standing="proven")), "established")
+        self.assertEqual(script.ceiling(rated("medium", standing="proven")), "hypothesis")
+
+    def test_no_claim_or_an_unknown_id_is_speculation(self):
+        self.assertEqual(script.ceiling(None), "speculation")
+        table = script.claim_table({"claims": [claim("one")]})
+        self.assertEqual(script.ceiling(table.get("c9")), "speculation")
+
+    def test_the_reason_names_what_capped_it(self):
+        self.assertEqual(script.ceiling_reason(rated(standing="limitation")),
+                         "the source calls it a limitation")
+        self.assertEqual(script.ceiling_reason(rated("low")), "low confidence")
+        self.assertEqual(script.ceiling_reason(None), "not in the research")
+
+
+class Cap(unittest.TestCase):
+    TABLE = {"c1": {"standing": "established", "confidence": "high", "caveat": "",
+                    "source_kind": "primary"},
+             "c7": {"standing": "", "confidence": "low", "caveat": "",
+                    "source_kind": "secondary"}}
+
+    def shot(self, **kw):
+        return script.Shot(narration="line", **kw)
+
+    def test_a_stored_ceiling_is_never_trusted(self):
+        stale = self.shot(claim="c7", status="established", ceiling="established")
+        script.cap([stale], self.TABLE)
+        self.assertEqual(stale.ceiling, "speculation")
+
+    def test_an_id_not_in_the_table_is_speculation_never_a_near_match(self):
+        made_up = self.shot(claim="c71", status="established")
+        script.cap([made_up], self.TABLE)
+        self.assertEqual(made_up.ceiling, "speculation")
+
+    def test_no_claim_on_an_unsourced_line_is_speculation(self):
+        line = self.shot(claim="", source="UNSOURCED", status="established")
+        script.cap([line], self.TABLE)
+        self.assertEqual(line.ceiling, "speculation")
+
+    def test_no_claim_on_a_cited_line_is_no_cap(self):
+        line = self.shot(claim="", source="NASA 2019", status="established")
+        script.cap([line], self.TABLE)
+        self.assertEqual(line.ceiling, "")
+
+    def test_without_a_dossier_there_is_no_cap(self):
+        line = self.shot(claim="c7", status="established", ceiling="hypothesis")
+        script.cap([line], None)
+        self.assertEqual(line.ceiling, "")
+
+    def test_a_loaded_screenplay_drops_its_stored_ceiling(self):
+        data = {"sections": [{"heading": "h", "shots": [
+            {"narration": "line", "claim": "c7", "status": "established",
+             "ceiling": "established"}]}]}
+        shot = script.sections_of(data)[0].shots[0]
+        self.assertEqual((shot.claim, shot.status, shot.ceiling),
+                         ("c7", "established", ""))
+
+
 if __name__ == "__main__":
     unittest.main()

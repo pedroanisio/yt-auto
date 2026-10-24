@@ -893,9 +893,13 @@ judge. Four tiers:
   title said or shown in the first 30 seconds; the title's verb counts, since
   telling the key noun from it needs a parser), `rule:hook-answer` (the payoff said in
   those 30 seconds), `rule:payoff-last` (the payoff line not in the last
-  section) and `rule:marks` (a shot's delivery mark on a word its line does
+  section), `rule:marks` (a shot's delivery mark on a word its line does
   not say, two emphasis words in one sentence, or a pronouncer with an
-  empty `say`; AUTO-139).
+  empty `say`; AUTO-139) and `rule:unframed-status` (AUTO-132: a hypothesis
+  or speculation line, after its claim's ceiling, that says no hedge such
+  as "might be", "so far" or "researchers think" and shows no label such
+  as "Hypothesis", or a what-if line with no "what if", "imagine" or
+  "suppose"; the problem names the claim id and why the cap lowered it).
 - **house**, the house's own prior, recorded and never revised:
   `rule:clause`, `rule:passive` (English only), `rule:person`, `rule:pace`
   (the words do not fit the shots at `--wpm`: consistency with the planned
@@ -903,13 +907,16 @@ judge. Four tiers:
   `rule:recap` and `rule:pronouncer` (one warning per section listing the
   capitalised names said mid-sentence with no pronouncer; English and
   Portuguese, and only in a screenplay that carries marks: one with none
-  records `not_evidenced: rule:pronouncer (pre-marks script)`).
+  records `not_evidenced: rule:pronouncer (pre-marks script)`) and
+  `rule:uncited-claim` (AUTO-132: an established or hypothesis line that
+  cites a source but no claim id). The two status rules run only where some
+  shot carries a status.
 - **minor**: `rule:last-line` (a last sentence over 20 words).
 
 The error and important flags go to one revision (`revise-rules`, a second
 round for a line still breaking its rule): the smallest change to the
-narration or, for `rule:legibility`, `rule:unspoken-number` and
-`rule:wall-of-text`, to the shot's on-screen text, or a reason to keep it. The rules
+narration or, for `rule:legibility`, `rule:unspoken-number`,
+`rule:wall-of-text` and `rule:unframed-status`, to the shot's on-screen text, or a reason to keep it. The rules
 are read again on the final text, after `--verify`. What stands is written
 to script.json's `findings` and script.md's Findings section: an error-tier
 rule as `error: rule:x: ...`, the rest as `warning: rule:x: ...` (`warning:

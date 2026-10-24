@@ -580,6 +580,8 @@ class Engine(FakeEngine):
             out = shots_for(1, ("context", "payoff"))
             for shot in out["shots"]:
                 shot["source"] = "S1"       # a sourced draft cites each line
+                # ... and names its claim and status (AUTO-132)
+                shot["claim"], shot["status"] = "c1", "established"
             return out
         if which == "fixes":
             return {"fixes": []}

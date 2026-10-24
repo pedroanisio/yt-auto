@@ -46,7 +46,7 @@ from claude_engine import ClaudeError
 from .core import Idea, read_json, timecode, wrap, write_json
 from .ideas import CHANNEL_STYLES, style_brief
 from . import flags, harness, house, narrative, reviewers, spend, workspace
-from .research import claim_key, paper_url, same_paper
+from .research import STANDINGS, claim_key, paper_url, same_paper
 
 #: Narration pace. 150 wpm is an unhurried documentary read; 180 is brisk.
 DEFAULT_WPM = 150
@@ -87,6 +87,20 @@ FUNCTIONS = ("hook", "context", "setup", "reveal", "rehook", "payoff", "handoff"
 #: and reads it as no role at all. Stated in the schema, so the model is told.
 _ENUM_DRIFT = ("A value outside this list is asked again once, then recorded as a "
                "note and treated as having no role.")
+
+#: How settled a sourced line is, as its writer labels it (AUTO-132):
+#: established, a hypothesis, a speculation, a framed what-if (a
+#: hypothetical, a thought experiment, a counterfactual), or none for
+#: connective or picture-only narration that states no fact.
+STATUSES = ("established", "hypothesis", "speculation", "what-if", "none")
+
+#: The statuses a claim can cap a line at, strongest first (`ceiling`).
+LADDER = ("established", "hypothesis", "speculation")
+
+#: A status off the list cannot be read as "no role": the line still says
+#: something, so it is read at its claim's ceiling (`effective_status`).
+_STATUS_DRIFT = ("A value outside this list is asked again once, then recorded as a "
+                 "note and the line is read at its claim's ceiling.")
 
 #: The same treatment for a device's kind (AUTO-135), where "no role" does
 #: not fit: an off-list kind is read as no device (known_devices).
@@ -382,6 +396,18 @@ def section_schema(sourced: bool) -> dict:
         **MARK_SCHEMA,
     }
     required = ["visual", "narration", "seconds", "asset", "style", "function", "shows"]
+    if sourced:
+        # AUTO-132: only a sourced section is asked, so section_schema(False)
+        # and every cached unsourced decision stay as they were. The
+        # ceiling is not asked: the code sets it from the dossier (`cap`).
+        props |= {
+            "claim": {"type": "string", "description": (
+                "the id (c1, c2 ...) of the weakest research claim the line rests "
+                "on; empty only for a none or what-if line")},
+            "status": {"type": "string", "enum": list(STATUSES), "description": (
+                "how settled the line is. " + _STATUS_DRIFT)},
+        }
+        required = required + ["claim", "status"]
 
     def marks(at: str, does: str) -> dict:
         # The writer knows its own shots by their place in the section only:
@@ -443,6 +469,31 @@ REVISE_SCHEMA = {
                     "action": {"type": "string", "enum": ["fix", "keep"]},
                     "narration": {"type": "string"},
                     "why": {"type": "string"},
+                },
+                "required": ["n", "action", "narration", "why"],
+            },
+        }
+    },
+    "required": ["fixes"],
+}
+
+#: `revise` over the fact-check's flags when the shots carry a status
+#: (AUTO-132): REVISE_SCHEMA with an optional `status`, so a line can be
+#: made defensible by saying it is less sure instead of by losing words.
+#: REVISE_SCHEMA itself is unchanged: the schema is in the cache key.
+FACT_REVISE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "fixes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    **REVISE_SCHEMA["properties"]["fixes"]["items"]["properties"],
+                    "status": {"type": "string", "enum": list(STATUSES), "description": (
+                        "the line's status after the fix, only to weaken it; omit to "
+                        "leave it as it is. A status as strong as the line's or "
+                        "stronger is ignored")},
                 },
                 "required": ["n", "action", "narration", "why"],
             },
@@ -653,6 +704,14 @@ class Shot:
     emphasis: list[str] = field(default_factory=list)
     pauses: list[str] = field(default_factory=list)
     pronounce: list[dict] = field(default_factory=list)
+    # How settled the line is (AUTO-132): `claim` is the id (c7) of the
+    # weakest dossier claim it rests on, `status` the writer's label
+    # (STATUSES), and `ceiling` what that claim allows, set by `cap` from
+    # the dossier and never by the model. All "" before AUTO-132, or with
+    # no dossier.
+    claim: str = ""
+    status: str = ""
+    ceiling: str = ""
 
     @classmethod
     def from_raw(cls, raw: dict) -> Shot:
@@ -660,7 +719,8 @@ class Shot:
         clean = {k: v for k, v in raw.items() if k in known and v is not None}
         clean |= clean_marks(clean)
         for key in ("visual", "narration", "on_screen", "asset", "style",
-                    "source", "note", "function", "shows"):
+                    "source", "note", "function", "shows", "claim", "status",
+                    "ceiling"):
             if key in clean:
                 clean[key] = str(clean[key]).strip()
         if "on_screen_text" in clean:
@@ -1318,8 +1378,10 @@ def questions_record(plan: dict, sections: list[Section]) -> list[dict]:
 # --------------------------------------------------------------------------- #
 
 def sections_of(data: dict) -> list[Section]:
-    """A screenplay's sections of shots, from its JSON form."""
-    known = {f.name for f in fields(Shot)}
+    """A screenplay's sections of shots, from its JSON form. A stored
+    `ceiling` is not read (AUTO-132): it is the dossier's to set, by `cap`,
+    so a stale or hand-edited one is never trusted."""
+    known = {f.name for f in fields(Shot)} - {"ceiling"}
     sections = []
     for raw in (data or {}).get("sections", []):
         sections.append(Section.from_spec(raw, [
@@ -1362,8 +1424,15 @@ def identifiable_case(data: dict) -> str:
     return f"{who} (source: {source})" if source else f"{who} (no source)"
 
 
-def research_block(data: dict, *, limit: int = 60) -> str:
-    """Claims with their sources, licensed assets, and what to correct."""
+def research_block(data: dict, *, limit: int = 60, ids: bool = True) -> str:
+    """Claims with their sources, licensed assets, and what to correct.
+
+    Each claim is listed by its id (AUTO-132), `c<k>` for its 1-based place
+    in the dossier's claims, never for its place in the listing, so the id
+    a shot cites stays the claim's however the outline reorders them; and
+    with its standing, where the dossier gives one. `ids=False` lists them
+    as before, for a screenplay written before the ids (`yt script
+    --revise`), whose cached revisions then still hold."""
     parts = []
     if data.get("premise"):
         parts.append(f"Researched premise: {data['premise']}")
@@ -1388,19 +1457,24 @@ def research_block(data: dict, *, limit: int = 60) -> str:
         print(f"note: {len(everything)} claims in the dossier; the script sees "
               f"the {len(on_outline)} the outline uses and the {limit} best "
               "sourced of the rest", file=sys.stderr)
+    place = {id(c): k for k, c in enumerate(everything, 1)}
     claims = []
     for claim in on_outline + ranked[:limit]:
         number = f" [{claim['number']}]" if claim.get("number") else ""
         caveat = f" CAVEAT: {claim['caveat']}" if claim.get("caveat") else ""
+        cid = f"c{place[id(claim)]}: " if ids else ""
+        standing = _standing(claim) if ids else ""
         claims.append(
-            f"- {claim.get('claim', '')}{number} -- {claim.get('detail', '')} "
+            f"- {cid}{claim.get('claim', '')}{number} -- {claim.get('detail', '')} "
             f"(source: {claim.get('source_title', '?')}, "
             f"{claim.get('source_url', 'no url')}; "
             f"{claim.get('source_kind', '?')}, "
-            f"{claim.get('confidence', '?')} confidence){caveat}")
+            f"{claim.get('confidence', '?')} confidence"
+            f"{f'; standing {standing}' if standing else ''}){caveat}")
     if claims:
         parts.append("Every claim you may put on camera, with the source to "
-                     "cite for it:\n" + "\n".join(claims))
+                     "cite for it" + (" and its id" if ids else "") + ":\n"
+                     + "\n".join(claims))
 
     assets = [f"- [{a.get('kind', '?')}] {a.get('title', '')} "
               f"({a.get('licence', 'licence unknown')}"
@@ -1426,6 +1500,137 @@ def research_block(data: dict, *, limit: int = 60) -> str:
         parts.append("Known weaknesses -- do not write a line that depends on "
                      "these being resolved:\n" + "\n".join(gaps))
     return "\n\n".join(parts)
+
+
+def _standing(claim: dict) -> str:
+    """A claim's standing when it is one of research.STANDINGS, else ""
+    (a dossier written before AUTO-132, or a value off the list)."""
+    standing = str(claim.get("standing") or "").strip().lower()
+    return standing if standing in STANDINGS else ""
+
+
+def claim_table(data: dict) -> dict[str, dict]:
+    """The dossier's claims by the ids research_block lists them under,
+    each with what decides how far a line resting on it may go."""
+    return {f"c{k}": {"standing": _standing(c),
+                      "confidence": str(c.get("confidence") or "").strip().lower(),
+                      "caveat": " ".join(str(c.get("caveat") or "").split()),
+                      "source_kind": str(c.get("source_kind") or "").strip().lower()}
+            for k, c in enumerate((data or {}).get("claims") or [], 1)
+            if isinstance(c, dict)}
+
+
+def _weaker(a: str, b: str) -> str:
+    """The weaker of two LADDER statuses."""
+    return a if LADDER.index(a) >= LADDER.index(b) else b
+
+
+def ceiling(claim: dict | None) -> str:
+    """The strongest status a line resting on `claim` may take: the weaker
+    of how reliable the source is and how it presents the claim.
+
+    A low-confidence or unsourced claim, or none at all, is speculation;
+    any other source allows established. A standing caps at itself, a
+    limitation at hypothesis; a caveat does not cap, since a scope caveat
+    ("US only", "figure from 2019") leaves an established finding
+    established, and medium confidence alone does not either. A claim with
+    no standing (a dossier written before AUTO-132) is established only at
+    high confidence with no caveat, else a hypothesis."""
+    if not isinstance(claim, dict):
+        return "speculation"
+    confidence = str(claim.get("confidence") or "").strip().lower()
+    if confidence == "low" or str(claim.get("source_kind") or "").strip().lower() \
+            == "unsourced":
+        return "speculation"
+    standing = _standing(claim)
+    if standing:
+        return "hypothesis" if standing == "limitation" else standing
+    caveat = str(claim.get("caveat") or "").strip()
+    return "established" if confidence == "high" and not caveat else "hypothesis"
+
+
+def ceiling_reason(claim: dict | None) -> str:
+    """Why `ceiling` gives what it gives, in a few words, for a flag that
+    names the cap."""
+    if not isinstance(claim, dict):
+        return "not in the research"
+    confidence = str(claim.get("confidence") or "").strip().lower()
+    if confidence == "low":
+        return "low confidence"
+    if str(claim.get("source_kind") or "").strip().lower() == "unsourced":
+        return "unsourced"
+    standing = _standing(claim)
+    if standing == "limitation":
+        return "the source calls it a limitation"
+    if standing:
+        return f"the source presents it as {'shown' if standing == 'established' else standing}"
+    if str(claim.get("caveat") or "").strip():
+        return "caveated, with no standing"
+    return f"{confidence or 'unrated'} confidence, with no standing"
+
+
+def shot_ceiling(shot: Shot, claims: dict | None) -> str:
+    """The ceiling one shot's claim puts on it; "" for no cap. With no
+    dossier there is none. A claim id the table lacks is speculation, never
+    matched to a near id; an UNSOURCED line citing no claim is speculation;
+    a line citing a source but no claim is not capped (rule:uncited-claim
+    notes it)."""
+    if claims is None:
+        return ""
+    cid = str(shot.claim or "").strip()
+    if cid:
+        return ceiling(claims.get(cid))
+    if str(shot.source or "").strip().upper() == "UNSOURCED":
+        return "speculation"
+    return ""
+
+
+def cap(shots: list[Shot], claims: dict | None) -> None:
+    """Set every shot's ceiling from the dossier's claim table, whatever was
+    stored: the model never sets or raises it."""
+    for shot in shots:
+        shot.ceiling = shot_ceiling(shot, claims)
+
+
+def has_status(sections: list[Section]) -> bool:
+    """Whether any shot carries a status: none does in a screenplay written
+    before AUTO-132 or with no dossier."""
+    return any(shot.status for section in sections for shot in section.shots)
+
+
+def _framed_whatif(shot: Shot, lang: str) -> bool | None:
+    """Whether a what-if line says or shows it is one; None in a language
+    with no lexicon, where it cannot be told."""
+    lex = LEXICON.get(rule_lang(lang))
+    if lex is None:
+        return None
+    said = spoken(shot.narration) + " " + " ".join(shot.on_screen_text or [])
+    return bool(_has(said, lex["whatif"])
+                or _has(" ".join(shot.on_screen_text or []), lex["whatif_label"]))
+
+
+def effective_status(shot: Shot, lang: str = "") -> str:
+    """The status the line is read at: the writer's label, never stronger
+    than its ceiling. "" for a shot with no label (a screenplay written
+    before AUTO-132), which takes no part in any status rule.
+
+    none on a line that cites a claim states a fact, so the ceiling
+    applies; a what-if is one when it cites no claim or says or shows it is
+    one (the whatif lexicon), else the ceiling applies; a label off the
+    list is read at the ceiling."""
+    status = str(shot.status or "").strip()
+    if not status:
+        return ""
+    top = shot.ceiling if shot.ceiling in LADDER else ""
+    if status in LADDER:
+        return _weaker(status, top) if top else status
+    cited = bool(str(shot.claim or "").strip())
+    if status == "what-if":
+        if not cited or _framed_whatif(shot, lang) is not False:
+            return "what-if"
+        return top or "what-if"
+    # none, or a label off the list
+    return (top or "none") if cited or status != "none" else "none"
 
 
 def direction_block(data: dict) -> str:
@@ -2687,8 +2892,14 @@ class Screenwriter:
                  samples: int = STORY_SAMPLES, fresh: bool = False,
                  review_log: Path | str | None = None,
                  paper: dict | None = None, claims: list[dict] | None = None,
+                 claim_table: dict | None = None,
                  verbose: bool = True, root: Path | str | None = None) -> None:
         self.idea = idea
+        #: The dossier's claims by id (AUTO-132, `claim_table`): every
+        #: drafted or loaded shot's ceiling is set from it (`cap`). None with
+        #: no dossier, or for a screenplay written before the ids, which is
+        #: asked exactly what it always was. (`claims` is the paper film's.)
+        self.claims = claim_table
         #: A paper film's digest and the dossier's claims (AUTO-131): the
         #: plan is asked to place the digest's items (`framing`), and
         #: paper_prechecks measures it against the claims. None for any
@@ -3251,10 +3462,25 @@ class Screenwriter:
                          "given in the research. Put the word UNSOURCED where "
                          "a line states something the research does not cover, "
                          "rather than attaching a source that does not say it.")
+            # AUTO-132 (attention 20, attention 18): the line says how sure
+            # it is, and the code caps it at what its claim allows.
+            parts.append(
+                "- claim: the id (c1, c2 ...) from the research list of the weakest "
+                "claim the line rests on; a line resting on two claims gives the "
+                "weaker one. Use \"\" only for a none or what-if line.\n"
+                "- status: established (the research reports it as shown), "
+                "hypothesis (a proposal or interpretation), speculation (a guess), "
+                "what-if (a framed hypothetical, thought experiment or "
+                "counterfactual) or none (connective or picture-only narration that "
+                "states no fact); every line that is not established says so aloud "
+                "or on screen (it might be, researchers think, so far; or a label "
+                "such as Hypothesis).")
 
         data = self._ask(name or f"write-{index:02d}", "\n\n".join(parts),
                          section_schema(sourced))
         shots = [Shot.from_raw(raw) for raw in data.get("shots", [])]
+        # The ceiling is the dossier's, never the model's (AUTO-132).
+        cap(shots, self.claims)
         questions.mark(index, shots, data)
         return shots
 
@@ -4966,6 +5192,18 @@ BOUNDS: dict[str, dict] = {
                 "is important until calibration says otherwise; a term is matched to "
                 "a line by its whole words, case folded, so a reader's paraphrase or "
                 "abbreviation names no line"},
+    # AUTO-132: how settled a line is, read from its status, its claim's
+    # ceiling and the words it says or shows.
+    "unframed_status": {
+        "value": "a hypothesis, speculation or what-if line with no framing cue in "
+                 "its narration or on-screen text",
+        "corpus": ("attention 20", "attention 18"), "strength": "house",
+        "note": "a lexical heuristic; a framing the lexicon lacks is a false flag, "
+                "and the writer may keep it with a reason"},
+    "uncited_claim": {
+        "value": "an established or hypothesis line that cites a source but no "
+                 "claim id", "corpus": ("attention 18",), "strength": "house",
+        "note": "not a cap: the line is not capped, only noted, and not revised"},
 }
 
 
@@ -5007,7 +5245,14 @@ RULES: tuple[Rule, ...] = (
     Rule("rule:last-line", "minor", (), "last_line"),
     Rule("rule:marks", "important", (), "marks"),
     Rule("rule:pronouncer", "house", _LEXICAL, "pronouncer"),
+    Rule("rule:unframed-status", "important", _LEXICAL, "unframed_status"),
+    Rule("rule:uncited-claim", "house", _LEXICAL, "uncited_claim"),
 )
+
+#: The rules that read a shot's status (AUTO-132): a screenplay in which no
+#: shot has one (written before AUTO-132, or with no dossier) is not
+#: measured by them, and no language takes them out of it either.
+STATUS_RULES = ("rule:unframed-status", "rule:uncited-claim")
 
 #: The question ledger's rules (AUTO-96, `question_findings`), apart from
 #: RULES: they read the plan, the writers' marks and the cold reader, not
@@ -5027,7 +5272,10 @@ _RULE = {r.id: r for r in RULES + LEDGER_RULES}
 
 #: The rules that measure what the shot shows rather than what it says: only
 #: a flag of one of these lets `revise` change the shot's on_screen_text.
-SCREEN_RULES = ("rule:legibility", "rule:unspoken-number", "rule:wall-of-text")
+#: An unframed status (AUTO-132) is read from both, and a label on screen
+#: ("Hypothesis") answers it as well as a hedge said aloud.
+SCREEN_RULES = ("rule:legibility", "rule:unspoken-number", "rule:wall-of-text",
+                "rule:unframed-status")
 
 #: The words a lexical rule looks for, by language. Lower case; a phrase
 #: matches on word boundaries.
@@ -5053,6 +5301,20 @@ LEXICON = {
         "sign_off": ("thanks for watching", "thank you for watching",
                      "that's it for today", "in this video we saw",
                      "see you next time"),
+        # AUTO-132: a cue that a line is not settled, and that it is a framed
+        # hypothetical. Bare "if", "could", "may" and "theory" are left out:
+        # ordinary narration says them ("in May 1953", "the theory of
+        # relativity"). The labels count on screen only, where a single word
+        # ("Hypothesis") is a label and not a sentence.
+        "hedge": ("might be", "may be", "could be", "suggests", "likely", "probably",
+                  "perhaps", "so far", "not yet", "if true", "if it holds",
+                  "the hypothesis", "a hypothesis", "the theory that", "a theory",
+                  "unproven", "researchers think", "the authors propose",
+                  "the authors suspect"),
+        "whatif": ("what if", "imagine", "suppose", "picture this", "hypothetically"),
+        "hedge_label": ("hypothesis", "hypothetical", "speculation", "speculative",
+                        "unproven", "unconfirmed", "preliminary", "open question"),
+        "whatif_label": ("what if", "thought experiment", "hypothetical", "imagine"),
     },
     "pt": {
         "filler": ("bem-vindo", "bem-vinda", "bem-vindos", "bem-vindas", "inscreva",
@@ -5076,6 +5338,14 @@ LEXICON = {
         "sign_off": ("obrigado por assistir", "obrigada por assistir",
                      "por hoje é só", "neste vídeo vimos", "nesse vídeo vimos",
                      "até a próxima"),
+        # AUTO-132: bare "pode" and "teoria" are left out, as "may" and
+        # "theory" are in English.
+        "hedge": ("pode ser", "poderia", "talvez", "sugere", "provavelmente", "ainda não",
+                  "se for verdade", "uma hipótese", "a hipótese", "a teoria de que"),
+        "whatif": ("e se", "imagine", "suponha"),
+        "hedge_label": ("hipótese", "hipotético", "hipotética", "especulação",
+                        "especulativo", "não comprovado", "preliminar", "questão em aberto"),
+        "whatif_label": ("e se", "experimento mental", "hipotético", "imagine"),
     },
 }
 
@@ -5106,7 +5376,11 @@ def not_evidenced(lang: str, sections: list[Section] | None = None) -> list[str]
     Given the `sections`, a screenplay with no delivery mark on any shot
     also records rule:pronouncer as not evidenced (AUTO-139)."""
     shown = str(lang or "").strip() or "en"
-    out = [f"not_evidenced: {r.id} ({shown})" for r in RULES if not _applies(r, lang)]
+    # The status rules (AUTO-132) are named only where some shot has a
+    # status: a screenplay with none is not theirs to measure.
+    unlabelled = sections is not None and not has_status(sections)
+    out = [f"not_evidenced: {r.id} ({shown})" for r in RULES
+           if not _applies(r, lang) and not (unlabelled and r.id in STATUS_RULES)]
     if sections is not None and _applies(_RULE["rule:pronouncer"], lang) \
             and not has_marks(sections):
         out.append("not_evidenced: rule:pronouncer (pre-marks script)")
@@ -5179,14 +5453,62 @@ def _flag(rule: str, shot: Shot | None, problem: str, fix: str) -> dict:
             "fix": fix}
 
 
+def _status_flags(voiced: list[tuple], lex: dict, lang: str, on: dict,
+                  claims: dict | None) -> list[dict]:
+    """rule:unframed-status and rule:uncited-claim (AUTO-132) over the
+    voiced shots that carry a status. A cap the ceiling put on the line is
+    named with its claim id and why (`claims`, the dossier's claim table)."""
+    out: list[dict] = []
+    for _, shot, _ in voiced:
+        status = str(shot.status or "").strip()
+        if not status:
+            continue
+        said = spoken(shot.narration) + " " + " ".join(shot.on_screen_text or [])
+        screen = " ".join(shot.on_screen_text or [])
+        effective = effective_status(shot, lang)
+        cid = str(shot.claim or "").strip()
+        if on["rule:unframed-status"] and effective in ("hypothesis", "speculation") \
+                and not _has(said, lex["hedge"]) and not _has(screen, lex["hedge_label"]):
+            why = ""
+            if effective != status:
+                cause = (f"{cid}: {ceiling_reason((claims or {}).get(cid))}"
+                         if cid and claims is not None else
+                         f"{cid}: capped at {shot.ceiling}" if cid else "an unsourced line")
+                why = f" (capped from {status}; {cause})"
+            out.append(_flag("rule:unframed-status", shot,
+                             f"a {effective} line with no framing cue in its narration "
+                             f"or on-screen text{why}",
+                             "say it is not settled (it might be, researchers think, so "
+                             "far) or label it on screen (Hypothesis); or keep it with a "
+                             "reason"))
+        elif on["rule:unframed-status"] and effective == "what-if" \
+                and _framed_whatif(shot, lang) is False:
+            out.append(_flag("rule:unframed-status", shot,
+                             "a what-if line with no what-if cue (what if, imagine, "
+                             "suppose) in its narration or on-screen text",
+                             "frame it aloud as a hypothetical (imagine, what if) or "
+                             "label it on screen; or keep it with a reason"))
+        source = str(shot.source or "").strip()
+        if on["rule:uncited-claim"] and not cid and source and source.upper() != \
+                "UNSOURCED" and effective in ("established", "hypothesis"):
+            article = "an" if effective == "established" else "a"
+            out.append(_flag("rule:uncited-claim", shot,
+                             f"{article} {effective} line that cites a source but no "
+                             "claim id",
+                             "name the research claim the line rests on (c1, c2 ...)"))
+    return out
+
+
 def rule_findings(plan: dict, sections: list[Section], wpm: int = DEFAULT_WPM,
-                  lang: str = "") -> list[dict]:
+                  lang: str = "", *, claims: dict | None = None) -> list[dict]:
     """The narration measured against RULES, as flags in CHECK_SCHEMA's
     shape: `n`, `severity`, `problem` (opening with the rule), `fix`, plus
     `rule` and `tier`. `plan` is the plan or script.json (its title under
     `idea`, its `promise`, `payoff` and `ending`); a field it lacks takes its
     rule out quietly, as an older screenplay has none. A rule whose
-    languages exclude `lang` is not run here; `not_evidenced` names it."""
+    languages exclude `lang` is not run here; `not_evidenced` names it.
+    `claims` is the dossier's claim table, read only to say why a cap
+    lowered a line's status (AUTO-132); the ceiling itself is on the shot."""
     plan = plan or {}
     on = {r.id: _applies(r, lang) for r in RULES}
     lex = LEXICON.get(rule_lang(lang), LEXICON["en"])
@@ -5453,6 +5775,9 @@ def rule_findings(plan: dict, sections: list[Section], wpm: int = DEFAULT_WPM,
             out.append(_flag("rule:recap", signed[0][0],
                              f"\"{signed[0][1]}\" after the payoff",
                              "end on the payoff; no sign-off"))
+
+    # -- how settled each line is (AUTO-132) ---------------------------------
+    out += _status_flags(voiced, lex, lang, on, claims)
     return out
 
 
