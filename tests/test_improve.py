@@ -32,7 +32,7 @@ sys.path.insert(0, str(HERE))
 
 from claude_engine import Usage  # noqa: E402
 from ytstudio import (build, cli, harness, improve, keyframe, qa, script, sound,  # noqa: E402
-                      styles, vfx, workspace)
+                      spend, styles, vfx, workspace)
 from ytstudio.core import Idea, read_json, write_json  # noqa: E402
 
 ROOT = HERE.parent
@@ -1710,6 +1710,15 @@ class FactCheckRows(ImproveCase):
         whole = improve.stage_argvs(["script"], ["script"], base, quality="draft",
                                     root=self.root, script_findings=[shot, wide])[0]
         self.assertNotIn("--revise", whole)
+        # and the estimate prices the whole screenplay: the full run's
+        # --review parts are added, which a line revision does not ask
+        priced = {name: next(r for r in spend.stage_estimates(
+                      self.root, ["script"], extras={"script": argv[1:]})
+                      if r["stage"] == "script")
+                  for name, argv in (("one", one), ("whole", whole))}
+        self.assertIn("--review", priced["whole"]["source"])
+        self.assertNotIn("--review", priced["one"]["source"])
+        self.assertGreater(priced["whole"]["usd"], priced["one"]["usd"])
 
     def test_a_card_holding_a_fact_check_row_has_not_reached_the_target(self):
         self.assertTrue(improve.reached(card(9.5), 9.0))
