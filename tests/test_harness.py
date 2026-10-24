@@ -281,6 +281,46 @@ class Inspect(HarnessCase):
         self.assertEqual(len(FakeEngine.stream_calls), 2)
 
 
+class TurnCap(HarnessCase):
+    """AUTO-116: inspect(max_turns=N) caps the agent that looks; nothing
+    else is capped, and no stage sets a cap of its own."""
+
+    def setUp(self):
+        super().setUp()
+        self.made = []
+        made = self.made
+
+        class Recording(FakeEngine):
+            def __init__(self, config):
+                super().__init__(config)
+                made.append(config)
+
+        harness.ENGINE = Recording
+        self.cwd = self.root / "qa" / "pass-01"
+        self.cwd.mkdir(parents=True)
+        (self.cwd / "a.png").write_bytes(b"png")
+
+    def test_the_cap_reaches_the_agent_that_looks_only(self):
+        self.make().inspect("pass-01", "p", SCHEMA, cwd=self.cwd, max_turns=7)
+        looked, filled = self.made           # the agent, then the text-only pass
+        self.assertEqual(looked.max_turns, 7)
+        self.assertIsNone(filled.max_turns)
+
+    def test_no_cap_by_default(self):
+        h = self.make()
+        h.inspect("pass-01", "p", SCHEMA, cwd=self.cwd)
+        h.decide("d", "p", SCHEMA)
+        self.assertEqual([c.max_turns for c in self.made], [None, None, None])
+
+    def test_the_cap_is_not_part_of_the_question(self):
+        # A capped inspection that ends is a whole answer; one the cap stops
+        # raises and saves nothing. So an answer is served whatever the cap,
+        # and an uncapped inspection keeps the digest it had before caps.
+        self.make().inspect("pass-01", "p", SCHEMA, cwd=self.cwd)
+        self.make().inspect("pass-01", "p", SCHEMA, cwd=self.cwd, max_turns=3)
+        self.assertEqual(len(FakeEngine.stream_calls), 1)
+
+
 class Helpers(unittest.TestCase):
     def test_a_file_that_vanishes_while_digesting_is_left_out(self):
         # Two section threads share vfx/vNN/: one renames its record's

@@ -614,3 +614,130 @@ class Workers(EngineCase):
     def test_full_tools_names_the_agent_tool(self):
         self.assertIn("Agent", claude_engine.FULL_TOOLS)
         self.assertNotIn("Task", claude_engine.FULL_TOOLS)
+
+
+# --------------------------------------------------------------------------- #
+# a turn cap (AUTO-116)
+# --------------------------------------------------------------------------- #
+
+from dataclasses import replace
+
+#: What claude -p prints when --max-turns stops it: an is_error result whose
+#: subtype names the cap and whose `errors` says which, billed like any other.
+MAX_TURNS_STOP = ok_result(is_error=True, subtype="error_max_turns", result="",
+                           num_turns=4, total_cost_usd=0.02,
+                           errors=["Reached maximum number of turns (3)"])
+READ = {"type": "assistant", "message": {"content": [
+    {"type": "tool_use", "name": "Read", "input": {"file_path": "a.png"}}]}}
+
+#: The launch a config with no cap makes today, flag for flag, pinned so a
+#: cap left unset changes nothing.
+PLAIN_JSON = ["-p", "--output-format", "json", "--tools", "",
+              "--permission-mode", "dontAsk", "--permission-prompts", "none",
+              "--strict-mcp-config"]
+PLAIN_STREAM = ["-p", "--output-format", "stream-json", "--tools", "Read",
+                "--allowed-tools", "Read", "--permission-mode", "dontAsk",
+                "--permission-prompts", "none", "--strict-mcp-config"]
+
+
+class MaxTurns(FakeClaudeCase):
+    """EngineConfig.max_turns caps an agentic call by turns as
+    max_turns_budget_usd caps it by dollars; the CLI's stop is permanent."""
+
+    def test_a_cap_is_passed_as_max_turns(self):
+        self.assertEqual(flag(argv_for(self.cfg(max_turns=5)), "--max-turns"), "5")
+        stream = argv_for(self.cfg(max_turns=5), output_format="stream-json")
+        self.assertEqual(flag(stream, "--max-turns"), "5")
+
+    def test_no_cap_passes_nothing_and_the_launch_is_what_it_was(self):
+        for config in (self.cfg(), self.cfg(max_turns=None)):
+            self.assertEqual(argv_for(config)[1:], PLAIN_JSON)
+            self.assertEqual(argv_for(config, output_format="stream-json",
+                                      tools=("Read",))[1:], PLAIN_STREAM)
+
+    def test_the_cli_takes_a_cap(self):
+        for given, expected in ((["--max-turns", "4"], 4), ([], None)):
+            args = claude_engine.build_parser().parse_args([*given, "ask", "hi"])
+            with mock.patch.object(claude_engine, "ClaudeEngine", wraps=ClaudeEngine) as made:
+                claude_engine._engine_from_args(args)
+            self.assertEqual(made.call_args.args[0].max_turns, expected)
+
+    def test_a_capped_ask_is_a_permanent_named_error(self):
+        for code in (0, 1):
+            with self.subTest(exit=code):
+                self.log.unlink(missing_ok=True)
+                eng = self.engine([{"result": MAX_TURNS_STOP, "exit": code},
+                                   {"result": ok_result()}], max_turns=3, max_retries=3)
+                with self.assertRaises(claude_engine.ClaudeExecutionError) as caught:
+                    eng.ask("hi")
+                self.assertFalse(caught.exception.transient)
+                self.assertIn("error_max_turns", str(caught.exception))
+                self.assertEqual(len(self.launches()), 1)
+                self.assertEqual(flag(self.launches()[0], "--max-turns"), "3")
+
+    def test_a_capped_stream_stops_with_a_permanent_named_error_and_books_it(self):
+        for code in (0, 1):
+            with self.subTest(exit=code):
+                self.log.unlink(missing_ok=True)
+                eng = self.engine([{"stream": [INIT, READ, MAX_TURNS_STOP], "exit": code},
+                                   {"stream": [INIT, HELLO, ok_result()]}],
+                                  max_turns=3, max_retries=3)
+                seen = []
+                with self.assertRaises(claude_engine.ClaudeExecutionError) as caught:
+                    for event in eng.stream("hi"):
+                        seen.append(event)
+                self.assertFalse(caught.exception.transient)
+                self.assertIn("error_max_turns", str(caught.exception))
+                self.assertIn("Reached maximum number of turns (3)", str(caught.exception))
+                self.assertEqual(len(self.launches()), 1)
+                self.assertEqual(seen[-1].subtype, "error_max_turns")   # delivered first
+                self.assertAlmostEqual(eng.usage.cost_usd, 0.02)        # and paid
+
+    def test_agent_raises_the_cap_too(self):
+        eng = self.engine([{"stream": [INIT, READ, MAX_TURNS_STOP]}], max_turns=3)
+        with self.assertRaises(claude_engine.ClaudeExecutionError) as caught:
+            eng.agent("hi")
+        self.assertIn("error_max_turns", str(caught.exception))
+
+    def test_an_error_result_other_than_the_cap_is_left_as_it_was(self):
+        # Only the cap's own stop raises from a stream that exits 0: any
+        # other is_error result there is still the consumer's to read, as it
+        # was before the cap existed.
+        other = ok_result(is_error=True, subtype="error_during_execution", result="x")
+        eng = self.engine([{"stream": [INIT, HELLO, other]}])
+        events = list(eng.stream("hi"))
+        self.assertEqual(events[-1].subtype, "error_during_execution")
+
+
+class CappedInspect(FakeClaudeCase):
+    """Acceptance: a capped inspect stops at the cap with a permanent, named
+    error and a billed engine row, launched once, with nothing saved."""
+
+    def test_the_cap_stops_the_inspection_and_bills_it(self):
+        from ytstudio import harness
+        cwd = Path(self._tmp.name) / "proj" / "qa"
+        cwd.mkdir(parents=True)
+        (cwd / "a.png").write_bytes(b"png")
+        self.plan.write_text(json.dumps([{"stream": [INIT, READ, MAX_TURNS_STOP], "exit": 1},
+                                         {"stream": [INIT, HELLO, ok_result()]}]))
+        exe = str(self.exe)
+
+        def engine(config):
+            return ClaudeEngine(replace(config, executable=exe, max_retries=3,
+                                        retry_backoff=0.0))
+
+        schema = {"type": "object", "properties": {"answer": {"type": "string"}},
+                  "required": ["answer"]}
+        with mock.patch.object(harness, "ENGINE", engine):
+            h = harness.Harness(cwd.parent, "vfx", model="sonnet", role="You look.",
+                                verbose=False)
+            with self.assertRaises(harness.HarnessError) as caught:
+                h.inspect("look", "Look at a.png.", schema, cwd=cwd, max_turns=3)
+        self.assertIn("error_max_turns", str(caught.exception))
+        self.assertEqual(len(self.launches()), 1)                 # not retried
+        self.assertEqual(flag(self.launches()[0], "--max-turns"), "3")
+        report = h.report()
+        self.assertEqual([(d["name"], d["kind"], d["cached"], d["tool_calls"])
+                          for d in report["decisions"]], [("look", "failed", False, 1)])
+        self.assertAlmostEqual(report["cost_usd"], 0.02)
+        self.assertFalse((cwd.parent / "decisions").exists())

@@ -143,6 +143,22 @@ class ClaudeExecutionError(ClaudeError):
         self.transient = transient
 
 
+#: The result subtype `claude -p` ends with when `--max-turns` stops it.
+MAX_TURNS_STOP = "error_max_turns"
+
+
+def turn_cap_stop(payload: Any) -> str | None:
+    """How a result says the turn cap stopped the call ("error_max_turns:
+    Reached maximum number of turns (3)"), or None when it is not that stop.
+    The CLI reports the cap as an is_error result and may still exit 0, so
+    the error has to come from the result itself; only this stop is read
+    here, so every other failure is reported and classified as before."""
+    if not isinstance(payload, dict) or payload.get("subtype") != MAX_TURNS_STOP:
+        return None
+    said = "; ".join(str(e) for e in payload.get("errors") or () if e)
+    return f"{MAX_TURNS_STOP}: {said}" if said else MAX_TURNS_STOP
+
+
 #: USD per 1M tokens (`input`, `cached_input`, `output`, optional
 #: `cache_creation`) by model id. It estimates the cost of a call that timed
 #: out (its `result` event, which carries the CLI's figure, never arrived),
@@ -621,6 +637,9 @@ class EngineConfig:
     # --- guard rails -------------------------------------------------------
     max_turns_budget_usd: float | None = None   # --max-budget-usd: hard
                                                 # spend cap per call
+    max_turns: int | None = None        # --max-turns: hard cap on agentic
+                                        # turns per call; the CLI stops with
+                                        # error_max_turns, never retried
     autocompact: str | int | None = None        # --autocompact: "auto" or a
                                                 # window in tokens
     timeout: float | None = 900.0               # seconds per call (ours)
@@ -893,6 +912,8 @@ class ClaudeEngine:
 
         if cfg.max_turns_budget_usd is not None:
             argv += ["--max-budget-usd", str(cfg.max_turns_budget_usd)]
+        if cfg.max_turns is not None:
+            argv += ["--max-turns", str(cfg.max_turns)]
         if cfg.autocompact is not None:
             argv += ["--autocompact", str(cfg.autocompact)]
         if cfg.setting_sources:
@@ -1027,8 +1048,10 @@ class ClaudeEngine:
                     printed = json.loads(proc.stdout or "")
                 except json.JSONDecodeError:
                     printed = None
+                capped = turn_cap_stop(printed)
                 last_error = ClaudeExecutionError(
-                    f"claude exited with code {proc.returncode}",
+                    f"claude exited with code {proc.returncode}"
+                    + (f": {capped}" if capped else ""),
                     returncode=proc.returncode, stderr=proc.stderr.strip(),
                     payload=printed if isinstance(printed, dict) else None,
                 )
@@ -1047,7 +1070,7 @@ class ClaudeEngine:
             if payload.get("is_error"):
                 last_error = ClaudeExecutionError(
                     f"claude reported an error: "
-                    f"{payload.get('subtype') or payload.get('result')}",
+                    f"{turn_cap_stop(payload) or payload.get('subtype') or payload.get('result')}",
                     payload=payload,
                 )
                 if not last_error.transient or not self._sleep_before_retry(attempt):
@@ -1065,7 +1088,9 @@ class ClaudeEngine:
         talking, since a blocked read never gets to check a clock; stderr
         is drained on its own thread so a chatty child cannot fill that
         pipe and stall. A consumer that stops iterating early kills the
-        child too.
+        child too. A result that says the turn cap (`max_turns`) stopped
+        the call is yielded, then raised as a permanent error whatever the
+        exit code.
         """
         cfg = self.config
         proc = subprocess.Popen(
@@ -1095,6 +1120,10 @@ class ClaudeEngine:
             daemon=True)
         drain.start()
 
+        #: The result a --max-turns stop printed, and how it said so.
+        capped: str | None = None
+        capped_result: dict | None = None
+
         abandoned = False
         try:
             try:
@@ -1111,6 +1140,8 @@ class ClaudeEngine:
                 except json.JSONDecodeError:
                     continue  # stray non-JSON line; ignore
                 self._note_spend(message, spent)
+                if message.get("type") == "result" and turn_cap_stop(message):
+                    capped, capped_result = turn_cap_stop(message), message
                 yield from self._normalise(message)
         except GeneratorExit:
             abandoned = True
@@ -1134,8 +1165,18 @@ class ClaudeEngine:
                         returncode=code, stderr=stderr.strip(), transient=True)
                 if code != 0:
                     raise ClaudeExecutionError(
-                        f"claude exited with code {code}",
-                        returncode=code, stderr=stderr.strip())
+                        f"claude exited with code {code}"
+                        + (f": {capped}" if capped else ""),
+                        returncode=code, stderr=stderr.strip(),
+                        payload=capped_result)
+                if capped:
+                    # The result was delivered and booked; a consumer that
+                    # reads only text would otherwise take a cut-off session
+                    # for a finished one. A retry would stop at the same cap.
+                    raise ClaudeExecutionError(
+                        f"claude stopped at its turn cap: {capped}",
+                        returncode=code, stderr=stderr.strip(),
+                        payload=capped_result, transient=False)
 
     @staticmethod
     def _note_spend(message: dict, spent: dict) -> None:
@@ -1584,6 +1625,7 @@ def _engine_from_args(args: argparse.Namespace) -> ClaudeEngine:
         debug=args.debug,
         debug_file=args.debug_file,
         max_turns_budget_usd=args.budget,
+        max_turns=args.max_turns,
     ))
 
 
@@ -1729,6 +1771,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--timeout", type=float, default=900.0,
                    help="seconds per call (default 900)")
     g.add_argument("--budget", type=float, help="max USD to spend on one call")
+    g.add_argument("--max-turns", dest="max_turns", type=int, metavar="N",
+                   help="stop an agentic call after N turns (error_max_turns)")
 
     g = parser.add_argument_group("diagnostics")
     g.add_argument("-v", "--verbose", action="store_true",
