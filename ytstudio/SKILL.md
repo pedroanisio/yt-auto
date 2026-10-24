@@ -785,7 +785,11 @@ blocking editorial note. It is not a delivery verdict. The order is:
 6. READY TO PUBLISH only when `yt qa` reports an overall of 9.0 with no
    category under 8.5, nothing blocking and no placeholder. A film in the
    house fallback palette (`build.json`'s `design.source` `fallback`) is a
-   `styles:` blocker naming `yt styles --rich`, whatever it scores. A blocking
+   `styles:` blocker naming `yt styles --rich`, whatever it scores. A vfx
+   continuity break marked `blocking` whose recorded reviewer is of another
+   family than its recorded author is a `vfx continuity:` blocker, whatever
+   it scores; the fix is `yt vfx --sections N`, which judges continuity
+   again. A blocking
    mechanical finding (flat, clipped, frozen, a jump, an off-camera object
    on the hook, the ending, the payoff shot or more than one sampled shot) blocks on its own
    and caps `visual_quality` and `animation_vfx` at 6 until it is fixed.
@@ -1119,7 +1123,8 @@ hand-authored world showed the cost.
     rest of the grant.
   - `yt vfx --sections 2,3` re-authors only those sections into the next
     `vfx/vNN/` and carries the others forward from the active version
-    (`carried_from`, $0). Continuity, reach and plan are then redone.
+    (`carried_from`, $0). Continuity, reach and plan are then redone. Each
+    record keeps the `bar` it was reviewed against, carried with its score.
     `--sections` refuses `--fresh`. Each section record keeps
     `inputs_sha256` (`vfx.section_inputs_digest`: the section's shots with
     their measured timings, `at` counted from its first shot so re-timing
@@ -1326,8 +1331,20 @@ hand-authored world showed the cost.
   or not, a score, each break with the section that should change and the
   fix, and `monotony`, each run of sections that stays in one set, scale and
   look longer than the story warrants). A planned change of setting is not a
-  break. `yt doctor` warns when the sections do not read as one film, and
-  once per monotony run (at most three). Every author and reviewer the stage
+  break. The verdict records who gave it (`continuity.reviewer`: model,
+  author, engine). A break marked `blocking` by a reviewer of another family
+  than the author (`flags.own_reviewer`) keeps `yt qa` off READY (`vfx
+  continuity: section N (<heading>): <problem>` among the blocking items); a
+  same-family or unrecorded verdict, a major break and `one_film: false`
+  alone never change the verdict. `yt doctor` warns once per section owning
+  a blocking or major break, once when the sections do not read as one film
+  with no serious break, and once per monotony run (at most three); a
+  skipped or failed review is a note. A section whose best reviewed round
+  ended under its bar (`authored[].bar`) is kept, never a hard stop, and is
+  a doctor warn naming why it stopped (`budget spent`, `revision did not
+  change it`, ...). These rows name `yt vfx --sections N`, so `yt improve`
+  re-authors that section alone; none is a fail, so the lane's vfx stage is
+  never held by them. Every author and reviewer the stage
   starts reports once into `vfx.json`'s `usage`, so it is the stage's whole
   bill.
 - **Vision reaches the model only on the agentic Read path.** `inspect`
@@ -1405,8 +1422,9 @@ them.
   `test_scope`, `test_run_wiring` and `test_skill`; and `test_delivery`
   (doctor's delivery verdict), `test_sound_synth` (the synthesis contract),
   `test_capability_surface` (the full cheat-sheet and the shader example),
-  `test_vfx_continuity` (the side-by-side review, the one account),
-  `test_lane` (the govern process and its checks), `test_sdkkit` (the kit,
+  `test_vfx_continuity` (the side-by-side review, the one account, its
+  doctor rows), `test_qa_vfx_blockers` (a continuity break that blocks READY),
+  `test_doctor_vfx` (a section under its bar), `test_lane` (the govern process and its checks), `test_sdkkit` (the kit,
   the build's determinism, rules and provenance, the examples) and
   `test_probes` (the suite, the separate reviewer, the revision loop, the
   run table).

@@ -1163,7 +1163,12 @@ review on the reviewer's model (`--reviewer-model`) sees one proof frame per
 world, at most two per section, side by side; a planned change of setting is
 not a break, and the review names any run of sections that stays in one set,
 scale and look longer than the story warrants (`monotony` in `vfx.json`'s
-`continuity`), which `yt doctor` warns of. No other
+`continuity`), which `yt doctor` warns of. The continuity verdict records
+who judged it (`continuity.reviewer`: model, author, engine); a break it
+marks `blocking`, from a reviewer of another family than the author, keeps
+`yt qa` off READY. A section whose best reviewed round ended under its bar
+(`authored[].bar`, the `--bar` it was reviewed against) is kept, as before,
+and `yt doctor` warns of it with the reason it stopped. No other
 animation tool is in the loop; a plan that cannot be expressed in
 scene-render constructs is a plan this stage will not make. Hour and second
 totals are computed in Python, and `--budget-hours` shapes what gets cut.
@@ -1968,7 +1973,14 @@ compares, since the comparison reads the scores only.
 The bar is applied mechanically on top: READY TO PUBLISH needs an overall of
 9.0, no category under 8.5 and nothing blocking, where blocking includes what
 the manifests already prove (a placeholder, a build error, a failed gate, a
-blocking mechanical finding). While a blocking mechanical finding stands,
+blocking mechanical finding) and each vfx continuity break marked `blocking`
+whose recorded reviewer is of another family than its recorded author
+(`vfx continuity: section N (<heading>): <problem>` in `scorecard.json`'s
+`blocking`). A verdict by the author's own family, or one that does not say
+who gave it (a `vfx.json` from before `continuity.reviewer`), a major break,
+`one_film: false` alone, and a skipped or failed continuity review stay
+`yt doctor` warns and never change the verdict; a `yt vfx --sections N`
+judges continuity again, and the new verdict decides the next QA. While a blocking mechanical finding stands,
 `visual_quality` and `animation_vfx` are capped at 6, whatever the reviewer
 wrote. When `build.json` has no audio track, `sound_design` and
 `music_score` are 2.0 by rule and named as not evidenced, never a neutral 5.
@@ -2116,7 +2128,10 @@ a defect survives three briefed passes, and writes `improve.json` and an
 each stage's own report (else a like project's) and marked measured, like or
 assumed (QA at its cost per scoring sample times the three samples, so a
 pass scored once prices the two it did not ask, and the side-by-side comparison once on top), and a routed vfx pass re-authors only the sections its findings fall in
-(`--sections`), the whole film (`--fresh`) when a finding cannot be placed. A
+(`--sections`), the whole film (`--fresh`) when a finding cannot be placed;
+a `yt doctor` vfx warn whose fix names `--sections N` (a section owning a
+serious continuity break, a section left under its bar, an effect shown
+static) is placed in section N. A
 routed script pass whose findings all name a shot sends only those lines back
 (`yt script --revise feedback`, read from the brief's `.json` twin); one
 finding that names none, or one briefed before and still there, runs the
@@ -2244,7 +2259,16 @@ whose vetted image or video assets have no `ok` row in
 but none ok, none of the downloads succeeded, and the deferred and failed
 rows say why), and each run of sections the vfx continuity review
 names as staying in one setting (`monotony`) is a `vfx` warning with the
-review's fix.
+review's fix. Each section that owns a blocking or major continuity break is
+one `vfx` warn (`continuity: section N (<heading>): <problem> [blocking;
+reviewer <model>]`, several breaks of one section joined), and each section
+whose best reviewed round ended under its bar is one (`section N ended at
+S/10, under its bar B (budget spent)`, or whichever reason stopped it); both
+name `yt vfx --project P --sections N` as the fix, so `yt improve`
+re-authors that section alone. A blocking break QA cannot block on (no
+reviewer of another family recorded) says so on its row, and a continuity
+review that was skipped or failed is a note. None of these is a fail, so the
+govern lane's vfx stage is never held by them.
 Exit 1 on any fail, so it works in a script.
 
 ### `yt assets`
