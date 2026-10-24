@@ -13,6 +13,7 @@ research too.
 
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -147,6 +148,16 @@ class Prompts(_Researched):
         self.assertEqual(idea.block(), before)
         self.assertNotIn("Stakes", idea.block())
 
+    def test_a_cinematic_film_with_stakes_gets_them_and_no_parallel(self):
+        # the stakes reach every film's research; the parallel only a spoken one's
+        idea = Idea(title="Comets", genre="cinematic", description="A tail at night.",
+                    stakes="the last night the comet is seen for a lifetime")
+        prompt, r = self.asked(depth=6, idea=idea)
+        self.assertEqual(prompt, f"{idea.block()}\nStakes: the last night the comet is "
+                         "seen for a lifetime\n\n"
+                         + research.SCOPES["cinematic"]["plan"].format(depth=6))
+        self.assertNotIn("historical parallel", prompt)
+
     def test_without_stakes_the_idea_block_is_todays(self):
         prompt, r = self.asked(depth=2)
         self.assertEqual(r._idea_block(), self.idea.block())
@@ -186,9 +197,15 @@ class Kept(unittest.TestCase):
                                     "collapse: where_it_breaks is empty"])
 
     def test_a_row_with_no_event_is_named_by_a_question_mark(self):
-        kept, warnings = self.of(parallel(event=""), "not a row")
+        kept, warnings = self.of(parallel(event=""))
         self.assertEqual(kept, [])
         self.assertEqual(warnings, ["historical parallel dropped: ?: event is empty"])
+
+    def test_a_row_that_is_not_a_row_is_dropped_with_a_warning(self):
+        # a bare string from the outline model leaves a trace, never nothing
+        kept, warnings = self.of("Tacoma, 1940", parallel())
+        self.assertEqual([p["event"] for p in kept], ["Tacoma Narrows bridge collapse"])
+        self.assertEqual(warnings, ["historical parallel dropped: ?: not a row"])
 
     def test_at_most_two_are_kept(self):
         kept, warnings = self.of(parallel(), QUEBEC, DEE)
@@ -261,6 +278,23 @@ class InTheDossier(_Researched):
         self.assertIn("source never opened", md.split("## Historical parallels", 1)[1])
         # a dropped parallel is not a provenance warning about the claims
         self.assertNotIn("historical parallel dropped", md.split("## Historical", 1)[0])
+        # dossier.json, read back from disk, holds the vetted rows and the warning
+        saved = json.loads((self.root / "dossier.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["parallels"], data["parallels"])
+        self.assertEqual([p["event"] for p in saved["parallels"]],
+                         ["Tacoma Narrows bridge collapse"])
+        self.assertEqual([w for w in saved["warnings"]
+                          if w.startswith(research.PARALLEL_DROPPED)],
+                         ["historical parallel dropped: A bridge a blog remembers: "
+                          "source never opened (https://example.org/blog)"])
+
+    def test_a_row_without_a_year_prints_no_empty_brackets(self):
+        data = self.run_with([parallel(year="")])
+        research.write_dossier(research.Dossier(self.root, self.idea, at=self.root),
+                               data, [])
+        md = (self.root / "README.md").read_text(encoding="utf-8")
+        self.assertIn("- Tacoma Narrows bridge collapse: maps: ", md)
+        self.assertNotIn("()", md)
 
     def test_none_with_a_reason_is_said_so(self):
         data = self.run_with([], why="no documented precedent")

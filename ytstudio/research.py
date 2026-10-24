@@ -968,6 +968,8 @@ def parallels_of(outline: dict | None, urls_opened: list[str]) -> tuple[list[dic
     warnings: list[str] = []
     for raw in rows:
         if not isinstance(raw, dict):
+            # a bare string from the outline model leaves a trace, not nothing
+            warnings.append(f"{PARALLEL_DROPPED} ?: not a row")
             continue
         row = {k: str(raw.get(k) or "").strip() for k in PARALLEL_FIELDS}
         name = row["event"] or "?"
@@ -2171,7 +2173,12 @@ def write_dossier(dossier: Dossier, data: dict, downloads: list[dict]) -> list[P
         unkept = [w for w in data.get("warnings") or []
                   if str(w).startswith(PARALLEL_DROPPED)]
         why = str(data.get("parallels_why") or "").strip()
-        lines = [f"- {p.get('event', '')} ({p.get('year', '')}): maps: "
+
+        def year(p: dict) -> str:
+            # the year is not required of a kept row: an empty one prints no "()"
+            y = str(p.get("year") or "").strip()
+            return f" ({y})" if y else ""
+        lines = [f"- {p.get('event', '')}{year(p)}: maps: "
                  f"{p.get('how_it_maps', '')}; breaks: {p.get('where_it_breaks', '')}"
                  f" — {p.get('source_url', '')}" for p in parallels]
         if not parallels and why:
