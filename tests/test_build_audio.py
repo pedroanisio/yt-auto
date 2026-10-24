@@ -159,7 +159,7 @@ class AudioFromSound(_Project):
              "file": "sound/none.wav"},
             {"cue_id": "X1", "kind": "stinger", "at": 7, "seconds": 3,
              "level": "-18 dBFS", "gain_db": 4, "description": "a tick",
-             "file": "sound/002-tick.wav", "loop": True},
+             "file": "sound/002-tick.wav", "loop": True, "licence": "CC0"},
             {"cue_id": "Q1", "kind": "silence", "at": 5, "seconds": 2,
              "level": "", "description": "a held breath"},
         ]
@@ -658,10 +658,12 @@ class BeatSyncBuilt(_Voiced):
         _wav(self.root / "sound" / "bed.wav", 14)
         cue = {"cue_id": "M1", "kind": "music", "at": 2, "seconds": 8,
                "level": "-30 dBFS", "description": "a pulse", "fade_out": 1,
-               "file": "sound/bed.wav"}
+               "file": "sound/bed.wav", "licence": "CC0"}
         if grid:
             cue["beat_grid"] = grid
-        return {"runtime": 10, "cues": [cue, self.hit("S1", 5)]}
+        # CC0 owes no credit line, and a placed file under no licence at all
+        # blocks publication (AUTO-147)
+        return {"runtime": 10, "cues": [cue, self.hit("S1", 5, licence="CC0")]}
 
     def test_the_mix_reports_its_music_rows(self):
         builder = build.SceneBuilder(_idea(), _sections(), self.root, vfx=self.vfx,
