@@ -88,6 +88,11 @@ FUNCTIONS = ("hook", "context", "setup", "reveal", "rehook", "payoff", "handoff"
 _ENUM_DRIFT = ("A value outside this list is asked again once, then recorded as a "
                "note and treated as having no role.")
 
+#: The same treatment for a device's kind (AUTO-135), where "no role" does
+#: not fit: an off-list kind is read as no device (known_devices).
+_DEVICE_DRIFT = ("A value outside this list is asked again once, then recorded as a "
+                 "note and the device is ignored.")
+
 #: An empty string passes the schema (only presence is checked); the plan's
 #: deterministic pre-checks catch it, so the description says so.
 _NOT_EMPTY = "Never empty: an empty value fails the plan's pre-check."
@@ -189,9 +194,7 @@ DEVICE = {
     "type": "object",
     "properties": {
         "kind": {"type": "string", "enum": list(DEVICE_KINDS), "description": (
-            "analogy, visual_metaphor, prediction or thought_experiment. A value outside "
-            "this list is asked again once, then recorded as a note and the device is "
-            "ignored.")},
+            "analogy, visual_metaphor, prediction or thought_experiment. " + _DEVICE_DRIFT)},
         "device": {"type": "string", "description": "what is said or shown"},
         "maps": {"type": "string", "description": (
             "for an analogy or a visual_metaphor, each familiar part and the part of the "

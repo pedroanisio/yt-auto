@@ -229,7 +229,9 @@ class Schema(unittest.TestCase):
             self.assertNotIn("devices", section["required"])
             item = devices["items"]
             self.assertEqual(item["properties"]["kind"]["enum"], list(script.DEVICE_KINDS))
-            self.assertIn("recorded", item["properties"]["kind"]["description"])
+            # the drift wording is shared, as _ENUM_DRIFT is for a role
+            self.assertTrue(item["properties"]["kind"]["description"].endswith(
+                " " + script._DEVICE_DRIFT))
             for name in ("kind", "device", "maps", "breaks_at", "framing", "scored_in"):
                 self.assertIn(name, item["properties"])
             self.assertEqual(item["properties"]["scored_in"]["type"], "integer")
