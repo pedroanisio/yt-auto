@@ -164,7 +164,7 @@
       "name": "deliver",
       "requires": "check",
       "check": "deliver",
-      "exit": "a clean final render of the whole programme, the delivery gate deliverable and a QA pass at READY TO PUBLISH, both after that render"
+      "exit": "a clean final render of the whole programme, the delivery gate deliverable and a QA pass at READY TO PUBLISH, both after that render, and the upload set `yt package` wrote for that scene and video, judged ready"
     }
   ],
   "gates": [

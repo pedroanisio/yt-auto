@@ -75,6 +75,17 @@ class DeliveryCase(unittest.TestCase):
         self.write("qa.json", {"pass": "pass-03", "verdict": verdict, "overall": overall})
         self.stamp("qa.json")
 
+    def packaged(self, verdict="ready", *, scene_sha256=None, video_sha256=None) -> None:
+        """The upload set `yt package` writes (AUTO-147), judged on the
+        scene.xml and video.mp4 now on disk unless told otherwise."""
+        (self.root / "package").mkdir(exist_ok=True)
+        current = lambda name: doctor.scene_digest(self.root / name)  # noqa: E731
+        self.write("package/package.json", {
+            "verdict": verdict, "findings": [] if verdict == "ready" else ["error: x"],
+            "scene_sha256": current("scene.xml") if scene_sha256 is None else scene_sha256,
+            "video_sha256": current("video.mp4") if video_sha256 is None else video_sha256})
+        self.stamp("package/package.json")
+
     def report(self):
         return doctor.check_project(workspace.Project(self.root))
 
@@ -91,7 +102,7 @@ class Delivery(DeliveryCase):
         self.assertEqual(self.delivery(), [])
 
     def test_everything_in_place_is_ready(self):
-        self.rendered(); self.gated(); self.scored()
+        self.rendered(); self.gated(); self.scored(); self.packaged()
         self.assertEqual(self.delivery("fail"), [])
         ok = self.delivery("ok")
         self.assertEqual(len(ok), 1)
@@ -117,7 +128,7 @@ class Delivery(DeliveryCase):
 
     def test_information_findings_do_not_block(self):
         self.rendered(findings=[{"code": "PREC1", "severity": "info", "message": "x"}])
-        self.gated(); self.scored()
+        self.gated(); self.scored(); self.packaged()
         self.assertEqual(self.delivery("fail"), [])
 
     def test_a_render_of_part_of_the_programme_is_not_delivery(self):
@@ -275,7 +286,7 @@ class FallbackDesign(DeliveryCase):
 
     def test_a_styled_build_is_ready(self):
         self.styled("styles.json")
-        self.rendered(); self.gated(); self.scored()
+        self.rendered(); self.gated(); self.scored(); self.packaged()
         self.assertEqual(self.about_palette(), [])
         self.assertTrue(self.report().metrics["delivery"]["ready"])
 
@@ -294,7 +305,7 @@ class FactCheck(DeliveryCase):
         self.write("script.json", body)
 
     def ready_otherwise(self):
-        self.rendered(); self.gated(); self.scored()
+        self.rendered(); self.gated(); self.scored(); self.packaged()
 
     def evidence(self):
         return doctor.delivery_evidence(workspace.Project(self.root), None)

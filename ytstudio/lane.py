@@ -21,7 +21,8 @@ passes when its artifact exists and `yt doctor` reports no fail owned by it
 every render job report to have rendered and `vfx` every section reviewed
 without an error; warnings never block. `keyframe` also needs the operator's approval of the look, and `deliver`
 passes only on doctor's delivery evidence (a clean final render, the gate
-deliverable, QA at READY TO PUBLISH).
+deliverable, QA at READY TO PUBLISH, and a current upload set from
+`yt package` judged ready).
 
 A lane's folder is `.govern/projects/<slug>`; its video is `work/<slug>`.
 """
@@ -73,7 +74,8 @@ def process() -> dict:
     rows.append({"name": DELIVER, "requires": "check", "check": DELIVER,
                  "exit": "a clean final render of the whole programme, the delivery "
                          "gate deliverable and a QA pass at READY TO PUBLISH, both "
-                         "after that render"})
+                         "after that render, and the upload set `yt package` wrote "
+                         "for that scene and video, judged ready"})
     commands = {name: ["{python}", "{repo}/ytstudio/lane.py", "check", "{dir}", name]
                 for name in stages()}
     return {

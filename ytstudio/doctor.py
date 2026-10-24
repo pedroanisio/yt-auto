@@ -1040,7 +1040,36 @@ def delivery_evidence(project: workspace.Project, build: dict | None
     elif qa.get("verdict") != READY_TO_PUBLISH:
         missing.append((f"QA {qa.get('pass', '')} says {qa.get('verdict')} at "
                         f"{qa.get('overall', '?')}", _cmd("qa", project)))
+    missing += _package_rows(project)
     return missing
+
+
+def _package_rows(project: workspace.Project) -> list[tuple[str, str]]:
+    """The upload set's rows of the delivery evidence (AUTO-147): none when
+    `yt package` wrote package/package.json for the scene.xml and video.mp4
+    now on disk and judged it ready (its own check read build.json's
+    `publishable`), else the one thing to fix. The digests are compared as
+    the gate's are: a recorded one, against a file that exists."""
+    fix = f"yt package --title {project.root.name}"
+    path = project.path("package")
+    pkg = read_json(path, warn=False) if path.exists() else None
+    if not isinstance(pkg, dict):
+        return [(f"no upload set: {workspace.ARTIFACTS['package']} has not been written "
+                 "for this render", fix)]
+    video, scene = project.path("video"), project.path("scene")
+    if pkg.get("video_sha256") and video.exists() \
+            and pkg["video_sha256"] != scene_digest(video):
+        return [("the upload package was made for a different video.mp4 than the one now "
+                 "rendered", fix)]
+    if pkg.get("scene_sha256") and scene.exists() \
+            and pkg["scene_sha256"] != scene_digest(scene):
+        return [("the upload package was made for a different scene.xml than the one now "
+                 "built", fix)]
+    if pkg.get("verdict") != "ready":
+        errors = sum(1 for f in pkg.get("findings") or [] if str(f).startswith("error:"))
+        return [(f"the upload package is not ready ({errors} error(s) in "
+                 f"{workspace.ARTIFACTS['package']})", fix)]
+    return []
 
 
 def check_renders(project: workspace.Project, report: Report) -> None:

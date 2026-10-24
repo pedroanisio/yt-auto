@@ -24,7 +24,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from ytstudio import lane, workspace  # noqa: E402
+from ytstudio import doctor, lane, workspace  # noqa: E402
 from ytstudio.core import write_json  # noqa: E402
 
 PROCESS_FILE = ROOT / ".govern" / "processes" / "yt-video.json"
@@ -151,8 +151,23 @@ class Check(unittest.TestCase):
                                              "triage": {"verdict": "deliverable"}})
         write_json(self.root / "qa.json", {"pass": "pass-02", "verdict": "READY TO PUBLISH",
                                            "overall": 9.1})
+        # AUTO-147: and a current, ready upload set from `yt package`
+        ok, lines = self.check("deliver")
+        self.assertFalse(ok)
+        self.assertEqual([ln for ln in lines if ln.startswith("missing:")],
+                         [ln for ln in lines if "package" in ln])
+        self.assertTrue(lines)
+        (self.root / "package").mkdir()
+        write_json(self.root / "package" / "package.json", {
+            "verdict": "ready", "findings": [], "scene_sha256": "",
+            "video_sha256": doctor.scene_digest(self.root / "video.mp4")})
         ok, lines = self.check("deliver")
         self.assertTrue(ok, lines)
+
+    def test_the_deliver_exit_names_the_package(self):
+        deliver = next(s for s in lane.process()["stages"] if s["name"] == "deliver")
+        self.assertIn("yt package", deliver["exit"])
+        self.assertIn("yt package", lane.__doc__)
 
     def test_an_unknown_stage_is_an_error_not_a_pass(self):
         with self.assertRaises(ValueError):

@@ -60,7 +60,7 @@ class Rebuilt(SceneEvidence):
         self.never_ready()
 
     def test_the_scene_before_the_render_is_ready(self):
-        self.built(); self.rendered(); self.gated(); self.scored_scene()
+        self.built(); self.rendered(); self.gated(); self.scored_scene(); self.packaged()
         self.assertEqual(self.delivery("fail"), [])
         self.assertTrue(self.is_ready())
 
@@ -70,7 +70,7 @@ class Mtime(SceneEvidence):
     video.mp4 and scene.xml."""
 
     def test_a_qa_pass_older_than_the_scene_is_stale(self):
-        self.built(); self.rendered(); self.gated(); self.scored_scene(None)
+        self.built(); self.rendered(); self.gated(); self.scored_scene(None); self.packaged()
         self.assertTrue(self.is_ready())
         self.stamp("scene.xml")
         self.assertTrue(self.fails_about("QA pass-03 predates"))
@@ -83,7 +83,7 @@ class Mtime(SceneEvidence):
         self.never_ready()
 
     def test_a_pass_after_both_is_not_stale(self):
-        self.built(); self.rendered(); self.gated(); self.scored_scene(None)
+        self.built(); self.rendered(); self.gated(); self.scored_scene(None); self.packaged()
         self.assertTrue(self.is_ready())
 
 
@@ -98,6 +98,7 @@ class Digest(SceneEvidence):
 
     def test_a_pass_of_this_scene_is_kept_when_the_scene_was_only_touched(self):
         self.built(SCENE_1); self.rendered(); self.gated(); self.scored_scene(SCENE_1)
+        self.packaged()
         self.assertTrue(self.is_ready())
         self.stamp("scene.xml")       # same bytes, newer mtime: the gate is what goes stale
         self.assertFalse(self.fails_about("QA pass-03"))
@@ -111,6 +112,56 @@ class Digest(SceneEvidence):
         self.assertEqual(doctor.scene_digest(self.root / "missing.xml"), "")
         self.built()
         self.assertEqual(doctor.scene_digest(self.root / "scene.xml"), digest(SCENE_1))
+
+
+class Package(SceneEvidence):
+    """AUTO-147: delivery needs a current, ready upload set from `yt package`;
+    each of its rows comes from doctor._package_rows alone."""
+
+    def everything_else(self) -> None:
+        self.built(); self.rendered(); self.gated(); self.scored_scene()
+
+    def package_fails(self):
+        return [f for f in self.delivery("fail") if "package" in f.message]
+
+    def test_ready_needs_package_json(self):
+        self.everything_else()
+        fails = self.delivery("fail")
+        self.assertEqual(len(fails), 1, [f.message for f in fails])
+        self.assertIn("package/package.json", fails[0].message)
+        self.assertEqual(fails[0].fix, "yt package --title a-film")
+        self.never_ready()
+        self.packaged()
+        self.assertEqual(self.delivery("fail"), [])
+        self.assertTrue(self.is_ready())
+
+    def test_a_package_of_another_scene_is_one_row(self):
+        self.everything_else(); self.packaged(scene_sha256=digest(SCENE_2))
+        fails = self.package_fails()
+        self.assertEqual(len(fails), 1)
+        self.assertIn("scene.xml", fails[0].message)
+        self.assertEqual(fails[0].fix, "yt package --title a-film")
+        self.never_ready()
+
+    def test_a_package_of_another_video_is_one_row(self):
+        self.everything_else(); self.packaged(video_sha256=digest(b"another video"))
+        fails = self.package_fails()
+        self.assertEqual(len(fails), 1)
+        self.assertIn("video.mp4", fails[0].message)
+        self.never_ready()
+
+    def test_a_package_that_is_not_ready_is_one_row(self):
+        self.everything_else(); self.packaged("not ready")
+        fails = self.package_fails()
+        self.assertEqual(len(fails), 1)
+        self.assertIn("not ready", fails[0].message)
+        self.never_ready()
+
+    def test_the_rows_come_from_one_helper_called_once(self):
+        source = Path(doctor.__file__).read_text(encoding="utf-8")
+        body = source.split("def delivery_evidence(", 1)[1].split("\ndef ", 1)[0]
+        self.assertEqual(body.count("_package_rows("), 1)
+        self.assertNotIn("package.json", body)
 
 
 class JudgeCalibration(SceneEvidence):
@@ -131,7 +182,7 @@ class JudgeCalibration(SceneEvidence):
                 sorted((f.level, f.message) for f in report.findings if f.area == "delivery"))
 
     def test_the_delivery_result_is_the_same_calibrated_or_not(self):
-        self.built(); self.rendered(); self.gated()
+        self.built(); self.rendered(); self.gated(); self.packaged()
         results = []
         for fixtures in (None, False, True):
             self.scored_with(None if fixtures is None else {
