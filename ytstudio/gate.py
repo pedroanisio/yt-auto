@@ -724,12 +724,17 @@ def run(args) -> int:
     code = exit_code(proc.returncode, triage)
     gate_out = (Path(found["video"]).with_name("gate.json") if project.standalone
                 else project.root / "gate.json")
+    # The bytes judged, so doctor tells a touched file from a replaced one:
+    # the local files, the same ones plan_remote ships to a host.
+    from .doctor import scene_digest
     write_json(gate_out, {
         "idea": {"title": idea.title}, "tool_exit": proc.returncode,
         "mode": "frames" if args.frames else "technical", "host": host or "",
         "command": cmd, "stopped_by": stop, "tool_output": output[-4000:],
         "triage": triage, "geometry": geo, "exit": code, "engine": supervisor.report(),
-        "usage": spend.from_report(supervisor.report())})
+        "usage": spend.from_report(supervisor.report()),
+        "video_sha256": scene_digest(Path(found["video"])),
+        "scene_sha256": scene_digest(Path(found["scene"]))})
     print(f"wrote {gate_out}", file=sys.stderr)
     if code == 0 and not args.frames:
         print("a perceptual review is still required: this gate is technical; "
