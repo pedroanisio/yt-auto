@@ -209,6 +209,71 @@ class SectionDeliveryOnElevenLabs(unittest.TestCase):
         self.assertEqual(scenes[0][1]["text"], "Line number 2.")
 
 
+class AligningKit(FakeKit):
+    """The fake kit, writing the character timings of the text it was sent,
+    as ElevenLabs does; `split` puts a space at every hyphen of the sent
+    text, so the aligned words outnumber the line's."""
+
+    def __init__(self, split=False):
+        super().__init__()
+        self.split = split
+
+    def tts_scenes(self, client, scenes_file, voice_id, out_dir, **kw):
+        super().tts_scenes(client, scenes_file, voice_id, out_dir, **kw)
+        for scene in json.loads(Path(scenes_file).read_text(encoding="utf-8")):
+            chars = list(scene["text"].replace("-", " ") if self.split else scene["text"])
+            (Path(out_dir) / f"{scene['id']}.alignment.json").write_text(json.dumps(
+                {"alignment": {"characters": chars,
+                               "character_start_times_seconds": [i * 0.01 for i in range(len(chars))],
+                               "character_end_times_seconds": [i * 0.01 + 0.008
+                                                               for i in range(len(chars))]}}),
+                encoding="utf-8")
+
+
+class ElevenLabsCaptionsReadTheLine(unittest.TestCase):
+    """AUTO-139: ElevenLabs is sent the respelled line and aligns what it
+    was sent; the takes and the captions carry the line as written, at the
+    aligned timings, or estimated when the counts do not map."""
+
+    def record(self, kit):
+        secs = sections(2)
+        secs[0].shots[0].narration = "Ask Schrödinger."
+        secs[0].shots[0].pronounce = [{"term": "Schrödinger", "say": "SHROH-ding-er"}]
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(voice, "pick_engine", lambda e: e), \
+                mock.patch.object(voice, "_kit", lambda: kit):
+            data = voice.VoiceOver(Idea(title="T", genre="g", description="d"), secs,
+                                   Path(tmp), engine="elevenlabs", voice="v1",
+                                   verbose=False).run()
+            takes = [voice.Take(**{k: v for k, v in row.items() if k != "words"},
+                                words=[voice.Word(**w) for w in row["words"]])
+                     for row in data["takes"]]
+            vtt = Path(tmp) / "narration.vtt"
+            voice.write_captions(vtt, takes)
+            return takes, vtt.read_text(encoding="utf-8")
+
+    def test_a_respelled_take_captions_the_line_at_its_aligned_timings(self):
+        takes, vtt = self.record(AligningKit())
+        first = takes[0]
+        self.assertEqual(first.spoken, "Ask shroh-ding-er.")
+        self.assertEqual([w.text for w in first.words], ["Ask", "Schrödinger."])
+        self.assertEqual(first.timing, "exact")
+        self.assertAlmostEqual(first.words[1].start, 0.04)
+        self.assertNotIn("caption_mismatch", first.delivery)
+        self.assertIn("Schrödinger", vtt)
+        self.assertNotIn("shroh", vtt)
+
+    def test_an_alignment_that_does_not_map_is_estimated_from_the_line(self):
+        takes, vtt = self.record(AligningKit(split=True))
+        first = takes[0]
+        self.assertEqual([w.text for w in first.words], ["Ask", "Schrödinger."])
+        self.assertEqual(first.timing, "estimated")
+        self.assertEqual(first.delivery["caption_mismatch"], {"spoken": 4, "text": 2})
+        self.assertIn("Schrödinger", vtt)
+        self.assertNotIn("shroh", vtt)
+        self.assertEqual(takes[1].timing, "exact")         # an unmarked take, as today
+
+
 class TheTakeReviewSaysWhatItHeard(unittest.TestCase):
     """voice.json's take review carries the mark of the takes it was asked
     about (AUTO-105), so `yt qa` uses it only while the film carries them."""
