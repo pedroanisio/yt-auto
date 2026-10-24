@@ -2767,12 +2767,45 @@ def fixed_errors(rounds: list[dict]) -> list[dict]:
     return sorted(out.values(), key=lambda e: (e["round_from"], e["finding"]))
 
 
+def fixed_finding(given, fixed: list[str]) -> str | None:
+    """The fixed finding an answer names, as the gate worded it: by its number
+    in the prompt's list (1-based), or by its words with the spacing set
+    aside. A build error carries a traceback over several lines, which a
+    model copying it may well re-space; a word changed is another finding."""
+    text = str(given or "").strip()
+    number = re.fullmatch(r"#?(\d+)\.?", text)
+    if number:
+        k = int(number.group(1))
+        return fixed[k - 1] if 1 <= k <= len(fixed) else None
+    words = " ".join(text.split())
+    return next((f for f in fixed if " ".join(str(f).split()) == words), None)
+
+
+def style_words(style: dict) -> list[tuple[str, str]]:
+    """The names a style gives its look, each with what it is: its palette's
+    swatches, its own name and its fonts. A lesson names none of them."""
+    out: list[tuple[str, str]] = []
+    for swatch in (style or {}).get("palette") or []:
+        if isinstance(swatch, dict) and str(swatch.get("name") or "").strip():
+            out.append(("the palette's", str(swatch["name"]).strip()))
+    if isinstance((style or {}).get("name"), str) and style["name"].strip():
+        out.append(("the style's name", style["name"].strip()))
+    for font in (style or {}).get("fonts") or []:
+        family = font.get("family") or font.get("name") if isinstance(font, dict) else font
+        if isinstance(family, str) and family.strip():
+            out.append(("the style's font", family.strip()))
+    return out
+
+
 def lesson_problems(answer, *, fixed: list[str], names, style: dict,
                     tokens: dict[str, str]) -> list[str]:
     """What keeps an answer from being a lesson, one line each: an SDK element
-    it names that the SDK lacks, a colour, a style token or a palette name in
-    its words (a lesson is about the engine, never the look), or a finding
-    that was not among the fixed ones."""
+    it names that the SDK lacks, a colour, a style token, a palette name, the
+    style's name or a font in its words (a lesson is about the engine, never
+    the look), or a finding that was not among the fixed ones. A style's
+    words are matched whole and in any case; a token's bare role name
+    (background, ink) is left alone, since the engine's own attributes share
+    those words, and refused only as a token (`--ink`, `var(--`)."""
     if not isinstance(answer, dict):
         return ["the answer is not an object"]
     problems: list[str] = []
@@ -2799,16 +2832,16 @@ def lesson_problems(answer, *, fixed: list[str], names, style: dict,
     for value in sorted(values):
         if value.lower() in words.lower():
             problems.append(f"the text holds the style's token value {value}")
-    if "var(--" in words or any(f"--{name}" in words for name in tokens_from(style)):
+    keys = {*tokens_from(style), *(tokens or {})}
+    if "var(--" in words or any(f"--{name}" in words for name in keys):
         problems.append("the text names a style token; a lesson is about the engine, "
                         "never the look")
-    for swatch in (style or {}).get("palette") or []:
-        name = str(swatch.get("name") or "").strip() if isinstance(swatch, dict) else ""
-        if name and re.search(rf"(?<!\w){re.escape(name)}(?!\w)", words):
-            problems.append(f"the text names the palette's {name!r}")
-    if isinstance(answer.get("finding"), str) and answer["finding"].strip() not in {
-            f.strip() for f in fixed}:
-        problems.append("finding is not one of the fixed findings, word for word")
+    for what, name in style_words(style):
+        if re.search(rf"(?<!\w){re.escape(name)}(?!\w)", words, re.I):
+            problems.append(f"the text names {what} {name!r}")
+    if isinstance(answer.get("finding"), str) and fixed_finding(answer["finding"],
+                                                                fixed) is None:
+        problems.append("finding is neither the number of a fixed finding nor its words")
     return problems
 
 
@@ -3608,7 +3641,18 @@ class VfxPlanner:
                            "review": review, "timed_out": False, "infra": lost,
                            "review_usd": round(reviewer.usage.cost_usd - paid, 4),
                            "findings": [f for f in findings if not f.startswith("note")]})
-            self.ws.keep_round(name, round_no)
+            if self.ws.keep_round(name, round_no) is None and (self.ws.dir / program).is_file():
+                # A build that failed saved no document, so keep_round kept
+                # nothing; the program it failed on is kept alone, for the
+                # lesson a later round may teach (AUTO-111). With no document
+                # the round is never restored or counted as kept.
+                kept = self.ws.dir / Workspace.ROUNDS_DIR / stem / f"r{round_no:02d}"
+                if kept.exists():
+                    shutil.rmtree(kept)
+                kept.mkdir(parents=True)
+                for rel in (program, f"{stem}.provenance.json"):
+                    if (self.ws.dir / rel).is_file():
+                        shutil.copy2(self.ws.dir / rel, kept / rel)
             # What a kill from here on keeps: the rounds so far, standing on
             # the one the verdicts promoted, for --recover to put back.
             standing = best_round(rounds) or rounds[-1]
@@ -3775,19 +3819,19 @@ class VfxPlanner:
             f"A section's program, {program}, failed the frame gate and a later revision "
             "passed it. The gate's error findings that the revision fixed, with the "
             "rounds:",
-            "\n".join(f"- round {e['round_from']} -> round {e['round_to']}: {e['finding']}"
-                      for e in fixed),
+            "\n".join(f"{i}. round {e['round_from']} -> round {e['round_to']}: {e['finding']}"
+                      for i, e in enumerate(fixed, 1)),
             "Distil one lesson for the next author, who writes another section of another "
             "film with the same kit: what the engine or the SDK does that the failing round "
-            "did not expect, and what to do instead, in one sentence. `finding` is the one "
-            "fixed finding above that the lesson answers, copied word for word. `elements` "
+            "did not expect, and what to do instead, in one sentence. `finding` is the number "
+            "of the one fixed finding above that the lesson answers. `elements` "
             "are the SDK element names the lesson is about, from the list below. `cause` is "
             "engine when the engine or the SDK behaves in a way an author could not read "
             "from the guide, authoring when the program made a mistake the kit already "
             "rules out. `general` is false when the lesson only holds for this world.",
             "The lesson is about the engine and the SDK, never the look: no colour, no "
-            "style token, no palette name, no layout or aesthetic choice. The next film's "
-            "treatment is its own.",
+            "style token, no palette, style or font name, no layout or aesthetic choice. "
+            "The next film's treatment is its own.",
             f"The SDK's element names: {names}",
             (f"The change between the rounds:\n```diff\n{capped(diff, LESSON_DIFF_CHARS)}```"
              if diff else "The rounds' programs were not both kept; no change can be shown."),
@@ -3800,62 +3844,92 @@ class VfxPlanner:
                 tokens: dict[str, str]) -> dict:
         """Ask the section's reviewer for the lesson its fixed gate errors
         teach, check it mechanically, ask once more with the problems named,
-        and otherwise record the failure (invariant 3). A general lesson is
-        appended to the lessons log, once: an answer served from the cache
-        was logged when it was first given. Returns {fixed, lesson, logged,
-        problem}: the finding a lesson not kept leaves on the record."""
+        and otherwise record the failure (invariant 3). Returns {fixed,
+        lesson, logged, problem}: the finding a lesson not kept leaves on the
+        record. The step is advisory: whatever goes wrong in it is that
+        finding, never a section without its final record."""
         out: dict = {"fixed": fixed, "lesson": None, "logged": None, "problem": None}
-        # Asked once more at the most, each ask under the review's cap: a
-        # section that cannot pay that is not taken past its budget for it.
-        if self.spend.available(n) < 2 * self.review_budget_usd:
-            out["problem"] = (f"note: lesson: not asked; the budget leaves "
-                              f"${self.spend.available(n):.2f}, under two asks at "
-                              f"${self.review_budget_usd:g}")
+        # The operator asked the run to wrap up: no reviewer is waited on.
+        if self.finish_requested() or self.spend.stopped.get(n) == "finish":
+            out["problem"] = "note: lesson: not asked (finish requested)"
             return out
+        # Two asks at the review's cap are held against the section's and the
+        # stage's budgets while they run, so sections side by side cannot
+        # together pass the stage. Like a review's reserve it is a floor, not
+        # a cap: the harness may ask once more inside each decision when an
+        # answer breaks the schema.
+        want = 2 * self.review_budget_usd
+        held = self.spend.grant(n, want)
+        try:
+            if held < want:
+                out["problem"] = (f"note: lesson: not asked; the budget leaves "
+                                  f"${held:.2f}, under two asks at "
+                                  f"${self.review_budget_usd:g}")
+                return out
+            self._ask_lesson(out, reviewer, n, name, fixed, style, tokens)
+        except harness.HarnessError as exc:
+            out["problem"] = f"warning: lesson: {exc}"
+        except Exception as exc:          # advisory: never costs the section its record
+            out["problem"] = f"warning: lesson: {type(exc).__name__}: {exc}"
+        finally:
+            self.spend.release(n)
+        return out
+
+    def _ask_lesson(self, out: dict, reviewer, n: int, name: str, fixed: list[dict],
+                    style: dict, tokens: dict[str, str]) -> None:
+        """The asks of `_lesson`, filling `out`. An answer the check refuses
+        is forgotten, so a rerun asks again instead of being served it. A
+        general lesson is appended to the lessons log once: not when its
+        answer came from the cache (logged when first given), nor when the
+        log already holds the same lesson for the same section (`--fresh`)."""
         try:
             names = set(sdk().element_names())
         except Exception as exc:
             out["problem"] = f"warning: lesson: the SDK's element names could not be read ({exc})"
-            return out
+            return
         stem = name[:-len(".scene.xml")]
         ask = f"lesson-{stem}"
         prompt = self._lesson_prompt(name, fixed)
         check = dict(fixed=[e["finding"] for e in fixed], names=names, style=style,
                      tokens=tokens)
-        try:
-            answer = reviewer.decide(ask, prompt, LESSON_SCHEMA)
+        answer = reviewer.decide(ask, prompt, LESSON_SCHEMA)
+        problems = lesson_problems(answer, **check)
+        if problems:
+            reviewer.forget(ask)
+            ask = f"{ask}-again"
+            answer = reviewer.decide(
+                ask, prompt + "\n\nYour last answer cannot be kept: "
+                + "; ".join(problems[:10]) + ". Answer again, the whole lesson.",
+                LESSON_SCHEMA)
             problems = lesson_problems(answer, **check)
             if problems:
-                ask = f"{ask}-again"
-                answer = reviewer.decide(
-                    ask, prompt + "\n\nYour last answer cannot be kept: "
-                    + "; ".join(problems[:10]) + ". Answer again, the whole lesson.",
-                    LESSON_SCHEMA)
-                problems = lesson_problems(answer, **check)
-        except harness.HarnessError as exc:
-            out["problem"] = f"warning: lesson: {exc}"
-            return out
+                reviewer.forget(ask)
         if problems:
             out["problem"] = "warning: lesson: not kept after asking twice: " + "; ".join(problems)
-            return out
-        entry = next(e for e in fixed if e["finding"].strip() == answer["finding"].strip())
+            return
+        finding = fixed_finding(answer["finding"], check["fixed"])
+        entry = next(e for e in fixed if e["finding"] == finding)
+        answer = dict(answer, finding=finding)
         out["lesson"] = dict(answer, round_from=entry["round_from"], round_to=entry["round_to"])
         if not answer["general"] or self.lessons_log is None:
-            return out
+            return
         if any(d.name == ask and d.cached for d in reviewer.decisions):
-            return out
+            return
         row = {"engine": sdkkit.engine_version(), "slug": self.ws.root.name, "section": n,
                "doc": name, "round_from": entry["round_from"], "round_to": entry["round_to"],
                **{k: answer[k] for k in LESSON_SCHEMA["required"]},
                "model": self.reviewer_model, "when": time.strftime("%Y-%m-%dT%H:%M:%S"),
                "label": None}
+        same = ("slug", "section", "doc", "finding", "topic", "text")
+        if any(all(r.get(k) == row[k] for k in same) for r in read_lessons(self.lessons_log)):
+            out["logged"] = str(self.lessons_log)
+            return
         try:
             append_lesson(self.lessons_log, row)
             out["logged"] = str(self.lessons_log)
         except OSError as exc:
             out["problem"] = f"warning: lesson: not appended to {self.lessons_log} ({exc})"
-        self._say(f"    [{n}] lesson: {answer['topic']} ({entry['finding'][:80]})")
-        return out
+        self._say(f"    [{n}] lesson: {answer['topic']} ({finding[:80]})")
 
     def author(self, outline: dict, effects: list[dict], style: dict,
                tokens: dict[str, str]) -> list[dict]:
