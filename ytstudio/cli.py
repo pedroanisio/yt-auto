@@ -268,7 +268,9 @@ def look_gate(stage: str, project: workspace.Project, skip: set, redo: set = fro
     - "again" for the keyframe when it was rejected, changed after approval,
       or its pass left nothing approvable: it is authored again (notes first);
     - "stop" before vfx while a look awaits the operator: nothing downstream
-      is paid for against a look that may change;
+      is paid for against a look that may change (a look on design.py's
+      house fallback palette, which cannot be approved, names `yt styles
+      --rich` in place of --approve);
     - "relook" for vfx when an approved look from the film is not in the
       animation that exists: its section is carried in and the others are
       authored again against it (`yt vfx --relook`), and build and render follow;
@@ -283,6 +285,15 @@ def look_gate(stage: str, project: workspace.Project, skip: set, redo: set = fro
         start = PIPELINE.index("vfx")
         rest = (list(PIPELINE[start:]) if redo & {"keyframe", "all"}
                 else [s for s in PIPELINE[start:] if s in redo])
+        palette = keyframe.palette_refusal(keyframe.load_record(project.root))
+        if palette:
+            # --approve would be refused (AUTO-155): the palette is the fix,
+            # and the look is authored again on it with --redo keyframe.
+            say(f"\n== vfx: the look cannot be approved: {palette}\n"
+                f"  yt styles --project {project.root} --rich\n"
+                f"  and `yt run --project {project.root} --redo {','.join(['keyframe', *rest])}` "
+                "to author it again on the film's palette; --skip keyframe runs without a look")
+            return "stop"
         again = f" --redo {','.join(rest)}" if rest else ""
         say(f"\n== vfx: waiting for the look's approval. Look at "
             f"{project.root / 'keyframe.md'}, then\n"

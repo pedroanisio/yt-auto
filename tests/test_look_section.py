@@ -575,5 +575,25 @@ class RunStops(Case):
         self.assertNotIn("--approve", sheet)
         self.assertIn("fallback palette", sheet)
 
+    def test_a_fallback_look_stops_the_run_naming_styles_not_the_approval(self):
+        # AUTO-155: `yt run --skip styles` reaches vfx with a look that
+        # `yt keyframe --approve` refuses, so the stop names the palette fix
+        lead = self.author(self.planner(lead=1))[0]
+        project = workspace.Project(self.root)
+        record = self.look_record(lead, "pending")
+        record["palette_source"] = "fallback"
+        (self.root / "keyframe.json").write_text(json.dumps(record))
+        said = []
+        self.assertEqual(cli.look_gate("vfx", project, set(), say=said.append), "stop")
+        self.assertNotIn("--approve", said[0])
+        self.assertIn("fallback palette", said[0])
+        self.assertIn(f"yt styles --project {self.root} --rich", said[0])
+        self.assertIn(f"yt run --project {self.root} --redo keyframe`", said[0])
+        self.assertIn("--skip keyframe", said[0])
+        self.assertEqual(cli.look_gate("vfx", project, set(), {"all"}, say=said.append), "stop")
+        self.assertIn("--redo keyframe,vfx,sound,build,render`", said[-1])
+        self.assertEqual(cli.look_gate("vfx", project, {"keyframe"}), "")
+
+
 if __name__ == "__main__":
     unittest.main()
