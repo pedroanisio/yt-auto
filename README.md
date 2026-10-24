@@ -584,8 +584,11 @@ which scope it got; an explicit `--depth` wins over either.
 or a local PDF) makes a film that explains one paper: the `paper` scope.
 The paper is read first (`raw/00-paper.json`), by WebFetch or, for a local
 file, Read; the read fails unless the agent's own tool events show the paper
-opened, and a local path never enters the dossier, which names the file
-`file:<basename>`. The questions then ask after the problem's cost, the state
+opened, and a local path never enters the dossier or a prompt, which name
+the file `file:<basename>`; idea.json keeps its absolute path, so a later
+run from another folder finds it, and `yt run` hands a paper planted there
+to research and to its estimate. A dossier cached for another paper, or for
+none, is researched again from the questions on instead of replayed. The questions then ask after the problem's cost, the state
 of the art before it, the reception, the consequences and the limitations;
 the paper is the first source, and its own claims cite it. One more decision,
 `06b-paper` (one `-again` at most), writes the dossier's `paper` digest:

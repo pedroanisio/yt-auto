@@ -380,7 +380,9 @@ whole file or none.
 --paper REF`; a DOI, an arXiv id, a URL or a local PDF) plans the `paper`
 scope. `raw/00-paper.json` is the paper as read, by WebFetch or, for a local
 file, Read; it fails unless the agent's own tool events show the paper opened,
-and a local path is named `file:<basename>` everywhere it is written. The
+and a local path is named `file:<basename>` in the dossier and every prompt
+(idea.json keeps the absolute path). A dossier cached for another paper, or
+for none, is researched again from `01-questions` on, never replayed. The
 questions ask after the problem's cost, the prior state of the art, the
 reception, the consequences and the limitations; the paper is the first source
 and its own claims cite it. `06b-paper` (and at most `06b-paper-again`) decides
