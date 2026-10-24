@@ -302,6 +302,28 @@ class Revise(unittest.TestCase):
         self.assertIn("shot 1.1", lines[0])
         self.assertIn("source:headline", [f["rule"] for f in data["rules"]["flags"]])
 
+    def test_a_changed_shot_citing_an_id_the_dossier_lost_is_cleared_and_reported(self):
+        # re-researched since: the dossier holds no article now
+        write_json(self.film / "dossier.json", {"idea": {"title": self.labels.TITLE},
+                                                "claims": [], "assets": []})
+        self.assertEqual(self.run_stage([HEADLINE, SOURCE, "Genoa"]), 0)
+        data = json.loads((self.film / "script.json").read_text())
+        self.assertIn("warning: source:headline: shot 1.1 cited N1, which the dossier "
+                      "does not hold; citation removed", data["findings"])
+        self.assertEqual(data["sections"][0]["shots"][0]["asset"], "headline")
+        # its strings are under the normal rules again
+        self.assertTrue(any("rule:wall-of-text" in f and "1.1" in f
+                            for f in data["findings"]), data["findings"])
+
+    def test_the_hint_keys_measure_the_card_as_the_findings_do(self):
+        data = json.loads((self.film / "script.json").read_text())
+        data.update(legibility=[], unspoken_numbers=[])
+        write_json(self.film / "script.json", data)
+        self.assertEqual(self.run_stage([HEADLINE, SOURCE, "Genoa"]), 0)
+        data = json.loads((self.film / "script.json").read_text())
+        self.assertEqual([h for h in data["unspoken_numbers"] + data["legibility"]
+                          if h.get("label") == "1.1"], [])
+
     def test_a_changed_shot_that_keeps_its_headline_is_not(self):
         self.assertEqual(self.run_stage([HEADLINE, SOURCE, "Genoa"]), 0)
         data = json.loads((self.film / "script.json").read_text())

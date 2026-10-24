@@ -7196,6 +7196,15 @@ def run_revise(args, idea: Idea, project) -> int:
             if raw[s.label].get("ceiling", "") != s.ceiling:
                 raw[s.label]["ceiling"] = s.ceiling
 
+    # A changed shot citing an N id the dossier no longer holds (research
+    # re-run since the draft, AUTO-149) loses the citation, as in the
+    # stage's own loop, so its strings fall under the normal rules again
+    # and the record says so instead of the card quietly going unchecked.
+    cleared = clear_unknown_headlines([s for s in targets if s.n in changed], writer.press)
+    for s in targets:
+        if s.n in changed and raw[s.label].get("asset", "") != s.asset:
+            raw[s.label]["asset"] = s.asset
+
     # The rules on the changed shots only: their old flags go, what the
     # new text breaks comes in; every other flag stands as it was recorded.
     ruled = data.get("rules") if isinstance(data.get("rules"), dict) else {}
@@ -7207,6 +7216,7 @@ def run_revise(args, idea: Idea, project) -> int:
              if f["n"] in changed]
     data["findings"] = ([line for line in data.get("findings") or []
                          if not any(p in str(line) for p in stale)]
+                        + cleared
                         + [line for line in rule_lines(fresh)
                            if not line.startswith("not_evidenced:")])
     data["rules"] = {**ruled, "flags": [f for f in old if f.get("n") not in changed] + fresh,
@@ -7264,7 +7274,7 @@ def run_revise(args, idea: Idea, project) -> int:
         data["check"] = check
     for key, measure in (("legibility", legibility), ("unspoken_numbers", unspoken_numbers)):
         if key in data:
-            data[key] = measure(sections)
+            data[key] = measure(sections, press=writer.press)
     data.setdefault("revised", []).append({
         "from": source, "asked": [s.label for s in targets], "why": args.why,
         "applied": result["applied"], "kept": kept,
