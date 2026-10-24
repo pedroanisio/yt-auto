@@ -134,7 +134,8 @@ class GridCopies(PlannerCase):
             self.assertTrue(copy.is_file(), copy)
             self.assertEqual(png.read_bytes(), varied_png())          # the clean frame untouched
             self.assertNotEqual(copy.read_bytes(), png.read_bytes())
-            self.assertEqual(Image.open(copy).size, Image.open(png).size)
+            self.assertEqual(Image.open(io.BytesIO(copy.read_bytes())).size,
+                             Image.open(io.BytesIO(png.read_bytes())).size)
             # the grid path sits in the frame's own entry, after its frame
             at = prompt.index(f'"frame": "frames/{png.name}"')
             g = prompt.index(f'"grid": "frames/grid/{png.name}"')
