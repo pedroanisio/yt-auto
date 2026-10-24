@@ -1040,6 +1040,15 @@ class Fixtures(unittest.TestCase):
         self.assertEqual(narrative.check_review(joke["review"]), [])
         punchline = shots(load(FIXTURES / "claim-joke" / "script.json"))[4]["narration"]
         self.assertIn("Far too fast for sunlight alone.", punchline)
+        # the joke itself is in shot 5, and good's shot 5 has none
+        joke_line = "blowing out a candle from the next town"
+        self.assertIn(joke_line, punchline)
+        self.assertNotIn(joke_line, shots(good["script.json"])[4]["narration"])
+        # the canned synopsis is good's, with only the candle comparison added
+        step = "sunlight is too weak to explain the gas tail"
+        self.assertIn(step, good_said["synopsis"])
+        self.assertEqual(joke["review"]["synopsis"].replace(
+            ", like blowing out a candle from the next town", ""), good_said["synopsis"])
 
     def test_the_good_pair_can_be_recommended(self):
         expected = load(FIXTURES / "good" / "expected.json")
