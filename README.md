@@ -1164,9 +1164,10 @@ world, at most two per section, side by side; a planned change of setting is
 not a break, and the review names any run of sections that stays in one set,
 scale and look longer than the story warrants (`monotony` in `vfx.json`'s
 `continuity`), which `yt doctor` warns of. The continuity verdict records
-who judged it (`continuity.reviewer`: model, author, engine); a break it
-marks `blocking`, from a reviewer of another family than the author, keeps
-`yt qa` off READY. A section whose best reviewed round ended under its bar
+who judged it (`continuity.reviewer`: model, author, `authors` -- the
+`author` of every section, carried ones too -- and engine); a break it marks
+`blocking`, from a reviewer of another family than every author, keeps `yt
+qa` off READY. A section whose best reviewed round ended under its bar
 (`authored[].bar`, the `--bar` it was reviewed against) is kept, as before,
 and `yt doctor` warns of it with the reason it stopped. No other
 animation tool is in the loop; a plan that cannot be expressed in
@@ -1974,14 +1975,14 @@ The bar is applied mechanically on top: READY TO PUBLISH needs an overall of
 9.0, no category under 8.5 and nothing blocking, where blocking includes what
 the manifests already prove (a placeholder, a build error, a failed gate, a
 blocking mechanical finding) and each vfx continuity break marked `blocking`
-whose recorded reviewer is of another family than its recorded author
+whose recorded reviewer is of another family than every recorded author
 (`vfx continuity: section N (<heading>): <problem>` in `scorecard.json`'s
 `blocking`). A verdict by the author's own family, or one that does not say
 who gave it (a `vfx.json` from before `continuity.reviewer`), a major break,
 `one_film: false` alone, and a skipped or failed continuity review stay
 `yt doctor` warns and never change the verdict; a `yt vfx --sections N`
-judges continuity again, and the new verdict decides the next QA. While a blocking mechanical finding stands,
-`visual_quality` and `animation_vfx` are capped at 6, whatever the reviewer
+judges continuity again, and the new verdict decides the next QA. While a
+blocking mechanical finding stands, `visual_quality` and `animation_vfx` are capped at 6, whatever the reviewer
 wrote. When `build.json` has no audio track, `sound_design` and
 `music_score` are 2.0 by rule and named as not evidenced, never a neutral 5.
 Each pass lives under `qa/pass-NN/` with its frames, `narration.txt`, the

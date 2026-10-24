@@ -787,12 +787,13 @@ blocking editorial note. It is not a delivery verdict. The order is:
    house fallback palette (`build.json`'s `design.source` `fallback`) is a
    `styles:` blocker naming `yt styles --rich`, whatever it scores. A vfx
    continuity break marked `blocking` whose recorded reviewer is of another
-   family than its recorded author is a `vfx continuity:` blocker, whatever
-   it scores; the fix is `yt vfx --sections N`, which judges continuity
-   again. A blocking
-   mechanical finding (flat, clipped, frozen, a jump, an off-camera object
-   on the hook, the ending, the payoff shot or more than one sampled shot) blocks on its own
-   and caps `visual_quality` and `animation_vfx` at 6 until it is fixed.
+   family than every recorded author of the film is a `vfx continuity:`
+   blocker, whatever it scores; the fix is `yt vfx --sections N`, which
+   judges continuity again.
+   A blocking mechanical finding (flat, clipped, frozen, a jump, an
+   off-camera object on the hook, the ending, the payoff shot or more than
+   one sampled shot) blocks on its own and caps `visual_quality` and
+   `animation_vfx` at 6 until it is fixed.
    QA's mechanical pass also compares the film with the authors' proof
    frames (as `yt build` did on the built document before the encode):
    for each world's latest proof frame it renders the film at the
@@ -1124,7 +1125,8 @@ hand-authored world showed the cost.
   - `yt vfx --sections 2,3` re-authors only those sections into the next
     `vfx/vNN/` and carries the others forward from the active version
     (`carried_from`, $0). Continuity, reach and plan are then redone. Each
-    record keeps the `bar` it was reviewed against, carried with its score.
+    record keeps the `bar` it was reviewed against and the model that
+    wrote it (`author`), carried with its score.
     `--sections` refuses `--fresh`. Each section record keeps
     `inputs_sha256` (`vfx.section_inputs_digest`: the section's shots with
     their measured timings, `at` counted from its first shot so re-timing
@@ -1332,8 +1334,11 @@ hand-authored world showed the cost.
   fix, and `monotony`, each run of sections that stays in one set, scale and
   look longer than the story warrants). A planned change of setting is not a
   break. The verdict records who gave it (`continuity.reviewer`: model,
-  author, engine). A break marked `blocking` by a reviewer of another family
-  than the author (`flags.own_reviewer`) keeps `yt qa` off READY (`vfx
+  author, `authors` -- every section's `author`, so a section carried from
+  another model counts, None for one carried from before authors were kept
+  -- and the engine the reviewer ran on). A break marked `blocking` by a
+  reviewer of another family than every author (`flags.own_reviewer`)
+  keeps `yt qa` off READY (`vfx
   continuity: section N (<heading>): <problem>` among the blocking items); a
   same-family or unrecorded verdict, a major break and `one_film: false`
   alone never change the verdict. `yt doctor` warns once per section owning
