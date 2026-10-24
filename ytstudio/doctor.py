@@ -1305,6 +1305,16 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
             report.add("warn", "vfx", f"the sections do not read as one film "
                        f"({cont.get('score', '?')}/10): {_clip(shown, 240)}",
                        "re-author the section(s) named; vfx.json `continuity` has each fix")
+        # AUTO-143: the opposite fault, a film that never leaves one set. A
+        # reviewer's warning, never a bar: staying is an editorial choice.
+        for run in [m for m in cont.get("monotony") or [] if isinstance(m, dict)][:3]:
+            names = [str(s) for s in run.get("sections") or []]
+            span = (f"{names[0]} to {names[-1]}" if len(names) > 1
+                    else names[0] if names else "?")
+            report.add("warn", "vfx", f"the film stays in one setting for sections {span}: "
+                       f"{_clip(str(run.get('problem', '')), 200)}",
+                       _clip(str(run.get("fix") or ""), 200)
+                       or "re-plan the section named with another setting")
         # A section carried after its inputs changed holds a review of other
         # inputs (`inherited`); nothing re-reviews it but authoring it again.
         # The approved look (`look`) was never scored: it lost no review, and

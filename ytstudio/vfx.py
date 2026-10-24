@@ -428,11 +428,23 @@ CONTINUITY_ROLE = (
     "will include it, and judge whether they read as one film: the same hero at "
     "the same scale, material and colour; the same world and light; one grade; a "
     "camera language that carries across the cuts. A change the editorial "
-    "treatment calls for is not a break, and you say so. Every break names the "
-    "sections it lies between, the one section whose document should change, and "
-    "the fix in that document's own terms (camera, light, material, scale, grade) "
-    "that its author can apply without asking you anything."
+    "treatment calls for is not a break, and you say so; a change of setting the "
+    "plan lists is not a break either (each frame carries its planned setting). "
+    "Every break names the sections it lies between, the one section whose "
+    "document should change, and the fix in that document's own terms (camera, "
+    "light, material, scale, grade) that its author can apply without asking you "
+    "anything. Then judge the opposite fault: name in `monotony` any run of "
+    "sections that stays in one set, scale and look longer than the story "
+    "warrants, the one section that should move, and the setting it should move "
+    "to (another place, scale, time or real-world record the story reaches). A "
+    "film may stay in one place by editorial choice; say so and leave `monotony` "
+    "empty when the story warrants it."
 )
+
+#: How many worlds of one section the continuity review is shown, one frame
+#: each: enough to see a planned change of setting without a film of many
+#: cuts flooding the side-by-side.
+WORLDS_SHOWN = 2
 
 CONTINUITY_SCHEMA = {
     "type": "object",
@@ -453,9 +465,24 @@ CONTINUITY_SCHEMA = {
                 "required": ["sections", "owner_section", "problem", "fix", "severity"],
             },
         },
+        # AUTO-143: a run of sections that never leaves one set; a warning
+        # `yt doctor` reports, never a bar.
+        "monotony": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "sections": {"type": "array", "items": {"type": "string"}},
+                    "owner_section": {"type": "string"},
+                    "problem": {"type": "string"},
+                    "fix": {"type": "string"},
+                },
+                "required": ["sections", "owner_section", "problem", "fix"],
+            },
+        },
         "summary": {"type": "string"},
     },
-    "required": ["one_film", "score", "breaks", "summary"],
+    "required": ["one_film", "score", "breaks", "monotony", "summary"],
 }
 
 #: Effect families, roughly cheapest to most expensive to refine by hand.
@@ -4382,10 +4409,13 @@ class VfxPlanner:
         return out
 
     def continuity(self, authored: list[dict]) -> dict:
-        """One proof frame from each section, side by side: do they read as
-        one film? Each section was reviewed alone, so a hero that changes
+        """One proof frame from each world, up to WORLDS_SHOWN a section, side
+        by side: do they read as one film, and does the film move where its
+        story does? Each section was reviewed alone, so a hero that changes
         size or a grade that shifts at every boundary passes every section
-        review; this is the review that sees it."""
+        review, and so does a film that never leaves one desk; this is the
+        review that sees both. It runs on the reviewer's model (AUTO-143):
+        the author's model never grades its own film."""
         def work() -> dict:
             frames: list[dict] = []
             cwd: Path | None = None
@@ -4398,25 +4428,41 @@ class VfxPlanner:
                 cwd = cwd or path.parent
                 if path.parent != cwd:
                     continue
-                png = pngs[len(pngs) // 2]
-                frames.append({"section": doc.get("section", ""), "document": path.name,
-                               "frame": f"frames/{png.name}"})
-            if len(frames) < 2:
+                # the middle frame of each symbol, in the order its frames sort
+                by_symbol: dict[str, list[Path]] = {}
+                for png in pngs:
+                    by_symbol.setdefault(self._frame_place(png.name)[0], []).append(png)
+                planned = {str(w.get("id")): str(w.get("setting") or "")
+                           for w in doc.get("worlds") or [] if isinstance(w, dict)}
+                order = [w for w in planned if w in by_symbol] + \
+                        [s for s in by_symbol if s not in planned]
+                for sid in order[:WORLDS_SHOWN]:
+                    group = sorted(by_symbol[sid], key=lambda p: self._frame_place(p.name)[1])
+                    png = group[len(group) // 2]
+                    frames.append({"section": doc.get("section", ""), "document": path.name,
+                                   "symbol": sid, "setting": planned.get(sid, ""),
+                                   "frame": f"frames/{png.name}"})
+            if len({f["section"] for f in frames}) < 2:
                 return {"skipped": "fewer than two sections have proof frames",
                         "frames": frames, "breaks": []}
-            reviewer = harness.Harness(self.ws.root, "vfx", model=self.model,
+            reviewer = harness.Harness(self.ws.root, "vfx", model=self.reviewer_model,
                                        role=CONTINUITY_ROLE, house=self.house,
                                        house_digest=self.house_digest, fresh=self.fresh,
                                        verbose=self.verbose, timeout=1800.0)
             prompt = "\n\n".join([
                 f"Read every PNG listed under `frames/` -- one proof frame from each "
-                f"section of \"{self.idea.title}\", in film order -- and judge them "
-                "together: do they read as one film? Then score 0-10 how well the "
-                "sections hold together as one film, by the publication bar.",
+                f"world of each section of \"{self.idea.title}\", in film order, each "
+                "with the setting its plan gave it -- and judge them together: do they "
+                "read as one film? Then score 0-10 how well the sections hold together "
+                "as one film, by the publication bar.",
                 harness.brief("Frames to Read, in film order", frames),
                 "The editorial treatment:\n" + self._direction_block(),
                 "A break names the sections it lies between, the one section whose "
-                "document should change, and the fix in that document's terms.",
+                "document should change, and the fix in that document's terms. A "
+                "monotony names the run of sections that stays in one set, scale and "
+                "look, the one section that should move, the problem as the viewer "
+                "sees it, and the setting to move to; leave it empty when the story "
+                "warrants staying.",
             ])
             try:
                 result = reviewer.inspect(f"continuity-{self.ws.version or 'v00'}", prompt,
@@ -4429,7 +4475,8 @@ class VfxPlanner:
             breaks = result.get("breaks") or []
             self._say(f"  continuity: {result.get('score')}/10, "
                       f"{'one film' if result.get('one_film') else 'not one film'}, "
-                      f"{len(breaks)} break(s)")
+                      f"{len(breaks)} break(s), "
+                      f"{len(result.get('monotony') or [])} run(s) in one setting")
             return dict(result, frames=frames,
                         cost_usd=round(reviewer.usage.cost_usd, 4))
         return self._stage("12-continuity", work)

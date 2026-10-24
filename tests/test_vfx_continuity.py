@@ -34,7 +34,13 @@ BREAK = {"one_film": False, "score": 4, "summary": "two films",
          "breaks": [{"sections": ["Open", "Later"], "owner_section": "Later",
                      "problem": "the hero is twice the size in Later",
                      "fix": "scale the hero to the size it has in Open",
-                     "severity": "major"}]}
+                     "severity": "major"}],
+         "monotony": []}
+
+#: AUTO-143: a run of sections that never leaves one set, named by the reviewer.
+MONOTONY = [{"sections": ["Open", "Later"], "owner_section": "Later",
+             "problem": "both sections sit on the same grey desk at the same scale",
+             "fix": "cut Later to the real 1953 lab, archival footage"}]
 
 
 class ContinuityCase(unittest.TestCase):
@@ -161,6 +167,84 @@ class Continuity(ContinuityCase):
         self.assertIn("usage", out)
 
 
+class Monotony(ContinuityCase):
+    """AUTO-143: the continuity review also names a film that stays in one
+    place, sees one frame per world, and is the reviewer's model, never the
+    author's."""
+
+    def two_worlds(self):
+        self.planner.jobs = 1                  # one author at a time: docs in order
+        world.FakeEngine.docs = [world.TWO_WORLD_DOC,
+                                 world.WORLD_DOC.replace("world-open", "world-later")]
+        groups = [world.SETTINGS_GROUP,
+                  dict(self.groups[1], setting="a storm over the North Sea")]
+        return self.author(groups=groups)
+
+    def test_a_section_with_two_worlds_shows_a_frame_of_each_with_its_setting(self):
+        authored = self.two_worlds()
+        world.FakeEngine.reviews = [dict(BREAK)]
+        result = self.planner.continuity(authored)
+        rows = [(f["section"], f["symbol"], f["setting"]) for f in result["frames"]]
+        self.assertEqual(rows, [
+            ("Open", "world-open", "1953 Cavendish lab, archival footage"),
+            ("Open", "world-open-2", "inside one cell membrane, molecular scale"),
+            ("Later", "world-later", "a storm over the North Sea")])
+        for f in result["frames"]:
+            self.assertIn(f"__{f['symbol']}__", f["frame"])
+        prompt = world.FakeEngine.stream_calls[-1]["prompt"]
+        self.assertIn("inside one cell membrane, molecular scale", prompt)
+
+    def test_a_section_shows_two_worlds_at_most(self):
+        authored = self.two_worlds()
+        three = dict(authored[0], worlds=authored[0]["worlds"] + [
+            dict(authored[0]["worlds"][1], id="world-open-3", setting="a third")])
+        frames = Path(self.root / three["file"]).parent / "frames"
+        stem = Path(three["file"]).name[:-len(".scene.xml")]
+        (frames / f"{stem}__world-open-3__1.5s.png").write_bytes(world.varied_png())
+        world.FakeEngine.reviews = [dict(BREAK)]
+        result = self.planner.continuity([three, authored[1]])
+        self.assertEqual([f["symbol"] for f in result["frames"]],
+                         ["world-open", "world-open-2", "world-later"])
+
+    def test_the_review_runs_on_the_reviewer_model(self):
+        authored = self.author()
+        world.FakeEngine.reviews = [dict(BREAK)]
+        before = len(world.FakeEngine.stream_calls)
+        self.planner.continuity(authored)
+        call = world.FakeEngine.stream_calls[before]
+        self.assertEqual(call["model"], self.planner.reviewer_model)
+        self.assertNotEqual(call["model"], self.planner.model)
+
+    def test_the_schema_requires_monotony_and_the_role_asks_for_it(self):
+        self.assertIn("monotony", vfx.CONTINUITY_SCHEMA["required"])
+        item = vfx.CONTINUITY_SCHEMA["properties"]["monotony"]["items"]
+        self.assertEqual(sorted(item["required"]),
+                         ["fix", "owner_section", "problem", "sections"])
+        self.assertIn("a change of setting the plan lists is not a break",
+                      vfx.CONTINUITY_ROLE)
+        self.assertIn("stays in one set, scale and look", vfx.CONTINUITY_ROLE)
+
+    def test_an_answer_without_monotony_is_asked_again_then_fails(self):
+        authored = self.author()
+        world.FakeEngine.reviews = [{k: v for k, v in BREAK.items() if k != "monotony"}]
+        asked = len(world.FakeEngine.json_calls)
+        result = self.planner.continuity(authored)
+        self.assertEqual(len(world.FakeEngine.json_calls), asked + 1)   # the form pass
+        self.assertIn("error", result)
+        self.assertIn("monotony", result["error"])
+
+    def test_monotony_reaches_vfx_json(self):
+        authored = self.author()
+        world.FakeEngine.reviews = [dict(BREAK, monotony=MONOTONY)]
+        stubs = {"outline": {"sections": self.sections}, "style": world.STYLE,
+                 "effects": self.groups, "author": authored,
+                 "scene_map": {}, "reach": {}, "plan": {}}
+        with patch.multiple(self.planner, **{k: (lambda *a, v=v, **kw: v)
+                                             for k, v in stubs.items()}):
+            out = self.planner.run()
+        self.assertEqual(out["continuity"]["monotony"], MONOTONY)
+
+
 class DoctorReadsContinuity(unittest.TestCase):
     def test_a_film_that_does_not_read_as_one_is_a_warning_naming_the_section(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -175,6 +259,35 @@ class DoctorReadsContinuity(unittest.TestCase):
             self.assertEqual(len(warns), 1)
             self.assertIn("Later", warns[0].message)
             self.assertIn("twice the size", warns[0].message)
+
+    def report(self, continuity):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "a-film"
+            root.mkdir()
+            write_json(root / "idea.json", {"title": "A film", "genre": "g",
+                                            "description": "d"})
+            write_json(root / "vfx.json", {"totals": {}, "plan": {},
+                                           "continuity": continuity})
+            return doctor.check_project(workspace.Project(root))
+
+    def test_a_film_that_stays_in_one_setting_is_one_warning_naming_the_sections(self):
+        one = {"one_film": True, "score": 8, "breaks": [], "summary": "one film",
+               "monotony": MONOTONY}
+        report = self.report(one)
+        warns = [f for f in report.findings
+                 if f.area == "vfx" and f.level == "warn" and "one setting" in f.message]
+        self.assertEqual(len(warns), 1)
+        self.assertIn("sections Open to Later", warns[0].message)
+        self.assertIn("same grey desk", warns[0].message)
+        self.assertIn("archival footage", warns[0].fix)
+        self.assertFalse([f for f in report.findings if f.level == "fail"
+                          and f.area == "vfx"])
+
+    def test_a_continuity_from_before_monotony_gives_no_warning(self):
+        old = {"one_film": True, "score": 8, "breaks": [], "summary": "one film"}
+        report = self.report(old)
+        self.assertFalse([f for f in report.findings if f.area == "vfx" and (
+            f.level == "fail" or "setting" in f.message or "one film" in f.message)])
 
 
 if __name__ == "__main__":

@@ -135,6 +135,7 @@ class FakeEngine:
     def stream(self, prompt, system=None, resume=False):
         tools = tuple(self.config.tools or ())
         FakeEngine.stream_calls.append({"prompt": prompt, "system": system,
+                                        "model": self.config.model,
                                         "tools": tools, "cwd": self.config.cwd,
                                         "timeout": self.config.timeout, "resume": resume})
         self.session_id = "author-session"
