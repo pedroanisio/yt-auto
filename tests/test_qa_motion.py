@@ -295,6 +295,59 @@ class Mechanical(unittest.TestCase):
             row.update(motion_by_label.get(row["label"], {}))
         return rows
 
+    def joined(self, **motion):
+        """The rows of a film with a push centred on the 1.2/1.3 cut
+        (AUTO-142): the join's row carries `motion`, every other row moves."""
+        build = _build()
+        build["joins"] = [{"n": 1, "at": 7.0, "kind": "world", "from": "shot-1.2",
+                           "to": "shot-1.3", "from_label": "1.2", "to_label": "1.3",
+                           "type": "push", "duration": 0.6, "alignment": "center",
+                           "why": "", "review": "accepted"}]
+        rows = qa.sample(build)
+        for row in rows:
+            row["still"] = {"mean": 100.0, "spread": 40.0, "dominant_share": 0.1,
+                            "clipped_share": 0.0}
+            row["motion"] = {"steps": [2.0, 2.1, 2.0, 2.2], "mean": 2.1, "max": 2.2,
+                             "frozen": False, "jump": None, "verdict": "moving"}
+            if "join" in row:
+                row.update(motion)
+        return rows
+
+    def test_a_join_burst_is_evidence_not_a_frozen_or_jump_finding(self):
+        jump = {"motion": {"steps": [1.0, 1.0, 40.0, 1.0], "mean": 10.75, "max": 40.0,
+                           "frozen": False, "jump": 2, "verdict": "jump"}}
+        frozen = {"motion": {"steps": [0.0, 0.0, 0.0, 0.0], "mean": 0.0, "max": 0.0,
+                             "frozen": True, "jump": None, "verdict": "frozen"}}
+        for motion in (jump, frozen):
+            rows = self.joined(**motion)
+            self.assertEqual(len([r for r in rows if "join" in r]), 1)
+            self.assertEqual(qa.mechanical_findings(rows), [])
+        # the same bursts on a shot's own still are still findings
+        self.assertEqual([f["kind"] for f in qa.mechanical_findings(self.rows(**{"1.2": jump}))],
+                         ["jump"])
+        self.assertEqual([f["kind"] for f in qa.mechanical_findings(
+            self.rows(**{"1.2": frozen}))], ["frozen"])
+
+    def test_a_join_row_is_never_a_shots_home(self):
+        rows = self.joined()
+        found = qa.mechanical_findings(rows, {"1.3": {"off_camera": ["probe"]}})
+        self.assertEqual(len(found), 1)
+        join = next(r for r in rows if "join" in r)
+        self.assertNotEqual(found[0]["timestamp"], join["t"])
+
+    def test_the_reviewer_sees_a_join_rows_motion_as_the_joins(self):
+        jump = {"motion": {"steps": [1.0, 40.0, 1.0], "mean": 14.0, "max": 40.0,
+                           "frozen": False, "jump": 1, "verdict": "jump"}}
+        rows = self.joined(**jump)
+        evidence = qa.evidence_rows(rows, {"sections": []}, None, have=set(),
+                                    diagnostics={}, mechanical=[])
+        join = [e for e in evidence if e["why_sampled"].startswith("transition:")]
+        self.assertEqual(len(join), 1)
+        self.assertNotIn("motion", join[0])
+        self.assertEqual(join[0]["join_motion"]["verdict"], "jump")
+        self.assertEqual(join[0]["transition"]["type"], "push")
+        self.assertTrue(all("motion" in e for e in evidence if e is not join[0]))
+
     def test_every_mechanical_finding_has_an_owner_a_fix_and_a_timestamp(self):
         rows = self.rows(**{"1.2": {"still": {"mean": 120.0, "spread": 1.0,
                                               "dominant_share": 1.0, "clipped_share": 0.0}}})

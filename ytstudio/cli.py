@@ -184,7 +184,7 @@ def run_extras(args, *, redo: set) -> dict[str, list[str]]:
     quick = getattr(args, "quick", False)
     # The reviewer flags go to the stages that review; unset, each keeps its default.
     # A pool reviewer (`pool`, `sdk:<id>`, AUTO-125) reads text only, so it goes
-    # to the script alone and keyframe and vfx keep their default reviewer.
+    # to the script alone and keyframe, vfx and build keep their default reviewer.
     named: list[str] = []
     if getattr(args, "reviewer_model", None):
         named = ["--reviewer-model", str(args.reviewer_model)]
@@ -226,7 +226,9 @@ def run_extras(args, *, redo: set) -> dict[str, list[str]]:
         # A cue Freesound cannot fill is synthesised, so the sheet never
         # leaves the stage with holes the build would play as silence.
         "sound": ["--fetch", "--synth"] + ([] if quick else ["--review"]),
-        "build": [],
+        # The joins review (AUTO-142) is a quality pass: --quick keeps the
+        # build at its old cost and its scene.xml byte for byte.
+        "build": ["--hard-cuts"] if quick else reviewer,
         "render": ["--quality", "draft"] if quick else [],
     }
 
@@ -420,14 +422,15 @@ def _run_pipeline(args) -> int:
     if getattr(args, "paper", None) and (why := research.paper_refusal()):
         print(f"error: {why}", file=sys.stderr)
         return 2
-    # keyframe and vfx review, and the script's plan review unless --quick: a
-    # model never grades its own work, so a run that would reach them is
-    # refused here, before any stage spends.
-    reviews = ({"keyframe", "vfx"} | (set() if args.quick else {"script"})) - skip
+    # keyframe and vfx review, and unless --quick the script's plan review
+    # and build's joins review (AUTO-142): a model never grades its own
+    # work, so a run that would reach them is refused here, before any
+    # stage spends.
+    reviews = ({"keyframe", "vfx"} | (set() if args.quick else {"script", "build"})) - skip
     asked = getattr(args, "reviewer_model", None)
     if reviewers.is_gateway(asked):
-        # A pool reviewer (AUTO-125) reads the script only; keyframe and vfx
-        # keep vfx.REVIEWER_MODEL, checked by family as before. It is
+        # A pool reviewer (AUTO-125) reads the script only; keyframe, vfx and
+        # build keep vfx.REVIEWER_MODEL, checked by family as before. It is
         # resolved once here and handed to the script as its gateway id. A
         # dry run checks what this machine can (the switch, the engine's
         # readiness, the maker rule) and fetches nothing: the providers are
@@ -437,11 +440,11 @@ def _run_pipeline(args) -> int:
                   f"makes no script review ({'--quick' if args.quick else '--skip script'}); "
                   "pass a claude or codex model, or leave the flag out", file=sys.stderr)
             return 2
-        inspected = sorted(reviews & {"keyframe", "vfx"})
+        inspected = sorted(reviews & {"keyframe", "vfx", "build"})
         if inspected and (own := flags.own_reviewer(args.model, vfx.REVIEWER_MODEL)):
             print(f"{own}\n  --reviewer-model {asked} reaches the script's review only; "
                   f"{' and '.join(inspected)} keep their default reviewer, "
-                  f"{vfx.REVIEWER_MODEL}: skip them (--skip keyframe,vfx) or pass another "
+                  f"{vfx.REVIEWER_MODEL}: skip them (--skip {','.join(inspected)}) or pass another "
                   "--model", file=sys.stderr)
             return 2
         try:

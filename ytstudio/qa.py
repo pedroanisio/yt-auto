@@ -801,10 +801,10 @@ def burst_plan(t: float, *, fps: float, seconds: float | None = None,
 
 
 def _burst(t: float, *, fps: float, seconds: float | None, frame: str,
-           start: float | None = None) -> dict:
+           start: float | None = None, span: float = BURST_SECONDS) -> dict:
     """The plan plus where each frame lands: `burst/<still stem>_<index>.png`,
     the engine's own `%04d` naming, so the files are known before rendering."""
-    plan = burst_plan(t, fps=fps, seconds=seconds, start=start)
+    plan = burst_plan(t, fps=fps, seconds=seconds, start=start, span=span)
     stem = frame[:-4] if frame.endswith(".png") else frame
     plan["pattern"] = f"burst/{stem}_%04d.png"
     plan["files"] = [f"burst/{stem}_{f:04d}.png" for f in plan["frames"]]
@@ -1163,7 +1163,101 @@ def sample(build: dict, *, limit: int | None = None,
         _add_watched(out, shots, watched, row, fps=fps)
     if builds:
         _add_builds(out, shots, builds, row, fps=fps)
+    if build.get("joins"):
+        _add_joins(out, shots, build["joins"], row, fps=fps)
     return sorted(out, key=lambda r: r["t"])
+
+
+#: A transition's still (AUTO-142) is labelled this way in `why`.
+TRANSITION_WHY = "transition: "
+#: At most this many transition stills, beyond `limit`: a film of many
+#: joins is sampled section joins first, then world joins, then pictures.
+TRANSITION_SAMPLES_MAX = 12
+TRANSITION_ORDER = ("section", "world", "shot")
+#: Where a transition's window lies against its cut, as a share of its
+#: duration before the cut (build.JOIN_ALIGN).
+_BEFORE_CUT = {"center": 0.5, "end": 1.0, "start": 0.0}
+
+
+def _join_window(join: dict) -> tuple[float, float] | None:
+    """A rendered transition's window (start, end) in film seconds, or None
+    for a cut, a gap or a row that says too little."""
+    if join.get("type") in (None, "", "cut") or join.get("kind") not in TRANSITION_ORDER:
+        return None
+    try:
+        at, seconds = float(join["at"]), float(join.get("duration") or 0)
+    except (KeyError, TypeError, ValueError):
+        return None
+    if seconds <= 0:
+        return None
+    start = at - _BEFORE_CUT.get(str(join.get("alignment") or "center"), 0.5) * seconds
+    return round(start, 3), round(start + seconds, 3)
+
+
+def _window_burst(t: float, window: tuple[float, float], *, fps: float, frame: str) -> dict:
+    """A transition's burst: its window and a frame either side, clipped to
+    BURST_MAX_FRAMES around `t`."""
+    first = max(int(round(window[0] * fps)) - 1, 0)
+    count = int(round(window[1] * fps)) + 1 - first + 1
+    return _burst(t, fps=fps, seconds=(count + 0.5) / fps, start=first / fps,
+                  span=count / fps, frame=frame)
+
+
+def _add_joins(out: list[dict], shots: list[dict], joins: list[dict], row, *,
+               fps: float) -> None:
+    """The transition stills (AUTO-142), added to `out` in place, last of
+    all and beyond `limit`. Each rendered join (build.json `joins`, not a
+    cut, not a gap) gets a row of its own at its window's middle, labelled
+    with the incoming shot, its burst the window and a frame either side
+    (the frames before, during and after), clipped to BURST_MAX_FRAMES
+    around the middle, so a longer window loses its edges. It never merges into a shot's still, whose burst
+    stays inside its shot; two joins within a burst of each other share
+    the first's row (`joins`). At most TRANSITION_SAMPLES_MAX rows, in the
+    order TRANSITION_ORDER, then time."""
+    by_label: dict[str, dict] = {}
+    for shot in shots:
+        by_label.setdefault(str(shot.get("label", "")), shot)
+    rows: list[dict] = []
+    for join in sorted((j for j in joins if isinstance(j, dict)),
+                       key=lambda j: float(j.get("at") or 0)):
+        window = _join_window(join)
+        shot = by_label.get(str(join.get("to_label", "")))
+        if window is None or shot is None:
+            continue
+        t = round((window[0] + window[1]) / 2, 3)
+        if rows and abs(rows[-1]["t"] - t) <= BURST_SECONDS:
+            rows[-1]["joins"].append(join.get("n"))
+            continue
+        why = f"{TRANSITION_WHY}{join['type']} ({join['kind']})"
+        new = row(shot, t, why)
+        new["burst"] = _window_burst(t, window, fps=fps, frame=new["frame"])
+        new["join"], new["joins"] = join.get("n"), [join.get("n")]
+        new["transition"] = {k: join.get(k) for k in
+                             ("n", "at", "kind", "type", "duration", "alignment",
+                              "from_label", "to_label")} | {"window": list(window)}
+        rows.append(new)
+    rank = {kind: n for n, kind in enumerate(TRANSITION_ORDER)}
+    kept = sorted(rows, key=lambda r: (rank[r["transition"]["kind"]], r["t"]))
+    used = {r["t"] for r in out}
+    for new in kept[:TRANSITION_SAMPLES_MAX]:
+        t, (lo, hi) = new["t"], new["transition"]["window"]
+        if t in used:
+            # a still is named by its millisecond: the nearest free frame
+            # inside the window, its burst planned again around it
+            t = next((m for k in range(1, int((hi - lo) * fps) + 2)
+                      for m in (round(t + k / fps, 3), round(t - k / fps, 3))
+                      if m not in used), t)
+            new["t"], new["frame"] = t, frame_name(t)
+            new["burst"] = _window_burst(t, (lo, hi), fps=fps, frame=new["frame"])
+        used.add(new["t"])
+        out.append(new)
+
+
+def join_only(row: dict) -> bool:
+    """A transition's own still (AUTO-142): evidence of the join, not of
+    the shot it is labelled with, so it is never that shot's home or its
+    still, and its burst is a discontinuity on purpose."""
+    return "join" in row
 
 
 def _add_builds(out: list[dict], shots: list[dict], builds, row, *, fps: float) -> None:
@@ -1526,8 +1620,9 @@ def unsampled(build: dict, samples: list[dict]) -> list[str]:
     """The labels of the build's shots no sampled still belongs to, in
     label order: what a --frames below the shot count left unseen. A build
     still of its own (`measured_only`) does not count: no per-shot check is
-    filed on it and the reviewer is not shown it."""
-    seen = {str(r.get("label", "")) for r in judged(samples)}
+    filed on it and the reviewer is not shown it. Nor does a transition's
+    still (AUTO-142, `join_only`): it shows the join, not the shot."""
+    seen = {str(r.get("label", "")) for r in judged(samples) if not join_only(r)}
     return sorted({str(s.get("label", "")) for s in build.get("shots", [])} - seen)
 
 
@@ -2079,7 +2174,8 @@ def text_dense_findings(samples: list[dict], supers: dict | None = None) -> list
     found, seen = [], set()
     for row in samples:
         rec = row.get("text")
-        if not isinstance(rec, dict):
+        # mid-transition, two nodes' words share the frame (AUTO-142)
+        if not isinstance(rec, dict) or join_only(row):
             continue
         label = str(row.get("label", ""))
         base = {"timestamp": row["t"], "frame": row.get("frame", ""), "shot": label,
@@ -2166,7 +2262,8 @@ def mechanical_findings(samples: list[dict], diagnostics: dict | None = None,
                    for why in str(row.get("why", "")).split("; "))
     home: dict[tuple, int] = {}
     for i, row in enumerate(samples):
-        if measured_only(row):
+        # a transition's still (AUTO-142) shows the join, never its shot's home
+        if measured_only(row) or join_only(row):
             continue
         key = (str(row.get("label", "")), row.get("at", row.get("t")))
         if key not in home or (extra(samples[home[key]]) and not extra(row)):
@@ -2178,7 +2275,15 @@ def mechanical_findings(samples: list[dict], diagnostics: dict | None = None,
                 "shot": str(row.get("label", "")),
                 "owner": "vfx" if row.get("asset") == "effect" else "build"}
         st = row.get("still") or {}
+        # A transition's burst is a discontinuity on purpose (AUTO-142): a
+        # push or a whip-pan is a jump, a held handle reads frozen, and a
+        # dip to a colour is a flat frame at its middle. Its motion is shown
+        # to the reviewer as the join's, never filed as a defect.
+        join = join_only(row)
+        dip = join and (row.get("transition") or {}).get("type") == "dip-to-color"
         for kind in judge_still(st):
+            if kind == "flat" and dip:
+                continue
             if kind == "flat":
                 found.append(base | {
                     "kind": "flat",
@@ -2204,7 +2309,7 @@ def mechanical_findings(samples: list[dict], diagnostics: dict | None = None,
         mo = row.get("motion") or {}
         steps = "/".join(f"{s:.1f}" for s in mo.get("steps", []))
         span = (row.get("burst") or {}).get("span", BURST_SECONDS)
-        if mo.get("frozen"):
+        if mo.get("frozen") and not join:
             found.append(base | {
                 "kind": "frozen",
                 "problem": f"no motion across {mo.get('frames')} frames over {span}s "
@@ -2215,7 +2320,7 @@ def mechanical_findings(samples: list[dict], diagnostics: dict | None = None,
                               "and the lights all hold still",
                 "fix": "author movement across the shot (camera, subject or light), or "
                        "shorten the hold to what the edit needs"})
-        if mo.get("jump") is not None:
+        if mo.get("jump") is not None and not join:
             found.append(base | {
                 "kind": "jump",
                 "problem": f"a jump inside the shot: one step of {mo.get('max', 0):.1f} "
@@ -3998,7 +4103,11 @@ def evidence_rows(samples: list[dict], script: dict, voice: dict | None, *, have
             "burst": {"frames": (row.get("burst") or {}).get("frames"),
                       "span_seconds": (row.get("burst") or {}).get("span"),
                       "files": (row.get("burst") or {}).get("files")},
-            "motion": row.get("motion"),
+            # A transition's still (AUTO-142): its burst spans the join, so
+            # its motion is the join's, evidence to judge by eye, not a
+            # measure of the shot.
+            **({"transition": row.get("transition"), "join_motion": row.get("motion")}
+               if join_only(row) else {"motion": row.get("motion")}),
             "engine": diagnostics.get(row["label"]),
             "mechanical": [f"[{f['severity']}] {f['kind']}: {f['problem']}"
                            for f in mechanical if f["shot"] == row["label"]]})
@@ -4050,13 +4159,15 @@ def review_prompt(*, title: str, pass_name: str, sheet_name: str, has_narration:
                   narrated_total: int, story: dict | None, evidence: list[dict],
                   mechanical: list[dict], listening: list[dict], unheard: dict,
                   silent_film: bool, measurements: dict, blockers: list[str],
-                  extra_briefs=(), measured_stills: int = 0) -> str:
+                  extra_briefs=(), measured_stills: int = 0, join_stills: int = 0) -> str:
     """The scorecard's prompt, before each sample's category order is added.
     `extra_briefs` are the listener's and the watcher's text (`--listen`,
     `--watch`), placed after the measurements. `measured_stills`, the
     build stills of their own under frames/build/ (AUTO-145), adds one
     sentence saying they are not to be scored; with none the prompt is
-    as before, so a film with no diagram is not asked again."""
+    as before, so a film with no diagram is not asked again. `join_stills`,
+    the transitions' own stills (AUTO-142), adds one sentence on how to
+    read them, and none without."""
     return "\n\n".join([
         f"Review {pass_name} of \"{title}\". Read `{sheet_name}` first "
         "(every still tiled in time order with its timestamp), then every PNG "
@@ -4086,6 +4197,17 @@ def review_prompt(*, title: str, pass_name: str, sheet_name: str, has_narration:
            "transition can be mid-dissolve, and what they measure is in the "
            "mechanical findings; neither read nor score them."
            if measured_stills else "")
+        + (f" The {join_stills} stills whose `why_sampled` is `transition: <type> "
+           "(<kind>)` sit inside a rendered transition between two shots, with "
+           "`transition` saying which and its window: their burst spans the "
+           "window and a frame either side, so the frames before, during and "
+           f"after it, except that a window over {BURST_MAX_FRAMES} frames is "
+           f"cut to the {BURST_MAX_FRAMES} around its middle, and its numbers are under "
+           "`join_motion`, a discontinuity on purpose, never a frozen or jump "
+           "defect. Judge from those frames whether the join reads as the "
+           "transition named (not a hard cut, a held frame or a black gap) and "
+           "whether it serves the story there."
+           if join_stills else "")
         + (" " + unseen_brief(missing, total_shots) if missing else "")
         + (" " + unseen_lines_brief(dropped_lines, narrated_total)
            if dropped_lines else ""),
@@ -4184,7 +4306,8 @@ def score_evidence(reviewer: Harness, pass_dir: Path, *, title: str, build: dict
         narrated_total=len(narrated_lines(build, voice)), story=story, evidence=evidence,
         mechanical=mechanical, listening=listening, unheard=unheard,
         silent_film=silent(build), measurements=measurements, blockers=blockers,
-        extra_briefs=extra_briefs, measured_stills=len(samples) - len(judged(samples)))
+        extra_briefs=extra_briefs, measured_stills=len(samples) - len(judged(samples)),
+        join_stills=sum(1 for r in samples if join_only(r)))
     # QA_SAMPLES readings of the same evidence (AUTO-107): one reading's
     # noise is the size of the steps read as progress. structure 20 is
     # checked past the schema in each (one non-blank line per screenplay

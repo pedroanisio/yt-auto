@@ -511,5 +511,111 @@ class Flag(unittest.TestCase):
         self.assertIn("evenly spaced", " ".join(qa.__doc__.split()))
 
 
+def _join(n, at, kind, frm, to, kind_of="crossfade", duration=0.4, alignment="end"):
+    """A build.json `joins` row (AUTO-142)."""
+    return {"n": n, "at": at, "kind": kind, "from": f"shot-{frm}", "to": f"shot-{to}",
+            "from_label": frm, "to_label": to, "type": kind_of,
+            "duration": None if kind_of == "cut" else duration,
+            "alignment": None if kind_of == "cut" else alignment,
+            "why": "", "review": "accepted"}
+
+
+def _joined():
+    """_build's film with a world join (a crossfade ending at 4.0), a section
+    join (a dip centred on 10.0), a hard cut and a gap."""
+    build = _build()
+    build["joins"] = [_join(1, 4.0, "world", "1.1", "1.2"),
+                      _join(2, 10.0, "section", "1.2", "2.1", "dip-to-color", 0.8, "center"),
+                      _join(3, 20.0, "section", "2.1", "2.2", "cut"),
+                      _join(4, 28.0, "gap", "2.2", "3.1", "cut")]
+    return build
+
+
+def _joins(rows):
+    return [r for r in rows if "join" in r]
+
+
+class Transitions(unittest.TestCase):
+    """AUTO-142: each rendered transition gets a still of its own whose burst
+    spans its window, never merged into a shot's still."""
+
+    def test_each_transition_gets_a_row_whose_burst_spans_its_window(self):
+        rows = _joins(qa.sample(_joined()))
+        self.assertEqual([r["join"] for r in rows], [1, 2])
+        self.assertEqual([r["why"] for r in rows],
+                         ["transition: crossfade (world)", "transition: dip-to-color (section)"])
+        fps = 30
+        # the crossfade ends at the cut: 3.6..4.0, a frame either side
+        frames = rows[0]["burst"]["frames"]
+        self.assertLessEqual(frames[0], round(3.6 * fps) - 1)
+        self.assertGreaterEqual(frames[-1], round(4.0 * fps))
+        self.assertLessEqual(len(frames), qa.BURST_MAX_FRAMES)
+        self.assertTrue(round(3.6 * fps) - 1 <= rows[0]["t"] * fps <= round(4.0 * fps) + 1)
+        # the dip is centred on 10.0 and wider than a burst: clipped to it,
+        # around the cut, inside its window
+        frames = rows[1]["burst"]["frames"]
+        self.assertEqual(len(frames), qa.BURST_MAX_FRAMES)
+        self.assertIn(300, frames)
+        self.assertGreaterEqual(frames[0], round(9.6 * fps) - 1)
+        self.assertLessEqual(frames[-1], round(10.4 * fps) + 1)
+        for r in rows:
+            self.assertEqual(len(r["burst"]["files"]), len(r["burst"]["frames"]))
+            self.assertTrue(r["burst"]["files"][0].startswith("burst/"))
+
+    def test_every_shot_row_is_unchanged(self):
+        today = qa.sample(_build())
+        rows = qa.sample(_joined())
+        self.assertEqual([r for r in rows if "join" not in r], today)
+        # a frame name is a moment: no join row takes a shot still's
+        names = [r["frame"] for r in rows]
+        self.assertEqual(len(names), len(set(names)))
+
+    def test_a_build_with_no_transitions_samples_as_before(self):
+        today = qa.sample(_build())
+        cuts = _build()
+        cuts["joins"] = [_join(1, 4.0, "world", "1.1", "1.2", "cut")]
+        self.assertEqual(qa.sample(cuts), today)
+        self.assertEqual(qa.sample(_build(), limit=3), qa.sample(cuts, limit=3))
+
+    def test_join_rows_come_beyond_the_limit(self):
+        rows = qa.sample(_joined(), limit=3)
+        self.assertEqual(len(rows) - len(_joins(rows)), 3)
+        self.assertEqual(len(_joins(rows)), 2)
+
+    def test_two_transitions_within_one_burst_merge_into_the_first(self):
+        # a layout the build makes: a 0.2 s shot between two worlds, so its
+        # two joins, 1.1 -> 1.2 and 1.2 -> 1.3, sit 0.2 s apart
+        build = {"scene": {"duration": 8.2, "fps": 30}, "shots": [
+            {"label": "1.1", "at": 0.0, "seconds": 4.0, "asset": "effect", "section": "One"},
+            {"label": "1.2", "at": 4.0, "seconds": 0.2, "asset": "image", "section": "One"},
+            {"label": "1.3", "at": 4.2, "seconds": 4.0, "asset": "effect", "section": "One"}]}
+        build["joins"] = [_join(1, 4.0, "shot", "1.1", "1.2", duration=0.1),
+                          _join(2, 4.2, "shot", "1.2", "1.3", duration=0.1)]
+        rows = _joins(qa.sample(build))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["join"], 1)
+        self.assertEqual(rows[0]["joins"], [1, 2])
+
+    def test_they_are_capped_sections_first_then_worlds_then_shots(self):
+        build = _even(count=30, seconds=2.0)
+        kinds = ["section"] * 5 + ["world"] * 10 + ["shot"] * 14
+        labels = [s["label"] for s in build["shots"]]
+        build["joins"] = [_join(n + 1, (n + 1) * 2.0, kind, labels[n], labels[n + 1])
+                          for n, kind in enumerate(kinds)]
+        rows = _joins(qa.sample(build))
+        self.assertEqual(len(rows), qa.TRANSITION_SAMPLES_MAX)
+        self.assertEqual(qa.TRANSITION_SAMPLES_MAX, 12)
+        got = [r["why"].split("(")[-1].rstrip(")") for r in rows]
+        self.assertEqual(got.count("section"), 5)
+        self.assertEqual(got.count("world"), 7)
+        self.assertEqual(got.count("shot"), 0)
+
+    def test_a_join_still_does_not_count_as_its_shots_still(self):
+        rows = qa.sample(_joined(), limit=2)
+        shot_labels = {r["label"] for r in rows if "join" not in r}
+        self.assertEqual(set(qa.unsampled(_joined(), rows)),
+                         {s["label"] for s in _build()["shots"]} - shot_labels)
+
+
 if __name__ == "__main__":
     unittest.main()

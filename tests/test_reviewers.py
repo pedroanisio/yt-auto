@@ -774,6 +774,8 @@ class Run(Offline):
         self.assertEqual(extra["script"][-4:], want)
         self.assertEqual(extra["keyframe"], want)
         self.assertEqual(extra["vfx"], want)
+        # build's joins review (AUTO-142) gets them as vfx does
+        self.assertEqual(extra["build"], want)
 
     def walk(self, *argv):
         args = self.args(*argv)
@@ -802,7 +804,7 @@ class Run(Offline):
         with mock.patch.dict(os.environ, GATEWAY_ON), \
                 mock.patch.object(reviewers, "_get_json", side_effect=OSError("offline")):
             code, said, args = self.walk("--model", "opus", "--reviewer-model", "pool",
-                                         "--skip", "keyframe,vfx")
+                                         "--skip", "keyframe,vfx,build")
             self.assertIsNone(code, said)
             self.assertEqual(args.reviewer_model, "sdk:google/gemini-3.6-flash")
             code, said, args = self.walk("--model", "sonnet", "--reviewer-model", "pool")
@@ -824,7 +826,7 @@ class Run(Offline):
         with mock.patch.dict(os.environ, GATEWAY_ON), \
                 mock.patch.object(reviewers, "_get_json", fetch):
             code, said, args = self.walk("--model", "opus", "--reviewer-model", "pool",
-                                         "--skip", "keyframe,vfx", "--dry-run")
+                                         "--skip", "keyframe,vfx,build", "--dry-run")
         self.assertIsNone(code, said)
         self.assertEqual(args.reviewer_model, "sdk:google/gemini-3.6-flash")
         fetch.assert_not_called()

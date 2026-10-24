@@ -250,6 +250,14 @@ def _compare_usd(root: Path | None, argv: list[str]) -> float:
 #: second plan and its reading.
 PLAN_REVIEW_USD = 0.5
 
+#: What build's joins add (AUTO-142), assumed until a build.json measures
+#: them: the editor's `joins` decision (and at most a `joins-2`), the
+#: reviewer's `joins-review` and at most one `joins-revise`. The review is
+#: capped at vfx.REVIEW_USD (2), a cap and not a price: one reading of a
+#: short brief listing the joins. A guess until a real build prices it
+#: from engine.report()["by_model"] (TO VERIFY).
+JOINS_REVIEW_USD = 0.5
+
 #: What `yt research --paper` adds (AUTO-131): the agentic read of the
 #: paper (`00-paper`) and the digest decision (`06b-paper`, at most one
 #: `06b-paper-again`). A guess until one real paper measures it (TO VERIFY).
@@ -406,6 +414,13 @@ FLAG_USD = {"research": {"--paper": ((PAPER_USD, "06b-paper"),)},
                    "--recheck": ((RECHECK_USD, None),)}}
 
 
+#: A part a stage pays unless a flag turns it off: stage -> (that flag, the
+#: name the estimate gives the part, its parts as in FLAG_USD). yt build
+#: asks for its joins unless it is handed --hard-cuts, as `yt run --quick`
+#: does (AUTO-142).
+UNLESS_USD = {"build": ("--hard-cuts", "joins review", ((JOINS_REVIEW_USD, "joins"),))}
+
+
 def qa_compares(root: Path | None) -> bool:
     """Whether a `yt qa` under `root` pays for the side-by-side comparison
     without being told --previous: a pass it can compare with, one scored
@@ -443,17 +458,24 @@ def flag_increments(root: Path | None, stage: str, argv: Iterable[str]) -> list[
         if (stage == "qa" and "--against" in argv and os.environ.get(GATEWAY_KEY)
                 and any(n.startswith("cutcompare-") for n in names)):
             names.add("compare-pass")
+    def missing(parts) -> float:
+        return sum((cost(root, argv) if callable(cost) else cost)
+                   for cost, decision in parts
+                   if decision is None
+                   or not any(n == decision or n.startswith(decision + "-") for n in names))
     out = []
     for flag in dict.fromkeys(argv):
         parts = FLAG_USD.get(stage, {}).get(flag)
         if not parts:
             continue
-        usd = sum((cost(root, argv) if callable(cost) else cost)
-                  for cost, decision in parts
-                  if decision is None
-                  or not any(n == decision or n.startswith(decision + "-") for n in names))
+        usd = missing(parts)
         if usd:
             out.append((flag, round(usd, 2)))
+    if stage in UNLESS_USD:
+        off, label, parts = UNLESS_USD[stage]
+        usd = 0.0 if off in argv else missing(parts)
+        if usd:
+            out.append((label, round(usd, 2)))
     return out
 
 

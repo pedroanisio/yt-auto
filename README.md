@@ -1523,6 +1523,35 @@ Each shot is drawn by the first of these that applies:
    The card draws in the design's `ink` role at its `label` size, with no
    literal colour.
 
+**Joins** (AUTO-142). Once every shot is placed (`SceneBuilder.layout()`, no
+model), the build finds each place one node gives way to the next
+(`joins_of`): a `section` join, a `world` join (a new world inside a
+section), a `shot` join (a picture on either side), or a `gap` where the
+nodes do not meet within a frame and the background shows. A gap, a join
+beside a placeholder card, a run of shots one world draws and two includes
+of one symbol are never transitioned. For the rest the editor chooses a hard
+cut or one of the schema's `<transition>` types (less morph, luma and
+shader), a duration up to half the shorter neighbour and at most 1.2 s, an
+alignment the outgoing world's authored slack allows (`end` always, since it
+runs the outgoing node no further), and a `why` that names
+the join's narrative purpose; an answer out of bounds is asked once more
+(`joins-2`), and a second, or an editor that does not answer, leaves every
+join a hard cut with a `warning:`. `--reviewer-model` (default opus, never
+the author's own family, a claude or codex model: the gateway pool is
+refused here) reads the joins once under `--review-budget-usd` (default 2),
+billed on the stage's record; a reject gets one revision (`joins-revise`),
+which changes only the joins the reviewer named (every join when it named
+none), and a problem it leaves standing is a `warning:` naming the join. build.json
+lists every join under `joins` and the review under `joins_review`, and the
+summary prints one line (`9 joins: 4 crossfade, 2 push, 3 cut, 1 gap
+(reviewed by opus: accepted)`). `--hard-cuts` asks nothing and writes
+today's scene.xml byte for byte, every join a `cut` reviewed `off`; `yt run
+--quick` passes it, and a full `yt run` passes build its `--reviewer-model`
+(unless it is a pool value) and `--review-budget-usd`. Until a build.json
+measures them, `yt run`'s estimate prices the joins and their review at an
+assumed `spend.JOINS_REVIEW_USD` ($0.50, TO VERIFY) beside build's own $0.10,
+unless build is handed `--hard-cuts`.
+
 A malformed number from the editor (`tail_seconds`) or the sound designer (a
 cue's `fade_in`, `fade_out` or `gain_db`, or a `level` written in words only)
 is replaced by its default (`tail_seconds` 0.5, the others 0) and recorded as
