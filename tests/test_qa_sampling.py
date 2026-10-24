@@ -583,9 +583,14 @@ class Transitions(unittest.TestCase):
         self.assertEqual(len(_joins(rows)), 2)
 
     def test_two_transitions_within_one_burst_merge_into_the_first(self):
-        build = _build()
-        build["joins"] = [_join(1, 4.0, "world", "1.1", "1.2", duration=0.2),
-                          _join(2, 4.2, "world", "1.2", "1.2", duration=0.2)]
+        # a layout the build makes: a 0.2 s shot between two worlds, so its
+        # two joins, 1.1 -> 1.2 and 1.2 -> 1.3, sit 0.2 s apart
+        build = {"scene": {"duration": 8.2, "fps": 30}, "shots": [
+            {"label": "1.1", "at": 0.0, "seconds": 4.0, "asset": "effect", "section": "One"},
+            {"label": "1.2", "at": 4.0, "seconds": 0.2, "asset": "image", "section": "One"},
+            {"label": "1.3", "at": 4.2, "seconds": 4.0, "asset": "effect", "section": "One"}]}
+        build["joins"] = [_join(1, 4.0, "shot", "1.1", "1.2", duration=0.1),
+                          _join(2, 4.2, "shot", "1.2", "1.3", duration=0.1)]
         rows = _joins(qa.sample(build))
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["join"], 1)
