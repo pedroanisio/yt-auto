@@ -254,10 +254,14 @@ def heard(cues, *, mix: dict | None = None, normalize: dict | None = None) -> di
     Takes Cue objects or the dicts sound.json holds; a cue's numbers are
     compared as numbers, so 1 and 1.0 agree.
 
-    What it does not cover: the narration. The listen-back reads the cue
-    sheet and the mix targets, never the recorded takes, so a voice
-    re-record under an unchanged sheet leaves it current; the takes are
-    what voice.json's take review hears, and voiceover is scored from that."""
+    What it does not cover: the narration, and so not where a re-recorded
+    voice moves the cues. The listen-back reads the cue sheet and the mix
+    targets, never the recorded takes, so a voice re-record under an
+    unchanged sheet leaves it current; the takes are what voice.json's take
+    review hears, and voiceover is scored from that. A cue's `anchor` (its
+    spoken word, `anchor_cues`) is written after the review and is not in
+    HEARD_FIELDS: when a redone take moves an anchored cue, `yt build`
+    reports the move in build.json's `cue_anchors`, not this digest."""
     rows = []
     for cue in cues or []:
         raw = asdict(cue) if hasattr(cue, "__dataclass_fields__") else dict(cue or {})
@@ -315,6 +319,9 @@ class Cue:
     duration: float = 0.0
     freesound_id: int = 0
     query_used: str = ""
+    # The spoken word the cue was spotted on (`anchor_cues`), so `yt build`
+    # can follow a redone take; derived after spotting, never asked for.
+    anchor: dict = field(default_factory=dict)
 
     @classmethod
     def from_raw(cls, raw: dict) -> Cue:
@@ -326,6 +333,9 @@ class Cue:
                     "query", "note"):
             if key in clean:
                 clean[key] = str(clean[key]).strip()
+        # The anchor is derived from the timeline (`anchor_cues`), never taken
+        # from what the model wrote.
+        clean.pop("anchor", None)
         clean["kind"] = clean.get("kind", "music").lower()
         if clean["kind"] not in CUE_KINDS:
             clean["kind"] = "sfx"
@@ -380,6 +390,81 @@ def on_measured_clock(script: dict, voice: dict | None) -> list[Section]:
     from . import retime
     import copy
     return sections_of(retime.apply(copy.deepcopy(script), voice))
+
+
+#: How far from a cue's time a word start may be and still be its anchor (s).
+ANCHOR_WINDOW_S = 1.0
+
+
+def anchor_cues(cues: list, placed: list, voice: dict | None, *,
+                window: float = ANCHOR_WINDOW_S) -> list:
+    """Give each cue the spoken word it lands on, so `yt build` can place it
+    on that word when the voice is redone (AUTO-140). Mechanical, after
+    spotting and revision: the model is never asked for it, and `at` stays
+    its whole second.
+
+    `placed` is `build.timeline(sections_of(script), voice)`. The shot is the
+    cue's `shot` when that names a placed shot, else the one its `at` falls
+    in; the anchor is the word of that shot's take whose start is nearest
+    `at` within `window` seconds, else the shot's start (word -1). `offset`
+    is `at` minus the anchor's time, so it may be negative. `take` is the
+    take's `build.take_mark`, "" for a shot with no recording. Takes the
+    dicts sound.json holds or Cue objects, sets `anchor` on each, and
+    returns them; with nothing placed no cue gets one."""
+    from . import build
+    takes = {t.get("label"): t for t in (voice or {}).get("takes", []) if isinstance(t, dict)}
+    by_label = {p.label: p for p in placed}
+    ordered = sorted(placed, key=lambda p: p.at)
+
+    def shot_for(at: float, named: str):
+        if named in by_label:
+            return by_label[named]
+        inside = [p for p in ordered if p.at <= at < p.at + p.seconds]
+        if inside:
+            return inside[-1]
+        before = [p for p in ordered if p.at <= at]
+        return before[-1] if before else (ordered[0] if ordered else None)
+
+    for cue in cues:
+        is_obj = hasattr(cue, "__dataclass_fields__")
+        get = (lambda k, c=cue: getattr(c, k, "")) if is_obj else cue.get
+        try:
+            at = float(get("at") or 0)
+        except (TypeError, ValueError):
+            continue
+        p = shot_for(at, str(get("shot") or ""))
+        if p is None:
+            if not is_obj and not cue.get("anchor"):
+                cue.pop("anchor", None)
+            continue
+        word, text, start = -1, "", p.at
+        best = None
+        for n, w in enumerate(p.words or []):
+            ws = build._word_start(w)
+            if ws is None:
+                continue
+            gap = abs(p.at + ws - at)
+            if gap <= window and (best is None or gap < best[0]):
+                best = (gap, n, str(w.get("text", "")), p.at + ws)
+        if best is not None:
+            _, word, text, start = best
+        anchor = {"shot": p.label,
+                  "take": build.take_mark(takes.get(p.label)) if p.source == "voice" else "",
+                  "word": word, "text": text, "offset": round(at - start, 3)}
+        if is_obj:
+            cue.anchor = anchor
+        else:
+            cue["anchor"] = anchor
+    return cues
+
+
+def anchor_text(anchor: dict | None) -> str:
+    """An anchor as the cue sheet lists it: `S03 word 3 "the" +0.2s`."""
+    if not anchor:
+        return ""
+    word = (f'word {anchor.get("word")} "{anchor.get("text", "")}"'
+            if int(anchor.get("word", -1)) >= 0 else "shot start")
+    return f"{anchor.get('shot', '')} {word} {float(anchor.get('offset') or 0):+g}s"
 
 
 def coverage(cues: list[Cue], runtime: int) -> dict:
@@ -2322,7 +2407,8 @@ def write_md(path: str, idea: Idea, data: dict, cues: list[Cue]) -> None:
             md += [f"## {section}", ""]
         md += [f"### {cue.cue_id} · {timecode(cue.at)}–{timecode(cue.out)} "
                f"({cue.seconds}s) · {cue.kind}"
-               + (f" · {cue.shot}" if cue.shot else ""), "",
+               + (f" · {cue.shot}" if cue.shot else "")
+               + (f" · on {anchor_text(cue.anchor)}" if cue.anchor else ""), "",
                f"**{cue.name}** — {cue.purpose}", "", cue.description, ""]
         for label, value in (("Motif", cue.motif),
                              ("Instrumentation", cue.instrumentation),
@@ -2375,7 +2461,7 @@ def write_md(path: str, idea: Idea, data: dict, cues: list[Cue]) -> None:
 
 
 def write_csv(path: str, cues: list[Cue]) -> None:
-    cols = ["cue_id", "kind", "in", "out", "seconds", "section", "shot", "name",
+    cols = ["cue_id", "kind", "in", "out", "seconds", "section", "shot", "anchor", "name",
             "purpose", "description", "motif", "instrumentation", "tempo",
             "sync", "layers", "entry", "exit", "fade_in", "fade_out", "level",
             "source", "search", "query", "note", "file", "licence", "credit",
@@ -2385,6 +2471,7 @@ def write_csv(path: str, cues: list[Cue]) -> None:
         writer.writeheader()
         for cue in cues:
             row = asdict(cue) | {"in": timecode(cue.at), "out": timecode(cue.out),
+                                 "anchor": anchor_text(cue.anchor),
                                  "layers": "; ".join(cue.layers),
                                  "search": "; ".join(cue.search)}
             writer.writerow({c: row.get(c, "") for c in cols})
@@ -2520,6 +2607,11 @@ def run(args) -> int:
     except ClaudeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    # Each cue on the word it lands on, after spotting and the review, on
+    # the timeline `yt build` places the takes on (AUTO-140). Only a fresh
+    # spot does this: a --fetch/--synth re-entry keeps the sheet as it is.
+    from . import build
+    anchor_cues(data.get("cues") or [], build.timeline(sections_of(script), voice), voice)
     code = _finish(args, idea, project, data)
     print(f"{designer.usage}", file=sys.stderr)
     return code

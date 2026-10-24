@@ -953,6 +953,109 @@ def timeline(sections: list[Section], voice: dict | None) -> list[Placed]:
 
 
 # --------------------------------------------------------------------------- #
+# cue anchors: a cue follows the word it was spotted on (AUTO-140)
+# --------------------------------------------------------------------------- #
+
+#: How many words either side of its old index an anchor's word is looked
+#: for once the take no longer has it there. TO VERIFY against a real
+#: re-recorded line.
+ANCHOR_SEARCH_WORDS = 8
+#: Under this many seconds an anchored cue is where the sheet put it.
+ANCHOR_SAME_S = 0.001
+#: What a take's mark is made of when voice.json records no sha256 of it:
+#: what the take review hears of it (voice.HEARD_FIELDS) and its word
+#: timings, so a re-record changes it and a move along the timeline does not.
+TAKE_MARK_FIELDS = ("label", "text", "file", "seconds", "engine", "voice", "words")
+
+
+def take_mark(take: dict | None) -> str:
+    """The recording a cue was anchored on: its file and a sha256, as
+    `<file>@<sha256>`. voice.json's takes carry no hash of the audio, so the
+    sha256 is the take's own `sha256` when it has one, else a digest of
+    TAKE_MARK_FIELDS. "" with no take."""
+    if not take:
+        return ""
+    sha = str(take.get("sha256") or "")
+    if not sha:
+        import hashlib
+        text = json.dumps({k: take.get(k) for k in TAKE_MARK_FIELDS},
+                          sort_keys=True, ensure_ascii=False)
+        sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return f"{take.get('file', '')}@{sha}"
+
+
+def fold_word(text: str) -> str:
+    """A word as it is compared: lower case, letters and digits only."""
+    return re.sub(r"[^\w]", "", str(text or "").lower())
+
+
+def _word_start(word) -> float | None:
+    try:
+        return float(word.get("start"))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def resolve_anchor(cue: dict, placed: list[Placed],
+                   voice: dict | None) -> tuple[float, str, str]:
+    """(seconds, status, why) for a cue with an `anchor`: the time its anchor
+    word now has on the current timeline, plus the anchor's offset.
+
+    status is "kept" (same take, same time), "moved" (the take was redone,
+    or the shot now starts elsewhere) or "lost": the shot, the take or the
+    word is gone, or the word appears more than once within
+    ANCHOR_SEARCH_WORDS of its old index and nothing says which is meant. A
+    lost cue is placed at its sheet `at`, and `why` says what was not found."""
+    anchor = cue.get("anchor") or {}
+    sheet_at = float(cue.get("at") or 0)
+    shot = str(anchor.get("shot") or "")
+    try:
+        offset = float(anchor.get("offset") or 0)
+        index = int(anchor.get("word", -1))
+    except (TypeError, ValueError):
+        return sheet_at, "lost", "the anchor is not readable"
+    p = next((p for p in placed if p.label == shot), None)
+    if p is None:
+        return sheet_at, "lost", f"shot {shot} is no longer in the film"
+    takes = {t.get("label"): t for t in (voice or {}).get("takes", []) if isinstance(t, dict)}
+    mark = take_mark(takes.get(shot)) if p.source == "voice" else ""
+    redone = mark != str(anchor.get("take") or "")
+    if index < 0:
+        at = p.at + offset
+    else:
+        words = p.words or []
+        text = fold_word(anchor.get("text", ""))
+        found = None
+        if index < len(words) and fold_word(words[index].get("text", "")) == text:
+            found = index
+        else:
+            near = [n for n in range(max(0, index - ANCHOR_SEARCH_WORDS),
+                                     min(len(words), index + ANCHOR_SEARCH_WORDS + 1))
+                    if text and fold_word(words[n].get("text", "")) == text]
+            if len(near) > 1:
+                return (sheet_at, "lost",
+                        f"{anchor.get('text', '')!r} is said {len(near)} times near "
+                        f"word {index} of shot {shot}'s take (ambiguous)")
+            found = near[0] if near else None
+        start = _word_start(words[found]) if found is not None else None
+        if start is None:
+            return (sheet_at, "lost",
+                    f"shot {shot}'s take no longer says {anchor.get('text', '')!r} "
+                    f"near word {index}")
+        at = p.at + start + offset
+    at = round(max(0.0, at), 3)
+    moved = redone or abs(at - sheet_at) > ANCHOR_SAME_S
+    return at, "moved" if moved else "kept", ""
+
+
+def anchor_time(cue: dict, placed: list[Placed], voice: dict | None) -> tuple[float, str]:
+    """(seconds, status) of an anchored cue on the current timeline; see
+    resolve_anchor."""
+    at, status, _ = resolve_anchor(cue, placed, voice)
+    return at, status
+
+
+# --------------------------------------------------------------------------- #
 # the document
 # --------------------------------------------------------------------------- #
 
