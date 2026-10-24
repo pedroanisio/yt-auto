@@ -768,7 +768,9 @@ blocking editorial note. It is not a delivery verdict. The order is:
    digest of the scene it judged, and the gate, like QA, the byte digests of
    the video and scene it judged, `video_sha256` and `scene_sha256`;
    those are compared instead where present, so a touched file is not
-   stale and a replaced one is), or a video
+   stale and a replaced one is; the gate hashes them before it runs, and
+   doctor reads the project's `video.mp4` whole each time, so a gate run on
+   `--video` another file reads as judging a different video), or a video
    older than `scene.xml`. Only with none of them does doctor
    print `delivery: READY TO PUBLISH`.
 
@@ -1057,14 +1059,20 @@ hand-authored world showed the cost.
     (`carried_from`, $0). Continuity, reach and plan are then redone.
     `--sections` refuses `--fresh`. Each section record keeps
     `inputs_sha256` (`vfx.section_inputs_digest`: the section's shots with
-    their measured timings, its effects and cuts, the tokens and the
-    approved look's digest; JSON only). A section carried by `--sections`
+    their measured timings, `at` counted from its first shot so re-timing
+    an earlier section unreviews no later one, its effects and cuts, the
+    tokens and the approved look's digest, none for a record made as the
+    look; JSON only). A section carried by `--sections`
     or `--relook` whose inputs changed since its review (or whose record has
     no digest) is unreviewed until re-authored: its score, review and best
     round move under `inherited`, it reads `reviewed: false` with a
     `warning: carried:` finding, and no model is asked; in the competition
     such a previous version is kept only over a broken attempt, as under
-    `--relook`. `yt doctor` names `yt vfx --sections N` for each.
+    `--relook`, and one carried so in an earlier run (`reviewed: false`)
+    likewise; `inherited.from_version` names the version that made the
+    review (`reviewed_in` on a record carried whole). `yt doctor` names
+    `yt vfx --sections N` for each; the approved look, never scored, is a
+    note instead. `--recover` puts such a record back as it stands.
   - Each section writes its own record as it goes:
     `vfx/vNN/rounds/<stem>/record.json`, partial after every gate
     (`finished: false`, the rounds so far) and whole when the section ends,
