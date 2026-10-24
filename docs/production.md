@@ -571,7 +571,17 @@ An honest spec says where it is blind, so nobody mistakes silence for a pass:
   their own films (`python -m ytstudio.qa capture-fixture`) and labels it.
   `qa.json` records `judge_calibration` (`fixtures`, how many owner-labelled
   films back it: none yet) and `yt qa` prints it under the verdict; it gates
-  nothing, and READY means what §2 says either way.
+  nothing, and READY means what §2 says either way. `fixtures` true means
+  this pass's judge (its model, role, categories, bar, schemas, prompt
+  template and house rules, `qa.judge_digest`) passed every case of the
+  set. It does not mean that this film's scores are right, that the judge
+  agrees with the owner on real films (`labelled` counts those, and is 0),
+  or anything about the audio categories, which the fixtures carry no
+  listening review for. The re-run rule: any card that edits qa.ROLE, the
+  categories, the scorecard schema or `review_prompt` changes the digest,
+  so `fixtures` is false until calibrate is run again; AUTO-141, AUTO-145,
+  AUTO-146 and AUTO-148 do this, and each adds or adjusts a fixture case
+  for the category it changes.
 
 ---
 

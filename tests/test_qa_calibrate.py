@@ -598,6 +598,14 @@ class Docs(unittest.TestCase):
         self.assertIn("judge: fixture-calibrated (<model>); 0 owner-labelled films", skill)
         self.assertIn("judge: not calibrated against the QA fixtures (<why>); "
                       "0 owner-labelled films", skill)
+        # §12 says what `fixtures` does and does not mean, and the re-run rule
+        spec = " ".join((ROOT / "docs" / "production.md").read_text(encoding="utf-8").split())
+        twelve = spec.split("## 12.", 1)[1].split("## 13.", 1)[0]
+        self.assertIn("`fixtures` true means", twelve)
+        self.assertIn("does not mean", twelve)
+        self.assertIn("re-run rule", twelve)
+        for card in ("AUTO-141", "AUTO-145", "AUTO-146", "AUTO-148"):
+            self.assertIn(card, twelve)
         # the re-run rule sits above judge_digest
         source = (ROOT / "ytstudio" / "qa.py").read_text(encoding="utf-8")
         above = source.split("def judge_digest(")[0].rsplit("\n\n\n", 1)[-1]
