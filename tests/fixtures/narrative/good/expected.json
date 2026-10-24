@@ -33,6 +33,8 @@
     "payoff_concrete": true,
     "stakes_concrete": true,
     "questions_unanswered": [],
+    "form_fits": true,
+    "form_problem": "",
     "problems": []
   },
   "cold_read": {

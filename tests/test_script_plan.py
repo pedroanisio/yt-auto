@@ -75,6 +75,12 @@ PLAN = {
                "callback": "Back to the empty river from the first shot.",
                "next_film": "The bolt that saved the Golden Gate",
                "device": "callback"},
+    "form": {"name": "investigation", "other": "",
+             "why_this_subject": "the inspectors traced the collapse bolt by bolt, so the "
+                                 "film follows their evidence in the order they found it",
+             "shape": "the fall, the paint that hid the crack, the sheared bolt",
+             "rejected": "countdown: the twin opens in a month, but the film is what was "
+                         "found, not the clock"},
     "sections": [
         {"heading": "The fall", "purpose": "open", "seconds": 20, "beats": ["it falls"],
          "opens": ["Q1"], "closes": [], "connective": "open", "rehook": "",
@@ -88,6 +94,11 @@ PLAN = {
          "escalation": "", "anchor_visual": "the sheared bolt"},
     ],
 }
+
+
+#: PLAN as it was before AUTO-157: a plan with no form, as an older
+#: script.json or a cached plan holds it.
+PRE_FORM = {k: v for k, v in PLAN.items() if k != "form"}
 
 
 #: AUTO-135's devices, as a plan section declares them.
@@ -137,8 +148,8 @@ STORY_LINES_BEFORE_AUTO_158 = [
 ]
 
 
-def with_persona(persona=PERSONA):
-    return {**copy.deepcopy(PLAN), "persona": copy.deepcopy(persona)}
+def with_persona(persona=PERSONA, base=PLAN):
+    return {**copy.deepcopy(base), "persona": copy.deepcopy(persona)}
 
 
 def with_devices(**by_section):
@@ -275,6 +286,30 @@ class Schema(unittest.TestCase):
         self.assertEqual(missing_fields(plan, script.PLAN_SCHEMA)
                          + enum_violations(plan, script.PLAN_SCHEMA), [])
 
+    def test_the_plan_requires_a_form(self):
+        # AUTO-157: the film-wide form, chosen for this subject; a house
+        # prior with no corpus list, so "other" names one the list lacks
+        self.assertEqual(script.FORMS, ("mystery", "investigation", "journey", "debate",
+                                        "countdown", "experiment", "biography", "other"))
+        self.assertNotIn("reversal", script.FORMS)       # AUTO-137's closing device
+        self.assertEqual(set(script.FORM_GLOSS), set(script.FORMS))
+        self.assertIn("form", script.STORY_REQUIRED)
+        for schema in (script.PLAN_SCHEMA, script.PLAN_FIELDS_SCHEMA):
+            self.assertIn("form", schema["required"])
+            self.assertIs(schema["properties"]["form"], script.STORY_PROPERTIES["form"])
+        form = script.PLAN_SCHEMA["properties"]["form"]
+        self.assertEqual(set(form["required"]), {"name", "why_this_subject", "shape"})
+        self.assertEqual(set(form["properties"]),
+                         {"name", "other", "why_this_subject", "shape", "rejected"})
+        name = form["properties"]["name"]
+        self.assertEqual(name["enum"], list(script.FORMS))
+        self.assertTrue(name["description"].endswith(script._ENUM_DRIFT))
+        for gloss in script.FORM_GLOSS.values():
+            self.assertIn(gloss, name["description"])
+        self.assertIn(script._NOT_EMPTY, form["properties"]["why_this_subject"]["description"])
+        self.assertIn("in words of the subject",
+                      form["properties"]["why_this_subject"]["description"])
+
     def test_persona_is_asked_but_never_required(self):
         # AUTO-158: optional, so older plans, fixtures and outline plan
         # fields still validate and are never asked again for it
@@ -294,7 +329,7 @@ class Schema(unittest.TestCase):
         self.assertEqual(script.plan_view(with_persona())["persona"], PERSONA)
         view = script.plan_view(PLAN)
         self.assertEqual(set(view), {
-            "audience", "ending", "hook", "logline", "misconception",
+            "audience", "ending", "form", "hook", "logline", "misconception",
             "misconception_why", "payoff", "promise", "questions", "reveal",
             "sections", "stakes", "train", "viewer_stake"})
         self.assertEqual({k: v for k, v in view.items() if k != "sections"},
@@ -360,6 +395,30 @@ class ThroughTheHarness(unittest.TestCase):
         self.assertIn("train", str(caught.exception))
         self.assertEqual(len(FakeEngine.json_calls), 2)
         self.assertIn("train is missing", FakeEngine.json_calls[1]["prompt"])
+
+    def test_a_plan_without_a_form_is_asked_again_then_fails(self):
+        answer = blank(script.PLAN_SCHEMA)
+        del answer["form"]
+        FakeEngine.answer = answer
+        with self.assertRaises(harness.HarnessError) as caught:
+            self.writer().plan()
+        self.assertIn("form", str(caught.exception))
+        self.assertEqual(len(FakeEngine.json_calls), 2)
+        self.assertIn("form is missing", FakeEngine.json_calls[1]["prompt"])
+
+    def test_a_form_off_the_list_is_asked_again_then_recorded(self):
+        answer = copy.deepcopy(PLAN)
+        answer["form"]["name"] = "heist"
+        FakeEngine.answer = answer
+        w = self.writer()
+        plan = w.plan()
+        self.assertEqual(len(FakeEngine.json_calls), 2)
+        self.assertIn("name", FakeEngine.json_calls[1]["prompt"])
+        self.assertIn("note: form 'heist' not in the schema; read as no form", w.findings)
+        self.assertEqual(plan["form"]["name"], "heist")      # kept as written
+        self.assertEqual(script.form_name(plan), "")
+        self.assertEqual(script.form_name(PLAN), "investigation")
+        self.assertEqual(script.form_name(PRE_FORM), "")
 
     def test_a_plan_without_a_rehook_key_is_asked_again_then_fails(self):
         # AUTO-136 reverses AUTO-90 here on purpose: the key is required in
@@ -553,6 +612,21 @@ class PlanPrompt(unittest.TestCase):
             self.assertIn(words, brief)
 
 
+    def test_the_brief_asks_for_the_form_and_the_rejected_one(self):
+        brief = " ".join(script.STORY_BRIEF.split())
+        self.assertIn("- form:", brief)
+        for name in script.FORMS:
+            self.assertIn(f"{name} (", brief)
+            self.assertIn(script.FORM_GLOSS[name], brief)
+        for words in ("Choose it from this subject and the research, never by habit",
+                      "why_this_subject", "shape", "rejected",
+                      "When the house names a form, use it."):
+            self.assertIn(words, brief)
+        w = writer()
+        calls = faked(w)
+        w.plan()
+        self.assertIn("- form:", calls[0]["prompt"])
+
     def test_the_plan_asks_for_this_films_persona(self):
         w = writer()
         calls = faked(w)
@@ -609,12 +683,51 @@ class SectionPrompt(unittest.TestCase):
             self.assertIn("never replaces it", prompt, name)
 
     def test_a_plan_without_persona_briefs_the_writer_as_before(self):
-        self.assertEqual(script.story_lines(PLAN), STORY_LINES_BEFORE_AUTO_158)
+        # over the plan before AUTO-157, which names no form either
+        self.assertEqual(script.story_lines(PRE_FORM), STORY_LINES_BEFORE_AUTO_158)
         for persona in ({}, {"temperament": "  ", "why": "w"}, "wry", None):
             with self.subTest(persona=persona):
-                self.assertEqual(script.story_lines(with_persona(persona)),
+                self.assertEqual(script.story_lines(with_persona(persona, base=PRE_FORM)),
                                  STORY_LINES_BEFORE_AUTO_158)
         self.assertNotIn("temperament", self.prompts()["write-01"])
+
+    def test_each_writer_is_handed_the_form(self):
+        line = ("The film's form: investigation — the fall, the paint that hid the crack, "
+                "the sheared bolt")
+        self.assertIn(line, script.story_lines(PLAN))
+        prompts = self.prompts()
+        self.assertEqual(sorted(prompts), ["write-01", "write-02", "write-03"])
+        for name, prompt in prompts.items():
+            self.assertIn(line, prompt, name)
+        other = copy.deepcopy(PLAN)
+        other["form"].update(name="other", other="a heist")
+        self.assertIn("The film's form: a heist — the fall, the paint that hid the crack, "
+                      "the sheared bolt", script.story_lines(other))
+        # an off-list name is read as no form, so no form line is handed on
+        drifted = copy.deepcopy(PLAN)
+        drifted["form"]["name"] = "heist"
+        self.assertEqual(script.story_lines(drifted), script.story_lines(PRE_FORM))
+        # the persona's line stays last
+        self.assertTrue(script.story_lines(with_persona())[-1].startswith(
+            "The narrator's temperament"))
+
+    def test_a_pre_form_plan_reads_as_before(self):
+        from ytstudio import channel
+        self.assertNotIn("form", script.plan_view(PRE_FORM))
+        self.assertFalse([c for c in script.plan_prechecks(PRE_FORM, 60, "t")
+                          if "form" in c])
+        self.assertEqual(script.story_lines(PRE_FORM), STORY_LINES_BEFORE_AUTO_158)
+        self.assertEqual(channel.story(PRE_FORM)["form"], "")
+        w = writer()
+        faked(w, plan=PRE_FORM)
+        data = w.run()
+        self.assertNotIn("form", data)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "script.md"
+            script.write_md(str(path), idea(), data, script.sections_of(data))
+            self.assertNotIn("**Form.**", path.read_text(encoding="utf-8"))
+            (Path(tmp) / "script.json").write_text(json.dumps(data), encoding="utf-8")
+            self.assertEqual(channel.fingerprint(Path(tmp))["form"], "")
 
     def test_a_persona_with_no_reason_is_named_alone(self):
         self.assertEqual(script.story_lines(with_persona({"temperament": "wry", "why": ""}))[-1],
@@ -774,6 +887,14 @@ class Outline(unittest.TestCase):
         faked(w, fields=fields)
         self.assertEqual(w.run()["persona"], PERSONA)
 
+    def test_outline_plan_fields_carry_the_form(self):
+        w = writer(outline=self.OUTLINE)
+        faked(w, fields=self.fields())
+        self.assertEqual(w.plan()["form"], PLAN["form"])
+        w = writer(outline=self.OUTLINE)
+        faked(w, fields=self.fields())
+        self.assertEqual(w.run()["form"], PLAN["form"])
+
     def test_the_script_carries_promise_payoff_and_train(self):
         w = writer(outline=self.OUTLINE)
         faked(w, fields=self.fields())
@@ -840,6 +961,16 @@ class Kept(unittest.TestCase):
             self.assertIn(text, md)
         ledger = md.split("Question ledger", 1)[1]
         self.assertIn("| Q1 | What brought the bridge down? | 1 | 3 |", ledger)
+
+    def test_script_json_and_markdown_carry_the_form(self):
+        _, data = self.run_it()
+        self.assertEqual(json.loads(json.dumps(data))["form"], PLAN["form"])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "script.md"
+            script.write_md(str(path), idea(), data, script.sections_of(data))
+            md = path.read_text(encoding="utf-8")
+        self.assertIn("**Form.** investigation: " + PLAN["form"]["why_this_subject"], md)
+        self.assertLess(md.index("**Audience.**"), md.index("**Form.**"))
 
     def test_markdown_prints_the_persona(self):
         def md(plan):
@@ -1268,31 +1399,34 @@ def plan_prompts() -> dict[str, str]:
 #: plan-fields-2 and plan-review prompts show in the plan they quote; over
 #: the plan without it those three prompts are develop's
 #: (tests/test_script_plan_review.py Channel pins them).
+#: AUTO-157 changed every one on purpose: the plan's required `form` is in
+#: the plan and plan-fields schemas and STORY_BRIEF, PLAN names one, and the
+#: plan review reads a form row under its `form_fits` and `form_problem`.
 PLAN_PROMPTS = {
     "plan":
-        "3878df073210e90fc0fda6d366107d0d72c14b7f11f7d802e44a96c43bc0260e",
+        "33ee741005f9de19d1eddd33373ccc399849a39934f04377269f12a6c9faf96b",
     "plan-2":
-        "35a5927f188a0a223922c711c4d7362a7d06264029acdf2636892e82782a41cc",
+        "22da4fcc35194222712727411b34fcc97c18d702598595dd255a1a42ff093553",
     "plan-2:schema":
-        "e48723b9e59d200daf6d53c35f2c82af7a1aef7368b4359337f446b022ccef77",
+        "b8059726e85dd2e753e08a5ff504acab9dca4e15383f8b51a4b4853821f70109",
     "plan-fields":
-        "a12b86cd957ee7d0f49f349ad657dcb9483df7023830ab404d16803f9c31962d",
+        "9acc670b55f9ac0db96f115eb717260a2b8d8f8c836d55c4ee9f165b82483f9e",
     "plan-fields-2":
-        "3244d156c8bd2f8b84fca6b697b94519aeb8a7b26dec523e3705998082a1da1c",
+        "1b497d3491fee8ac3d2ca62e029060585b9e06c31bc8ef617d5fc0e0617897a9",
     "plan-fields-2:schema":
-        "3722088e179fa8828dc7af568dc0f7608197d2f2749cc01ae4be25e69b447858",
+        "57e8ed58c45694c40f205e0e368f1e2bad93b69fdb7bdcdc9d9c17232501d00d",
     "plan-fields-retry":
-        "1cd23624d935136be97611de561b685543d44eeb159c29f083e16bb625056c8a",
+        "da8fe88cacbc46ac7e327ecc5c3a27181469adf3cd35cedf4ababd1a0060f4f4",
     "plan-fields-retry:schema":
-        "3722088e179fa8828dc7af568dc0f7608197d2f2749cc01ae4be25e69b447858",
+        "57e8ed58c45694c40f205e0e368f1e2bad93b69fdb7bdcdc9d9c17232501d00d",
     "plan-fields:schema":
-        "3722088e179fa8828dc7af568dc0f7608197d2f2749cc01ae4be25e69b447858",
+        "57e8ed58c45694c40f205e0e368f1e2bad93b69fdb7bdcdc9d9c17232501d00d",
     "plan-review":
-        "21907080523802b381dae4c5d3e883c7c1f445e295f242a975b2f0c25d197d6f",
+        "a17544a7575424f2c932765a983e9e1307de616af2469e869372da7b722e09bc",
     "plan-review:schema":
-        "d78a2db03a07add01992161c942750505a3d2b296c5bce3738b5ea707d6b03d0",
+        "ecc0e94eb5cae4479b7c5024ed297f3fbcc753cd0cd6d2c74f8fb4fce5e1db82",
     "plan:schema":
-        "e48723b9e59d200daf6d53c35f2c82af7a1aef7368b4359337f446b022ccef77",
+        "b8059726e85dd2e753e08a5ff504acab9dca4e15383f8b51a4b4853821f70109",
 }
 
 

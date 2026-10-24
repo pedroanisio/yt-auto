@@ -350,7 +350,7 @@ class TheShippedText(unittest.TestCase):
     def test_every_format_device_is_neutral_until_the_channel_sets_it(self):
         # The script stage knows no other film and no series: a device the
         # default asks for unconditionally is one the writer makes up.
-        for device in ("Opening", "Ending", "Hand-off", "Series", "Temperament"):
+        for device in ("Opening", "Ending", "Hand-off", "Series", "Temperament", "Form"):
             with self.subTest(device=device):
                 self.assertRegex(self.line("format", f"- {device}:"), r"\bnone\b")
         self.assertNotRegex(self.line("format", "- Hand-off:"), r"^- Hand-off: one spoken")
@@ -382,6 +382,21 @@ class TheShippedText(unittest.TestCase):
         self.assertIn("persona", temperament)
         self.assertIn("a temperament per film is a house extension", self.raw["format"])
         self.assertNotIn("house extension", self.parsed["format"])
+
+    def test_the_format_leaves_the_form_to_the_film_unless_the_channel_fixes_it(self):
+        # AUTO-157: FORMS is a house prior; structure 20 gives no list and
+        # no template, so the default fixes no form and names how a channel
+        # does. Its own example sits inside the line, so it fixes nothing.
+        from ytstudio import script
+        form = self.line("format", "- Form:")
+        self.assertEqual(sum(1 for line in self.parsed["format"].splitlines()
+                             if line.startswith("- Form:")), 1)
+        self.assertIn("none", form)
+        self.assertIn('("- Form: countdown")', form)
+        self.assertIn("choose this film's form from its subject", form)
+        self.assertEqual(script.house_form(self.parsed["format"]), "")
+        self.assertIn(("structure", 20), cited(COMMENT.search(self.raw["format"]).group(1)))
+        self.assertLess(len(self.raw["format"]), 1500)
 
     def test_the_styles_ask_for_a_needed_formula_and_space_shown_in_space(self):
         # AUTO-145: direction 9 (already the section's tag) puts the formula

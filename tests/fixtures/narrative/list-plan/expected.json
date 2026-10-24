@@ -96,6 +96,8 @@
     "payoff_concrete": true,
     "stakes_concrete": true,
     "questions_unanswered": [],
+    "form_fits": false,
+    "form_problem": "The plan declares an investigation, but its sections are a tour of comet facts, famous comets, tail types and a future mission: no section follows Biermann's evidence.",
     "problems": [
       {
         "section": 2,

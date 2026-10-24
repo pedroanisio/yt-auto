@@ -13,7 +13,11 @@ that had been done. This is the check:
   plan and script that expects recommend (with a padded copy of the same
   script for the length audit), and the good script with one joke that
   makes the point (claim-joke), which expects recommend with voice no
-  lower than Good (`at_least`, AUTO-159);
+  lower than Good (`at_least`, AUTO-159); every plan.json carries good/'s
+  `form` (AUTO-157) on purpose, so a seeded fault is the only change, and
+  only list-plan's reading is under test on it (`form_fits` false, a list
+  carries no investigation); in the other seeded-bad plans the form is
+  not under test and may not describe their sections;
 - `python -m ytstudio.narrative calibrate <dir>` runs the plan review, the
   three-sample story review and the cold read over each case and prints a
   table (fixture, expected, got, pass/fail) and the length audit;

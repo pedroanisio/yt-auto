@@ -343,5 +343,60 @@ class Repeats(unittest.TestCase):
                                          ("palette",)), [])
 
 
+# --------------------------------------------------------------------------- #
+# the form (AUTO-157)
+# --------------------------------------------------------------------------- #
+
+def with_form(name, other=""):
+    return dict(SCRIPT, form={"name": name, "other": other, "why_this_subject": "w",
+                              "shape": "s", "rejected": "r"})
+
+
+class Form(Work):
+    """The film's form is recorded and a shared one is an advisory line:
+    a form may recur when it fits the subject, and no rotation is asked."""
+
+    def test_the_record_spells_the_script_stages_forms(self):
+        from ytstudio import script
+        self.assertEqual(channel.FORMS, script.FORMS)
+        self.assertEqual(channel.FORM_KEY, ("form", "name"))
+        # the form is never a repeats dimension: a repeat is a ground to
+        # revise, and a form may recur when it fits the subject
+        self.assertNotIn("form", channel.DIMENSIONS)
+        self.assertNotIn("form", channel.PLAN_DIMENSIONS)
+
+    def test_the_fingerprint_reads_the_form(self):
+        print_ = channel.fingerprint(self.film("bridge", script=with_form("investigation")))
+        self.assertEqual(print_["form"], "investigation")
+        # an older script.json, an off-list name and an `other` with no name
+        # are no form; an `other` is keyed by the name it gives
+        self.assertEqual(channel.fingerprint(self.film("old", script=SCRIPT))["form"], "")
+        self.assertEqual(channel.form(with_form("heist")), "")
+        self.assertEqual(channel.form(with_form("other")), "")
+        self.assertEqual(channel.form(with_form("other", "A  Heist")),
+                         channel.form(with_form("other", "a heist")))
+        self.assertTrue(channel.form(with_form("other", "a heist")).startswith("other:"))
+
+    def test_two_ready_films_sharing_a_form_give_one_advisory_house_line(self):
+        # A `house:` line, never a `channel:` one: the reviewer lists each
+        # `channel:` line under repeats or dismissed, and a shared form is
+        # neither, so it is kept out of that path (and names every film
+        # sharing it, which no one repeat could).
+        new = channel.fingerprint(self.film("new", script=with_form("countdown")))
+        before = [counted("a", form="countdown"), counted("b", form="countdown"),
+                  counted("c", form="journey")]
+        self.assertEqual(channel.shared_form(new, before),
+                         ["house: this film's form, countdown, is shared by 2 of the last 3 "
+                          "counted films (a, b): advisory, since a form may recur when it "
+                          "fits the subject; never a repeat"])
+        self.assertEqual(channel.repeats(new, before, channel.PLAN_DIMENSIONS), [])
+        self.assertEqual(channel.shared_form(counted("n", form="debate"), before), [])
+        # a film either side without a form is not evidenced
+        self.assertEqual(channel.shared_form(counted("n", form=""), [counted("a", form="")]),
+                         [])
+        self.assertEqual(channel.shared_form(counted("n", form="countdown"), [counted("a")]),
+                         [])
+
+
 if __name__ == "__main__":
     unittest.main()

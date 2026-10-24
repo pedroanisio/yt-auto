@@ -136,6 +136,11 @@ judging 13; Zeigarnik → attention Contested.
    and no declared twist, is a ground for it to revise, never on its own to
    reject (attention 8), and the plan that explains before it gives a reason
    to care fails a plan review that says its `stakes_concrete` is true.
+   Since AUTO-157 each plan names a film-wide form chosen for its subject;
+   structure 20 gives no template and no list, so the form list is a house
+   prior, its pre-checks are `house:` lines, and a form that does not fit is
+   a ground to revise only: a second revise on it alone drafts on with an
+   advisory.
 4. **The evidence loop.** `yt improve` ingests the channel's retention curves
    (judging 1–3), maps dips, spikes and the Intro figure to beat ids and
    routes findings to the script stage under the rule they bear on. Every

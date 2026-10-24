@@ -354,7 +354,9 @@ class StakesGround(unittest.TestCase):
 
     REJECT = ("Only the train, the order, a section that moves nothing and the payoff "
               "are grounds to reject.")
-    REVISE = "Those four, and stakes, are grounds to revise."
+    #: AUTO-157 ends the sentence on the form, in the role and the attack alike
+    REVISE = ("Those four, and stakes, are grounds to revise, and a form that does not "
+              "follow from the subject is a ground to revise only, never to reject.")
 
     def check_text(self, text):
         flat = " ".join(text.split())
@@ -415,6 +417,170 @@ class StakesGround(unittest.TestCase):
         missing = dict(alone)
         del missing["stakes_concrete"]
         self.assertEqual(narrative.check_plan_review(missing), [])
+
+
+class Form(unittest.TestCase):
+    """AUTO-157: the film's form (its macro shape) is read by the plan review
+    alone. It is a plan-only row, outside RUBRIC, so the story review's
+    grades, its medians and qa's rubric are what they were; a form that does
+    not follow from the subject is a ground to revise only."""
+
+    @staticmethod
+    def clean(**change):
+        return dict({"verdict": "revise", "train_ok": True, "reorder_survives": False,
+                     "sections_advancing_none": [], "payoff_concrete": True,
+                     "stakes_concrete": True, "questions_unanswered": [],
+                     "form_fits": False, "form_problem": "a mystery any topic could wear",
+                     "problems": []}, **change)
+
+    def test_the_rubric_and_its_keys_are_unchanged(self):
+        self.assertNotIn("form", narrative.KEYS)
+        self.assertNotIn("form", [c.key for c in narrative.RUBRIC])
+        self.assertEqual(len(narrative.RUBRIC), 10)
+        self.assertNotIn("form", narrative.REVIEW_SCHEMA["properties"]["grades"]["required"])
+        self.assertNotIn("form", narrative.REVIEW_SCHEMA["properties"]["flags"]["items"]
+                         ["properties"]["criterion"]["enum"])
+        from ytstudio import qa
+        self.assertNotIn("form", qa.STORY_RUBRIC)
+
+    def test_the_form_row_is_plan_only_practitioner_and_drawn_from_structure_20(self):
+        self.assertEqual([c.key for c in narrative.PLAN_ONLY], ["form"])
+        form = narrative.criterion("form")
+        self.assertIs(form, narrative.PLAN_ONLY[0])
+        self.assertEqual(tuple(form.levels), narrative.LEVELS)
+        self.assertEqual(form.strength, "practitioner")
+        self.assertEqual(form.rules, ("structure 20",))
+        self.assertEqual(strengths()[form.rules[0]], form.strength)
+        self.assertIn("script", corpus_ids()["structure 20"])
+        for level, line in form.levels.items():
+            self.assertTrue(line.strip(), level)
+            self.assertNotIn("\n", line)
+        self.assertIn("any topic could wear", form.levels["Poor"])
+        self.assertIn("mysteries are engaging", form.example)
+        self.assertIn("Biermann", form.example)
+
+    def test_only_the_plan_review_reads_the_form_row(self):
+        self.assertNotIn(". form [", narrative.rubric_text("reviewer"))
+        self.assertNotIn("form:", narrative.rubric_text("writer"))
+        self.assertIn("form", script.PLAN_CRITERIA)
+        self.assertEqual(script.PLAN_CRITERIA[-1], "form")
+        text = narrative.rubric_text("reviewer", keys=script.PLAN_CRITERIA)
+        self.assertIn(". form [practitioner]", text)
+        for line in narrative.criterion("form").levels.values():
+            self.assertIn(line, text)
+
+    def test_the_plan_review_schema_requires_form_fits_and_form_problem(self):
+        props = narrative.PLAN_REVIEW_SCHEMA["properties"]
+        for name in ("form_fits", "form_problem"):
+            self.assertIn(name, narrative.PLAN_REVIEW_SCHEMA["required"])
+            self.assertIn(name, narrative.plan_review_schema(True)["required"])
+        self.assertEqual(props["form_fits"]["type"], "boolean")
+        self.assertEqual(props["form_problem"]["type"], "string")
+        self.assertIn("true when the plan names no form", props["form_fits"]["description"])
+        # a form repeat is not a repeats ground
+        self.assertEqual(narrative.REPEATS_PROPERTY["items"]["properties"]["dimension"]["enum"],
+                         ["opening", "structure", "closing"])
+        self.assertEqual(problems(blank(narrative.PLAN_REVIEW_SCHEMA),
+                                  narrative.PLAN_REVIEW_SCHEMA), [])
+
+    def test_check_plan_review_names_the_two_form_contradictions(self):
+        accept = self.clean(verdict="accept")
+        lines = narrative.check_plan_review(accept)
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("form_fits is false", lines[0])
+        empty = self.clean(form_problem="  ",
+                           problems=[{"section": 0, "problem": "p", "fix": "f"}])
+        lines = narrative.check_plan_review(empty)
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("form_problem", lines[0])
+        # a revise whose form field names the fault has named a problem
+        self.assertEqual(narrative.check_plan_review(self.clean()), [])
+        self.assertEqual(narrative.check_plan_review(self.clean(verdict="accept",
+                                                                form_fits=True,
+                                                                form_problem="")), [])
+        # an old stub or cached answer carries no form_fits and reads as before
+        old = self.clean(verdict="accept")
+        del old["form_fits"], old["form_problem"]
+        self.assertEqual(narrative.check_plan_review(old), [])
+
+    def test_a_reject_on_the_form_alone_is_a_contradiction(self):
+        problem = [{"section": 0, "problem": "the form fits no subject", "fix": "f"}]
+        alone = self.clean(verdict="reject", problems=problem)
+        lines = narrative.check_plan_review(alone)
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("form alone is grounds to revise", lines[0])
+        self.assertEqual(narrative.check_plan_review(dict(alone, reorder_survives=True)), [])
+
+    def test_form_only_revise_is_true_only_when_every_other_ground_is_clean(self):
+        self.assertTrue(narrative.form_only_revise(self.clean()))
+        self.assertTrue(narrative.form_only_revise(dict(self.clean(), repeats=[])))
+        for change in ({"verdict": "accept"}, {"verdict": "reject"}, {"form_fits": True},
+                       {"train_ok": False}, {"reorder_survives": True},
+                       {"sections_advancing_none": [2]}, {"questions_unanswered": ["Q1"]},
+                       {"payoff_concrete": False}, {"stakes_concrete": False},
+                       {"repeats": [{"film": "a", "dimension": "closing", "problem": "p"}]}):
+            with self.subTest(change=change):
+                self.assertFalse(narrative.form_only_revise(self.clean(**change)))
+        old = self.clean()
+        del old["form_fits"]
+        self.assertFalse(narrative.form_only_revise(old))
+        self.assertFalse(narrative.form_only_revise(None))
+
+    def test_form_only_revise_needs_a_named_settled_problem_about_the_form(self):
+        # A reading that still contradicts itself after the again ask, or
+        # that names no form problem, has not said the form is all that is
+        # wrong; nor has one whose problems name another fault no field
+        # mirrors (an ending, a rehook), which would stop without the form.
+        self.assertFalse(narrative.form_only_revise(self.clean(form_problem=" ")))
+        self.assertFalse(narrative.form_only_revise(
+            self.clean(), unsettled=["form_fits is false and form_problem is empty"]))
+        self.assertTrue(narrative.form_only_revise(self.clean(), unsettled=[]))
+        about_form = {"section": 0, "problem": "the form is a label any topic could wear",
+                      "fix": "follow the evidence in the order Biermann had it"}
+        named = {"section": 0, "problem": "a mystery nothing in this subject keeps back",
+                 "fix": "f"}
+        mirrored = {"section": 0, "problem": "a mystery any topic could wear", "fix": "f"}
+        other = {"section": 3, "problem": "the rehook repeats section 2's question",
+                 "fix": "ask what the photographs could not show"}
+        ending = {"section": 0, "problem": "the ending recaps instead of paying off",
+                  "fix": "end on the tail"}
+        self.assertTrue(narrative.form_only_revise(self.clean(problems=[about_form])))
+        self.assertTrue(narrative.form_only_revise(self.clean(problems=[named]),
+                                                   form="mystery"))
+        self.assertFalse(narrative.form_only_revise(self.clean(problems=[named])))
+        self.assertTrue(narrative.form_only_revise(self.clean(problems=[mirrored])))
+        for fault in (other, ending):
+            with self.subTest(problem=fault["problem"]):
+                self.assertFalse(narrative.form_only_revise(
+                    self.clean(problems=[about_form, fault]), form="mystery"))
+        # The problem text says what is wrong; a fix that reshapes toward the
+        # form, or "form" as an ordinary word, does not make a rehook or a
+        # payoff fault a form fault.
+        fixed_toward = {"section": 3, "problem": "section 3 rehook is weak and does not "
+                        "inform", "fix": "reshape the reveal to fit the form"}
+        verb = {"section": 3, "problem": "section 3 does not form a question",
+                "fix": "ask what the photographs could not show"}
+        shape = {"section": 0, "problem": "the payoff line is in list form",
+                 "fix": "say the tail in one sentence"}
+        for fault in (fixed_toward, verb, shape):
+            with self.subTest(problem=fault["problem"]):
+                self.assertFalse(narrative.form_only_revise(
+                    self.clean(problems=[about_form, fault]), form="mystery"))
+        for said in ("its form is a label", "the declared form fits no subject",
+                     "the film's form is habit", "this form is not this subject's"):
+            with self.subTest(problem=said):
+                self.assertTrue(narrative.form_only_revise(
+                    self.clean(problems=[{"section": 0, "problem": said, "fix": "f"}])))
+
+    def test_the_plan_role_names_the_form_a_ground_to_revise_only(self):
+        for channel in (False, True):
+            with self.subTest(channel=channel):
+                role = " ".join(narrative.reviewer_role(plan=True, channel=channel).split())
+                self.assertIn("a form that does not follow from the subject is a ground to "
+                              "revise only", role)
+                self.assertIn("give no grade", role)
+                self.assertIn("form_fits", role)
+        self.assertNotIn("form that does not follow", narrative.reviewer_role())
 
 
 def review(verdict="recommend", grades=None, flags=()) -> dict:
@@ -1200,14 +1366,18 @@ def _sha(text: str) -> str:
 #: reviewer_role(plan=True) and PLAN_REVIEW_SCHEMA as develop wrote them
 #: before AUTO-137 (with AUTO-161's stakes ground, merged first), by digest:
 #: a film with no counted earlier film is asked exactly what it was.
-ROLE_BEFORE_AUTO_137 = "6b12d27d0178c51578cf5ae3d45921bd3afaaea5ec0498d054ba9ad7b99c6c37"
-SCHEMA_BEFORE_AUTO_137 = "d78a2db03a07add01992161c942750505a3d2b296c5bce3738b5ea707d6b03d0"
+#: AUTO-157 changed both on purpose, for every film (the form as a ground to
+#: revise only in the role, form_fits and form_problem in the schema), so
+#: the values are taken after it; the channel still changes neither.
+ROLE_BEFORE_AUTO_137 = "8b02c0e2c1261eb712b4d8490ad8a0d69732a7bb90239c6fb5ca2a77ed542b9c"
+SCHEMA_BEFORE_AUTO_137 = "ecc0e94eb5cae4479b7c5024ed297f3fbcc753cd0cd6d2c74f8fb4fce5e1db82"
 
 
 def accept_review(**kw):
     return {"verdict": "accept", "train_ok": True, "reorder_survives": False,
             "sections_advancing_none": [], "payoff_concrete": True,
-            "questions_unanswered": [], "problems": [], "stakes_concrete": True, **kw}
+            "questions_unanswered": [], "problems": [], "stakes_concrete": True,
+            "form_fits": True, "form_problem": "", **kw}
 
 
 class Channel(unittest.TestCase):
@@ -1226,7 +1396,8 @@ class Channel(unittest.TestCase):
         role = " ".join(narrative.reviewer_role(plan=True, channel=True).split())
         self.assertIn("Those four, and stakes, are grounds to revise, and so is a repeat of "
                       "an earlier channel film that a returning viewer would notice, which "
-                      "is never a ground to reject.", role)
+                      "is never a ground to reject, and a form that does not follow from "
+                      "the subject is a ground to revise only, never to reject.", role)
         self.assertNotEqual(role, " ".join(narrative.reviewer_role(plan=True).split()))
 
     def test_with_earlier_films_the_schema_requires_repeats(self):

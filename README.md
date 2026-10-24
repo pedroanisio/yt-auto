@@ -382,7 +382,7 @@ Everything for one video lives in one directory:
 work/
 ├── ideas.json                      every idea from the last `yt ideas`
 ├── ideas.store.json                every unique idea ever generated
-├── channel.json                    each film's opening, closing, sections, treatment, palette
+├── channel.json                    each film's opening, closing, form, sections, treatment, palette
 └── how-euv-light-is-made/          one video
     ├── idea.json
     ├── dossier.json  README.md  claims.csv  sources.csv  assets.csv  notes.md
@@ -420,7 +420,7 @@ stdout, so `--json` / `--md` / `--csv` are only for sending a copy elsewhere.
 
 `work/channel.json` is the channel record: every time `yt script`, `yt
 styles` or `yt qa` writes, the film's row is refreshed with its opening (the plan's
-`hook.trigger`), its closing (`ending.device`), its section shape, its primary
+`hook.trigger`), its closing (`ending.device`), its form (`form.name`), its section shape, its primary
 treatment, the palette roles its own swatches fill and the type families it
 names. A film counts once its `qa.json` says READY TO PUBLISH; drafts and
 remakes are recorded but never compared. The next film's plan and its review
@@ -516,15 +516,16 @@ goes into every manifest, so an artifact says which standards produced it.
 
 Under all of them sits the shipped default, `ytstudio/house/default.md`: the
 craft corpus in `docs/narrative/` distilled by hand into `## all`, `## script`,
-`## styles`, `## vfx`, `## sound`, `## voice` and `## format` (the narrator,
-opening, ending, hand-off and series, which the script stage reads before its
+`## styles`, `## vfx`, `## sound`, `## voice` and `## format` (the narrator, opening, ending, hand-off, series and form, which the script stage reads before its
 own section). Each film's format is chosen for its subject: an opening or an
 ending device recurs across films only when the channel's own `## format` names
 one, and the channel record below measures where a film repeats an earlier one
 anyway. The narrator is one proxy across films;
 its temperament is a device of its own (AUTO-158): the same every film when
 the channel's `## format` sets one, otherwise each film's own, chosen from its
-subject and named in the plan's `persona`. Each section opens with a comment
+subject and named in the plan's `persona`. So is the film's form (AUTO-157):
+fixed only by a `- Form: <name>` line in the channel's `## format`, otherwise
+chosen from this film's subject. Each section opens with a comment
 naming the corpus rules it states; comments never reach a prompt, and a test
 holds the ids to the corpus. The channel's file replaces a section by writing
 one of the same name. The keyframe, which has no section of its own, reads
@@ -736,8 +737,9 @@ engine instead (see Requirements): the plan review, the picture check and
 the story review's readers ask it, the drafting and every revision stay on
 the author's CLI, and `plan_review`, `review` and `picture` in script.json
 name it under `reviewer`. The `plan-review` decision
-reads five rows of the narrative rubric (the train, the stakes, the open
-loops, the reveal's setup, the ending) under a reviewer role of its own
+reads seven rows of the narrative rubric (the train, the stakes, the open
+loops, the reveal's setup, the ending, the devices, and the film's form, a
+row only the plan review reads) under a reviewer role of its own
 (`narrative.reviewer_role(plan=True)`: accept, revise or reject, never the
 story review's recommend or consider) and is told how to attack the plan:
 reorder the sections and see whether the story survives, find a section that
@@ -754,21 +756,42 @@ picture before its mechanism, and no declared twist, is grounds to revise,
 never on its own to reject (AUTO-161: the reading says so in
 `stakes_concrete`, and a second plan is told it even when the problems list
 is thin; each round of `plan_review`, in script.json or `plan_review.json`,
-keeps what the reading's fields found under `field_lines`). A reading whose fields
+keeps what the reading's fields found under `field_lines`). A form that does
+not follow from the subject is a ground to revise only, never to reject
+(AUTO-157): the plan names its `form` (one of `script.FORMS`, why this subject
+calls for it, the shape the sections give it, the obvious form it passed
+over), the pre-checks gain `house:` lines for an empty reason, a generic one
+(it names only the form, or nothing the train, promise, title or headings
+name), an `other` that names none, and a form other than the one the
+channel's `## format` fixes (`- Form: countdown`), and the reading says
+`form_fits` with its `form_problem`, which a second plan is told. A second
+`revise` whose only fault is the form drafts on: `plan_review` records
+`advisory: ["form"]`, script.md an `advisory: form` line, the terminal
+summary `(advisory: form)` and the findings a note; only when that reading
+names its `form_problem`, left nothing `unsettled`, and lists no problem
+that is not about the form (a rehook or an ending fault still stops it:
+`narrative.form_only_revise`; a problem is about the form only when its
+problem text, not its fix, speaks of the film's form, names the plan's form
+or repeats `form_problem`, so "does not form a question" is a rehook fault).
+Without `--review` the form's `house:` pre-checks are kept as `note: house:`
+findings. A reading whose fields
 contradict its verdict (an accept that finds the order a list or
-`stakes_concrete` false, a revise that names no problem and whose fields find
-no fault, a reject on stakes alone: `narrative.check_plan_review`) is asked once more as
+`stakes_concrete` or `form_fits` false, a revise that names no problem and whose fields find
+no fault, a reject on stakes or the form alone: `narrative.check_plan_review`) is asked once more as
 `plan-review-again`; what still contradicts is recorded under `unsettled`,
 and the verdict stands. `accept` drafts; `revise`
 sends the plan back once with the problems (`plan-2`, read again as
-`plan-review-2`); `reject`, or a second `revise`, exits 1 before a section
+`plan-review-2`); `reject`, or a second `revise` (but one on the form alone), exits 1 before a section
 is written, and no `script.json` is left for `yt run` to take as done: the
 reading, the stage's engine report and its spend go to `plan_review.json`
 instead, removed by the next run that gets past the plan.
 With counted earlier films in the channel record the plan's writer and its
 reviewer are shown how they opened, unfolded and closed (newest first, each
-by its slug), the pre-checks gain `channel:` lines (an opening or closing
-device, or an exact section shape, an earlier film had), and the attack gains
+by its slug), the pre-checks gain `channel:` lines (an opening or closing device, or an exact section shape, an earlier film had)
+and one `house:` line for a form earlier films share (`channel.shared_form`),
+advisory and never a repeat, since a form may recur when it fits the
+subject; the reviewer is told never to list it under `repeats`, so a shared
+form alone never stops the stage, and the attack gains
 a sixth objection, after the stakes (AUTO-161): could a returning viewer predict this film from one of
 them? A noticeable repeat is listed under `repeats` with a section 0 problem
 naming the film, and is a ground to revise, never to reject (a reject whose

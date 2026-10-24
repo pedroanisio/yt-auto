@@ -55,10 +55,11 @@ def kind(schema):
     return ""
 
 
-def verdict(word, problems=(), stakes=True):
+def verdict(word, problems=(), stakes=True, form_fits=True, form_problem=""):
     return {"verdict": word, "train_ok": word != "reject", "reorder_survives": word == "reject",
             "sections_advancing_none": [], "payoff_concrete": word != "reject",
             "stakes_concrete": stakes, "questions_unanswered": [],
+            "form_fits": form_fits, "form_problem": form_problem,
             "problems": [{"section": s, "problem": p, "fix": f} for s, p, f in problems]}
 
 
@@ -378,15 +379,18 @@ class Stakes(unittest.TestCase):
         # AUTO-161 changes the plan review's reading only: the plan's schema,
         # STORY_BRIEF, the plan prompt and the story review's role and schema
         # hash as they did on develop before it, so their decisions stay cached
-        # (the plan schema's value is AUTO-137's, which added ending.device)
+        # (the plan schema's value is AUTO-137's, which added ending.device).
+        # AUTO-157 changed the plan schema, STORY_BRIEF and the plan prompt on
+        # purpose (the plan's `form`); the story review's role and schema are
+        # still develop's.
         import hashlib
 
         def digest(text):
             return hashlib.sha256(text.encode()).hexdigest()
         self.assertEqual(digest(json.dumps(script.PLAN_SCHEMA, sort_keys=True)),
-                         "e48723b9e59d200daf6d53c35f2c82af7a1aef7368b4359337f446b022ccef77")
+                         "b8059726e85dd2e753e08a5ff504acab9dca4e15383f8b51a4b4853821f70109")
         self.assertEqual(digest(script.STORY_BRIEF),
-                         "34a8cdb485d2f53f258c06c153fc6cb883661e13d745ffa46ec583ba3afc79ee")
+                         "9653fea2a559647af4ec355399ffeed22dd998f43ba9a8addb860c743b972290")
         self.assertEqual(digest(json.dumps(narrative.REVIEW_SCHEMA, sort_keys=True)),
                          "7814e025c70fc932451f27deb712c9d7f6296dcb3d09004f69403bd96f7a5649")
         self.assertEqual(digest("".join(narrative.reviewer_role(seed=s) for s in range(4))),
@@ -396,7 +400,7 @@ class Stakes(unittest.TestCase):
         w.run(review=True)
         plan_prompt = next(c["prompt"] for c in calls if c["name"] == "plan")
         self.assertEqual(digest(plan_prompt),
-                         "a82bf4df71e355bba5ddd20aad808d258a956842e88020b86e9c3468e7ff7cf7")
+                         "f735c4f9250e90e169340553ea9639411f3c3c4718c81441c2741b8ec70f4370")
 
 
 class SelfContradiction(unittest.TestCase):
@@ -788,6 +792,294 @@ class Persona(unittest.TestCase):
         w = writer()
         self.assertIn('"temperament": "tender"', w._story_prompt([], plan))
         self.assertNotIn("persona", w._story_prompt([], PLAN))
+
+
+# --------------------------------------------------------------------------- #
+# the film's form, chosen for its subject (AUTO-157)
+# --------------------------------------------------------------------------- #
+
+NARRATIVE = Path(__file__).resolve().parent / "fixtures" / "narrative"
+
+#: What a reviewer says of a form that does not follow from the subject.
+MISFIT = "a mystery any subject could wear; nothing in the bridge is kept back"
+FORM_LINE = "the whole plan: the form does not follow from the subject: " + MISFIT
+
+
+def comet(why=None, **form):
+    """The calibration set's good comet-tail plan, with its form changed."""
+    plan = json.loads((NARRATIVE / "good" / "plan.json").read_text(encoding="utf-8"))
+    if why is not None:
+        plan["form"]["why_this_subject"] = why
+    plan["form"].update(form)
+    return plan
+
+
+def form_lines(plan, title="Why a comet flies tail first", **kw):
+    return [c for c in script.plan_prechecks(plan, 130, title, **kw)
+            if "form" in c and not c.startswith("channel:")]
+
+
+def form_only(word="revise"):
+    """A reading whose fields find only the form wrong."""
+    return dict(verdict(word, [(0, MISFIT, "follow the inspection's evidence")]),
+                train_ok=True, reorder_survives=False, payoff_concrete=True,
+                form_fits=False, form_problem=MISFIT)
+
+
+class Form(unittest.TestCase):
+    """The film's form follows from its subject: a generic reason is a
+    house: pre-check, the reviewer of another family reads a form row, and
+    a form that does not fit is a ground to revise only, so a second
+    reading that objects to the form alone drafts on with an advisory."""
+
+    GENERIC = "house: the form's reason names only the form, so any topic could wear it"
+
+    def test_the_good_comet_plan_has_no_form_line(self):
+        self.assertEqual(form_lines(comet()), [])
+
+    def test_a_generic_form_reason_is_a_house_pre_check(self):
+        for why in ("mystery", "it is a mystery story", "mysteries are engaging"):
+            with self.subTest(why=why):
+                lines = form_lines(comet(why, name="mystery"))
+                self.assertEqual(lines, [f"{self.GENERIC} (\"{why}\")"])
+                self.assertTrue(lines[0].startswith("house:"))
+        self.assertEqual(form_lines(comet("nobody knows why comet tails outrun sunlight",
+                                          name="mystery")), [])
+
+    def test_an_other_form_with_no_name_and_an_empty_reason_are_flagged(self):
+        self.assertEqual(form_lines(comet("  ")),
+                         ["house: the form has no why_this_subject (structure 20)"])
+        self.assertIn("house: the form is other and names none",
+                      form_lines(comet(name="other", other="")))
+        self.assertEqual(form_lines(comet(name="other", other="a heist")), [])
+        # the name given under other is a form word, not a reason
+        self.assertEqual(form_lines(comet("a heist", name="other", other="a heist")),
+                         [f"{self.GENERIC} (\"a heist\")"])
+        # an off-list name is read as no form, and an older plan as before
+        self.assertEqual(form_lines(comet("", name="heist")), [])
+        older = comet()
+        del older["form"]
+        self.assertEqual(form_lines(older), [])
+
+    def test_the_house_fixes_the_form(self):
+        from ytstudio import house
+        default = house.load().for_stage("script")
+        self.assertIn("- Form:", default)
+        self.assertEqual(script.house_form(default), "")
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "house.md").write_text(
+                "## format\n- Form: countdown, every film.\n", encoding="utf-8")
+            block = house.load(project_root=Path(tmp)).for_stage("script")
+        self.assertEqual(script.house_form(block), "countdown")
+        self.assertEqual(script.house_form("- Form: other"), "")
+        self.assertEqual(script.house_form("- Form: heist"), "")
+        line = "house: the channel's house fixes the form as countdown; this plan uses journey"
+        self.assertIn(line, form_lines(comet(name="journey"), house_form="countdown"))
+        self.assertFalse([c for c in form_lines(comet(name="countdown"), house_form="countdown")
+                          if "fixes" in c])
+        # through the stage: the plan prompt carries the house, the reviewer the line
+        plan = copy.deepcopy(PLAN)
+        plan["form"]["name"] = "journey"
+        w = writer(house=block)
+        calls = faked(w, [verdict("accept")], plan=plan)
+        w.run(review=True)
+        asked = {c["name"]: c["prompt"] for c in calls}
+        self.assertIn("- Form: countdown", asked["plan"])
+        self.assertIn("- " + line, asked["plan-review"])
+        # without --review nobody reads the pre-checks, so the form's lines
+        # are filed as notes, as the channel's are
+        w = writer(house=block)
+        faked(w, [], plan=plan)
+        data = w.run()
+        self.assertIn("note: " + line, data["findings"])
+        kept = copy.deepcopy(PLAN)
+        kept["form"]["name"] = "countdown"
+        w = writer(house=block)
+        faked(w, [], plan=kept)
+        self.assertFalse([f for f in w.run()["findings"] if "form" in f])
+
+    def test_the_plan_review_reads_the_form_row(self):
+        prompt = Prompt.review_prompt(self, PLAN)
+        self.assertIn(". form [practitioner]", prompt)
+        for level in narrative.criterion("form").levels.values():
+            self.assertIn(level, prompt)
+        self.assertIn('"form"', prompt)
+        self.assertIn("its form (does the declared form follow from something in this "
+                      "subject", prompt)
+
+    def test_an_accept_with_form_fits_false_is_asked_again(self):
+        w = writer()
+        calls = faked(w, [verdict("accept", form_fits=False, form_problem=MISFIT),
+                          verdict("accept")])
+        data = w.run(review=True)
+        self.assertEqual(names(calls)[:3], ["plan", "plan-review", "plan-review-again"])
+        self.assertIn("form_fits is false", calls[2]["prompt"])
+        self.assertEqual(data["plan_review"]["unsettled"], [])
+        # still contradicting after the again ask, it is kept under unsettled
+        w = writer()
+        faked(w, [verdict("accept", form_fits=False, form_problem=MISFIT)] * 2)
+        record = w.run(review=True)["plan_review"]
+        self.assertTrue(any("form_fits" in line for line in record["unsettled"]))
+
+    def test_a_form_only_revise_goes_to_plan_2_with_the_form_problem(self):
+        w = writer()
+        calls = faked(w, [form_only(), verdict("accept")])
+        data = w.run(review=True)
+        self.assertEqual(names(calls)[:4], ["plan", "plan-review", "plan-2", "plan-review-2"])
+        self.assertIn(FORM_LINE, calls[2]["prompt"])
+        self.assertEqual(data["plan_review"]["verdict"], "accept")
+        self.assertNotIn("advisory", data["plan_review"])
+        self.assertEqual(data["plan_review"]["rounds"][0]["field_lines"], [FORM_LINE])
+
+    def test_a_second_form_only_revise_drafts_on_with_an_advisory(self):
+        w = writer()
+        calls = faked(w, [form_only(), form_only()])
+        data = w.run(review=True)
+        order = names(calls)
+        self.assertEqual(order[:4], ["plan", "plan-review", "plan-2", "plan-review-2"])
+        self.assertIn("write-01", order)
+        record = data["plan_review"]
+        self.assertEqual((record["verdict"], record["advisory"], record["retried"]),
+                         ("revise", ["form"], True))
+        self.assertIn("note: plan review: the form still does not fit after planning once "
+                      f"more ({MISFIT}); drafted on, since form is a revise-only ground",
+                      data["findings"])
+        md = "\n".join(script.plan_review_lines(record))
+        self.assertIn("- advisory: form", md)
+        self.assertIsNone(getattr(w, "plan_review_stop", None))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            script.print_script(w.idea, data, [])
+        self.assertIn("(advisory: form)", out.getvalue())
+
+    def test_a_second_revise_on_form_and_order_still_stops(self):
+        both = dict(form_only(), reorder_survives=True)
+        w = writer()
+        calls = faked(w, [form_only(), both])
+        with self.assertRaises(ClaudeError) as caught:
+            w.run(review=True)
+        self.assertIn("the beat sheet did not pass review", str(caught.exception))
+        self.assertEqual(names(calls), ["plan", "plan-review", "plan-2", "plan-review-2"])
+        self.assertNotIn("advisory", w.plan_review_stop)
+        # a reject is unchanged, and report-only drafts on as before
+        w = writer()
+        faked(w, [form_only("reject"), form_only("reject")])
+        with self.assertRaises(ClaudeError):
+            w.run(review=True)
+        w = writer()
+        calls = faked(w, [form_only()])
+        data = w.run(review=True, fix=False)
+        self.assertNotIn("plan-2", names(calls))
+        self.assertNotIn("advisory", data["plan_review"])
+
+    def test_a_second_revise_naming_another_fault_in_problems_still_stops(self):
+        # a fault only the problems list carries (a section 3 rehook, the
+        # ending) is not the form, so the form does not make the gate lenient
+        rehook = (3, "the rehook repeats section 2's question",
+                  "ask what the photographs could not show")
+        second = form_only()
+        second["problems"].append({"section": rehook[0], "problem": rehook[1],
+                                   "fix": rehook[2]})
+        w = writer()
+        faked(w, [form_only(), second])
+        with self.assertRaises(ClaudeError):
+            w.run(review=True)
+        self.assertNotIn("advisory", w.plan_review_stop)
+
+    def test_a_second_form_revise_still_unsettled_stops(self):
+        # form_fits false with no form_problem, asked again and still so: the
+        # reading has not named what is wrong, so nothing is drafted on it
+        unnamed = dict(form_only(), form_problem="")
+        w = writer()
+        calls = faked(w, [form_only(), unnamed, unnamed])
+        with self.assertRaises(ClaudeError):
+            w.run(review=True)
+        self.assertEqual(names(calls), ["plan", "plan-review", "plan-2", "plan-review-2",
+                                        "plan-review-2-again"])
+        self.assertTrue(w.plan_review_stop["unsettled"])
+        self.assertNotIn("advisory", w.plan_review_stop)
+
+    def test_a_form_that_does_not_fit_with_no_problem_named_says_so(self):
+        lines = script.review_field_lines(dict(verdict("revise"), form_fits=False,
+                                               form_problem="  "))
+        self.assertEqual(lines, ["the whole plan: the form does not follow from the "
+                                 "subject: no problem named"])
+
+    def test_the_house_form_is_the_first_fixing_line(self):
+        # a channel `## format` that keeps the shipped default line and adds
+        # its own below it still fixes the form
+        from ytstudio import house
+        default = house.load().for_stage("script")
+        line = next(x for x in default.splitlines() if x.lstrip().startswith("- Form:"))
+        self.assertEqual(script.house_form(line + "\n- Form: countdown\n"), "countdown")
+        self.assertEqual(script.house_form("- Form: other\n- Form: journey"), "journey")
+
+    def test_the_terminal_summary_names_the_advisory(self):
+        data = {"target_seconds": 60, "plan_review": {"verdict": "revise", "retried": True,
+                                                      "advisory": ["form"]}}
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            script.print_script(idea(), data, [])
+        self.assertIn("plan review: revise (planned once more) (advisory: form)",
+                      out.getvalue())
+        data["plan_review"].pop("advisory")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            script.print_script(idea(), data, [])
+        self.assertNotIn("advisory", out.getvalue())
+
+    def test_a_reject_on_the_form_alone_is_asked_again(self):
+        w = writer()
+        calls = faked(w, [form_only("reject"), form_only(), verdict("accept")])
+        w.run(review=True)
+        self.assertEqual(names(calls)[:4], ["plan", "plan-review", "plan-review-again",
+                                            "plan-2"])
+        self.assertIn("the form alone is grounds to revise", calls[2]["prompt"])
+
+    def test_both_prompts_name_form_as_revise_only(self):
+        for channel in (False, True):
+            with self.subTest(channel=channel):
+                attack = " ".join(script.plan_attack(channel).split())
+                self.assertIn("its form (", attack)
+                self.assertIn("a form that does not follow from the subject is a ground to "
+                              "revise only, never to reject", attack)
+                role = " ".join(narrative.reviewer_role(plan=True, channel=channel).split())
+                self.assertIn("a form that does not follow from the subject is a ground to "
+                              "revise only", role)
+
+    def test_the_docs_name_the_form_as_revise_only_with_its_advisory(self):
+        root = Path(__file__).resolve().parent.parent
+        for doc, said in ((root / "README.md", "a ground to revise only, never to reject"),
+                          (root / "ytstudio" / "SKILL.md",
+                           "grounds to revise only, never to reject")):
+            with self.subTest(doc=doc.name):
+                flat = " ".join(doc.read_text(encoding="utf-8").split())
+                self.assertIn(said, flat)
+                for words in ("`form_fits`", "`form_problem`", 'advisory: ["form"]',
+                              "- Form: ", "`script.FORMS`"):
+                    self.assertIn(words, flat)
+
+    def test_the_form_is_read_by_the_reviewer_of_another_family(self):
+        engine = harness.ENGINE
+        harness.ENGINE = ByModel
+        self.addCleanup(setattr, harness, "ENGINE", engine)
+        ByModel.seen, ByModel.fail_review = [], False
+        with tempfile.TemporaryDirectory() as tmp:
+            script.Screenwriter(idea(), root=Path(tmp), verbose=False, minutes=1, jobs=1,
+                                model="sonnet", reviewer_model="opus").run(review=True)
+        review = [c for c in ByModel.seen if c["kind"] == "plan-review"]
+        self.assertEqual([c["model"] for c in review], ["opus"])
+        self.assertIn(narrative.FORM_GROUND.strip(", "), " ".join(review[0]["system"].split()))
+        authored = {c["model"] for c in ByModel.seen if c["kind"] == "plan"}
+        self.assertEqual(authored, {"sonnet"})
+        # the author's own family is still refused under this role, before
+        # anything is asked (the command's own path:
+        # Command.test_the_authors_own_family_is_refused_before_any_decision)
+        from ytstudio import flags
+        self.assertIn("does not grade its own work", flags.own_reviewer("sonnet", "sonnet"))
+        self.assertIn("does not grade its own work", flags.own_reviewer("opus",
+                                                                        "claude-opus-5-5"))
+        self.assertEqual(flags.own_reviewer("sonnet", "opus"), "")
 
 
 # --------------------------------------------------------------------------- #
@@ -1452,13 +1744,16 @@ def _sha(text: str) -> str:
 #: plan-review prompt, the reviewer's system and PLAN_ATTACK. A film with no
 #: counted earlier film is asked exactly this (AUTO-161's stakes ground, merged
 #: first, is in the plan-review prompt, the system and the attack).
-OLD_PLAN = {**copy.deepcopy(PLAN),
+#: AUTO-157 changed all four on purpose: the plan prompt asks for the form,
+#: and the attack and the system name the form a ground to revise only. The
+#: old plan has no `form` either, so its review carries no form line.
+OLD_PLAN = {**{k: v for k, v in copy.deepcopy(PLAN).items() if k != "form"},
             "ending": {k: v for k, v in PLAN["ending"].items() if k != "device"}}
 BEFORE_AUTO_137 = {
-    "plan": "a82bf4df71e355bba5ddd20aad808d258a956842e88020b86e9c3468e7ff7cf7",
-    "plan-review": "d54037ff86762bec8147f79c1479264a8da24dec686d028e9f0cb6e0dd07c271",
-    "system": "accb270dd99270f7249c48a996a9be05ae3cf201e28e322c93704bf8d7b6c2ca",
-    "attack": "80f901fec67f3f2b613bf631efb6ac7f4038ed8cba3f771aff81ff62a7cda06e",
+    "plan": "f735c4f9250e90e169340553ea9639411f3c3c4718c81441c2741b8ec70f4370",
+    "plan-review": "75e3c3092436d0e1e2a6ce91507d102d30f5469470517cbbf89d9be09b071959",
+    "system": "45c3e51e269949435933222dd401f1d4d255ef869df71fece30bf8e289c02f36",
+    "attack": "d02ba66b70a8ff2195897fc321e5b7333dba6386c650237dafea4f0564d98414",
 }
 
 #: One counted earlier film that opened, unfolded and closed as PLAN does.
@@ -1516,6 +1811,19 @@ class Channel(unittest.TestCase):
         self.assertIs(asked["plan-review"]["schema"], narrative.PLAN_REVIEW_SCHEMA)
         self.assertEqual(_sha(w.reviewer.system), BEFORE_AUTO_137["system"])
 
+    def test_each_earlier_films_form_reaches_the_plan_and_its_review(self):
+        # AUTO-157: the earlier films' forms are listed, and the writer is told
+        # a form may recur, since a form is chosen for its subject.
+        w = writer(earlier=[dict(EARLIER[0], form="investigation")])
+        calls = channel_faked(w, [verdict("accept")])
+        w.run(review=True)
+        asked = {c["name"]: c["prompt"] for c in calls}
+        self.assertIn("; form: investigation; sections:", asked["plan-review"])
+        self.assertIn("; form: investigation; sections:", asked["plan"])
+        self.assertIn("A form may recur when this subject calls for it.", asked["plan"])
+        self.assertIn("; form: not recorded; sections:",
+                      script.channel_block(EARLIER, reviewer=True))
+
     def test_with_earlier_films_the_plan_and_its_review_are_told_of_them(self):
         w = writer(earlier=EARLIER)
         calls = channel_faked(w, [verdict("accept")])
@@ -1542,7 +1850,9 @@ class Channel(unittest.TestCase):
                       "an earlier film", script.plan_attack(True))
         # the sixth objection follows AUTO-161's stakes, in one list
         self.assertIn("?), its stakes (", script.plan_attack(True))
-        self.assertIn("withheld as its twist?) and its sameness (", script.plan_attack(True))
+        self.assertIn("withheld as its twist?), its form (", script.plan_attack(True))
+        # and the form (AUTO-157) is the last before the sameness
+        self.assertIn("any topic could wear?) and its sameness (", script.plan_attack(True))
         # the drafting writers are not handed the channel
         writes = [c["prompt"] for c in calls if c["name"].startswith("write-")]
         self.assertTrue(writes)
@@ -1595,6 +1905,34 @@ class Channel(unittest.TestCase):
         self.assertEqual(len(found), 1, found)
         self.assertIn("a repeat is a ground to revise, never to reject", found[0])
 
+    def test_a_shared_form_is_a_house_line_kept_out_of_the_repeats(self):
+        # The reviewer lists each `channel:` line under repeats or dismissed;
+        # a shared form is a `house:` line instead, and the note says it is
+        # never a repeat, so a form alone never becomes a revise ground that
+        # stops the stage.
+        earlier = [dict(EARLIER[0], form="investigation")]
+        checks = script.plan_prechecks(PLAN, 60, "t", earlier=earlier)
+        shared = [c for c in checks if "is shared by" in c]
+        self.assertEqual(shared, ["house: this film's form, investigation, is shared by 1 "
+                                  "of the last 1 counted films (old-bridge): advisory, since "
+                                  "a form may recur when it fits the subject; never a repeat"])
+        self.assertEqual([c.split(":")[1].strip() for c in checks if c.startswith("channel:")],
+                         ["opening", "structure", "closing"])
+        self.assertIn("never list it under repeats", script.CHANNEL_PRECHECK_NOTE)
+        # two readings that object only to the shared form, as the note asks
+        # (no repeat listed, the form line dismissed), draft on
+        form_bound = dict(form_only(), repeats=[],
+                          dismissed=[{"film": "old-bridge", "dimension": "form",
+                                      "why": "the form is advisory"}])
+        w = writer(earlier=earlier)
+        calls = channel_faked(w, [form_bound, form_bound])
+        data = w.run(review=True)
+        review = next(c["prompt"] for c in calls if c["name"] == "plan-review")
+        self.assertIn("- " + shared[0], review)
+        self.assertIn("never list it under repeats", review)
+        self.assertIn("write-01", names(calls))
+        self.assertEqual(data["plan_review"]["advisory"], ["form"])
+
     def test_without_review_the_channel_lines_are_notes(self):
         w = writer(earlier=EARLIER, reviewer_model=None)
         calls = faked(w, [])
@@ -1641,6 +1979,11 @@ class ChannelCommand(unittest.TestCase):
         record = json.loads((self.film / "script.json").read_text())
         notes = [f for f in record["findings"] if f.startswith("note: channel:")]
         self.assertEqual(len(notes), 3, record["findings"])
+        # the shared form is one advisory house line (AUTO-157), never a
+        # channel repeat
+        self.assertIn("note: house: this film's form, investigation, is shared by 1 of the "
+                      "last 1 counted films (old-bridge): advisory, since a form may recur "
+                      "when it fits the subject; never a repeat", record["findings"])
         rows = json.loads((self.root / "work" / "channel.json").read_text())["films"]
         self.assertEqual({r["slug"]: r["counted"] for r in rows},
                          {"old-bridge": True, "a-film": False})
@@ -1648,6 +1991,7 @@ class ChannelCommand(unittest.TestCase):
         mine = next(r for r in rows if r["slug"] == "a-film")
         self.assertEqual(mine["opening"], PLAN["hook"]["trigger"])
         self.assertEqual(mine["closing"], "callback")
+        self.assertEqual(mine["form"], "investigation")
         self.assertEqual(mine["shape"]["tokens"], ["open", "constraint", "reveal"])
 
     def test_a_reviewed_run_shows_the_reviewer_the_channel(self):

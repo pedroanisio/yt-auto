@@ -7,7 +7,8 @@ the same film shape every time without anything noticing (AUTO-137).
 
 `work/channel.json` keeps one row per film: its opening device (the plan's
 hook trigger, AUTO-136), its closing device (the plan's `ending.device`),
-its section shape, its primary treatment, the palette roles its own
+its form (the plan's `form.name`, AUTO-157), its section shape, its
+primary treatment, the palette roles its own
 swatches fill, and the shipped type families its typography names. Only a
 film whose qa.json says READY counts: drafts, test runs and a film being
 remade are recorded with `counted: false` and never compared against. A
@@ -43,6 +44,15 @@ RECORD_FILE = "channel.json"
 #: card that moves either field changes one constant.
 OPENING_KEY = ("hook", "trigger")
 CLOSING_KEY = ("ending", "device")
+#: The film's form (AUTO-157): the plan's `form.name`, with `form.other`
+#: read beside it when the name is `other`.
+FORM_KEY = ("form", "name")
+
+#: script.FORMS, spelled here so the record does not import the script
+#: stage; tests/test_channel.py holds the two the same. A name off it is
+#: recorded as no form, as the script stage reads it.
+FORMS = ("mystery", "investigation", "journey", "debate", "countdown", "experiment",
+         "biography", "other")
 
 #: How many counted earlier films a new one is compared with, newest first.
 #: NO STANDARD: a house prior, unmeasured (TO VERIFY).
@@ -54,7 +64,11 @@ EARLIER_LIMIT = 12
 #: a returning viewer compares from memory, so the bar is looser.
 PALETTE_DISTANCE = 12.0
 
-#: The dimensions `repeats` measures. Typography is not one of them.
+#: The dimensions `repeats` measures. Typography is not one of them, nor
+#: is the form (AUTO-157): the plan reviewer lists each `channel:` line
+#: under repeats, a ground to revise, or dismisses it, and a form may
+#: recur when it fits the subject, so a shared form is `shared_form`'s
+#: advisory `house:` line instead.
 DIMENSIONS = ("opening", "closing", "structure", "treatment", "palette")
 
 #: What the plan review is shown, and what `yt styles` warns on.
@@ -128,10 +142,24 @@ def shape(data: dict | None) -> dict | None:
     return {"count": len(sections), "tokens": tokens, "functions": functions}
 
 
+def form(data: dict | None) -> str:
+    """A plan's or a script.json's form: its listed name, `other:<key>` for
+    one the list lacks (the name it gives, folded by core._key, so two films
+    calling it "Heist" and "heist" share it), and "" when it names none, one
+    off FORMS, or `other` with no name, which nothing can be compared with."""
+    name = _at(data, FORM_KEY)
+    if name not in FORMS:
+        return ""
+    if name == "other":
+        other = _key(_at(data, ("form", "other")))
+        return f"other:{other}" if other else ""
+    return name
+
+
 def story(data: dict | None) -> dict:
-    """The opening, closing and shape of a plan or a script.json."""
+    """The opening, closing, form and shape of a plan or a script.json."""
     return {"opening": _at(data, OPENING_KEY), "closing": _at(data, CLOSING_KEY),
-            "shape": shape(data)}
+            "form": form(data), "shape": shape(data)}
 
 
 def typography_families(text: str) -> list[str]:
@@ -327,6 +355,24 @@ def _same_shape(a: dict, b: dict) -> bool:
     fa, fb = a.get("functions"), b.get("functions")
     # A plan has no shots yet: what both evidence is compared, exactly.
     return fa is None or fb is None or fa == fb
+
+
+def shared_form(new: dict, earlier: Sequence[dict]) -> list[str]:
+    """The counted earlier films whose form (AUTO-157) is `new`'s, as one
+    `house:` line naming them all, or none. It is a `house:` line and not
+    a `channel:` one on purpose: the plan reviewer lists each `channel:`
+    line under repeats, a ground to revise, or dismisses it as one film's,
+    and a form may recur when it fits the subject, so a shared form is an
+    advisory that never sends a plan back on its own. A form either side
+    lacks is not evidenced and gives no line."""
+    films = [e for e in earlier if isinstance(e, dict)]
+    mine = str(new.get("form") or "")
+    sharing = [e for e in films if mine and str(e.get("form") or "") == mine]
+    if not sharing:
+        return []
+    return [f"house: this film's form, {mine}, is shared by {len(sharing)} of the last "
+            f"{len(films)} counted films ({', '.join(str(e['slug']) for e in sharing)}): "
+            "advisory, since a form may recur when it fits the subject; never a repeat"]
 
 
 def repeats(new: dict, earlier: Sequence[dict], dimensions: Iterable[str]) -> list[str]:
