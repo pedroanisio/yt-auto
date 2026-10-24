@@ -273,6 +273,23 @@ class Routing(ImproveCase):
         self.assertEqual(a, "text-dense|1.2|l-one")
         self.assertEqual(improve.fingerprint(dict(dense("l-one"), timestamp=99.0)), a)
 
+    def test_one_long_node_is_one_defect_not_two(self):
+        # A 13-word label is over the wall-of-text bound and over the
+        # screen's count at once; both name only it, so filing both would
+        # report one defect twice under one fingerprint.
+        from ytstudio import qa
+        rows = qa.sample({"shots": [{"label": "1.2", "at": 0.0, "seconds": 4.0,
+                                     "asset": "effect", "section": "1"}]})
+        node = {"id": "shot-1.2/l-long", "name": "l-long", "kind": "text", "asset": "",
+                "text": " ".join(f"w{i}" for i in range(13)), "window": [0.0, 60.0],
+                "fades": []}
+        for row in rows:
+            row["text"] = qa.text_record(qa.screen_text([node], row["t"]))
+        dense = [f for f in qa.mechanical_findings(rows) if f["kind"] == "text-dense"]
+        self.assertEqual(len(dense), 1, dense)
+        prints = [improve.fingerprint(f) for f in dense]
+        self.assertEqual(prints, ["text-dense|1.2|l-long"])
+
     def test_prose_findings_are_routed_by_the_model(self):
         findings = improve.collect(card(5.0, findings=[
             prose("the hero reads flat under the key", owner="scene-render lighting"),

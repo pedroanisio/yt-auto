@@ -2103,7 +2103,13 @@ def text_dense_findings(samples: list[dict], supers: dict | None = None) -> list
                        "narration say the rest"})
         counted = [i for i in items if not i.get("exempt")]
         total = int(rec.get("words") or 0)
-        if total >= SCREEN_WORDS and (label, "count") not in seen:
+        # One long node is the whole count: the node's finding already names
+        # it, and a second naming only it would share its fingerprint
+        # (improve.fingerprint) and be routed as the same defect twice.
+        bearing = [i for i in counted if int(i.get("words") or 0) > 0]
+        alone = (len(bearing) == 1 and bearing[0].get("kind") != "formula"
+                 and int(bearing[0].get("words") or 0) > WALL_WORDS)
+        if total >= SCREEN_WORDS and not alone and (label, "count") not in seen:
             seen.add((label, "count"))
             names = ", ".join(f"`{i['id']}` ({i['words']})" for i in counted)
             found.append(base | {
