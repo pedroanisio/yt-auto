@@ -84,6 +84,14 @@ class Doctor(unittest.TestCase):
         self.assertTrue(any("two-pressure covers 2.1" in m for m in notes), notes)
         self.assertEqual([f for f in found if f.level == "warn"], [])
 
+    def test_nothing_authored_says_so_once_not_again_as_a_motion_note(self):
+        why = "nothing was authored, so there is nothing to audit"
+        data = vfx_json(reason=why)
+        data["reach"].update(usage=None, report=None, reason=why)
+        _, found = self.vfx(data)
+        self.assertFalse(any("motion audit" in f.message for f in found),
+                         [f.message for f in found])
+
     def test_an_older_vfx_json_gives_nothing_new(self):
         _, before = self.vfx(vfx_json(motion=False))
         self.assertEqual([f.level for f in before], ["ok"])

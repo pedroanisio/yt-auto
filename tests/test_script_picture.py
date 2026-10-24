@@ -196,6 +196,11 @@ def faked(w, check, fixes=None):
     return calls
 
 
+#: What revise-picture tells the writer when a static process is flagged.
+STATIC_KEEP = ("A keep does not answer a static process: only a changed `visual` or "
+               "`shows` that lets the viewer watch the change does.")
+
+
 def named(calls, name):
     return [c for c in calls if c["name"] == name]
 
@@ -606,7 +611,7 @@ class StaticProcess(unittest.TestCase):
         # flag stands, with the writer's reason, and still binds.
         from ytstudio import vfx
         w = writer()
-        faked(w, picture(reports=[{"n": 1, "static_process": "the cascade is drawn whole"},
+        calls = faked(w, picture(reports=[{"n": 1, "static_process": "the cascade is drawn whole"},
                                   {"n": 3, "bare_number": "12,000 bolts, bare"}]),
               fixes=[{"n": 1, "action": "keep", "narration": "SPOKEN LINE 1.1.",
                       "why": "the line explains the cascade"},
@@ -616,6 +621,9 @@ class StaticProcess(unittest.TestCase):
         [standing] = data["picture"]["flags"]
         self.assertEqual((standing["n"], standing["kind"], standing["kept"]),
                          (1, "picture:static-process", "the line explains the cascade"))
+        # the writer is told so before spending its one revise on a keep
+        [revise] = named(calls, "revise-picture")
+        self.assertIn(STATIC_KEEP, revise["prompt"])
         self.assertEqual([k["n"] for k in data["picture"]["kept"]], [3])
         rows = [r for r in vfx.picture_constraints(data) if r["source"] == "picture"]
         self.assertEqual([r["label"] for r in rows], ["1.1"])
@@ -627,6 +635,15 @@ class StaticProcess(unittest.TestCase):
         faked(w, picture())
         data = w.run(review=True)
         self.assertEqual(data["picture"]["flags"], [])
+
+    def test_the_keep_sentence_is_only_there_for_a_static_process(self):
+        w = writer()
+        calls = faked(w, picture(reports=[{"n": 3, "bare_number": "12,000 bolts, bare"}]),
+                      fixes=[{"n": 3, "action": "keep", "narration": "SPOKEN LINE 2.1.",
+                              "why": "the line compares it"}])
+        w.run(review=True)
+        [revise] = named(calls, "revise-picture")
+        self.assertNotIn(STATIC_KEEP, revise["prompt"])
 
 
 if __name__ == "__main__":

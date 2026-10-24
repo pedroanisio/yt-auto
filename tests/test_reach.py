@@ -651,6 +651,176 @@ class MotionAudit(unittest.TestCase):
         self.assertEqual(asked[0], plain)
         self.assertNotIn("REQUIRED", plain)
 
+    def test_a_failed_motion_audit_is_asked_again_on_the_next_run(self):
+        # A reviewer that timed out says nothing about the film: the record
+        # says it failed, and the next `yt vfx` asks reach-motion again.
+        from ytstudio import harness
+        FakeReviewer.answers = [harness.HarnessError("the reviewer is down")]
+        out = self.run_reach(self.planner([]))
+        self.assertTrue(out["motion"]["failed"])
+        self.assertTrue(reach.needs_motion(out))
+        asked: list = []
+        self.cached["14-reach"] = out
+        FakeReviewer.asked, FakeReviewer.answers = [], [GOOD]
+        again = self.run_reach(self.planner(asked, fresh=False))
+        self.assertEqual(asked, [])                         # no plan-reach
+        self.assertEqual([n for n, _, _ in FakeReviewer.asked], ["reach-motion"])
+        self.assertEqual([s["id"] for s in again["motion"]["static"]], ["open-late"])
+        self.assertNotIn("failed", again["motion"])
+        self.assertEqual(self.saved["14-reach"]["motion"], again["motion"])
+        self.assertFalse(reach.needs_motion(again))
+        # an answer that could not be read is an answer: it is not asked again
+        self.assertFalse(reach.needs_motion(dict(out, motion={
+            "answer": {}, "static": [], "reason": "could not be read"})))
+
+    def test_a_cached_plan_is_kept_when_the_motion_audit_is_new(self):
+        # An existing project's next `yt vfx` asks reach-motion and nothing
+        # else: the cached 15-plan stands, without the REQUIRED lines, until
+        # --sections or `yt improve` makes it stale (SKILL.md says so).
+        asked: list = []
+        self.cached["14-reach"] = {"usage": {"elements": {}, "symbols": {}},
+                                   "report": {"families": {}}, "audit": Audit.AUDIT,
+                                   "reason": ""}
+        self.cached["15-plan"] = {"verdict": "ok", "build_order": ["open-move"]}
+        FakeReviewer.answers = [GOOD]
+        p = self.planner(asked, fresh=False)
+        out = self.run_reach(p)
+        self.assertEqual([s["id"] for s in out["motion"]["static"]], ["open-late"])
+        effects = [dict(g, effects=[dict(e, difficulty=2, hours=1) for e in g["effects"]])
+                   for g in GROUPS]
+        plan = p.plan(effects, {"hours": 2, "count": 2, "seconds": 6}, WORLD_SCENE, out)
+        self.assertEqual(plan, {"verdict": "ok", "build_order": ["open-move"]})
+        self.assertEqual(asked, [])                         # no plan-refine
+        self.assertEqual([n for n, _, _ in FakeReviewer.asked], ["reach-motion"])
+
+    def test_an_effect_with_no_shots_is_read_over_its_whole_world(self):
+        groups = [dict(GROUPS[0], effects=[dict(GROUPS[0]["effects"][0], shots=[]),
+                                           GROUPS[0]["effects"][1]])]
+        FakeReviewer.answers = [GOOD]
+        with mock.patch.object(reach, "manifest", return_value=[]), \
+                mock.patch.object(vfx.harness, "Harness", FakeReviewer):
+            self.planner([]).reach(groups, WORLD_SCENE, {"sections": [SECTION_OPEN]})
+        move = FakeReviewer.asked[0][1].split("`open-move`", 1)[1].split("`open-late`", 1)[0]
+        self.assertIn("shape#a", move)                      # phase one's
+        self.assertIn("camera#c", move)                     # phase two's
+
+    def test_a_world_the_section_does_not_make_is_read_whole(self):
+        (self.root / "vfx" / "01-open.scene.xml").write_text(
+            WORLD_DOC.replace('id="world-open"', 'id="world-other"'))
+        scene = {"symbols": {"world-other": {"file": "vfx/01-open.scene.xml"}},
+                 "phases": {"open-move": "world-other", "open-late": "world-other"},
+                 "dropped": {}}
+        FakeReviewer.answers = [GOOD]
+        with mock.patch.object(reach, "manifest", return_value=[]), \
+                mock.patch.object(vfx.harness, "Harness", FakeReviewer):
+            self.planner([]).reach(GROUPS, scene, {"sections": [SECTION_OPEN]})
+        move = FakeReviewer.asked[0][1].split("`open-move`", 1)[1].split("`open-late`", 1)[0]
+        self.assertIn("shape#a", move)
+        self.assertIn("camera#c", move)
+
+
+#: Elements with no id, and one whose id is "1".
+UNNAMED_DOC = """<scene version="1.3"><symbols><symbol id="s" duration="6">
+  <shape shape="rect" x="0" y="0" width="10" height="10" opacity="0">
+    <animate property="opacity"><key time="0.5" value="0"/><key time="1" value="1"/></animate>
+    <animate property="opacity"><key time="2" value="1"/><key time="2.5" value="0"/></animate>
+  </shape>
+  <shape id="1" shape="rect" x="0" y="0" width="10" height="10">
+    <animate property="x"><key time="0" value="0"/><key time="3" value="100"/></animate>
+  </shape>
+</symbol></symbols></scene>"""
+
+#: Text animators: a fade preset whose presetStart is on the text's parent
+#: timeline, an opacity-only animator timed by its own animate, and a
+#: typewriter whose start/end are its selector's range, not times.
+TEXT_DOC = """<scene version="1.3"><symbols><symbol id="t" duration="6">
+  <group id="g" start="2">
+    <text id="cap" text="hi" start="1">
+      <textAnimator preset="fade-in" presetStart="1" presetDuration="0.5"/>
+    </text>
+  </group>
+  <text id="soft" text="x">
+    <textAnimator opacity="0" start="0" end="100">
+      <animate property="amount"><key time="1" value="0"/><key time="2" value="100"/></animate>
+    </textAnimator>
+  </text>
+  <text id="typed" text="y" start="1">
+    <textAnimator preset="typewriter" start="0" end="100"/>
+  </text>
+</symbol></symbols></scene>"""
+
+#: Motion-family elements that change nothing over time, and one change
+#: inside one of them.
+STILL_DOC = """<scene version="1.3"><symbols><symbol id="k" duration="6">
+  <shape id="one" shape="rect" x="0" y="0" width="10" height="10">
+    <animate property="x"><key time="1" value="0"/></animate>
+  </shape>
+  <shape id="same" shape="rect" x="0" y="0" width="10" height="10">
+    <animate property="x"><key time="1" value="0"/><key time="1" value="5"/></animate>
+  </shape>
+  <shape id="m" shape="rect" x="0" y="0" width="10" height="10"><morph name="m" weight="0.5"/></shape>
+  <shape id="mm" shape="rect" x="0" y="0" width="10" height="10">
+    <morph name="m"><animate property="weight"><key time="0" value="0"/><key time="2" value="1"/></animate></morph>
+  </shape>
+  <beatGrid bpm="120"/>
+  <cue start="0" end="2" text="hi"/>
+  <constraint id="c1" type="hinge" a="x" b="y"/>
+  <transformConstraint id="tc"/>
+  <map id="mp"><pin id="p" lon="0" lat="0">
+    <animate property="radius"><key time="0" value="1"/><key time="2" value="5"/></animate>
+  </pin></map>
+</symbol></symbols></scene>"""
+
+
+class MotionRows(unittest.TestCase):
+    """What a row is: one target per element, times on the right timeline,
+    and nothing that holds still."""
+
+    def test_an_unnamed_element_is_one_target_across_its_changes(self):
+        rows = reach.motion_slice(UNNAMED_DOC, "s", None)
+        unnamed = [r for r in rows if r["target"] == "shape#(unnamed 1)"]
+        self.assertEqual([(r["start"], r["end"]) for r in unnamed], [(0.5, 1.0), (2.0, 2.5)])
+        self.assertEqual(targets(rows), ["shape#(unnamed 1)", "shape#1"])
+
+    def test_an_unnamed_shapes_fade_in_and_out_is_only_a_fade(self):
+        slices = {"s": reach.motion_slice(UNNAMED_DOC, "s", None)}
+        got = reach.motion_problems({"effects": [told("s", True, ["shape#(unnamed 1)"])]},
+                                    ["s"], slices)
+        self.assertTrue(any("only a fade" in p for p in got), got)
+        self.assertEqual(reach.motion_problems(
+            {"effects": [told("s", True, ["shape#1"])]}, ["s"], slices), [])
+
+    def test_a_presetStart_is_on_the_layers_parent_timeline(self):
+        [cap] = [r for r in reach.motion_slice(TEXT_DOC, "t", None)
+                 if r["target"] == "text#cap"]
+        self.assertEqual((cap["property"], cap["start"], cap["end"]), ("fade-in", 3.0, 3.5))
+
+    def test_a_text_animators_start_and_end_are_its_selector_not_times(self):
+        rows = {r["target"]: r for r in reach.motion_slice(TEXT_DOC, "t", None)}
+        self.assertEqual((rows["text#typed"]["property"], rows["text#typed"]["start"],
+                          rows["text#typed"]["end"]), ("typewriter", 1.0, 2.0))
+        self.assertEqual((rows["text#soft"]["property"], rows["text#soft"]["start"],
+                          rows["text#soft"]["end"]), ("opacity", 1.0, 2.0))
+
+    def test_a_text_fade_is_only_a_fade(self):
+        slices = {"t": reach.motion_slice(TEXT_DOC, "t", None)}
+        for target in ("text#cap", "text#soft"):
+            got = reach.motion_problems({"effects": [told("t", True, [target])]}, ["t"],
+                                        slices)
+            self.assertTrue(any("only a fade" in p for p in got), (target, got))
+        self.assertEqual(reach.motion_problems(
+            {"effects": [told("t", True, ["text#typed"])]}, ["t"], slices), [])
+
+    def test_a_construct_that_holds_still_is_no_row(self):
+        rows = reach.motion_slice(STILL_DOC, "k", None)
+        self.assertEqual(targets(rows), ["pin#p", "shape#mm"])
+        [mm] = [r for r in rows if r["target"] == "shape#mm"]
+        self.assertEqual((mm["construct"], mm["start"], mm["end"]), ("morph", 0.0, 2.0))
+        slices = {"k": rows}
+        got = reach.motion_problems({"effects": [told("k", True, ["shape#one"])]}, ["k"],
+                                    slices)
+        self.assertTrue(any("shape#one" in p for p in got), got)
+
 
 class MotionSummary(unittest.TestCase):
     STATIC = {"answer": None, "reason": "",
@@ -671,6 +841,25 @@ class MotionSummary(unittest.TestCase):
         self.assertEqual(s["upgrades"], [])
         self.assertEqual(len(s["static_processes"]), 1)
         self.assertIsNone(reach.summary({"audit": None, "reason": "r"}))  # older: as before
+
+    def test_summary_of_nothing_authored_is_none_as_before(self):
+        # QA's context and its digest stay what they were for such a film.
+        why = "nothing was authored, so there is nothing to audit"
+        self.assertIsNone(reach.summary({"usage": None, "report": None, "audit": None,
+                                         "reason": why, "motion": {
+                                             "answer": None, "static": [], "reason": why}}))
+
+    def test_the_cli_line_counts_the_static_processes(self):
+        self.assertEqual(vfx.glance_line(None), "")
+        motion_only = reach.summary({"audit": None, "reason": "r", "motion": self.STATIC})
+        self.assertEqual(vfx.glance_line(motion_only), " · 1 static process(es)")
+        both = reach.summary({"audit": Audit.AUDIT, "report": {"families": {}, "caveats": []},
+                              "motion": self.STATIC})
+        self.assertEqual(vfx.glance_line(both),
+                         " · reach 6/10, 1 upgrade(s) · 1 static process(es)")
+        plain = reach.summary({"audit": Audit.AUDIT, "report": {"families": {}, "caveats": []},
+                               "motion": {"answer": {}, "static": [], "reason": ""}})
+        self.assertEqual(vfx.glance_line(plain), " · reach 6/10, 1 upgrade(s)")
 
     def test_vfx_md_lists_the_static_processes(self):
         from tests.test_vfx_picture_constraints import plain_data, rendered
