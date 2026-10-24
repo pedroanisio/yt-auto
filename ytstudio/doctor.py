@@ -40,8 +40,8 @@ from . import (env, gateway, house, keyframe, narrative, render, retention, rhyt
 from . import script as script_stage
 from .assets import kind_for, licence_tier
 from .core import read_json, timecode, write_json
-from .research import (CROSSCHECK_WARNING, PARALLEL_DROPPED, PARALLEL_MIN_DEPTH,
-                       STORY_DROPPED, UNVERIFIED)
+from .research import (CROSSCHECK_WARNING, PARALLEL_DROPPED, PARALLEL_MIN_DEPTH, SCOPES,
+                       STORY_DROPPED, UNVERIFIED, crosscheck_failed)
 
 #: Levels, in the order the report sorts them.
 LEVELS = ("fail", "warn", "note", "ok")
@@ -1253,12 +1253,21 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
                 report.add("warn", "research", "independent sources contradict "
                            f"\"{_clip(e.get('claim', ''))}\": {_clip(e.get('correction', ''))}",
                            _cmd("script", project, "--verify"))
+        # A failed pass or verdict is asked again by a plain re-run, for the
+        # price of what failed; a verdict rejected twice is an answer the
+        # cache keeps, so only the stage's own file, removed, redoes it.
+        # --fresh would redo the entire research, so it is never the fix.
         unverified = [e for e in checked if e.get("status") == UNVERIFIED]
         if unverified:
+            again = _cmd("research", project, "--crosscheck", str(len(checked)))
+            stage = Path(project.source("dossier")).parent / "raw" / "09-crosscheck.json"
+            fix = (again + " (asks again only the passes and verdicts that failed)"
+                   if any(crosscheck_failed(e) for e in unverified) else
+                   f"remove {stage}, then {again}: that redoes the cross-check alone; "
+                   "--fresh redoes the entire research")
             report.add("warn", "research", f"{len(unverified)} of {len(checked)} cross-checked "
-                       "claim(s) unverified: no valid independent verdict",
-                       _cmd("research", project, "--fresh", "--crosscheck", str(len(checked))))
-        if dossier.get("scope") in ("explainer", "paper") and claims \
+                       "claim(s) unverified: no valid independent verdict", fix)
+        if SCOPES.get(str(dossier.get("scope") or ""), {}).get("spoken") and claims \
                 and "crosscheck" not in dossier and not dossier.get("crosscheck_skipped"):
             report.add("note", "research", "key claims were not cross-checked independently; "
                        "run yt research --crosscheck N",

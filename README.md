@@ -653,10 +653,17 @@ ones the outline uses first, then the weakly sourced ones, then the numbers
 host, and has a model of another family (`--reviewer-model`, refused when it
 shares the author's family) judge what the pass read. It runs after the
 outline as stage `09-crosscheck`, cached like the others. A verdict must
-name pages the pass opened and quote words found under that page's URL; a
-source on the cited host does not count. Anything else is asked once more,
-then recorded as `unverified`, never as confirmed. The dossier gains a
-`crosscheck` list and each checked claim an `independent` status
+name pages the pass opened and quote words found under that page's URL
+(another page's words, or the notes under no fetched URL, are not that
+page's); a source on the cited host does not count. Anything else is asked
+once more, then recorded as `unverified`, never as confirmed. A pass or a
+verdict whose call fails is `unverified` too, the other claims finish and
+the dossier is written; the next run asks again only what failed (a failed
+verdict on the pass it kept), while a verdict rejected twice stays until
+`raw/09-crosscheck.json` is removed, which redoes the cross-check alone
+(`--fresh` redoes the entire research). `--budget-usd` caps each of the
+check's calls, passes and verdicts, as it caps every research call. The
+dossier gains a `crosscheck` list and each checked claim an `independent` status
 (corroborated, contradicted, disputed, not found, unverified), printed under
 the claim in `dossier.md`; a wordless scope records `crosscheck_skipped`
 instead. It is off by default and costs about $0.40 a claim (TO VERIFY: an

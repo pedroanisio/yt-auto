@@ -15,6 +15,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -70,6 +71,27 @@ class Contradicted(unittest.TestCase):
         self.assertEqual(len(warns), 1, rows)
         self.assertIn("2 ", warns[0].message)
 
+    def unverified_warn(self, *entries):
+        rows = research_rows(report(crosscheck=list(entries)))
+        [warn] = [f for f in rows if f.level == "warn" and "unverified" in f.message]
+        return warn
+
+    def test_a_failed_call_is_retried_by_a_plain_rerun(self):
+        warn = self.unverified_warn(
+            entry("unverified", problems=[f"{research.PASS_FAILED}: timed out"]),
+            entry("unverified", problems=[f"{research.VERDICT_FAILED}: reviewer down"]),
+            entry("corroborated"))
+        self.assertTrue(warn.fix.startswith("yt research --project"), warn.fix)
+        self.assertIn("--crosscheck 3", warn.fix)
+        self.assertNotIn("--fresh", warn.fix.split(";")[0])
+
+    def test_a_twice_rejected_verdict_is_redone_by_the_stage_alone(self):
+        warn = self.unverified_warn(entry("unverified", problems=["x is not a page fetched"]),
+                                    entry("corroborated"))
+        self.assertIn("raw/09-crosscheck.json", warn.fix)
+        self.assertIn("--crosscheck 2", warn.fix)
+        self.assertIn("--fresh redoes the entire research", warn.fix)
+
     def test_a_clean_check_adds_nothing(self):
         rows = research_rows(report(crosscheck=[entry("corroborated"), entry("not_found")]))
         self.assertFalse([f for f in rows if "cross-check" in f.message
@@ -84,6 +106,11 @@ class NotChecked(unittest.TestCase):
         found = self.notes()
         self.assertEqual([f.level for f in found], ["note"])
         self.assertIn("--crosscheck", f"{found[0].message} {found[0].fix}")
+
+    def test_any_spoken_scope_is_noted(self):
+        lecture = dict(research.SCOPES["explainer"], name="lecture")
+        with mock.patch.dict(research.SCOPES, {"lecture": lecture}):
+            self.assertEqual([f.level for f in self.notes(scope="lecture")], ["note"])
 
     def test_a_skipped_check_a_wordless_film_or_no_claims_get_none(self):
         self.assertEqual(self.notes(crosscheck_skipped="cinematic scope"), [])
