@@ -403,5 +403,53 @@ class Improve(unittest.TestCase):
         self.assertEqual(improve._qa_cost(self.root), 0.6)
 
 
+class AccuracyEstimate(unittest.TestCase):
+    """AUTO-150: a dossier film's QA asks the on-screen accuracy check too;
+    until a pass has measured it, the estimate assumes qa.ACCURACY_USD."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name) / "work" / "a-film"
+        self.root.mkdir(parents=True)
+
+    def scored(self, **card):
+        write_json(self.root / "qa.json", {"pass": "pass-01"})
+        (self.root / "qa" / "pass-01").mkdir(parents=True, exist_ok=True)
+        write_json(self.root / "qa" / "pass-01" / "scorecard.json",
+                   dict({"usage": spend.record(0.6, "m", 1), "scoring": {"asked": 3}},
+                        **card))
+
+    def qa_row(self):
+        return next(r for r in spend.stage_estimates(self.root, []) if r["stage"] == "qa")
+
+    def test_a_dossier_film_adds_the_assumed_accuracy_check(self):
+        from ytstudio import qa
+        self.scored()
+        plain = self.qa_row()
+        write_json(self.root / "dossier.json", {"claims": []})
+        row = self.qa_row()
+        self.assertEqual(row["usd"], round(plain["usd"] + qa.ACCURACY_USD, 2))
+        self.assertIn("assumed", row["source"])
+        self.assertIn("accuracy", row["source"])
+        # a pass that measured it prices it from its own record, once
+        self.scored(accuracy_engine={"cost_usd": 0.3},
+                    usage=spend.record(0.9, "m", 2))
+        row = self.qa_row()
+        self.assertNotIn("accuracy", row["source"])
+        (self.root / "dossier.json").unlink()
+        self.assertEqual(self.qa_row(), row)
+        self.assertEqual(spend._qa_pass_usd(self.root),
+                         round((0.9 - 0.3) / 3 * qa.QA_SAMPLES + 0.3, 2))
+
+    def test_no_dossier_adds_nothing(self):
+        self.scored()
+        self.assertNotIn("accuracy", self.qa_row()["source"])
+        self.assertEqual(self.qa_row()["basis"], "measured")
+        # nor on the default, when nothing was measured
+        (self.root / "qa.json").unlink()
+        self.assertNotIn("accuracy", self.qa_row()["source"])
+
+
 if __name__ == "__main__":
     unittest.main()

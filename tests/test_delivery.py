@@ -71,8 +71,9 @@ class DeliveryCase(unittest.TestCase):
                                  "triage": {"verdict": verdict, "blocking": []}})
         self.stamp("gate.json")
 
-    def scored(self, verdict="READY TO PUBLISH", overall=9.2) -> None:
-        self.write("qa.json", {"pass": "pass-03", "verdict": verdict, "overall": overall})
+    def scored(self, verdict="READY TO PUBLISH", overall=9.2, accuracy=None) -> None:
+        self.write("qa.json", {"pass": "pass-03", "verdict": verdict, "overall": overall,
+                               **({"accuracy": accuracy} if accuracy is not None else {})})
         self.stamp("qa.json")
 
     def report(self):
@@ -280,6 +281,11 @@ class FallbackDesign(DeliveryCase):
         self.assertTrue(self.report().metrics["delivery"]["ready"])
 
 
+#: qa.json's on-screen accuracy summary (AUTO-150) when the check ran clean.
+CHECKED = {"status": "done", "bar": False, "checked": 3, "blocking": 0,
+           "command": "", "why": "", "first": None}
+
+
 class FactCheck(DeliveryCase):
     """AUTO-133: a fact-check blocker that stands, or a narration never read
     against the dossier, keeps delivery open, whatever QA said."""
@@ -294,7 +300,10 @@ class FactCheck(DeliveryCase):
         self.write("script.json", body)
 
     def ready_otherwise(self):
-        self.rendered(); self.gated(); self.scored()
+        self.rendered(); self.gated(); self.scored(accuracy=CHECKED)
+        if (self.root / "dossier.json").exists():   # the dossier that check read
+            older = self.clock - 100
+            os.utime(self.root / "dossier.json", (older, older))
 
     def evidence(self):
         return doctor.delivery_evidence(workspace.Project(self.root), None)
@@ -332,8 +341,66 @@ class FactCheck(DeliveryCase):
         self.ready_otherwise()
         self.assertEqual(self.evidence(), [])
         self.write("dossier.json", {"claims": [{"id": "C1", "claim": "a bolt"}]})
+        older = self.clock - 100            # the dossier QA's accuracy check read
+        os.utime(self.root / "dossier.json", (older, older))
         self.screenplay({"flags": [{"n": 1, "severity": "blocker", "problem": "p",
                                     "fix": "f", "resolved": True}], "verdict": "defensible"})
+        self.assertEqual(self.evidence(), [])
+        self.assertTrue(self.report().metrics["delivery"]["ready"])
+
+
+class OnScreenAccuracy(DeliveryCase):
+    """AUTO-150: with a dossier, QA's on-screen accuracy check must be current
+    and find nothing blocking; a film with no dossier is judged as before."""
+
+    def evidence(self):
+        return doctor.delivery_evidence(workspace.Project(self.root), None)
+
+    def dossier(self):
+        self.write("dossier.json", {"claims": [{"claim": "the share rose 14%"}]})
+        self.stamp("dossier.json")
+
+    def test_accuracy_blocking_row(self):
+        self.dossier()
+        self.rendered(); self.gated()
+        self.scored(accuracy=dict(CHECKED, blocking=2,
+                                  first={"shot": "1.1", "problem": "number-mismatch"}))
+        self.assertEqual(self.evidence(), [
+            ("on-screen accuracy: 2 blocking finding(s) in QA pass-03, first at shot 1.1: "
+             "number-mismatch", f"yt qa --project {self.root}")])
+        self.assertFalse(self.report().metrics["delivery"]["ready"])
+
+    def test_accuracy_missing_row(self):
+        self.dossier()
+        self.rendered(); self.gated(); self.scored()
+        rows = self.evidence()
+        self.assertEqual(len(rows), 1, rows)
+        self.assertTrue(rows[0][0].startswith(
+            "QA pass-03 has no current on-screen accuracy check: "), rows)
+        self.assertEqual(rows[0][1], f"yt qa --project {self.root}")
+        # a check whose bar is set (a defaulted family clash) is not current either
+        self.scored(accuracy=dict(CHECKED, status="not_evidenced", bar=True,
+                                  why="vfx.json was made with opus",
+                                  command="yt qa --accuracy-model <another family>"))
+        rows = self.evidence()
+        self.assertEqual(len(rows), 1, rows)
+        self.assertIn("vfx.json was made with opus", rows[0][0])
+        self.assertEqual(rows[0][1], f"yt qa --project {self.root} "
+                                     "--accuracy-model <another family>")
+        # nor is a clean one older than the dossier it should have read
+        self.scored(accuracy=CHECKED)
+        self.assertEqual(self.evidence(), [])
+        self.dossier()
+        rows = self.evidence()
+        self.assertEqual(len(rows), 1, rows)
+        self.assertIn("dossier.json is newer", rows[0][0])
+
+    def test_no_dossier_no_accuracy_row(self):
+        self.rendered(); self.gated(); self.scored()
+        self.assertEqual(self.evidence(), [])
+        self.scored(accuracy={"status": "not_evidenced", "bar": False, "checked": 0,
+                              "blocking": 0, "command": "yt research",
+                              "why": "the film has no dossier"})
         self.assertEqual(self.evidence(), [])
         self.assertTrue(self.report().metrics["delivery"]["ready"])
 
