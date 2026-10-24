@@ -267,6 +267,11 @@ def write_case(out: Path, build: dict, script: dict, voice: dict | None, samples
     write_json(out / "expected.json", expected)
 
 
+#: The stand-in's over_bar is every frame-judged category, editorial_identity
+#: (AUTO-146) among them. That row is NO STANDARD: no live `python -m
+#: ytstudio.qa calibrate` has shown a real judge rates this drawn stand-in's
+#: identity at the 8.5 bar, so a first failure there is a calibration
+#: finding about the stand-in, not a regression in the judge.
 GOOD = {"label": "seeded", "judge_only": False, "verdict": "READY", "under_bar": [],
         "over_bar": list(qa.SIDE_CATEGORIES), "must_find": []}
 
