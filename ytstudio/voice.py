@@ -1072,9 +1072,12 @@ class VoiceOver:
         return self.directions.get(take.label, {}) if self._named(take) else {}
 
     def _section(self, take: Take) -> dict:
-        """The director's speed/settings for this take's section, if any."""
+        """The director's speed/settings for this take's section, if any,
+        as far as the engine takes them (MARK_SUPPORT): one it cannot take
+        is only recorded on the take, and never moves its cache key."""
         row = self.delivery.get(take.section) or {}
-        return {k: row[k] for k in ("speed", "settings") if k in row}
+        support = MARK_SUPPORT.get(self.engine, frozenset())
+        return {k: row[k] for k in ("speed", "settings") if k in row and k in support}
 
     def _opts_for(self, take: Take) -> dict:
         """The engine options for one take: the cast's, then its section's

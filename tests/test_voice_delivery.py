@@ -422,6 +422,26 @@ class Layering(unittest.TestCase):
             self.assertEqual(rec._opts_for(first)["wpm"], 165)
             self.assertEqual(rec._opts_for(third)["wpm"], round(165 * 1.1 / 0.9))
 
+    def test_a_section_control_the_engine_cannot_take_leaves_its_cache_key(self):
+        # chatterbox records a section speed only, espeak and kokoro take no
+        # settings: none of these may move a free take's cache key.
+        for engine, row in (("chatterbox", {"speed": 1.1}), ("kokoro", {"settings": {"style": 0.2}}),
+                            ("espeak", {"settings": {"style": 0.2}})):
+            with tempfile.TemporaryDirectory() as tmp:
+                opts = {"wpm": 165, "speed": 1.0}
+                plain = self.rec(tmp, engine=engine, opts=opts)
+                directed = self.rec(tmp, engine=engine, opts=opts,
+                                    delivery={"The Opening": {"note": "n", **row}})
+                first = plain.takes()[0]
+                self.assertEqual(directed._fingerprint(directed.takes()[0]),
+                                 plain._fingerprint(first), engine)
+                self.assertEqual(directed._opts_for(directed.takes()[0]),
+                                 plain._opts_for(first), engine)
+        with tempfile.TemporaryDirectory() as tmp:          # kokoro takes a speed
+            rec = self.rec(tmp, opts={"speed": 1.0},
+                           delivery={"The Opening": {"note": "n", "speed": 1.1}})
+            self.assertEqual(rec._opts_for(rec.takes()[0])["speed"], 1.1)
+
     def test_a_take_records_its_section_note_and_what_the_engine_took(self):
         delivery = {"Second": {"note": "brisk", "speed": 1.1, "settings": {"style": 0.2}}}
         with tempfile.TemporaryDirectory() as tmp:
