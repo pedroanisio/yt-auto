@@ -1087,6 +1087,18 @@ beside its `entry` and `exit` prose, required for music and ambience
 (`rule:fade` flags a bed with no fade out) and optional for the rest; `yt
 build` sets the track's `fadeIn`/`fadeOut` from them.
 
+A fresh spot then anchors every cue to the spoken word it lands on
+(`sound.anchor_cues`, AUTO-140), on the timeline `yt build` places the
+takes on: `anchor` is the shot (the cue's `shot` when it names one, else the
+shot its `at` falls in), the take as `<file>@<sha256>` (`build.take_mark`;
+"" with no recording), the index and text of the word whose start is nearest
+`at` within 1 s (else -1 and "", the shot's start) and the `offset` in
+seconds from it. The model is never asked for it and `at` stays its whole
+second; `sound.md` and `cues.csv` list it beside the shot. A `--fetch` or
+`--synth` re-entry keeps the sheet as it is, anchors or none, and `anchor`
+is not in the listen-back's `heard` digest, so adding anchors leaves a
+review current.
+
 Coverage is computed, not asked for — merged music intervals, share of runtime
 scored, longest unbroken run, unscored stretches — and `--review` hands those
 numbers back for a listen-back pass that flags wall-to-wall music, cues that
@@ -1242,6 +1254,24 @@ in `build.json`, not invented, and a sound design of which nothing could be
 placed sets `publishable: false` — a project with no sound design at all is
 not blocked. `build.json` also counts `audio_tracks`, `narration_tracks`,
 `buses` and `silence_windows`.
+
+A cue with an `anchor` (AUTO-140) is placed on its word, not its second:
+`build.anchor_time` finds the anchored shot's take on the current timeline,
+adds the word's start and the offset, and calls the cue `kept`, `moved`
+(the take was redone, by file or sha256, or the shot starts elsewhere) or
+`lost`. A word no longer at its index is looked for by its text (case and
+punctuation folded) within `build.ANCHOR_SEARCH_WORDS` (8, TO VERIFY) of it,
+and only a single match is used: a word said twice there, a missing word or
+a missing shot is `lost`, placed at the sheet's `at`, and a `warning:`
+names the cue, its anchor and the time used. The placed times are checked
+again with `sound.rule_findings` against the built runtime, and an overlap
+or a cue past the end that only re-anchoring made is a `warning:`.
+`build.json`'s `cue_anchors` lists each anchored cue (`cue`, `sheet_at`,
+`placed_at`, `anchor`, `status`) and the summary names the moved and the
+lost. A sheet with no anchors places as before, has no `cue_anchors`, and the
+build prints one line saying cues will not follow a redone voice. `yt qa`'s
+scorecard reviewer and `--listen`'s listener are given each cue's
+`placed_at` in place of its `at` when build.json has it.
 
 Short effects are staged before the gain is split. The limiter runs after
 normalisation, so a tap or stinger far above the bed is limited after the
