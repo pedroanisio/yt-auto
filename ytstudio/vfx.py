@@ -4910,10 +4910,15 @@ def write_vfx(dossier: Dossier, data: dict) -> list[Path]:
     if glance and not audit:
         # The motion audit without the reach audit (AUTO-144): its table, and
         # the reach record's reason, under the same heading.
+        # A record of nothing authored carries the same reason in both: it is
+        # said once, as before AUTO-144.
         md += ["## Reach", ""]
-        if data["reach"].get("reason"):
-            md += [f"*{data['reach']['reason']}*", ""]
-        md += motion_lines(data["reach"].get("motion")) + [""]
+        why, motion = data["reach"].get("reason"), data["reach"].get("motion")
+        motion = motion if isinstance(motion, dict) else {}
+        if why:
+            md += [f"*{why}*", ""]
+        if motion.get("static") or motion.get("reason") != why:
+            md += motion_lines(motion) + [""]
     elif glance:
         md += ["## Reach", "",
                f"**{glance['score']}/10** -- {glance['summary']}", "",

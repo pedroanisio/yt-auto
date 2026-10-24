@@ -704,6 +704,15 @@ class MotionSummary(unittest.TestCase):
         self.assertIn("the motion audit failed: down",
                       md.split("### Static processes", 1)[1].split("\n## ", 1)[0])
 
+    def test_vfx_md_of_nothing_authored_says_why_once(self):
+        from tests.test_vfx_picture_constraints import plain_data, rendered
+        data = plain_data()
+        why = "nothing was authored, so there is nothing to audit"
+        data["reach"] = {"usage": None, "report": None, "audit": None, "reason": why,
+                         "motion": {"answer": None, "static": [], "reason": why}}
+        md = rendered(data)
+        self.assertEqual(md.count(why), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
