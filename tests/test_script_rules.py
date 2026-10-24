@@ -569,6 +569,17 @@ class Pronouncer(unittest.TestCase):
         self.assertNotIn("not_evidenced: rule:pronouncer (pre-marks script)",
                          script.not_evidenced("", self.sheet()))
 
+    def test_a_name_is_listed_once_as_the_word_without_its_punctuation(self):
+        sheet = clean(body=[("We scraped the paint off one joint.", {"emphasis": ["paint"]}),
+                            ("Then Bohr's notes, [Bohr] said, and Bohr— wait.", {}),
+                            ("It was Schrödinger's cat that won.", {})])
+        flags = by_rule(rules(sheet), "rule:pronouncer")
+        self.assertEqual(len(flags), 1)
+        problem = flags[0]["problem"]
+        self.assertIn("says Bohr, Schrödinger with no pronouncer", problem)
+        for noisy in ("Bohr's", "[Bohr", "Bohr—", "Schrödinger's"):
+            self.assertNotIn(noisy, problem)
+
     def test_german_is_not_read_for_names(self):
         flags = rules(self.sheet(), lang="de")
         self.assertEqual(by_rule(flags, "rule:pronouncer"), [])

@@ -4581,22 +4581,26 @@ def rule_findings(plan: dict, sections: list[Section], wpm: int = DEFAULT_WPM,
     # once per section, and only in a screenplay that carries marks at all.
     if on["rule:pronouncer"] and has_marks(sections):
         for section in sections:
-            unmarked: list[str] = []
+            unmarked: dict[str, str] = {}      # mark_key -> the word as shown
             first = None
             for shot in section.shots:
                 named = {mark_key(r.get("term", "")) for r in shot.pronounce or []}
                 for sentence in sentences(spoken(shot.narration)):
                     for token in sentence.split()[1:]:
-                        token = token.strip(".,;:!?\"'()“”‘’")
-                        if token and token != "I" and _CAPITALISED.match(token) \
-                                and mark_key(token) not in named \
-                                and token not in unmarked:
-                            unmarked.append(token)
+                        # "Bohr's," "[Bohr]" and "Bohr—" are one name, shown bare
+                        key = mark_key(token)
+                        word = token.strip(_MARK_PUNCT)
+                        for tail in ("'s", "’s"):
+                            if word.endswith(tail) and len(word) > len(tail):
+                                word = word[:-len(tail)]
+                        if word and word != "I" and _CAPITALISED.match(word) \
+                                and key not in named and key not in unmarked:
+                            unmarked[key] = word
                             first = first or shot
             if unmarked:
                 out.append(_flag("rule:pronouncer", first,
                                  f"section \"{section.heading}\" says "
-                                 f"{', '.join(unmarked)} with no pronouncer",
+                                 f"{', '.join(unmarked.values())} with no pronouncer",
                                  "give each name that is not obvious to say a pronouncer "
                                  "(term, say: SHROH-ding-er); an obvious one needs none"))
 
