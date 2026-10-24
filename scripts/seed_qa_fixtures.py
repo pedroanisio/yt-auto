@@ -485,7 +485,7 @@ def seeded(name: str, base: dict, out: Path) -> None:
         shots = [shot_of(build, label) for label in labels]
         expected.update(under_bar=["narrative_clarity"], drop={"narrative_clarity": 1.0},
                         must_find=[{"t_range": [span(shots[0])[0], span(shots[-1])[1]],
-                                    "owners": ["script"]}])
+                                    "owners": ["script", "vfx"]}])
     write_case(case, build, script, voice, base["samples"], expected)
 
 

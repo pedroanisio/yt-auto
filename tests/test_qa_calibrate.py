@@ -271,6 +271,11 @@ class Fixtures(unittest.TestCase):
             self.assertEqual(expected_of(case)["label"], "seeded", case)
         self.assertEqual(json.loads((FIXTURES / "placeholder-moving" / "build.json")
                                     .read_text())["placeholders"], [])
+        # the prompt places "a picture that does not show what its line says"
+        # with whoever draws it, and a story fault with script: a judge that
+        # follows it may file the told lines under either, so both count
+        for want in expected_of("tells-not-shows")["must_find"]:
+            self.assertEqual(sorted(want["owners"]), ["script", "vfx"])
 
     def test_seed_script_is_deterministic(self):
         tmp = Path(tempfile.mkdtemp(prefix="qa-seed-"))
