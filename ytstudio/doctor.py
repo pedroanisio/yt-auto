@@ -1491,11 +1491,12 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
         total = build.get("timeline", {}).get("shots", 0)
         report.metrics["build"] = {"shots": total, "placeholders": placeholders,
                                    "images": layers.get("image", 0),
+                                   "footage": layers.get("footage", 0),
                                    "findings": len(findings),
                                    "from_voice": build.get("timeline", {}).get("from_voice")}
         report.add("ok", "build", f"scene {build.get('scene', {}).get('version', '?')} · "
                    f"{total} shots · {layers.get('effect', 0)} effects, "
-                   f"{layers.get('image', 0)} from files, "
+                   f"{layers.get('image', 0) + layers.get('footage', 0)} from files, "
                    f"{placeholders} placeholder cards")
         # The screenplay's own errors ride in build.json for qa (`error:
         # script: ...`); the script area already fails them with the command
