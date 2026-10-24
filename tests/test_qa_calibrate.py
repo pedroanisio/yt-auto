@@ -578,6 +578,27 @@ class Digest(unittest.TestCase):
         self.assertEqual(qa.judge_digest("sonnet", house), first)
 
 
+class Docs(unittest.TestCase):
+    def test_the_manual_readme_and_spec_name_the_calibration(self):
+        for path in (ROOT / "ytstudio" / "SKILL.md", ROOT / "README.md",
+                     ROOT / "docs" / "production.md"):
+            text = " ".join(path.read_text(encoding="utf-8").split())
+            self.assertIn("python -m ytstudio.qa calibrate", text, path)
+            self.assertIn("capture-fixture", text, path)
+            self.assertIn("judge_calibration", text, path)
+            self.assertIn("gates nothing", text, path)
+        skill = (ROOT / "ytstudio" / "SKILL.md").read_text(encoding="utf-8")
+        for case in CASES:
+            self.assertIn(f"`{case}`", skill)
+        self.assertIn("judge: fixture-calibrated (<model>); 0 owner-labelled films", skill)
+        self.assertIn("judge: not calibrated against the QA fixtures (<why>); "
+                      "0 owner-labelled films", skill)
+        # the re-run rule sits above judge_digest
+        source = (ROOT / "ytstudio" / "qa.py").read_text(encoding="utf-8")
+        above = source.split("def judge_digest(")[0].rsplit("\n\n\n", 1)[-1]
+        self.assertIn("The re-run rule", above)
+
+
 class Capture(unittest.TestCase):
     def test_capture_keeps_eight_spread_samples_three_burst_frames_at_tile_width(self):
         tmp = Path(tempfile.mkdtemp(prefix="qa-capture-"))

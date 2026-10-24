@@ -722,6 +722,27 @@ passes it, and it is refused without `--review` or with `--revise`, which
 never reads the story again. The record is `script.json` `review` and the
 `## Story review` section of `script.md`.
 
+`yt qa`'s judge has a calibration of its own (AUTO-156). `python -m
+ytstudio.qa calibrate tests/fixtures/qa --model sonnet` scores each fixture
+film (tests/fixtures/qa/<case>/: build.json, script.json, voice.json,
+samples.json, 480 px frames and expected.json) through the same evidence and
+prompt as a QA pass, in a folder under `work/calibration-qa/` named so the
+judge cannot read the label, and checks the raw card: the verdict, the
+categories that must fall under or stay over the bar, the moments a
+two-sample finding must land in, and how far a category must drop against
+the good case. Mechanical findings reach the prompt and are recorded, never
+judged. It prints a row a case and the false positives and negatives per
+category, writes `work/calibration-qa/report.json`, and caches its readings,
+so a second run costs nothing (the cost of a live run is not measured yet).
+`scripts/seed_qa_fixtures.py` draws the cases byte for byte; its good films
+are stand-ins, so the set does not pass until `python -m ytstudio.qa
+capture-fixture work/<slug>/qa/pass-NN tests/fixtures/qa/good` cuts down one
+of your own passes, you label it (`"label": "owner"`) and re-seed with
+`--base`. Every pass then records `judge_calibration` in `qa.json` and prints
+`judge: fixture-calibrated (<model>); 0 owner-labelled films` or `judge: not
+calibrated against the QA fixtures (<why>); ...` under its verdict. It gates
+nothing: READY, `yt doctor` and `yt improve` read the verdict as before.
+
 The same reviewer then reads the drafted screenplay with the sound off. After
 the story review, `picture-check` is shown each shot's picture (`visual`), what it must
 demonstrate (`shows`) and its on-screen text, with the plan's beat for each
@@ -2332,7 +2353,7 @@ ytstudio/
 ├── pilot.py            the editor's cuts, validated, as segment outputs
 ├── gate.py             the delivery gate, triaged
 ├── review.py           the PDF review sheet, read
-├── qa.py               sampling, stills, the scorecard, pass against pass
+├── qa.py               sampling, stills, the scorecard, pass against pass, the judge's fixture calibration
 ├── assess.py           can this be produced? an agent investigates and proves it
 └── doctor.py           health, status and what to do next
 tests/                  stdlib unittest cases (`python -m unittest discover -s tests`)
