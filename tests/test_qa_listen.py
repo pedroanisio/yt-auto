@@ -59,6 +59,7 @@ def _listen():
 #: records rewrites these; --listen left off never may. AUTO-106 rewrote the
 #: prompt's: the "Previous pass, for comparison" brief (null on a first
 #: pass) is gone, and that is the only difference from the digest before it.
+#: AUTO-156 added qa.json's `judge_calibration`; the prompt and card are as before.
 OFF = {
     "prompt_sha": "57bab3709bba64b6ead210e9a504a5cbb9e4990608e590d0a9194ea7bfc9714b",
     "role_sha": "fb112df18eac174eff86df8020f3ab2bd3d51f9bea23f0577196bf2efba22954",
@@ -69,7 +70,7 @@ OFF = {
                   "scoring", "side_by_side", "spread", "story", "unsampled", "usage",
                   "verdict"],
     "qa_keys": ["audio_not_evidenced", "blocking", "capped", "findings", "house", "idea",
-                "low_confidence", "mechanical", "overall", "pass", "reasons", "regressions",
+                "judge_calibration", "low_confidence", "mechanical", "overall", "pass", "reasons", "regressions",
                 "scene_sha256", "scorecard", "scores", "scoring", "side_by_side", "spread",
                 "usage", "verdict"],
     "usage_keys": ["by_model", "calls", "cost_usd", "model", "unmetered_calls"],
