@@ -30,6 +30,7 @@ import contextlib
 import copy
 import io
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -79,10 +80,35 @@ def sample(verdict="recommend", grades=None, flags=(), previous=None):
     return out
 
 
+def line_of(n):
+    """What the default fake writes on shot n: two shots a section, `line s.i`."""
+    return f"line {(n + 1) // 2}.{2 - n % 2}"
+
+
 def flag(n=1, section=1, criterion="hook", severity="important",
-         problem="the hook lists its conclusions", fix="open on the empty river"):
-    return {"n": n, "section": section, "criterion": criterion, "problem": problem,
-            "severity": severity, "fix": fix}
+         problem="the hook lists its conclusions", fix="open on the empty river",
+         quote=None, conflicts_with=None):
+    """A story-review flag. It quotes the default fake's own words (AUTO-112):
+    shot n's line, a section's first line, nothing for the whole script."""
+    if quote is None:
+        quote = line_of(n) if n else f"line {section}.1" if section else ""
+    out = {"n": n, "section": section, "criterion": criterion, "problem": problem,
+           "severity": severity, "fix": fix, "quote": quote}
+    if conflicts_with is not None:
+        out["conflicts_with"] = dict(conflicts_with)
+    return out
+
+
+#: A shot as the story prompt lists it: `n. [label time seconds] narration`.
+_LISTED = re.compile(r"^(\d+)\. \[[^\]]*\] (.*)$", re.M)
+
+
+def requoted(prompt, flags):
+    """`flags` with each shot flag quoting its shot's line as `prompt` shows
+    it now: a later round reads the lines the revision changed."""
+    said = {int(m.group(1)): m.group(2).split("  [")[0] for m in _LISTED.finditer(prompt)}
+    return [dict(f, quote=said.get(f["n"], f["quote"])) if f["n"] else dict(f)
+            for f in flags]
 
 
 COLD = {"premise": "A bridge fell because of one bolt nobody could see.",
@@ -146,8 +172,9 @@ def consider_then(second, *, flags=(flag(),), first=None):
     `second` (a verdict and the previous one: ("recommend", "better"))."""
     verdict, previous = second
     out = {f"review-r1-s{k}": first or sample("consider", flags=flags) for k in (1, 2, 3)}
-    out.update({f"review-r2-s{k}": sample(verdict, previous=previous,
-                                          flags=flags if verdict == "consider" else ())
+    later = flags if verdict == "consider" else ()
+    out.update({f"review-r2-s{k}": (lambda prompt, schema: sample(
+        verdict, previous=previous, flags=requoted(prompt, later)))
                 for k in (1, 2, 3)})
     return out
 
@@ -735,7 +762,8 @@ class Command(unittest.TestCase):
             which = kind(schema)
             asked.append(name)
             if name in answers:
-                return copy.deepcopy(answers[name])
+                got = answers[name]
+                return copy.deepcopy(got(prompt, schema) if callable(got) else got)
             if which == "plan-review":
                 return copy.deepcopy(ACCEPT)
             if which == "plan":
@@ -852,6 +880,200 @@ class Command(unittest.TestCase):
         with mock.patch.object(script.Screenwriter, "__init__", init):
             self.run_stage("--fresh")
         self.assertEqual(seen["fresh"], [True, True])
+
+
+# --------------------------------------------------------------------------- #
+# the flagged words, quoted exactly (AUTO-112)
+# --------------------------------------------------------------------------- #
+
+class Quotes(unittest.TestCase):
+    """A flag quotes the words it is about, and a contradiction names both
+    lines. A quote the script does not say is a broken answer: asked again
+    once, then not valid, never trimmed or matched on the model's behalf."""
+
+    SHOTS = {1: "line 1.1", 2: "line 1.2", 3: "line 2.1", 4: "line 2.2"}
+    SECTIONS = {1: [1, 2], 2: [3, 4]}
+
+    def problems(self, *flags, shots=None, sections=None):
+        review = sample("consider", flags=flags)
+        return script.Screenwriter._sample_problems(
+            review, narrative.REVIEW_SCHEMA,
+            self.SHOTS if shots is None else shots,
+            self.SECTIONS if sections is None else sections)
+
+    def test_a_quote_not_in_the_shot_is_asked_again_naming_the_shot_and_the_words(self):
+        w = writer()
+        made_up = flag(quote="the river was never empty")
+        calls = faked(w, {"review-r1-s1": sample("consider", flags=[made_up]),
+                          "review-r1-s1-again": sample("recommend")})
+        record = w.run(review=True, fix=False)["review"]
+        order = names(calls)
+        self.assertEqual(order.count("review-r1-s1-again"), 1)
+        again = next(c for c in calls if c["name"] == "review-r1-s1-again")["prompt"]
+        said = again.split("Your previous answer", 1)[1]
+        self.assertIn("shot 1", said)
+        self.assertIn('"the river was never empty"', said)
+        first = next(s for s in record["samples"] if s["name"] == "review-r1-s1")
+        self.assertTrue(first["again"] and first["valid"], first)
+        self.assertEqual(record["verdict"], "recommend")
+
+    def test_a_sample_still_misquoting_is_not_valid_and_its_flags_never_reach_revise(self):
+        w = writer()
+        made_up = sample("consider", flags=[flag(quote="invented words",
+                                                 problem="a problem nobody else saw")])
+        honest = sample("consider", flags=[flag()])
+        answers = {"review-r1-s1": made_up, "review-r1-s1-again": made_up,
+                   "review-r1-s2": honest, "review-r1-s3": honest,
+                   "revise-story-1": {"fixes": [{"n": 1, "action": "fix",
+                                                 "narration": "The river is empty now.",
+                                                 "why": "w"}]}}
+        answers.update({f"review-r2-s{k}": sample("recommend", previous="better")
+                        for k in (1, 2, 3)})
+        calls = faked(w, answers)
+        record = w.run(review=True)["review"]
+        self.assertIn("review-r1-s1-again", names(calls))
+        revise = next(c for c in calls if c["name"] == "revise-story-1")["prompt"]
+        self.assertNotIn("invented words", revise)
+        self.assertNotIn("a problem nobody else saw", revise)
+        self.assertEqual(record["rounds"][0]["verdict"], "consider")   # two valid decide
+        # the round as recorded: the sample is not valid, and says why
+        w = writer()
+        faked(w, answers)
+        record = w.run(review=True, fix=False)["review"]
+        first = next(s for s in record["samples"] if s["name"] == "review-r1-s1")
+        self.assertFalse(first["valid"])
+        self.assertTrue(any("invented words" in p and "shot 1" in p
+                            for p in first["unsettled"]), first)
+        self.assertNotIn("a problem nobody else saw",
+                         [f["problem"] for f in record["flags"]])
+
+    def test_whitespace_and_curly_quote_marks_are_the_only_difference_allowed(self):
+        shots = {1: 'He said "stop"  there,\nand it\'s late.'}
+        for quote in ('He said “stop” there, and it’s late.',
+                      "He  said \"stop\"\tthere,",
+                      "it’s late."):
+            with self.subTest(quote=quote):
+                self.assertEqual(self.problems(flag(quote=quote), shots=shots,
+                                               sections={1: [1]}), [])
+        for quote in ("he said \"stop\" there", "He said stop there", "and it's late!",
+                      "said \"stop\" there and"):
+            with self.subTest(quote=quote):
+                found = self.problems(flag(quote=quote), shots=shots, sections={1: [1]})
+                self.assertEqual(len(found), 1, found)
+                self.assertIn("shot 1", found[0])
+
+    def test_a_shot_flag_must_quote_something(self):
+        found = self.problems(flag(quote=""))
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("shot 1", found[0])
+        # a silent shot has no words to quote
+        self.assertEqual(self.problems(flag(quote=""), shots={1: ""}, sections={1: [1]}), [])
+
+    def test_a_section_flags_quote_comes_from_that_sections_lines(self):
+        self.assertEqual(self.problems(flag(n=0, section=2, quote="line 2.2")), [])
+        found = self.problems(flag(n=0, section=2, quote="line 1.1"))
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("section 2", found[0])
+        self.assertIn('"line 1.1"', found[0])
+        self.assertEqual(len(self.problems(flag(n=0, section=2, quote=""))), 1)
+        # through the stage: asked again, as any broken answer is
+        w = writer()
+        stray = flag(n=0, section=2, quote="line 1.1", criterion="open_loops")
+        calls = faked(w, {"review-r1-s2": sample("consider", flags=[stray]),
+                          "review-r1-s2-again": sample("recommend")})
+        w.run(review=True, fix=False)
+        self.assertIn("review-r1-s2-again", names(calls))
+
+    def test_a_whole_script_flag_quotes_nothing_and_is_valid(self):
+        whole = flag(n=0, section=0, criterion="train", quote="")
+        self.assertEqual(self.problems(whole), [])
+        w = writer()
+        calls = faked(w, {f"review-r1-s{k}": sample("consider", flags=[whole])
+                          for k in (1, 2, 3)})
+        record = w.run(review=True, fix=False)["review"]
+        self.assertFalse([n for n in names(calls)
+                          if n.startswith("review-") and n.endswith("-again")])
+        self.assertEqual(record["flags"][0]["criterion"], "train")
+
+    def test_a_plan_read_before_any_line_is_drafted_has_nothing_to_quote(self):
+        plan_flag = flag(n=0, section=2, criterion="train", quote="")
+        self.assertEqual(self.problems(plan_flag, shots={}, sections={}), [])
+
+    def test_conflicts_with_must_name_a_shot_that_says_its_words(self):
+        good = flag(n=3, quote="line 2.1", criterion="honesty",
+                    conflicts_with={"n": 1, "quote": "line 1.1"})
+        self.assertEqual(self.problems(good), [])
+        for other, words in (({"n": 99, "quote": "line 1.1"}, "99"),
+                             ({"n": 1, "quote": "line 2.2"}, '"line 2.2"'),
+                             ({"n": 1, "quote": ""}, "shot 1")):
+            with self.subTest(other=other):
+                found = self.problems(dict(good, conflicts_with=other))
+                self.assertEqual(len(found), 1, found)
+                self.assertIn(words, found[0])
+        w = writer()
+        broken = dict(good, conflicts_with={"n": 99, "quote": "line 1.1"})
+        calls = faked(w, {"review-r1-s3": sample("consider", flags=[broken]),
+                          "review-r1-s3-again": sample("recommend")})
+        w.run(review=True, fix=False)
+        self.assertIn("review-r1-s3-again", names(calls))
+
+    def test_merge_keeps_the_most_severe_quote_and_lists_every_distinct_one(self):
+        minor = flag(severity="minor", quote="line")
+        severe = flag(severity="blocker", quote="line 1.1",
+                      conflicts_with={"n": 3, "quote": "line 2.1"})
+        again = flag(severity="minor", quote="line")
+        merged = script.merge_flags([{"flags": [minor]}, {"flags": [severe]},
+                                     {"flags": [again]}])
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["quote"], "line 1.1")
+        self.assertEqual(merged[0]["conflicts_with"], {"n": 3, "quote": "line 2.1"})
+        self.assertEqual(merged[0]["quotes"], ["line", "line 1.1"])
+        self.assertEqual(merged[0]["samples"], 3)
+
+    def test_the_flag_line_shows_the_quote_and_the_line_it_contradicts(self):
+        line = script.story_flag_line(flag(n=3, quote="line 2.1", criterion="honesty",
+                                           conflicts_with={"n": 1, "quote": "line 1.1"}))
+        self.assertIn('shot 3 "line 2.1"', line)
+        self.assertIn('(contradicts shot 1: "line 1.1")', line)
+        self.assertIn("[honesty, important]", line)
+        plain = script.story_flag_line(flag(n=0, section=0, quote=""))
+        self.assertTrue(plain.startswith("the whole script ["), plain)
+        self.assertNotIn('""', plain)
+        # script.md's "## Story review" reads it
+        record = {"verdict": "consider", "samples": [],
+                  "flags": [flag(n=3, quote="line 2.1",
+                                 conflicts_with={"n": 1, "quote": "line 1.1"})]}
+        md = "\n".join(script.story_review_lines(record))
+        self.assertIn('"line 2.1" (contradicts shot 1: "line 1.1")', md)
+
+    def test_revise_story_shows_each_flags_quote_and_the_conflicting_line(self):
+        w = writer()
+        flags = [flag(n=3, quote="line 2.1", criterion="honesty",
+                      problem="it says the river rose",
+                      conflicts_with={"n": 1, "quote": "line 1.1"}),
+                 flag(n=2, quote="line 1.2", problem="the second line restates the first")]
+        answers = consider_then(("recommend", "better"), flags=flags)
+        calls = faked(w, answers)
+        w.run(review=True)
+        prompt = next(c for c in calls if c["name"] == "revise-story-1")["prompt"]
+        problems = prompt.split("flagged by the story review", 1)[1]
+        self.assertIn('"line 2.1"', problems)
+        self.assertIn('contradicts shot 1: "line 1.1"', problems)
+        self.assertIn('"line 1.2"', problems)
+        self.assertIn('3. important: "line 2.1" (contradicts shot 1: "line 1.1"): '
+                      'it says the river rose (suggested: open on the empty river)', problems)
+
+    def test_another_revise_reads_its_flags_as_before(self):
+        # only the story review's flags carry quotes into the prompt; the
+        # fact-check's problem lines are what they were
+        w = writer()
+        calls = faked(w)
+        shots = [script.Shot(narration=f"line 1.{i}", n=i, label=f"1.{i}", seconds=5)
+                 for i in (1, 2)]
+        w.revise(shots, [dict(flag(quote="line 1.1"), problem="p", fix="f")], name="revise")
+        prompt = calls[-1]["prompt"]
+        self.assertIn("\n1. important: p (suggested: f)\n", prompt)
+        self.assertNotIn('"line 1.1"', prompt)
 
 
 class ReviewLog(unittest.TestCase):
