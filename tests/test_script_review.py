@@ -1704,8 +1704,10 @@ class ViewerQuiz(unittest.TestCase):
     def test_without_review_no_quiz_is_asked(self):
         w = writer()
         calls = faked(w, quizzed())
-        w.run()
+        data = w.run()
         self.assertFalse([n for n in names(calls) if n.startswith("quiz")])
+        # and so no quiz warning (AUTO-162)
+        self.assertFalse([f for f in data["findings"] if "viewer quiz" in f])
 
     def test_the_quiz_is_routed_to_its_own_reader_and_the_takers_to_the_cold_one(self):
         for name in ("quiz", "quiz-again"):
@@ -1781,11 +1783,13 @@ class ViewerQuizCommand(unittest.TestCase):
         record = json.loads((self.film / "script.json").read_text())
         narration = self.film / "narration.txt"
         review = record["review"]
-        return {"code": code, "verdict": review["verdict"], "flags": review["flags"],
+        return {"code": code, "asked": asked, "verdict": review["verdict"],
+                "flags": review["flags"],
                 "unresolved": review["unresolved"], "findings": record["findings"],
                 "narration": narration.read_text() if narration.exists() else None,
                 "quiz": review["cold_read"].get("quiz"),
-                "quiz_failed": review["cold_read"].get("quiz_failed")}
+                "quiz_failed": review["cold_read"].get("quiz_failed"),
+                "md": (self.film / "script.md").read_text()}
 
     def test_a_failed_quiz_after_changes_no_verdict_flag_or_narration(self):
         for base in ({}, consider_then(("consider", "same"))):
@@ -1800,6 +1804,9 @@ class ViewerQuizCommand(unittest.TestCase):
                 self.assertEqual(fine[key], failed[key], key)
 
     def test_the_gain_moves_no_verdict_and_no_gate(self):
+        # The gain-0 run is the ceiling case: a reader right on all eight
+        # before and after has nothing missed, so no warning is raised
+        # (AUTO-162) and the findings stay equal.
         for flags, answers, code in ((("--review",), {}, 0),
                                      (("--review", "--gate"), {}, 0),
                                      (("--review", "--gate"), self.rejected(), 1)):
@@ -1811,6 +1818,76 @@ class ViewerQuizCommand(unittest.TestCase):
             self.assertEqual(none["code"], code, flags)
             for key in ("code", "verdict", "flags", "unresolved", "findings", "narration"):
                 self.assertEqual(none[key], eight[key], (flags, key))
+
+    def test_a_low_gain_is_one_warning_and_moves_nothing_else(self):
+        # AUTO-162: five right after a reader that knew all eight before is
+        # a gain of -3 with three facts untaught; the same film with a gain
+        # of 8 differs from it by that one warning line and nothing else
+        low_after = {"answers": [{"id": f"K{i}", "choice": "A" if i <= 5 else "unsure"}
+                                 for i in range(1, 9)]}
+        for flags, answers, code in ((("--review",), {}, 0),
+                                     (("--review", "--gate"), {}, 0),
+                                     (("--review", "--gate"), self.rejected(), 1)):
+            low = self.outcome(*flags, answers=quizzed(answers, quiz=QUIZ8,
+                                                       before=ALL_RIGHT, after=low_after))
+            high = self.outcome(*flags, answers=quizzed(answers, quiz=QUIZ8,
+                                                        before=ALL_UNSURE, after=ALL_RIGHT))
+            self.assertEqual((low["quiz"]["gain"], high["quiz"]["gain"]), (-3, 8))
+            self.assertEqual((low["code"], high["code"]), (code, code), flags)
+            warned = [f for f in low["findings"]
+                      if f.startswith("warning: story review: viewer quiz")]
+            self.assertEqual(len(warned), 1, low["findings"])
+            for text in ("gain -3 under 1", '"Question 6?" = "right 6"',
+                         '"Question 8?" = "right 8"'):
+                self.assertIn(text, warned[0], text)
+            self.assertEqual([f for f in low["findings"] if f not in warned],
+                             high["findings"], flags)
+            self.assertFalse([f for f in high["findings"] if "viewer quiz" in f])
+            for key in ("code", "verdict", "flags", "unresolved", "narration"):
+                self.assertEqual(low[key], high[key], (flags, key))
+            # no call is added: the sections are drafted on a pool, so the
+            # order of their calls is the pool's
+            self.assertEqual(sorted(low["asked"]), sorted(high["asked"]), flags)
+            # the same line is in script.md's Findings, before voice
+            findings = low["md"][low["md"].index("## Findings"):]
+            self.assertIn("- `warning` " + warned[0].split(": ", 1)[1], findings)
+            self.assertNotIn("viewer quiz gain", high["md"])
+
+    def test_the_low_gain_never_reaches_a_revise_prompt(self):
+        # what the quiz missed is a warning for the operator, never a flag:
+        # no revise-story, redraft or revise-ledger prompt is shown it
+        low_after = {"answers": [{"id": "K4", "choice": "B"}]}
+        missed = [i["question"] for i in QUIZ["items"][:3]]
+        for second in (("consider", "same"), ("recommend", "better")):
+            answers = consider_then(second)
+            answers["revise-story-1"] = {"fixes": [{"n": 1, "action": "fix",
+                                                    "narration": "The river is empty now.",
+                                                    "why": "opens on the picture"}]}
+            w = writer()
+            calls = faked(w, quizzed(dict(answers, **{"quiz-after-r2": low_after}),
+                                     after=low_after))
+            data = w.run(review=True)
+            self.assertEqual(data["review"]["cold_read"]["quiz"]["gain"], 0, second)
+            self.assertEqual(len([f for f in data["findings"] if "viewer quiz" in f]), 1,
+                             data["findings"])
+            revises = [c for c in calls
+                       if c["name"].startswith(("revise-story", "revise-ledger", "redraft"))]
+            self.assertIn("revise-story-1", names(revises))
+            for c in revises:
+                for text in ("viewer quiz", "Viewer quiz", *missed):
+                    self.assertNotIn(text, c["prompt"], (c["name"], text))
+            self.assertFalse([f for f in data["review"]["unresolved"]
+                              if "quiz" in json.dumps(f)])
+            # every other decision is asked word for word as with a high
+            # gain, so its cache key is what it was: the warning adds no call
+            w = writer()
+            high = faked(w, quizzed(dict(answers, **{"quiz-after-r2": ALL_KEYED}),
+                                    before={"answers": []}, after=ALL_KEYED))
+            w.run(review=True)
+            self.assertEqual([(c["name"], c["prompt"]) for c in calls
+                              if not c["name"].startswith("quiz")],
+                             [(c["name"], c["prompt"]) for c in high
+                              if not c["name"].startswith("quiz")], second)
 
     def test_script_md_shows_the_quiz_as_a_measure(self):
         self.run_stage("--review", answers=quizzed())
@@ -1829,6 +1906,139 @@ class ViewerQuizCommand(unittest.TestCase):
         self.run_stage("--review", answers=quizzed({"quiz": failing}))
         md = (self.film / "script.md").read_text()
         self.assertIn("Viewer quiz failed", md)
+
+
+# --------------------------------------------------------------------------- #
+# a low quiz gain is one warning (AUTO-162)
+# --------------------------------------------------------------------------- #
+
+def scored(before, after, *, quiz=QUIZ, round_no=1):
+    """A cold read's record holding `quiz` taken with `before` and `after`,
+    scored as viewer_quiz scores them."""
+    items = copy.deepcopy(quiz["items"])
+    b = script.quiz_score(items, before)[0]
+    a, missed = script.quiz_score(items, after)
+    return {"quiz": {"items": items, "before": b, "after": a, "gain": a - b,
+                     "missed_after": missed, "round": round_no}}
+
+
+#: Two right before (K1, K4), two right after (K1, K2): gain 0 with K3
+#: and K4 missed after hearing.
+TWO_BEFORE = {"answers": [{"id": "K1", "choice": "B"}, {"id": "K2", "choice": "unsure"},
+                          {"id": "K3", "choice": "unsure"}, {"id": "K4", "choice": "B"}]}
+TWO_AFTER = {"answers": [{"id": "K1", "choice": "B"}, {"id": "K2", "choice": "B"},
+                         {"id": "K3", "choice": "A"}, {"id": "K4", "choice": "unsure"}]}
+ALL_KEYED = {"answers": [{"id": i["id"], "choice": i["answer"]} for i in QUIZ["items"]]}
+
+
+class QuizFindings(unittest.TestCase):
+    def test_a_gain_under_the_floor_with_missed_facts_warns_with_the_keyed_text(self):
+        cold = scored(TWO_BEFORE, TWO_AFTER)
+        self.assertEqual((cold["quiz"]["before"], cold["quiz"]["after"]), (2, 2))
+        lines = script.quiz_findings(cold)
+        self.assertEqual(len(lines), 1, lines)
+        line = lines[0]
+        self.assertTrue(line.startswith(
+            f"warning: story review: viewer quiz gain 0 under {script.QUIZ_GAIN_FLOOR}"),
+            line)
+        self.assertIn("(2 of 4 before, 2 after)", line)
+        for text in ("K3", "When does the twin bridge open?", '"in a month"',
+                     "QUIZ-FROM-CLAIM-ONE", "K4", '"40 years"', "QUIZ-FROM-CLAIM-TWO",
+                     '`yt script --review --notes "teach: '):
+            self.assertIn(text, line, text)
+        # the gain and the first fact come first: doctor clips the text
+        # after `warning: ` at 160 characters
+        self.assertLess(line.index('"in a month"') + len('"in a month"'),
+                        160 + len("warning: "), line)
+        self.assertNotIn("round", line)
+
+    def test_the_floor_is_one_question(self):
+        self.assertEqual(script.QUIZ_GAIN_FLOOR, 1)
+
+    def test_a_gain_at_or_over_the_floor_is_silent(self):
+        cold = scored(BEFORE, AFTER)
+        self.assertEqual(cold["quiz"]["gain"], 2)
+        self.assertTrue(cold["quiz"]["missed_after"])
+        self.assertEqual(script.quiz_findings(cold), [])
+        # exactly the floor: one question more taught than known is enough
+        one_after = copy.deepcopy(BEFORE)
+        one_after["answers"][0]["choice"] = "B"
+        cold = scored(BEFORE, one_after)
+        self.assertEqual(cold["quiz"]["gain"], script.QUIZ_GAIN_FLOOR)
+        self.assertTrue(cold["quiz"]["missed_after"])
+        self.assertEqual(script.quiz_findings(cold), [])
+
+    def test_a_ceiling_score_is_silent(self):
+        # a reader that knew it all before has nothing left to be taught
+        cold = scored(ALL_KEYED, ALL_KEYED)
+        self.assertEqual((cold["quiz"]["before"], cold["quiz"]["after"],
+                          cold["quiz"]["gain"], cold["quiz"]["missed_after"]), (4, 4, 0, []))
+        self.assertEqual(script.quiz_findings(cold), [])
+
+    def test_a_negative_gain_warns(self):
+        before = copy.deepcopy(ALL_KEYED)
+        before["answers"][2]["choice"] = "unsure"           # 3 of 4
+        after = {"answers": [{"id": "K1", "choice": "B"}]}  # 1 of 4
+        cold = scored(before, after)
+        self.assertEqual(cold["quiz"]["gain"], -2)
+        [line] = script.quiz_findings(cold)
+        self.assertTrue(line.startswith("warning: story review: viewer quiz gain -2 under 1 "
+                                        "(3 of 4 before, 1 after)"), line)
+        for text in ('"paint"', '"in a month"', '"40 years"'):
+            self.assertIn(text, line, text)
+
+    def test_a_failed_before_or_after_is_silent(self):
+        cold = scored(TWO_BEFORE, TWO_AFTER)
+        for key in ("before", "after"):
+            failed = copy.deepcopy(cold)
+            failed["quiz"].update({key: None, "gain": None})
+            failed["quiz_failed"] = [f"quiz-{key}: the reader timed out"]
+            self.assertEqual(script.quiz_findings(failed), [], key)
+
+    def test_no_quiz_is_silent(self):
+        for cold in ({}, {"quiz_failed": ["quiz: the author timed out"]}, None, "x",
+                     {"quiz": {"items": [], "gain": -1, "missed_after": [{"id": "K1"}]}}):
+            self.assertEqual(script.quiz_findings(cold), [], cold)
+
+    def test_an_unresolvable_key_falls_back_to_the_letter(self):
+        cold = scored(TWO_BEFORE, TWO_AFTER)
+        cold["quiz"]["missed_after"][0]["key"] = "E"
+        cold["quiz"]["missed_after"][1]["id"] = "K9"
+        [line] = script.quiz_findings(cold)
+        self.assertIn("keyed E", line)
+        self.assertIn("keyed B", line)
+        self.assertNotIn('"in a month"', line)
+        self.assertNotIn('"40 years"', line)
+        # an item with too few options, or none at all, never raises
+        broken = copy.deepcopy(cold)
+        broken["quiz"]["missed_after"][0]["key"] = "D"
+        broken["quiz"]["items"][2]["options"] = ["only one"]
+        self.assertIn("keyed D", script.quiz_findings(broken)[0])
+        broken["quiz"]["items"][2]["options"] = None
+        broken["quiz"]["missed_after"].append("not a dict")
+        self.assertIn("keyed D", script.quiz_findings(broken)[0])
+
+    def test_the_from_part_appears_only_when_named(self):
+        cold = scored(TWO_BEFORE, TWO_AFTER)
+        for m in cold["quiz"]["missed_after"]:
+            m["from"] = ""
+        [line] = script.quiz_findings(cold)
+        self.assertNotIn("(from", line)
+
+    def test_a_revision_that_stands_reads_the_reasked_quiz(self):
+        cold = scored(TWO_BEFORE, TWO_AFTER, round_no=2)
+        [line] = script.quiz_findings(cold)
+        self.assertIn("(2 of 4 before, 2 after, round 2)", line)
+
+    def test_story_findings_carries_it_after_the_cold_read_lines(self):
+        w = writer()
+        cold = dict(scored(TWO_BEFORE, TWO_AFTER), failed="the reader timed out")
+        out = w.story_findings({"verdict": "recommend", "grades": {}, "unresolved": [],
+                                "cold_read": cold})
+        self.assertEqual(len(out), 2, out)
+        self.assertTrue(out[0].startswith("warning: story review: the cold read failed"))
+        self.assertEqual(out[1:], script.quiz_findings(cold))
+        self.assertEqual(w.story_findings({"verdict": "recommend", "grades": {}}), [])
 
 
 if __name__ == "__main__":
