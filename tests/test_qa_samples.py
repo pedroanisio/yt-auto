@@ -392,7 +392,8 @@ class Samples(unittest.TestCase):
         third = self.card("pass-03")
         self.assertEqual(third["comparison"]["against"], "pass-01")
         self.assertIn("cinematography", third["comparison"]["regressions"])
-        self.assertIn("pass-01", self.seen["prompts"][-1])
+        # compared in code, after the scoring: the prompt names no pass (AUTO-106)
+        self.assertNotIn("pass-01", self.seen["prompts"][-1])
         record = json.loads((self.root / "qa.json").read_text())
         self.assertIn("cinematography", record["regressions"])
 

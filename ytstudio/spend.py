@@ -218,6 +218,12 @@ DEFAULT_USD = {"research": 5.0, "styles": 2.0, "script": 3.0, "props": 0.0,
 #: costs. It is asked once a pass, never per sample.
 COMPARE_PASS_USD = 0.5
 
+#: What `yt qa --recheck` adds (AUTO-106), assumed until a scorecard
+#: measures it: one inspection reading the stills against the previous
+#: pass's findings, about what the side-by-side comparison costs. Asked
+#: once a pass, never per sample.
+RECHECK_USD = 0.5
+
 #: What the video comparison adds to a QA pass (`--against`, AUTO-128),
 #: assumed until a scorecard measures it: two gateway requests, each
 #: carrying both cuts. A guess until a live run prices one (TO VERIFY).
@@ -361,7 +367,11 @@ FLAG_USD = {"script": {"--review": ((PLAN_REVIEW_USD, "plan-review"),
                    # and `-ba`, on the scorecard's compare_engine (AUTO-128)
                    "--against": ((_compare_usd, "cutcompare"),),
                    "--listen": ((listen_usd, "listen"),),
-                   "--watch": ((watch_usd, "watch"),)}}
+                   "--watch": ((watch_usd, "watch"),),
+                   # the previous findings rechecked after the blind
+                   # scoring, `<pass>-recheck` on the reviewer's own record
+                   # (AUTO-106), which qa.pass_usd counts once
+                   "--recheck": ((RECHECK_USD, "recheck"),)}}
 
 
 def qa_compares(root: Path | None) -> bool:
