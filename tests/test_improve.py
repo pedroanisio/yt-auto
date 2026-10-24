@@ -1512,6 +1512,84 @@ class OwnerRouting(ImproveCase):
         self.assertEqual(routing["routes"]["F1"]["stage"], "build")
 
 
+class AccuracyFindings(ImproveCase):
+    """AUTO-150: QA's on-screen accuracy findings go to their owner by lookup
+    and are tracked across passes by shot and quote."""
+
+    @staticmethod
+    def accurate(quote="40%", shot="1.1", owner="vfx", start=3.0):
+        c = card(5.0)
+        c["accuracy"] = {"fact_check": [], "final": {
+            "status": "done", "model": "opus", "checked": 1, "not_checked": [],
+            "findings": [{"shot": shot, "quote": quote, "claim_id": "c1",
+                          "problem": "number-mismatch", "severity": "blocking",
+                          "fix": "draw 14%", "owner": owner, "start": start,
+                          "in_screenplay": False}], "cost": 0.2}}
+        return c
+
+    def test_accuracy_finding_routes_to_owner(self):
+        findings = improve.collect(self.accurate())
+        self.assertEqual(len(findings), 1)
+        row = findings[0]
+        self.assertEqual((row["source"], row["kind"], row["shot"], row["timestamp"],
+                          row["severity"], row["owner"]),
+                         ("qa", "accuracy", "1.1", 3.0, "blocking", "vfx"))
+        self.assertIn("40%", row["problem"])
+        self.assertIn("number-mismatch", row["problem"])
+        h = harness.Harness(self.root, "improve", verbose=False)
+        for answer in (route_all_to("sound"), lambda p: {"routes": [], "briefs": []}):
+            FakeEngine.route = answer
+            routing = improve.route(h, findings, name="route-pass-01")
+            self.assertEqual(routing["routes"]["F1"]["stage"], "vfx")
+            self.assertEqual(routing["routes"]["F1"]["by"], "owner")
+        # the dossier's own error goes to a person
+        routing = improve.route(h, improve.collect(self.accurate(owner="upstream-fact")),
+                                name="route-pass-02")
+        self.assertEqual([r["route"] for r in routing["human"]], ["upstream-fact"])
+
+    def test_accuracy_fingerprint_stable(self):
+        first = improve.collect(self.accurate(quote="40%"))[0]
+        again = improve.collect(self.accurate(quote="  40%  ", start=4.5))[0]
+        self.assertEqual(first["fingerprint"], "accuracy|1.1|40%")
+        self.assertEqual(first["fingerprint"], again["fingerprint"])
+        other = improve.collect(self.accurate(quote="41%"))[0]
+        self.assertNotEqual(first["fingerprint"], other["fingerprint"])
+        # a reviewer's prose finding still has none
+        self.assertIsNone(improve.collect(card(5.0, findings=[prose("flat")]))[0]
+                          ["fingerprint"])
+
+    def test_qa_argv_accuracy_model(self):
+        plain = self.improver(FakeRunner(self.root, []))
+        self.assertNotIn("--accuracy-model", plain._qa_argv())
+        given = self.improver(FakeRunner(self.root, []), accuracy_model="gpt-5")
+        argv = given._qa_argv()
+        self.assertEqual(argv[argv.index("--accuracy-model") + 1], "gpt-5")
+        self.assertEqual([a for a in argv if a != "--accuracy-model" and a != "gpt-5"],
+                         plain._qa_argv())
+
+    def test_an_accuracy_model_of_an_author_is_refused_before_any_stage(self):
+        write_json(self.root / "script.json", {"usage": {"model": "sonnet"}, "sections": []})
+        write_json(self.root / "vfx.json", {"usage": {"model": "gpt-5"}})
+        args = cli.build_parser().parse_args(
+            ["improve", "--project", str(self.root), "--model", "sonnet",
+             "--accuracy-model", "gpt-5"])
+        self.assertEqual(args.accuracy_model, "gpt-5")
+        with patch.object(improve, "Improver", side_effect=AssertionError("ran")), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(improve.run(args), 2)
+        self.assertIn("gpt-5", err.getvalue())
+        # improve's own --model is an author too
+        write_json(self.root / "script.json", {"usage": {"model": "gpt-5"}, "sections": []})
+        args = cli.build_parser().parse_args(
+            ["improve", "--project", str(self.root), "--model", "sonnet",
+             "--accuracy-model", "claude-sonnet-4-5"])
+        with patch.object(improve, "Improver", side_effect=AssertionError("ran")), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(improve.run(args), 2)
+        self.assertIsNone(cli.build_parser().parse_args(
+            ["improve", "--title", "x"]).accuracy_model)
+
+
 class History(ImproveCase):
     """--resume and --rejudge continue the earlier run's record (AUTO-48)."""
 

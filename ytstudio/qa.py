@@ -197,6 +197,15 @@ findings.md and block nothing. The watcher's account is `watch_engine`,
 its cost is in `usage`. `--reuse PASS --watch` reads that pass's
 watch.json. Without --watch nothing here changes.
 
+With a dossier (AUTO-150), the words the film's documents draw (scene_text:
+each include's text, formula and chart assets) are read against it by one
+decision, `<pass>-accuracy`, on a harness of its own (`--accuracy-model`,
+default ACCURACY_MODEL, never an author's family; no still is sent). Each
+blocking finding is one blocking item, filed under the scorecard's
+`accuracy.final` beside the fact-check's `accuracy.fact_check`; a check
+that could not be made sets a bar reason. No category or bar moves, and a
+film with no dossier is judged as before.
+
 The loop is: fix the owning stage's source, rebuild, run `yt qa` again. This
 stage changes no file but its own; it says what to change and who owns it.
 """
@@ -709,7 +718,8 @@ def pass_usd(card: dict | None) -> float | None:
     asked once a pass, not per sample, so what it cost is added once, not
     scaled; a pass without one is priced without it, and the estimate adds
     spend.COMPARE_PASS_USD where QA is told the pass to compare with. The
-    video comparison's decisions (`compare_engine`, AUTO-128) are likewise
+    video comparison's decisions (`compare_engine`, AUTO-128) and the
+    on-screen accuracy check (`accuracy_engine`, AUTO-150) are likewise
     added once. A `--listen` (AUTO-126), a `--watch` (AUTO-127,
     `watch_engine`) and a `--recheck` (AUTO-106, `<pass>-recheck`) are left
     out: the card's usage holds what they cost, but a plain `yt qa` and
@@ -744,6 +754,9 @@ def pass_usd(card: dict | None) -> float | None:
     once += sum(float(d.get("cost_usd") or 0)
                 for d in (video.get("decisions") if isinstance(video, dict) else None) or []
                 if isinstance(d, dict) and not d.get("cached"))
+    checked = card.get("accuracy_engine") if isinstance(card, dict) else None
+    if isinstance(checked, dict):
+        once += float(checked.get("cost_usd") or 0)
     once = min(max(once, 0.0), cost)
     return round((cost - once) / asked * QA_SAMPLES + once, 2)
 
@@ -2829,14 +2842,18 @@ def next_pass(root: Path) -> Path:
 
 
 def verdict_of(scores: dict, overall: float, *, blocking: list,
-               unheard: dict | None = None) -> tuple[str, list[str]]:
+               unheard: dict | None = None,
+               accuracy: dict | None = None) -> tuple[str, list[str]]:
     """The bar of §2, applied mechanically to whatever the reviewer scored.
     A category recorded not evidenced (None) is not under the bar: READY
     cannot be judged for it, and the reason says so (AUTO-105). Where
     `unheard` (the card's `audio_not_evidenced`) says no command produces
     the evidence, as for a wordless film's voiceover, the reason says READY
     is out of reach until a review that hears the rendered track exists,
-    so nobody loops on a gap no stage can close."""
+    so nobody loops on a gap no stage can close. `accuracy`, the on-screen
+    accuracy check (AUTO-150, the scorecard's `accuracy.final`), adds one
+    reason when its bar is set: a dossier film whose check could not be
+    made is not READY, and the reason names the command that makes it."""
     reasons = []
     if overall < OVERALL_BAR:
         reasons.append(f"overall {overall:.1f} is under {OVERALL_BAR}")
@@ -2860,6 +2877,9 @@ def verdict_of(scores: dict, overall: float, *, blocking: list,
             reasons.append(f"{key} {value:.1f} is under {CATEGORY_BAR}")
     if blocking:
         reasons.append(f"{len(blocking)} blocking item(s)")
+    if isinstance(accuracy, dict) and accuracy.get("bar"):
+        reasons.append(f"on-screen accuracy is not evidenced: {accuracy.get('why')}; READY "
+                       f"cannot be judged until `{accuracy.get('command')}`")
     return (READY if not reasons else NOT_READY), reasons
 
 
@@ -2961,6 +2981,413 @@ def vfx_blockers(vfx: dict | None, authored: list | None = None) -> list[str]:
         where = f"section {n} ({heading})" if n is not None else owner
         out.append(f"vfx continuity: {where}: {b.get('problem', '')}")
     return out
+
+
+# --------------------------------------------------------------------------- #
+# the on-screen text, against the dossier (AUTO-150)
+# --------------------------------------------------------------------------- #
+
+#: The model that reads the film's on-screen text against the dossier when
+#: --accuracy-model is not given: the reviewer vfx already uses, a claude
+#: CLI decision with YT_GATEWAY unset.
+ACCURACY_MODEL = "opus"
+#: What one accuracy decision costs, for the estimate before a pass has
+#: measured it. TO VERIFY: a placeholder until the research block, the scene
+#: text and the narration context of one live 8-12 minute dossier film are
+#: measured through one opus CLI decision.
+ACCURACY_USD = 0.60
+ACCURACY_PROBLEMS = ("contradicts", "overstates", "unsupported", "number-mismatch",
+                     "unframed-speculation")
+ACCURACY_OWNERS = ("script", "vfx", "upstream-fact")
+ACCURACY_SEVERITIES = ("blocking", "minor")
+#: The asset kinds whose words scene_text reads: a text's @text (else its
+#: spans), a formula's @tex, a chart's labels and each series' name and
+#: values. Any other kind a document draws is named under not_checked.
+ACCURACY_KINDS = ("text", "formula", "chart")
+#: Where a defaulted model that cannot check the film sends the reader.
+ACCURACY_ANOTHER = "yt qa --accuracy-model <another family>"
+
+ACCURACY_ROLE = (
+    "You are the fact-checker of what a film shows on screen: every number, label, "
+    "formula and chart value its pictures put in front of the viewer. The dossier is "
+    "your only evidence. What you know yourself is not evidence, and you search "
+    "nothing. A claim's confidence and its caveat are part of the claim: a figure "
+    "drawn as certain where the dossier hedges it overstates it. You quote the exact "
+    "words the screen shows, name the dossier claim they rest on, and say who must fix "
+    "it: vfx when the picture drew it wrong, the script when the screenplay asked for "
+    "it, upstream-fact when the dossier itself is wrong."
+)
+
+ACCURACY_SCHEMA = {
+    "type": "object",
+    "required": ["findings", "checked", "verdict"],
+    "properties": {
+        "findings": {"type": "array", "items": {
+            "type": "object",
+            "required": ["shot", "quote", "claim_id", "problem", "severity", "fix", "owner"],
+            "properties": {
+                "shot": {"type": "string", "description": "the shot's label"},
+                "quote": {"type": "string",
+                          "description": "the exact on-screen words, as the shot shows them"},
+                "claim_id": {"type": "string",
+                             "description": "the dossier claim's id (c1, c2 ..), or none"},
+                "problem": {"type": "string", "enum": list(ACCURACY_PROBLEMS)},
+                "severity": {"type": "string", "enum": list(ACCURACY_SEVERITIES)},
+                "fix": {"type": "string"},
+                "owner": {"type": "string", "enum": list(ACCURACY_OWNERS)}}}},
+        "checked": {"type": "integer", "description": "how many shots you read"},
+        "verdict": {"type": "string"}},
+}
+
+
+def _asset_words(asset) -> str:
+    """What one asset puts on screen, as words (ACCURACY_KINDS), or ""."""
+    kind = geo._local(asset)
+    if kind in ("text", "formula"):
+        return geo._words_of(asset)
+    if kind != "chart":
+        return ""
+    parts = [asset.get("labels") or ""]
+    for series in asset:
+        if geo._local(series) == "series":
+            parts += [series.get("name") or "", series.get("values") or ""]
+    return " | ".join(" ".join(p.split()) for p in parts if p and p.strip())
+
+
+def _document(path: Path):
+    try:
+        return geo._parse(path.read_bytes())
+    except OSError:
+        return None
+
+
+def _assets_of(doc) -> dict:
+    """The asset definitions of one document, by id: the children of its
+    <assets>, never a drawn element that happens to share an id."""
+    return {el.get("id"): el for group in doc.iter() if geo._local(group) == "assets"
+            for el in group if el.get("id")}
+
+
+def _include_text(inc, base: Path, head: dict, depth: int, seen: set, scene_dir: Path,
+                  rows: list, unread: list) -> None:
+    """What one <include src symbol> draws: its document read from `base`,
+    its symbol (else its composition) walked by _body_text."""
+    src = inc.get("src") or ""
+    path = Path(base) / src
+    doc = _document(path) if src and path.is_file() else None
+    if doc is None:
+        unread.append({"include": head["include"], "element_id": inc.get("id") or src,
+                       "kind": "include", "why": f"{src or 'no src'}: missing or unparsable"})
+        return
+    sym = inc.get("symbol")
+    body = (next((s for s in doc.iter() if geo._local(s) == "symbol" and s.get("id") == sym),
+                 None) if sym else
+            next((c for c in doc.iter() if geo._local(c) == "composition"), doc))
+    if body is None:
+        unread.append({"include": head["include"], "element_id": sym or "", "kind": "symbol",
+                       "why": f"{src} has no symbol {sym}"})
+        return
+    _body_text(doc, body, path, head, depth, seen, scene_dir, rows, unread)
+
+
+def _body_text(doc, body, path: Path, head: dict, depth: int, seen: set, scene_dir: Path,
+               rows: list, unread: list) -> None:
+    """Every asset `body` names in an `asset` attribute, in document order:
+    a readable one is a row of `head`'s include, any other is not_checked.
+    An <instance symbol> of the same document and a nested <include> are
+    followed one way, to geometry.NEST_DEPTH, as geometry._composed does."""
+    assets = _assets_of(doc)
+    try:
+        where = Path(os.path.relpath(path, scene_dir)).as_posix()
+    except ValueError:
+        where = str(path)
+    for el in body.iter():
+        if el is body:
+            continue
+        tag = geo._local(el)
+        if tag == "instance":
+            sym = el.get("symbol")
+            inner = next((s for s in doc.iter() if geo._local(s) == "symbol"
+                          and s.get("id") == sym), None) if sym else None
+            if inner is not None and inner is not body and depth < geo.NEST_DEPTH:
+                _body_text(doc, inner, path, head, depth + 1, seen, scene_dir, rows, unread)
+            continue
+        if tag == "include":
+            if depth < geo.NEST_DEPTH:
+                _include_text(el, path.parent, head, depth + 1, seen, scene_dir, rows, unread)
+            continue
+        if tag in ACCURACY_KINDS and el.get("id") and not el.get("asset"):
+            asset, ident = el, el.get("id")      # drawn in place, not as an asset
+        elif el.get("asset"):
+            ident = el.get("asset")
+            asset = assets.get(ident)
+        else:
+            continue
+        if (where, ident) in seen:
+            continue
+        seen.add((where, ident))
+        if asset is None:
+            unread.append({"include": head["include"], "element_id": ident, "kind": "missing"})
+            continue
+        words = _asset_words(asset)
+        if not words:
+            unread.append({"include": head["include"], "element_id": ident,
+                           "kind": geo._local(asset)})
+            continue
+        rows.append(dict(head, kind=geo._local(asset), text=words, element_id=ident,
+                         source_doc=where))
+
+
+def scene_text(scene_xml, build: dict | None) -> tuple[list[dict], list[dict]]:
+    """The words the film's documents draw, include by include (AUTO-150),
+    and what could not be read.
+
+    For each <include id src symbol start end> of the scene: its document
+    is read relative to the scene's directory, its <symbol> found, and every
+    asset a descendant names in an `asset` attribute is one row, in document
+    order, so text split across nodes stays in reading order: {include,
+    shots (each build.json shot label whose `include` is the include's id),
+    start, end (the include's), kind, text, element_id, source_doc}. A text
+    gives its @text, a formula its @tex, a chart its labels, then each
+    series' name and values, joined with " | ". An asset no symbol draws
+    never reaches the screen and is skipped. Any other kind drawn (an image,
+    a video), an asset that is not defined, a chart with no labels or series,
+    and a missing or unparsable document are `not_checked` entries
+    ({include, element_id, kind}), never an exception."""
+    rows: list[dict] = []
+    unread: list[dict] = []
+    scene_xml = Path(scene_xml)
+    root = _document(scene_xml) if scene_xml.is_file() else None
+    if root is None:
+        return rows, unread
+    labels: dict[str, list[str]] = {}
+    for shot in (build or {}).get("shots") or []:
+        if isinstance(shot, dict) and shot.get("include"):
+            labels.setdefault(str(shot["include"]), []).append(str(shot.get("label", "")))
+    for inc in root.iter():
+        if geo._local(inc) != "include":
+            continue
+        iid = inc.get("id") or ""
+        head = {"include": iid, "shots": list(labels.get(iid, [])),
+                "start": _number(inc.get("start")), "end": _number(inc.get("end"))}
+        _include_text(inc, scene_xml.parent, head, 0, set(), scene_xml.parent, rows, unread)
+    return rows, unread
+
+
+def shot_screen(rows: list[dict]) -> dict[str, str]:
+    """Each shot's on-screen words: its rows' text, in order, whitespace
+    normalised. What an accuracy finding's quote must be words of."""
+    out: dict[str, list[str]] = {}
+    for row in rows:
+        for label in row.get("shots") or []:
+            out.setdefault(str(label), []).append(str(row.get("text") or ""))
+    return {label: " ".join(" ".join(texts).split()) for label, texts in out.items()}
+
+
+def accuracy_refusal(model: str, authors: list[tuple[str, str]]) -> str:
+    """Why `model` may not check the film's on-screen text, or "". `authors`
+    are cutcompare.author_models of script.json and vfx.json (improve adds
+    its own --model): a model of any author's family is refused
+    (flags.own_reviewer, so the vfx author counts even when the script's
+    differs), and a report that names no model refuses a model of the CLIs'
+    providers, since nobody can show it differs."""
+    from . import cutcompare, flags, models
+    for file, author in authors:
+        if author:
+            said = flags.own_reviewer(author, model)
+            if said:
+                return (f"{said} ({file} was made with {author}; the on-screen accuracy "
+                        f"check is --accuracy-model {model})")
+    unnamed = list(dict.fromkeys(f for f, author in authors if not author))
+    if unnamed and models.maker(model) in cutcompare.CLI_PROVIDERS:
+        return (f"error: {', '.join(unnamed)} names no model, so whether --accuracy-model "
+                f"{model} is of the author's family cannot be known; run that stage again "
+                "so its report names its model, or pass --accuracy-model with a model of "
+                "another provider")
+    return ""
+
+
+def accuracy_harness(root, model: str | None, *, house: str, house_digest: dict,
+                     fresh: bool, verbose: bool) -> Harness:
+    """The accuracy check's own harness: a plain CLI one (no gateway, no
+    media), apart from the scoring reviewer, so its report stays its own."""
+    return Harness(root, "qa", model=model or ACCURACY_MODEL, role=ACCURACY_ROLE,
+                   house=house, house_digest=house_digest, fresh=fresh, verbose=verbose)
+
+
+def _screenplay_shots(script: dict | None) -> dict[str, dict]:
+    return {str(s.get("label", "")): s for sec in (script or {}).get("sections") or []
+            if isinstance(sec, dict) for s in sec.get("shots") or [] if isinstance(s, dict)}
+
+
+def accuracy_prompt(rows: list[dict], *, script: dict | None, dossier: dict,
+                    voice: dict | None) -> str:
+    """The question: the research block once, then per shot its time, the
+    words its documents draw, the screenplay's supers and its narration."""
+    shots = _screenplay_shots(script)
+    takes = {str(t.get("label")): t for t in (voice or {}).get("takes") or []
+             if isinstance(t, dict)}
+    screen = shot_screen(rows)
+    lines = [
+        "Check every number, label, formula and chart value this film shows on screen "
+        "against the research below and against the shot's narration. A figure that "
+        "differs from the narration's is number-mismatch. The screenplay's supers were "
+        "already fact-checked at the script stage: check one only where the screen shows "
+        "something other than it. The narration is context and was fact-checked too; do "
+        "not judge it.",
+        "",
+        "For each problem: the shot's label, the exact words the screen shows (quote "
+        "them as they are drawn), the claim id they rest on (c1, c2 .., or none), the "
+        "problem (" + ", ".join(ACCURACY_PROBLEMS) + "), blocking when a viewer would "
+        "come away believing something the research does not hold, else minor, the fix, "
+        "and the owner (" + ", ".join(ACCURACY_OWNERS) + "). Say how many shots you read.",
+        "",
+        "## The research",
+        "",
+        script_stage.research_block(dossier),
+        "",
+        "## What each shot shows",
+    ]
+    for label in screen:
+        mine = [r for r in rows if label in (r.get("shots") or [])]
+        start, end = mine[0].get("start"), mine[0].get("end")
+        lines += ["", f"### Shot {label} ({_stamp(start)} - {_stamp(end)})"]
+        lines += [f"- {r['kind']}: {r['text']}" for r in mine]
+        shot = shots.get(label)
+        supers = visible_text(Shot.from_raw(shot)) if shot and (
+            shot.get("on_screen_text") or shot.get("on_screen")) else ""
+        if supers:
+            lines.append(f"- screenplay supers (already fact-checked): {supers}")
+        said = ((takes.get(label) or {}).get("text", "") if takes
+                else (shot or {}).get("narration", ""))
+        if spoken(said):
+            lines.append(f"- narration (context, already fact-checked): {spoken(said)}")
+    return "\n".join(lines) + "\n"
+
+
+def accuracy_problems(answer, screen: dict[str, str], claims: dict) -> list[str]:
+    """What makes an accuracy answer unusable, one line each: a shot that
+    showed no text here, a quote that is not words its shot shows
+    (script.said_in), a claim id that is neither "none" nor the dossier's,
+    and a problem, severity or owner off its list."""
+    findings = answer.get("findings") if isinstance(answer, dict) else None
+    if not isinstance(findings, list):
+        return ["findings is not a list"]
+    out = []
+    for k, f in enumerate(findings, 1):
+        if not isinstance(f, dict):
+            out.append(f"finding {k} is not an object")
+            continue
+        shot, quote = str(f.get("shot", "")), str(f.get("quote", ""))
+        if shot not in screen:
+            out.append(f"finding {k}: shot {shot!r} shows no text this check read")
+        elif not script_stage.said_in(quote, screen[shot]):
+            out.append(f'finding {k}: "{quote}" is not words shot {shot} shows')
+        cid = str(f.get("claim_id", ""))
+        if cid != "none" and cid not in claims:
+            out.append(f"finding {k}: claim_id {cid!r} is not a dossier claim "
+                       "(c1, c2 .., or none)")
+        for key, allowed in (("problem", ACCURACY_PROBLEMS), ("severity", ACCURACY_SEVERITIES),
+                             ("owner", ACCURACY_OWNERS)):
+            if f.get(key) not in allowed:
+                out.append(f"finding {k}: {key} {f.get(key)!r} is not one of "
+                           f"{', '.join(allowed)}")
+    return out
+
+
+def accuracy(harness, pass_dir, *, rows: list[dict], script: dict | None, dossier: dict,
+             voice: dict | None, not_checked=()) -> dict:
+    """One decision, "<pass>-accuracy", reading the film's on-screen text
+    (scene_text's rows) against the dossier; an answer accuracy_problems
+    refuses is asked once more as "<pass>-accuracy-retry" with the reasons,
+    and a second refusal, or an engine that fails, is a failed check:
+    not_evidenced with the bar set. Nothing on screen asks nothing."""
+    unread = list(not_checked)
+    screen = shot_screen(rows)
+    if not screen:
+        return {"status": "done", "checked": 0, "findings": [], "not_checked": unread}
+    claims = script_stage.claim_table(dossier)
+    prompt = accuracy_prompt(rows, script=script, dossier=dossier, voice=voice)
+    name = f"{Path(pass_dir).name}-accuracy"
+    try:
+        answer = harness.decide(name, prompt, ACCURACY_SCHEMA)
+        problems = accuracy_problems(answer, screen, claims)
+        if problems:
+            answer = harness.decide(
+                f"{name}-retry", prompt + "\n\nAn earlier answer was refused: "
+                + "; ".join(problems[:10]) + ". Quote only words the shot shows, and "
+                "answer again.", ACCURACY_SCHEMA)
+            problems = accuracy_problems(answer, screen, claims)
+            if problems:
+                raise HarnessError(f"[qa] {name}-retry: " + "; ".join(problems[:3]))
+    except HarnessError as exc:
+        return {"status": NOT_EVIDENCED, "why": f"the accuracy check failed: {exc}",
+                "command": "yt qa --fresh", "bar": True, "not_checked": unread}
+    starts: dict[str, float] = {}
+    for row in rows:
+        for label in row.get("shots") or []:
+            if row.get("start") is not None:
+                starts.setdefault(str(label), float(row["start"]))
+    shots = _screenplay_shots(script)
+    found = []
+    for f in answer.get("findings") or []:
+        shot = shots.get(str(f["shot"]))
+        supers = visible_text(Shot.from_raw(shot)) if shot and (
+            shot.get("on_screen_text") or shot.get("on_screen")) else ""
+        found.append(dict(f, start=starts.get(str(f["shot"]), 0.0),
+                          in_screenplay=bool(supers) and script_stage.said_in(f["quote"],
+                                                                              supers)))
+    return {"status": "done", "model": harness.model, "checked": len(screen),
+            "not_checked": unread, "findings": found,
+            "cost": (harness.report() or {}).get("cost_usd")}
+
+
+def accuracy_lines(final: dict | None) -> list[str]:
+    """One blocking line per blocking accuracy finding, as the bar counts it."""
+    return [f'accuracy: {f.get("problem")} at {float(f.get("start") or 0):g}s '
+            f'(shot {f.get("shot")}): "{f.get("quote")}" -> {f.get("owner")}'
+            for f in (final or {}).get("findings") or []
+            if isinstance(f, dict) and f.get("severity") == "blocking"]
+
+
+def accuracy_summary(final: dict | None) -> dict:
+    """qa.json's account of the check: what doctor reads."""
+    final = final or {}
+    blocking = [f for f in final.get("findings") or []
+                if isinstance(f, dict) and f.get("severity") == "blocking"]
+    out = {"status": final.get("status", NOT_EVIDENCED), "bar": bool(final.get("bar")),
+           "checked": int(final.get("checked") or 0), "blocking": len(blocking),
+           "command": str(final.get("command") or ""), "why": str(final.get("why") or "")}
+    if blocking:
+        out["first"] = {"shot": blocking[0].get("shot"), "problem": blocking[0].get("problem")}
+    return out
+
+
+def accuracy_md(accuracy_record: dict | None) -> list[str]:
+    """findings.md's "On-screen accuracy" section."""
+    final = (accuracy_record or {}).get("final")
+    if not isinstance(final, dict):
+        return []
+    lines = ["## On-screen accuracy", ""]
+    if final.get("status") != "done":
+        lines += [f"Not evidenced: {final.get('why', '')}. Run `{final.get('command', '')}`.",
+                  ""]
+        return lines
+    lines.append(f"Read by {final.get('model', '?')}: {final.get('checked', 0)} shot(s) "
+                 "against the dossier.")
+    blocking = accuracy_lines(final)
+    lines += [f"- {line}" for line in blocking]
+    for f in final.get("findings") or []:
+        if isinstance(f, dict) and f.get("severity") != "blocking":
+            lines.append(f'- minor: {f.get("problem")} at shot {f.get("shot")}: '
+                         f'"{f.get("quote")}" -> {f.get("owner")} ({f.get("fix", "")})')
+    if not final.get("findings"):
+        lines.append("Nothing found.")
+    unread = final.get("not_checked") or []
+    if unread:
+        lines.append(f"Not checked ({len(unread)}): " + ", ".join(
+            f"{u.get('element_id')} ({u.get('kind')})" for u in unread[:12]))
+    return lines + [""]
 
 
 def compare(prev: dict | None, cur: dict) -> dict:
@@ -3537,6 +3964,7 @@ def findings_md(name: str, card: dict, samples: list[dict], diff: dict, *,
         lines += ["**Regressions:** " + ", ".join(diff["regressions"]), ""]
     lines += side_lines(card.get("side_by_side"))
     lines += recheck_lines(card.get("recheck"))
+    lines += accuracy_md(card.get("accuracy"))
 
     def finding_lines(row: dict) -> list[str]:
         seen_in = (f" (samples {', '.join(map(str, row['samples']))})"
@@ -4914,6 +5342,12 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
     p.add_argument("--compare-model", metavar="MODEL", dest="compare_model",
                    help="the gateway video model for --against, provider/model "
                         f"(default ${cutcompare.MODEL_ENV}); never of an author's family")
+    p.add_argument("--accuracy-model", metavar="MODEL", dest="accuracy_model",
+                   help="with a dossier, the model that reads the text the film's "
+                        "documents draw against it (default "
+                        f"{ACCURACY_MODEL}); never of an author's family: given, one "
+                        "is refused before anything renders, defaulted, the check is "
+                        "not evidenced and READY cannot be judged (AUTO-150)")
     p.add_argument("--host", help="ssh target of the render host")
     p.add_argument("--local", action="store_true", help="render the stills here")
     p.add_argument("--fresh", action="store_true",
@@ -4921,7 +5355,7 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
     listen_pass.add_flags(p)
     from . import watch as watch_pass       # it reads this module's owners and duties
     watch_pass.add_flags(p)
-    workspace.add_inputs(p, "build", "script", "voice", "sound", "styles", "gate")
+    workspace.add_inputs(p, "build", "script", "voice", "sound", "styles", "gate", "dossier")
     p.set_defaults(run=run)
     return p
 
@@ -4972,6 +5406,19 @@ def run(args) -> int:
         {stage: src(stage) for stage in cutcompare.AUTHORS}) if against else [])
     if said:
         print(said, file=sys.stderr)
+        return 2
+    # The on-screen accuracy check (AUTO-150), with a dossier only: a model
+    # of an author's family is refused here when it was asked for, and
+    # recorded not evidenced (READY cannot be judged) when it was defaulted.
+    dossier_file = src("dossier")
+    dossier = read_json(dossier_file, warn=False) if dossier_file else None
+    dossier = dossier if isinstance(dossier, dict) and dossier else None
+    accuracy_flag = getattr(args, "accuracy_model", None)
+    accuracy_model = accuracy_flag or ACCURACY_MODEL
+    clash = accuracy_refusal(accuracy_model, cutcompare.author_models(
+        {"script": src("script"), "vfx": project.source("vfx")})) if dossier else ""
+    if clash and accuracy_flag:
+        print(clash, file=sys.stderr)
         return 2
     # --listen (AUTO-126): everything it needs, checked before anything renders.
     prepared = None
@@ -5276,6 +5723,28 @@ def run(args) -> int:
     rechecked = (recheck(reviewer, pass_dir, previous, quiet=args.quiet)
                  if getattr(args, "recheck", False) else None)
 
+    # -- the on-screen text, against the dossier (AUTO-150) ----------------------
+    # Its own decision on its own harness, after the scoring, whose prompt it
+    # leaves alone: the text the documents draw, never a still.
+    checker = None
+    if dossier is None:
+        final = {"status": NOT_EVIDENCED, "why": "the film has no dossier",
+                 "command": "yt research", "bar": False}
+    elif clash:
+        final = {"status": NOT_EVIDENCED, "why": clash.removeprefix("error: "),
+                 "command": ACCURACY_ANOTHER, "bar": True}
+    else:
+        shown, unread = scene_text(Path(scene), build)
+        checker = accuracy_harness(project.root, accuracy_model, house=rules,
+                                   house_digest=digest, fresh=getattr(args, "fresh", False),
+                                   verbose=not args.quiet)
+        final = accuracy(checker, pass_dir, rows=shown, script=script, dossier=dossier,
+                         voice=voice, not_checked=unread)
+    if not args.quiet and dossier is not None:
+        print(f"[qa] on-screen accuracy: {final['status']}"
+              + (f" ({final.get('why')})" if final.get("why") else
+                 f", {len(accuracy_lines(final))} blocking"), file=sys.stderr)
+
     # -- the bar, applied; the pass, kept ----------------------------------------
     # What the measurements proved overrides what the reviewer awarded: a
     # silent film scores no sound, and a blocking mechanical finding caps
@@ -5322,11 +5791,13 @@ def run(args) -> int:
     all_blocking += [f"{f.get('problem')} at {f.get('timestamp')}s"
                      for f in card.get("findings", []) if f.get("severity") == "blocking"]
     all_blocking += [mechanical_line(f) for f in mechanical if f["severity"] == "blocking"]
+    all_blocking += accuracy_lines(final)
     if evidenced:
         # The bar reads the median scores, never one sample's.
         verdict, reasons = verdict_of(card.get("scores", {}), float(card.get("overall", 0)),
                                       blocking=all_blocking,
-                                      unheard=card.get("audio_not_evidenced"))
+                                      unheard=card.get("audio_not_evidenced"),
+                                      accuracy=final)
     else:
         verdict, reasons = NOT_EVIDENCED, [
             f"fewer than two of the {card['scoring']['asked']} scoring samples were valid "
@@ -5350,8 +5821,9 @@ def run(args) -> int:
                          "blocking": all_blocking, "frames": sorted(have),
                          "samples": samples, "mechanical": mechanical, "capped": capped,
                          "rhythm": rhythm_block,
-                         # what improve routes to the script (AUTO-133)
-                         "accuracy": {"fact_check": fact_rows(script)},
+                         # what improve routes to the script (AUTO-133), and
+                         # the on-screen text against the dossier (AUTO-150)
+                         "accuracy": {"fact_check": fact_rows(script), "final": final},
                          "proof_note": proof_note, "listening": listening,
                          "cut": cut, "side_by_side": side,
                          "contact_sheet": sheet.name, "engine": reviewer.report(),
@@ -5382,6 +5854,11 @@ def run(args) -> int:
             card["watch_engine"] = watched["engine"]
             card["usage"] = spend.merge_records(card["usage"],
                                                 spend.from_report(watched["engine"]))
+    if checker is not None:
+        # The accuracy check is a harness of its own too (AUTO-150).
+        card["accuracy_engine"] = checker.report()
+        card["usage"] = spend.merge_records(card["usage"],
+                                            spend.from_report(card["accuracy_engine"]))
     diff = compare(previous, card)
     card["comparison"] = diff
     write_json(pass_dir / "scorecard.json", card)
@@ -5406,6 +5883,7 @@ def run(args) -> int:
                          "total": side["tally"]["total"]},
         **({"recheck": {"against": rechecked["against"], "status": rechecked["status"],
                         **rechecked["tally"]}} if rechecked is not None else {}),
+        "accuracy": accuracy_summary(final),
         "scorecard": str(pass_dir / "scorecard.json"), "house": digest,
         "judge_calibration": calibration, "usage": card["usage"]})
     # AUTO-137: the channel record's row says counted as soon as qa.json
