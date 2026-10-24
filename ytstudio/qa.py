@@ -2509,13 +2509,14 @@ def recheck_name(pass_name: str) -> str:
 def recheck_rows(previous: dict) -> tuple[list[dict], int]:
     """The previous pass's findings as the recheck lists them, `P01`.., and
     how many past RECHECK_MAX are left unchecked. Only what places and
-    states a finding is carried (time, frame, problem, owner): never a
-    score, an overall, a verdict or a severity, so the checklist cannot
-    become the previous scorecard again."""
+    states a finding is carried (time, problem, owner): never a score, an
+    overall, a verdict or a severity, so the checklist cannot become the
+    previous scorecard again. The earlier pass's frame name is left out too:
+    it names a still of the earlier cut's frames/, and the recheck reads
+    this pass's, which may have sampled other times."""
     found = [f for f in previous.get("findings") or [] if isinstance(f, dict)]
     rows = [{"id": f"P{n:02d}", "timestamp": f.get("timestamp"),
-             "frame": f.get("frame") or "", "problem": str(f.get("problem", ""))[:400],
-             "owner": f.get("owner")}
+             "problem": str(f.get("problem", ""))[:400], "owner": f.get("owner")}
             for n, f in enumerate(found[:RECHECK_MAX], 1)]
     return rows, max(len(found) - RECHECK_MAX, 0)
 
@@ -2551,14 +2552,15 @@ def recheck(reviewer: Harness, pass_dir: Path, previous: dict | None, *,
     if not rows:
         return _recheck(against, "skipped", f"{against} filed no findings to recheck")
     prompt = "\n\n".join([
-        "Recheck: each finding below was filed on an earlier cut of this film. Read "
-        "the stills under `frames/` at and around each finding's timestamp (the "
-        "contact sheet tiles them in time order) and say for each whether what it "
+        "Recheck: each finding below was filed on an earlier cut of this film. Find "
+        "this cut's stills for each finding by its timestamp: they are under "
+        "`frames/`, each named for its time, and the contact sheet tiles them in "
+        "time order. Read those at and around it and say whether what the finding "
         "describes is still visibly wrong in this cut: stands when it is, gone when "
         "the stills show it fixed, cannot_tell when no still shows that moment or a "
-        "still cannot show it. Say why in what the stills show, naming the frame you "
-        "read. This is a checklist filed beside a scorecard already written: it "
-        "scores nothing. Answer every finding by its id.",
+        "still cannot show it. Say why in what the stills show, naming the frame of "
+        "this cut you read. This is a checklist filed beside a scorecard already "
+        "written: it scores nothing. Answer every finding by its id.",
         brief("Findings filed on the earlier cut", rows)])
     name = recheck_name(pass_dir.name)
     try:

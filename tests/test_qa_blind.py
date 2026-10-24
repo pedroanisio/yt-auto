@@ -29,8 +29,9 @@ from tests.test_qa_side_by_side import COMPARE, STORY, Pass, ids_in
 OLD = "the comet's tail points at the sun in shot 1.1"
 #: The previous pass's scores: a number no other part of the brief carries.
 OLD_SCORE = 6.35
-#: What marks the recheck's prompt apart from a scoring sample's.
-RECHECK = "earlier cut"
+#: What marks the recheck's prompt apart from a scoring sample's: its opening
+#: word, so a scoring prompt that mentions an earlier cut is still a sample.
+RECHECK = "Recheck:"
 
 
 def finding(problem, t=0.5):
@@ -74,7 +75,7 @@ class Blind(Pass):
                 if COMPARE in prompt:
                     seen["compares"].append(prompt)
                     answer = compare[0](prompt)
-                elif RECHECK in prompt:
+                elif prompt.startswith(RECHECK):
                     seen["rechecks"].append({"prompt": prompt, "cwd": self_.config.cwd})
                     answer = recheck[0]
                     if isinstance(answer, Exception):
@@ -124,6 +125,7 @@ class ScoredBlind(Blind):
         for prompt in self.second():
             self.assertNotIn(OLD, prompt)
             self.assertNotIn(RECHECK, prompt)
+            self.assertNotIn("earlier cut", prompt)
 
 
 class Delta(Blind):
@@ -249,6 +251,22 @@ class Recheck(Blind):
         self.assertEqual(len(rows), qa.RECHECK_MAX)
         self.assertEqual(unchecked, 3)
         self.assertEqual(rows[0]["id"], "P01")
+
+    def test_the_earlier_cuts_frame_name_is_not_carried(self):
+        # The recheck reads this pass's frames/; a still named by the earlier
+        # pass may not exist here, or may be another moment, so the row
+        # carries the time and the reviewer finds this cut's still by it.
+        old = dict(finding(OLD, t=1.25), frame="t_00m01s250.png")
+        rows, _ = qa.recheck_rows({"pass": "pass-01", "findings": [old]})
+        self.assertNotIn("frame", rows[0])
+        self.assertNotIn("t_00m01s250.png", json.dumps(rows))
+        self.assertEqual(rows[0]["timestamp"], 1.25)
+
+    def test_its_prompt_says_to_find_this_cuts_still_by_timestamp(self):
+        self.two_passes(recheck=True)
+        prompt = " ".join(self.seen["rechecks"][0]["prompt"].split())
+        self.assertTrue(prompt.startswith(RECHECK))
+        self.assertIn("by its timestamp", prompt)
 
 
 class Flag(unittest.TestCase):
