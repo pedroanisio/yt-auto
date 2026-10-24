@@ -4413,7 +4413,7 @@ class VfxPlanner:
         by side: do they read as one film, and does the film move where its
         story does? Each section was reviewed alone, so a hero that changes
         size or a grade that shifts at every boundary passes every section
-        review, and so does a film that never leaves one desk; this is the
+        review, and so does a film that never leaves one set; this is the
         review that sees both. It runs on the reviewer's model (AUTO-143):
         the author's model never grades its own film."""
         def work() -> dict:
