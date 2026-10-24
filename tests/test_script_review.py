@@ -1863,13 +1863,18 @@ class ViewerQuizCommand(unittest.TestCase):
             answers["revise-story-1"] = {"fixes": [{"n": 1, "action": "fix",
                                                     "narration": "The river is empty now.",
                                                     "why": "opens on the picture"}]}
+            # when the revision stands, round 1 taught everything and the
+            # re-ask taught nothing, so the one warning can only come from
+            # the re-asked quiz
+            stands = second[1] == "better"
             w = writer()
             calls = faked(w, quizzed(dict(answers, **{"quiz-after-r2": low_after}),
-                                     after=low_after))
+                                     after=ALL_KEYED if stands else low_after))
             data = w.run(review=True)
             self.assertEqual(data["review"]["cold_read"]["quiz"]["gain"], 0, second)
-            self.assertEqual(len([f for f in data["findings"] if "viewer quiz" in f]), 1,
-                             data["findings"])
+            warned = [f for f in data["findings"] if "viewer quiz" in f]
+            self.assertEqual(len(warned), 1, data["findings"])
+            self.assertEqual("round 2" in warned[0], stands, warned)
             revises = [c for c in calls
                        if c["name"].startswith(("revise-story", "revise-ledger", "redraft"))]
             self.assertIn("revise-story-1", names(revises))
@@ -1888,6 +1893,22 @@ class ViewerQuizCommand(unittest.TestCase):
                               if not c["name"].startswith("quiz")],
                              [(c["name"], c["prompt"]) for c in high
                               if not c["name"].startswith("quiz")], second)
+
+    def test_a_reasked_quiz_that_teaches_silences_round_one(self):
+        # the reverse: round 1 taught nothing, the revision that stands
+        # teaches every fact, and the warning goes with the replaced draft
+        low_after = {"answers": [{"id": "K4", "choice": "B"}]}
+        answers = consider_then(("recommend", "better"))
+        answers["revise-story-1"] = {"fixes": [{"n": 1, "action": "fix",
+                                                "narration": "The river is empty now.",
+                                                "why": "opens on the picture"}]}
+        w = writer()
+        faked(w, quizzed(dict(answers, **{"quiz-after-r2": ALL_KEYED}), after=low_after))
+        data = w.run(review=True)
+        quiz = data["review"]["cold_read"]["quiz"]
+        self.assertEqual((quiz["round"], quiz["missed_after"]), (2, []), quiz)
+        self.assertFalse([f for f in data["findings"] if "viewer quiz" in f],
+                         data["findings"])
 
     def test_script_md_shows_the_quiz_as_a_measure(self):
         self.run_stage("--review", answers=quizzed())
