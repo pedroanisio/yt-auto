@@ -158,7 +158,7 @@ itself, and `--project DIR` names a directory directly.
 | `yt voice` | script | `voice/`, `voice.json`, `narration.vtt`, `.srt` | yes (casting, retakes; the take review keeps `heard`, `voice.heard`'s digest of the takes it was asked about, which `yt qa` checks before it scores voiceover from it) |
 | `yt retime` | script, voice | `retime.json`, the screenplay's measured lengths (`script.json.bak` kept) | yes (accept, rerecord, rewrite, keep; a `rerecord` prints `yt voice --redo <labels>` and a `rewrite` prints `yt script --revise retime`) |
 | `yt keyframe` | script, voice, styles, props (what `yt vfx` reads) | the vfx plan, the lead section in `vfx/vNN/`, `keyframe/keyframe.png`, `keyframe/frames.png`, `keyframe.json`, `keyframe.md` | yes (the vfx plan; one author agent, one attempt, no vision review; `--sheet`: the older composed frame) |
-| `yt vfx` | script, voice, styles, props | `vfx/vNN/<section>.scene.xml`, `vfx/vNN/frames/`, `vfx.json`, `vfx.md`, `vfx.csv` | yes (one author agent per section, a frame review per round) |
+| `yt vfx` | script, voice, styles, props | `vfx/vNN/<section>.scene.xml`, `vfx/vNN/frames/` (and `frames/grid/`, the review's grid copies), `vfx.json`, `vfx.md`, `vfx.csv` | yes (one author agent per section, a frame review per round) |
 | `yt sound` | script | `sound.json`, `sound.md`, `cues.csv`; with `--fetch`, `sound/` and `sound/index.json` | yes (spotting; `yt sound --review` listens back and fixes its own important and blocking findings, one revision of the cue's design fields each, two rounds at most, and `yt sound --review --report-only` only reports them; the review keeps `heard`, `sound.heard`'s digest of the cue sheet's design as the review left it (not the files `--fetch` adds), which `yt qa` checks before it scores sound and music from it; the fetch judges each candidate that passes the level checks against its cue, from its evidence and a spectrogram, and records the verdict in the cue's `judgement`) |
 | `yt build` | all of the above | `scene.xml`, `build.json`, `vfx/vNN/<section>.include.scene.xml` | yes (coverage, captions, tail, blocking) |
 | `yt render` | `scene.xml` | `video.mp4`, `render.json` (a still, a validation, an audio pass or a pilot writes `render-<job>.json`) | no |
@@ -327,6 +327,22 @@ whose fix is `yt keyframe`. Measured on the Euler run
 (2026-10-20): the separate style frame cost 51 min and $20 for a frame the
 film never used. `--sheet` still composes that frame (elements, rounds of
 review, `--rounds`, `--bar`) when a look is wanted before any section.
+
+**Where a finding is (AUTO-110).** The frame reviewers (`yt vfx`'s, and
+`yt keyframe --sheet`'s) get, beside each frame, a grid copy made at review
+time: `vfx/vNN/frames/grid/<frame>.png`, `keyframe/grid/keyframe.png`, the
+same picture with a labelled 8x6 grid (`framecheck.grid_overlay`, columns
+A-H, rows 1-6). It is a ruler, not evidence and not a composition rule: the
+reviewer judges the clean frame, a round keeps only the clean frames, and
+nothing else reads the copies. A finding may name its `cells` (checked
+against `framecheck.GRID_CELLS` like `category`, so a bad name fails the
+review); a whole-frame finding names none. The next round's brief gives the
+cells, their pixel rectangle and, for vfx, the object3D ids in them from one
+eval of that frame on the host (`Workspace.cell_objects`; 2D text has no
+box), or why there are none; the finding keeps them as `objects`. With no
+Pillow, or a frame it cannot read, no copy is made and the reviewer is not
+told of one; an eval that fails or a host that refuses (`YT_NO_REMOTE`)
+leaves the review standing, with `objects` null and the reason.
 
 **The research's assets.** `yt research` fills its shot list from every
 catalogue in `--asset-sources` (default all of `assets.SOURCES`): NASA

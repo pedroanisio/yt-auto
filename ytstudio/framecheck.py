@@ -93,6 +93,78 @@ def judge_frame(png: bytes, at: float, symbol: str, *, clip_share: float = CLIP_
 
 
 # --------------------------------------------------------------------------- #
+# the grid: where in a frame a finding is (AUTO-110)
+# --------------------------------------------------------------------------- #
+
+#: The reviewer's measuring grid: columns A-H left to right, rows 1-6 top to
+#: bottom, so a cell reads `C4`. A neutral ruler for saying where something
+#: is, not a composition rule: no thirds, no cell is better than another.
+GRID_COLS = 8
+GRID_ROWS = 6
+
+#: Every cell's name, row by row (A1 .. H1, A2 .. H6): the enum a review's
+#: `cells` is checked against.
+GRID_CELLS = tuple(f"{chr(ord('A') + c)}{r + 1}"
+                   for r in range(GRID_ROWS) for c in range(GRID_COLS))
+
+
+def grid_cells(frame: tuple[int, int], cols: int = GRID_COLS,
+               rows: int = GRID_ROWS) -> dict[str, tuple[int, int, int, int]]:
+    """Each cell's pixel rectangle (x0, y0, x1, y1), x1 and y1 exclusive.
+    The edges are rounded from the exact fractions, so the cells tile any
+    frame size with no gap and no overlap."""
+    width, height = int(frame[0]), int(frame[1])
+    xs = [round(i * width / cols) for i in range(cols + 1)]
+    ys = [round(j * height / rows) for j in range(rows + 1)]
+    return {f"{chr(ord('A') + c)}{r + 1}": (xs[c], ys[r], xs[c + 1], ys[r + 1])
+            for r in range(rows) for c in range(cols)}
+
+
+def cells_rect(cells, frame: tuple[int, int], cols: int = GRID_COLS,
+               rows: int = GRID_ROWS) -> tuple[int, int, int, int] | None:
+    """The one pixel rectangle that holds every named cell; None when no
+    name is a cell of the grid."""
+    rects = grid_cells(frame, cols, rows)
+    held = [rects[c] for c in cells or () if c in rects]
+    if not held:
+        return None
+    return (min(r[0] for r in held), min(r[1] for r in held),
+            max(r[2] for r in held), max(r[3] for r in held))
+
+
+def grid_overlay(png: bytes, cols: int = GRID_COLS, rows: int = GRID_ROWS) -> bytes:
+    """A copy of the frame with thin grid lines and each cell's name in its
+    top-left corner, as a new PNG. The lines are a dark stroke under a light
+    one, so they read over any picture. The input bytes are never changed;
+    the copy is a viewing aid for the reviewer, never evidence."""
+    from PIL import Image, ImageDraw, ImageFont
+    im = Image.open(io.BytesIO(png)).convert("RGB")
+    width, height = im.size
+    draw = ImageDraw.Draw(im)
+    rects = grid_cells((width, height), cols, rows)
+    line = max(1, round(min(width, height) / 540))
+    for x in sorted({r[0] for r in rects.values()} - {0}):
+        draw.line([(x, 0), (x, height)], fill=(0, 0, 0), width=line + 2)
+        draw.line([(x, 0), (x, height)], fill=(255, 255, 255), width=line)
+    for y in sorted({r[1] for r in rects.values()} - {0}):
+        draw.line([(0, y), (width, y)], fill=(0, 0, 0), width=line + 2)
+        draw.line([(0, y), (width, y)], fill=(255, 255, 255), width=line)
+    size = max(8, round(min(width / cols, height / rows) / 6))
+    try:
+        font = ImageFont.load_default(size=size)
+    except TypeError:                     # a Pillow from before sized default fonts
+        font = ImageFont.load_default()
+    pad = max(1, size // 4)
+    for name, (x0, y0, _x1, _y1) in rects.items():
+        box = draw.textbbox((x0 + pad, y0 + pad), name, font=font)
+        draw.rectangle((box[0] - pad, box[1] - pad, box[2] + pad, box[3] + pad), fill=(0, 0, 0))
+        draw.text((x0 + pad, y0 + pad), name, fill=(255, 255, 255), font=font)
+    buf = io.BytesIO()
+    im.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+# --------------------------------------------------------------------------- #
 # the engine's words
 # --------------------------------------------------------------------------- #
 

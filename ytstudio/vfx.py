@@ -274,6 +274,75 @@ REVIEW_ROLE = (
     + framecheck.checklist_text()
 )
 
+#: A finding's `cells` (AUTO-110): the grid copy's cells it is about, by
+#: name, checked like `category`. Optional: a finding about the whole frame
+#: (the grade, continuity) names none.
+GRID_CELLS_SCHEMA = {"type": "array", "items": {"type": "string",
+                                                "enum": list(framecheck.GRID_CELLS)}}
+
+#: What a reviewer is told about the grid copies: a ruler for saying where,
+#: never the picture judged, and no rule about where anything belongs.
+GRID_NOTE = (
+    "A grid copy is the same picture with a labelled grid drawn over it, columns A-H "
+    "left to right and rows 1-6 top to bottom, so a cell reads `C4`. Judge the clean frame, never the copy; open the copy only to say "
+    "where a finding is, and list the cells it covers in the finding's `cells`. A "
+    "finding about the whole frame (the grade, continuity) leaves `cells` empty.")
+
+#: Where the grid copies are written, beside the frames they copy.
+GRID_DIR = "grid"
+
+
+def grid_copy(png: Path) -> Path | None:
+    """Write `png`'s grid copy to grid/<name> beside it and return its path;
+    None when the frame cannot be read, or when this python has no Pillow
+    (`python3 -m ytstudio` runs without it, and the review ran without it
+    before the copies came). Made for a review and made again for the next
+    one, never kept with a round: a viewing aid, not evidence. The copy
+    lands by one rename, as every writer in a shared tree does, so an
+    inspection's digest never reads half of it."""
+    try:
+        data = framecheck.grid_overlay(Path(png).read_bytes())
+    except (ImportError, OSError, ValueError, SyntaxError):
+        return None
+    out = Path(png).parent / GRID_DIR / Path(png).name
+    out.parent.mkdir(exist_ok=True)
+    tmp = out.with_name(f".{out.name}.{os.getpid()}.tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, out)
+    return out
+
+
+def finding_cells(finding: dict) -> list[str]:
+    """The grid cells a finding names, in its order. `cells` that is not a
+    list names none: inspect's enum check reads only a list's items, so a
+    string such as "C3,C4" gets this far and must not be read letter by letter."""
+    cells = finding.get("cells")
+    if not isinstance(cells, list):
+        return []
+    return [c for c in cells if c in framecheck.GRID_CELLS]
+
+
+def located(finding: dict, frame: tuple[int, int]) -> str:
+    """The part of a listing line that says where a finding is: its cells,
+    the one pixel rectangle that holds them and, when the review was
+    located (`objects`), the object3D ids in them or why there are none.
+    Empty for a finding that names no cell."""
+    cells = finding_cells(finding)
+    rect = framecheck.cells_rect(cells, frame)
+    if rect is None:
+        return ""
+    out = f" cells {','.join(cells)} = px ({rect[0]},{rect[1]})-({rect[2]},{rect[3]})"
+    if "objects" in finding:
+        objects = finding["objects"]
+        if objects is None:
+            out += f", objects not mapped: {finding.get('unmapped') or 'not evaluated'}"
+        elif objects:
+            out += ", objects: " + ", ".join(objects)
+        else:
+            out += ", no 3D object in these cells"
+    return out
+
+
 REVIEW_SCHEMA = {
     "type": "object",
     "properties": {
@@ -295,6 +364,9 @@ REVIEW_SCHEMA = {
                                 "fix": {"type": "string"},
                                 "severity": {"type": "string",
                                              "enum": ["blocking", "major", "minor"]},
+                                # Where in the frame (AUTO-110): the grid
+                                # copy's cells; empty for the whole frame.
+                                "cells": GRID_CELLS_SCHEMA,
                             },
                             "required": ["category", "problem", "fix", "severity"],
                         },
@@ -2544,6 +2616,58 @@ class Workspace:
             out += geometry.findings(report, symbol=fact["id"], shots=held)
         return out
 
+    def cell_objects(self, name: str, symbol: str, t: float, cells, frame: tuple[int, int],
+                     runner=None) -> dict[str, list[str]] | None:
+        """Per grid cell a reviewer named, the ids of the object3D nodes whose
+        screen box at time `t` of `symbol` overlaps it (AUTO-110), from one
+        eval of the same proof document `geometry` evaluates, on the host
+        through EVAL_RUNNER. None when it cannot be said: `locate` gives why."""
+        return self.locate(name, symbol, t, cells, frame, runner=runner)[0]
+
+    def locate(self, name: str, symbol: str, t: float, cells, frame: tuple[int, int],
+               runner=None) -> tuple[dict[str, list[str]] | None, str]:
+        """`cell_objects` and, when it is None, the reason in a few words.
+        Only object3D nodes have a box (`geometry.document_objects`), so 2D
+        text and labels are never named; the author is then given the
+        pixels alone. `runner` replaces EVAL_RUNNER's (a test's seam)."""
+        path = self.dir / name
+        if not path.is_file():
+            return None, "the document is gone"
+        text = path.read_text(encoding="utf-8", errors="replace")
+        fact = next((f for f in symbol_facts(text) if f["id"] == symbol), None)
+        if fact is None:
+            return None, f"the document has no symbol `{symbol}`"
+        objects = geometry.document_objects(text, symbol=symbol, prefix="shot/")
+        if not objects:
+            return None, "the symbol has no object3D (2D text and labels have no box)"
+        stem = name[:-len(".scene.xml")] if name.endswith(".scene.xml") else name
+        proof_path = f"{self.rel}/.proof-{stem}.scene.xml"
+        files = dict(referenced_files(text, self.dir, self.root))
+        files[f"{self.rel}/{name}"] = text.encode("utf-8")
+        files[proof_path] = proof_document(name, text, symbol, frame, fact["duration"],
+                                           fact["background"]).encode("utf-8")
+        # The review this locates is already paid for: a host that refuses
+        # (YT_NO_REMOTE), an rsync that fails or an ssh that cannot start
+        # loses the objects, never the review.
+        try:
+            run = runner if runner is not None else EVAL_RUNNER(proof_path, files=files)
+            if run is None:
+                return None, ("no engine reachable to evaluate the frame "
+                              "(RS_RENDER_HOSTS, or RS_RENDER_BIN)")
+            got = run([float(t)]) or []
+        except (subprocess.SubprocessError, OSError, render.RemoteRefused) as exc:
+            return None, f"the engine's eval at {float(t):g}s failed: {str(exc)[:160]}"
+        evaluated = got[0] if got else None
+        if not isinstance(evaluated, dict) or evaluated.get("ok") is False:
+            return None, f"the engine's eval at {float(t):g}s failed"
+        boxes = geometry.screen_boxes(
+            objects, geometry.document_cameras(text, symbol=symbol, prefix="shot/"),
+            evaluated, frame)
+        if boxes is None:
+            return None, "no perspective camera renders the frame"
+        rects = framecheck.grid_cells(frame)
+        return geometry.in_cells(boxes, {c: rects[c] for c in cells if c in rects}), ""
+
 
 # --------------------------------------------------------------------------- #
 # the planner
@@ -2916,18 +3040,22 @@ class VfxPlanner:
         pngs = sorted(frames_dir.glob(f"{stem}__*.png")) if frames_dir.is_dir() else []
         if not pngs:
             return None
+        # The grid copies are this review's alone: an earlier round's are
+        # cleared, so the reviewer is never shown a copy of a frame it is not judging.
+        grid_dir = frames_dir / GRID_DIR
+        for stale in grid_dir.glob(f"{stem}__*.png") if grid_dir.is_dir() else []:
+            stale.unlink(missing_ok=True)
         by_world = {w["id"]: w for w in worlds}
-        evidence = []
+        evidence, copies = [], 0
         for png in pngs:
-            parts = png.stem.split("__")
-            sid = parts[1] if len(parts) > 2 else ""
-            try:
-                t = float(parts[-1].rstrip("s"))
-            except ValueError:
-                t = 0.0
+            sid, t = self._frame_place(png.name)
             shot = next((s for s in by_world.get(sid, {}).get("shots", [])
                          if s["at"] <= t < s["at"] + s["seconds"]), None)
-            evidence.append({"frame": f"frames/{png.name}", "symbol": sid, "at": t,
+            copy = grid_copy(png)
+            copies += bool(copy)
+            evidence.append({"frame": f"frames/{png.name}",
+                             **({"grid": f"frames/{GRID_DIR}/{copy.name}"} if copy else {}),
+                             "symbol": sid, "at": t,
                              "shot": shot["label"] if shot else "",
                              "should_show": shot.get("visual", "") if shot else
                              "(between shots: the world's own start or end)"})
@@ -2940,6 +3068,10 @@ class VfxPlanner:
             "same size, colour and material; the same room and light; one camera on one "
             "path. Then give a provisional score 0-10 for the section as it would read in "
             "the finished film, by the publication bar.",
+            # Said only when a copy was made: no Pillow, or no frame it could
+            # read, and the reviewer is not sent to look for one.
+            *([f"A frame listed with a `grid` path has a grid copy beside it. {GRID_NOTE}"]
+              if copies else []),
             harness.brief("Frames to Read, and what each should show", evidence),
             harness.brief("The section's shots (label, offset, length, picture)",
                           [{"label": s["label"], "at": s["at"], "seconds": s["seconds"],
@@ -3007,12 +3139,53 @@ class VfxPlanner:
                 "is `same` -- and `findings` says of each of its findings whether it is "
                 "resolved, persists or regressed. Score this round on its own, as before."])
         try:
-            return reviewer.inspect(f"review-{self.ws.version or 'v00'}-{n:02d}-r{round_no}",
-                                    prompt, review_schema(delta=previous is not None),
-                                    cwd=self.ws.dir)
+            review = reviewer.inspect(f"review-{self.ws.version or 'v00'}-{n:02d}-r{round_no}",
+                                      prompt, review_schema(delta=previous is not None),
+                                      cwd=self.ws.dir)
         except harness.HarnessError as exc:
             self._say(f"    [{n}] review failed: {exc}")
             return None
+        if isinstance(review, dict):
+            self._locate(review, name)
+        return review
+
+    @staticmethod
+    def _frame_place(frame: str) -> tuple[str, float]:
+        """The symbol and the time a proof frame's name holds
+        (<doc>__<symbol>__<t>s.png); ("", 0.0) for a name that holds none."""
+        parts = Path(str(frame)).stem.split("__")
+        sid = parts[1] if len(parts) > 2 else ""
+        try:
+            t = float(parts[-1].rstrip("s"))
+        except ValueError:
+            t = 0.0
+        return sid, t
+
+    def _locate(self, review: dict, name: str) -> None:
+        """Give each finding that names grid cells the object3D ids in them
+        (`objects`), or None and the reason (`unmapped`), so the record keeps
+        what the author is told. One eval per frame with a located finding,
+        on the host; the cells themselves are the reviewer's and stay as given."""
+        stem = name[:-len(".scene.xml")]
+        frame = self.ws._frame_from_tokens()
+        for fr in review.get("frames") or []:
+            if not isinstance(fr, dict):
+                continue
+            found = [f for f in fr.get("findings") or [] if isinstance(f, dict) and finding_cells(f)]
+            if not found:
+                continue
+            sid, t = self._frame_place(fr.get("frame") or "")
+            if not sid or not Path(str(fr.get("frame") or "")).name.startswith(f"{stem}__"):
+                mapping, why = None, "the finding's frame is not one of this section's proof frames"
+            else:
+                cells = list(dict.fromkeys(c for f in found for c in finding_cells(f)))
+                mapping, why = self.ws.locate(name, sid, t, cells, frame)
+            for f in found:
+                if mapping is None:
+                    f["objects"], f["unmapped"] = None, why
+                else:
+                    f["objects"] = list(dict.fromkeys(o for c in finding_cells(f)
+                                                      for o in mapping.get(c, [])))
 
     #: Findings about these are the ones the author keeps answering with
     #: primitives and flat colour; they go back first, as requirements.
@@ -3020,11 +3193,12 @@ class VfxPlanner:
                                r"grain|lighting|light rig|flat.shaded|environment", re.I)
 
     @classmethod
-    def _review_listing(cls, review: dict | None) -> str:
+    def _review_listing(cls, review: dict | None, *, frame: tuple[int, int] = FRAME) -> str:
         """The review's findings as requirements for the next round, verbatim
         (problem and fix): what persists or regressed from the round before
         leads, then this round's, the material / translucency / shadow ones
-        first."""
+        first. A finding that names grid cells says where: the cells, their
+        pixels in a `frame`-sized picture and the objects in them (`located`)."""
         if not review:
             return ""
         lines = [f"The reviewer scored the frames {review.get('score', '?')}/10: "
@@ -3045,7 +3219,8 @@ class VfxPlanner:
                 text = f"{f.get('category', '')} {f.get('problem', '')} {f.get('fix', '')}"
                 rows.append((0 if cls.SURFACE_WORDS.search(text) else 1,
                              f"- [{f.get('severity', '')}] {fr.get('frame', '')} (shot "
-                             f"{fr.get('shot', '?')}, {f.get('category', '')}): "
+                             f"{fr.get('shot', '?')}, {f.get('category', '')})"
+                             f"{located(f, frame)}: "
                              f"{f.get('problem', '')}\n  REQUIRED FIX: {f.get('fix', '')}"))
         rows.sort(key=lambda r: r[0])
         lines += ["", "Requirements for this round (verbatim from the review; each must be "
@@ -3277,7 +3452,8 @@ class VfxPlanner:
             listing = "\n".join(f"- {f}" for f in findings if not f.startswith(("note", "infra")))
             prompt = (f"{name} is not done."
                       + (f" The gate reports:\n{listing}\n\n" if listing else "\n\n")
-                      + (self._review_listing(review) + "\n\n" if review else "")
+                      + (self._review_listing(review, frame=self.ws._frame_from_tokens())
+                         + "\n\n" if review else "")
                       + f"Re-read {brief.name}, then fix the program {program} -- the same "
                       "world, one camera, the hero kept -- run `python3 kit.py build "
                       f"{program}` until it reports 0 error(s), then `python3 sr.py frame "

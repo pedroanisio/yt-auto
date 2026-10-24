@@ -188,5 +188,54 @@ class Diagnostics(unittest.TestCase):
         self.assertEqual(framecheck.report_findings(None), [])
 
 
+class Grid(unittest.TestCase):
+    """AUTO-110: a labelled grid drawn on a copy of a proof frame, so a
+    reviewer can say where a finding is (`C4`). A measuring aid only: the
+    copy is new bytes, the frame itself is never touched."""
+
+    def test_the_overlay_is_a_new_png_of_the_same_size(self):
+        frame = png("varied", size=(320, 180))
+        before = bytes(frame)
+        out = framecheck.grid_overlay(frame)
+        self.assertEqual(frame, before)                      # the input is untouched
+        self.assertTrue(out.startswith(b"\x89PNG"))
+        clean, grid = Image.open(io.BytesIO(frame)), Image.open(io.BytesIO(out))
+        self.assertEqual(grid.size, clean.size)
+        self.assertNotEqual(list(grid.convert("RGB").getdata()),
+                            list(clean.convert("RGB").getdata()))
+        self.assertEqual(framecheck.grid_overlay(frame), out)  # the same copy every time
+
+    def test_48_cells_named_a1_to_h6_tile_the_frame(self):
+        self.assertEqual((framecheck.GRID_COLS, framecheck.GRID_ROWS), (8, 6))
+        cells = framecheck.grid_cells((1920, 1080), 8, 6)
+        self.assertEqual(len(cells), 48)
+        self.assertEqual(set(cells), set(framecheck.GRID_CELLS))
+        self.assertEqual(len(framecheck.GRID_CELLS), 48)
+        self.assertEqual({c[0] for c in cells}, set("ABCDEFGH"))      # columns, left to right
+        self.assertEqual({c[1:] for c in cells}, {str(r) for r in range(1, 7)})  # rows, top down
+        self.assertEqual(cells["A1"], (0, 0, 240, 180))
+        self.assertEqual(cells["H6"], (1680, 900, 1920, 1080))
+        self.assertEqual(cells["C3"], (480, 360, 720, 540))
+        # exactly: the areas add up to the frame and no two cells overlap
+        self.assertEqual(sum((x1 - x0) * (y1 - y0) for x0, y0, x1, y1 in cells.values()),
+                         1920 * 1080)
+        rects = list(cells.values())
+        for i, a in enumerate(rects):
+            for b in rects[i + 1:]:
+                self.assertFalse(min(a[2], b[2]) > max(a[0], b[0])
+                                 and min(a[3], b[3]) > max(a[1], b[1]), (a, b))
+
+    def test_an_odd_frame_still_tiles_exactly(self):
+        cells = framecheck.grid_cells((1001, 557))
+        self.assertEqual(sum((x1 - x0) * (y1 - y0) for x0, y0, x1, y1 in cells.values()),
+                         1001 * 557)
+
+    def test_cells_merge_into_one_pixel_rectangle(self):
+        self.assertEqual(framecheck.cells_rect(["C3", "C4"], (1920, 1080)),
+                         (480, 360, 720, 720))
+        self.assertIsNone(framecheck.cells_rect([], (1920, 1080)))
+        self.assertIsNone(framecheck.cells_rect(["Z9"], (1920, 1080)))
+
+
 if __name__ == "__main__":
     unittest.main()

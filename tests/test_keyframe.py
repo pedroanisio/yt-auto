@@ -540,6 +540,84 @@ class Loop(ProjectCase):
         self.assertEqual(record["frame"], "")
 
 
+class GridCells(ProjectCase):
+    """AUTO-110: the reviewer is shown a labelled grid copy of the still,
+    keyframe/grid/keyframe.png, and a finding may name its cells; the next
+    round's author is told the cells and their pixels. The still itself,
+    the evidence, is never drawn on."""
+
+    authors, reviews = Loop.authors, Loop.reviews
+
+    LOCATED = {"category": "cinematography", "problem": "the plane sits in a dead corner",
+               "fix": "move the camera 20 cm left", "severity": "major", "cells": ["C3", "C4"]}
+
+    def test_the_review_names_the_grid_copy_and_the_still_stays_clean(self):
+        self.run_stage()
+        prompt = self.reviews()[0]["prompt"]
+        self.assertIn("grid/keyframe.png", prompt)
+        self.assertIn("clean", prompt)
+        self.assertIn("`cells`", prompt)
+        still = self.root / "keyframe" / keyframe.FRAME_NAME
+        copy = self.root / "keyframe" / "grid" / keyframe.FRAME_NAME
+        self.assertTrue(copy.is_file())
+        self.assertEqual(still.read_bytes(), varied_png())
+        self.assertNotEqual(copy.read_bytes(), still.read_bytes())
+
+    def test_cells_are_optional_and_enum_checked(self):
+        item = keyframe.REVIEW_SCHEMA["properties"]["findings"]["items"]
+        self.assertIn("cells", item["properties"])
+        self.assertNotIn("cells", item["required"])
+
+        def review(cells):
+            return {"seen": "s", "scores": {c: 5 for c in keyframe.CATEGORIES},
+                    "findings": [dict(self.LOCATED, cells=cells)], "score": 5, "summary": "s"}
+        self.assertEqual(harness.enum_violations(review(["C3", "H6"]), keyframe.REVIEW_SCHEMA), [])
+        bad = harness.enum_violations(review(["I7"]), keyframe.REVIEW_SCHEMA)
+        self.assertEqual(len(bad), 1)
+        self.assertIn("I7", bad[0])
+
+    def test_the_next_author_gets_the_cells_and_their_pixels(self):
+        FakeEngine.reviews = [
+            {"seen": "a plane", "scores": {c: 5 for c in keyframe.CATEGORIES},
+             "findings": [self.LOCATED], "score": 5, "summary": "low"},
+            {"seen": "a plane", "scores": {c: 8 for c in keyframe.CATEGORIES},
+             "findings": [], "score": 8, "summary": "reads"}]
+        record = self.run_stage()
+        self.assertEqual(record["rounds"][0]["review"]["findings"][0]["cells"], ["C3", "C4"])
+        second = self.authors()[1]["prompt"]
+        self.assertIn("cells C3,C4 = px (480,360)-(720,720)", second)
+        self.assertIn("the plane sits in a dead corner", second)
+
+    def test_a_cell_off_the_grid_fails_the_review(self):
+        FakeEngine.reviews = [
+            {"seen": "a plane", "scores": {c: 5 for c in keyframe.CATEGORIES},
+             "findings": [dict(self.LOCATED, cells=["Z9"])], "score": 5, "summary": "low"}]
+        record = self.run_stage(rounds=0)
+        self.assertIsNone(record["rounds"][0]["score"])
+
+    def test_a_still_with_no_copy_leaves_no_earlier_copy_behind(self):
+        # Round 2's copy cannot be made (a still Pillow cannot read): the
+        # copy round 1 left is gone, and the review does not name one.
+        FakeEngine.reviews = [
+            {"seen": "a plane", "scores": {c: 5 for c in keyframe.CATEGORIES},
+             "findings": [self.LOCATED], "score": 5, "summary": "low"},
+            {"seen": "a plane", "scores": {c: 8 for c in keyframe.CATEGORIES},
+             "findings": [], "score": 8, "summary": "reads"}]
+        real, made = vfx.grid_copy, []
+
+        def copy_once(png):
+            made.append(png)
+            return real(png) if len(made) == 1 else None
+        with patch.object(keyframe.vfx, "grid_copy", copy_once):
+            self.run_stage()
+        self.assertEqual(len(made), 2)
+        first, second = (r["prompt"] for r in self.reviews()[:2])
+        self.assertIn("grid/keyframe.png", first)
+        self.assertNotIn("grid/keyframe.png", second)
+        self.assertNotIn(vfx.GRID_NOTE, second)
+        self.assertFalse((self.root / "keyframe" / "grid" / keyframe.FRAME_NAME).exists())
+
+
 def fake_renderer_sequence(pngs: list[bytes]):
     queue = list(pngs)
 

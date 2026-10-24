@@ -23,6 +23,15 @@ def row(prefix: str) -> str:
 
 
 class Stale(unittest.TestCase):
+    def test_the_grid_copies_and_cells_are_named(self):
+        from ytstudio import framecheck, vfx
+        self.assertIn("frames/grid/", row("| `yt vfx`"))
+        self.assertEqual(vfx.GRID_DIR, "grid")
+        self.assertEqual(len(framecheck.GRID_CELLS), 48)
+        for needle in ("keyframe/grid/keyframe.png", "framecheck.GRID_CELLS",
+                       "Workspace.cell_objects", "not evidence"):
+            self.assertIn(needle, FLAT)
+
     def test_props_is_a_model_stage_with_its_two_decisions(self):
         self.assertEqual(cli.NO_MODEL, ("render",))
         line = row("| `yt props`")
