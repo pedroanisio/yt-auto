@@ -32,7 +32,8 @@ from claude_engine import ClaudeError  # noqa: E402
 from ytstudio import cli, harness, narrative, script  # noqa: E402
 
 from tests.test_harness_decisions import FakeEngine, blank  # noqa: E402
-from tests.test_script_plan import PLAN, idea, shots_for  # noqa: E402
+from tests.test_script_plan import (FRAMED, PAPER_CLAIMS, PAPER_DIGEST, PAPER_URL,  # noqa: E402
+                                    PLAN, framing, idea, shots_for)
 
 
 def kind(schema):
@@ -589,6 +590,133 @@ class Command(unittest.TestCase):
         with mock.patch.object(script.Screenwriter, "run", run):
             self.run_stage("--verify", "--rounds", "3")
         self.assertEqual(seen["rounds"], 3)
+
+    def test_a_paper_dossier_hands_its_digest_and_claims_to_the_screenwriter(self):
+        seen = {}
+
+        def run(self_, **kw):
+            seen["paper"], seen["claims"] = self_.paper, self_.paper_claims
+            raise ClaudeError("stop here")
+        for scope, paper in (("paper", PAPER_DIGEST), ("explainer", None)):
+            (self.film / "dossier.json").write_text(json.dumps(
+                {"scope": scope, "paper": PAPER_DIGEST, "claims": PAPER_CLAIMS,
+                 "idea": {"title": "Why the bridge fell", "paper": PAPER_URL}}))
+            with mock.patch.object(script.Screenwriter, "run", run):
+                self.run_stage()
+            self.assertEqual(seen["paper"], paper, scope)
+            self.assertEqual(seen["claims"], PAPER_CLAIMS if paper else None, scope)
+
+
+# --------------------------------------------------------------------------- #
+# paper mode: where the framing lands (AUTO-131)
+# --------------------------------------------------------------------------- #
+
+def framed(mechanism=3, **sections):
+    plan = copy.deepcopy(FRAMED)
+    plan["framing"] = framing(**sections)
+    plan["mechanism_section"] = mechanism
+    return plan
+
+
+class PaperPrechecks(unittest.TestCase):
+    def checks(self, plan):
+        return script.paper_prechecks(plan, PAPER_CLAIMS, PAPER_URL)
+
+    def test_a_well_ordered_fully_cited_plan_has_none(self):
+        self.assertEqual(self.checks(FRAMED), [])
+
+    def test_each_misplacement_is_its_own_line(self):
+        cases = (
+            (framed(mechanism=2, problem=3, significance=1, implications=1,
+                    contribution=2),
+             "rule: the paper's problem (section 3) does not come before the mechanism "
+             "(section 2)"),
+            (framed(significance=3),
+             "rule: the paper's significance (section 3) does not come before the "
+             "mechanism (section 3)"),
+            (framed(limitations=0),
+             "rule: framing.limitations is placed in no section: the film says the "
+             "paper's limits on air"),
+            (framed(mechanism=1, problem=1, significance=1, implications=1),
+             "rule: mechanism_section is missing or outside 2..3"),
+            (framed(mechanism=4), "rule: mechanism_section is missing or outside 2..3"),
+        )
+        for plan, line in cases:
+            self.assertEqual(self.checks(plan), [line])
+
+    def test_a_quote_that_is_not_a_claim_and_a_contribution_off_the_paper(self):
+        plan = framed()
+        plan["framing"]["consequences"]["claims"] = ["A claim nobody made."]
+        self.assertEqual(self.checks(plan), [
+            "rule: framing.consequences cites \"A claim nobody made.\", which is not a "
+            "research claim"])
+        plan = framed()
+        plan["framing"]["contribution"]["claims"] = [PAPER_CLAIMS[1]["claim"]]
+        self.assertEqual(self.checks(plan),
+                         ["house: the contribution cites no claim from the paper itself"])
+        plan = framed()
+        plan["framing"]["problem"]["claims"] = []
+        plan["framing"]["significance"]["said"] = " "
+        self.assertEqual(self.checks(plan), ["rule: framing.problem cites no research claim",
+                                             "rule: framing.significance is empty"])
+
+    def test_a_quote_differing_in_case_and_whitespace_is_a_claim(self):
+        plan = framed()
+        plan["framing"]["contribution"]["claims"] = [" the transformer  DROPS recurrence "
+                                                     "entirely. "]
+        self.assertEqual(self.checks(plan), [])
+
+
+def paper_writer(**kw):
+    kw.setdefault("research", "")
+    kw.setdefault("reviewer_model", "opus")
+    return script.Screenwriter(idea(), verbose=False, jobs=1, minutes=1,
+                               paper=PAPER_DIGEST, claims=PAPER_CLAIMS, **kw)
+
+
+class PaperReview(unittest.TestCase):
+    MISORDERED = framed(mechanism=2, problem=3, significance=1, implications=1,
+                        contribution=2)
+    LINE = ("the paper's problem (section 3) does not come before the mechanism "
+            "(section 2)")
+
+    def test_the_review_reads_the_framing_and_its_pre_checks(self):
+        w = paper_writer()
+        calls = faked(w, [verdict("accept")], plan=self.MISORDERED)
+        data = w.run(review=True)
+        prompt = next(c["prompt"] for c in calls if c["name"] == "plan-review")
+        self.assertIn("the film's significance", prompt)
+        self.assertIn('"mechanism_section": 2', prompt)
+        self.assertIn(script.PRECHECK_NOTE, prompt)
+        self.assertIn(f"- rule: {self.LINE}", prompt)
+        self.assertIn(f"rule: {self.LINE}", data["plan_review"]["prechecks"])
+
+    def test_run_records_the_rule_lines_as_findings_and_doctor_warns(self):
+        plan = copy.deepcopy(self.MISORDERED)
+        plan["framing"]["contribution"]["claims"] = [PAPER_CLAIMS[1]["claim"]]
+        w = paper_writer(reviewer_model=None)
+        faked(w, [], plan=plan)
+        data = w.run()
+        paper = [f for f in data["findings"] if "paper framing" in f]
+        self.assertEqual(paper, [f"warning: paper framing: {self.LINE}"])
+        self.assertEqual(data["framing"], plan["framing"])
+        self.assertEqual(data["mechanism_section"], 2)
+        from ytstudio import doctor, workspace
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "film"
+            root.mkdir()
+            (root / "idea.json").write_text(json.dumps(
+                {"title": "Why the bridge fell", "genre": "g", "description": "d"}))
+            (root / "script.json").write_text(json.dumps(data))
+            warns = [f.message for f in doctor.check_project(workspace.Project(root)).findings
+                     if f.area == "script" and f.level == "warn"]
+        self.assertIn(f"paper framing: {self.LINE}", warns)
+
+    def test_a_film_without_a_paper_records_no_framing(self):
+        w = script.Screenwriter(idea(), verbose=False, jobs=1, minutes=1, research="")
+        faked(w, [], plan=self.MISORDERED)
+        data = w.run()
+        self.assertFalse([f for f in data["findings"] if "paper framing" in f])
 
 
 if __name__ == "__main__":

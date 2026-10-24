@@ -629,5 +629,252 @@ class VfxBrief(unittest.TestCase):
                       "where the tension peaks", text)
 
 
+# --------------------------------------------------------------------------- #
+# paper mode (AUTO-131)
+# --------------------------------------------------------------------------- #
+
+PAPER_URL = "https://arxiv.org/pdf/1706.03762"
+
+#: The dossier's claims a paper film quotes, and its digest.
+PAPER_CLAIMS = [
+    {"claim": "The Transformer drops recurrence entirely.", "source_url": PAPER_URL},
+    {"claim": "Training a translation model took days of GPU time.",
+     "source_url": "https://example.org/cost"},
+    {"claim": "It reached 28.4 BLEU on English-German.", "source_url": PAPER_URL + "v5"},
+    {"claim": "Most large language models since build on it.",
+     "source_url": "https://example.org/review"},
+]
+PAPER_DIGEST = {
+    "citation": {"title": "Attention Is All You Need", "authors": "Vaswani et al.",
+                 "year": "2017", "url": PAPER_URL},
+    **{key: {"text": f"the digest's {key}", "claims": [PAPER_CLAIMS[n]["claim"]]}
+       for key, n in (("problem", 1), ("contribution", 0), ("significance", 2),
+                      ("implications", 3), ("consequences", 3), ("limitations", 0))},
+}
+
+
+def framing(**sections):
+    """A framing over PLAN's three sections, the mechanism in section 3."""
+    at = {"problem": 1, "significance": 2, "implications": 2, "contribution": 3,
+          "consequences": 3, "limitations": 3, **sections}
+    quote = {"problem": 1, "contribution": 0, "significance": 2, "implications": 3,
+             "consequences": 3, "limitations": 0}
+    return {key: {"said": f"the film's {key}", "claims": [PAPER_CLAIMS[quote[key]]["claim"]],
+                  "section": at[key]} for key in at}
+
+
+FRAMED = {**copy.deepcopy(PLAN), "framing": framing(), "mechanism_section": 3}
+
+
+def paper_writer(**kw):
+    return writer(paper=PAPER_DIGEST, claims=PAPER_CLAIMS, **kw)
+
+
+def asked(w, plan=FRAMED, fields=None):
+    """Answer by the schema; keep each decision's prompt and schema."""
+    calls = []
+    queue = list(fields or [])
+
+    def ask(name, prompt, schema):
+        calls.append({"name": name, "prompt": prompt, "schema": schema})
+        which = kind(schema)
+        if which == "plan":
+            return copy.deepcopy(plan)
+        if which == "plan-fields":
+            return copy.deepcopy(queue.pop(0))
+        if which == "function":
+            return shots_for(int(name.split("-")[1]))
+        return {"verdict": "unlisted"}
+    w._ask = ask
+    return calls
+
+
+def outline_fields(rows=2, paper=False):
+    fields = {k: copy.deepcopy(v) for k, v in PLAN.items() if k not in ("logline", "sections")}
+    fields["sections"] = [{k: v for k, v in s.items()
+                           if k in ("opens", "closes", "connective", "rehook", "escalation",
+                                    "anchor_visual")} for s in PLAN["sections"][:rows]]
+    if paper:
+        fields["framing"] = framing(significance=1, implications=1, contribution=2,
+                                    consequences=2, limitations=2)
+        fields["mechanism_section"] = 2
+    return fields
+
+
+OUTLINE_2 = {"working_title": "The bridge", "sections": [
+    {"heading": "The fall", "seconds": 30, "beats": ["it falls"]},
+    {"heading": "The bolt", "seconds": 30, "beats": ["the bolt"]}]}
+
+SENT_BACK = {"problems": [{"section": 2, "problem": "p", "fix": "f"}], "train_ok": False}
+
+
+def every_plan_ask(w_scratch, w_outline, paper=False) -> list[dict]:
+    """plan, plan-2, plan-fields, plan-fields-retry and plan-fields-2, each asked once."""
+    calls = asked(w_scratch)
+    w_scratch.plan()
+    w_scratch.plan(previous=PLAN, review=SENT_BACK)
+    out = asked(w_outline, fields=[outline_fields(1, paper), outline_fields(2, paper),
+                                   outline_fields(2, paper)])
+    w_outline.plan()
+    w_outline.plan(previous=PLAN, review=SENT_BACK)
+    return calls + out
+
+
+class PaperSchema(unittest.TestCase):
+    def test_without_a_paper_the_schemas_are_todays_objects(self):
+        self.assertIs(script.plan_schema(False), script.PLAN_SCHEMA)
+        self.assertIs(script.plan_fields_schema(False), script.PLAN_FIELDS_SCHEMA)
+
+    def test_with_a_paper_framing_and_the_mechanism_are_required(self):
+        for schema in (script.plan_schema(True), script.plan_fields_schema(True)):
+            self.assertIn("framing", schema["required"])
+            self.assertIn("mechanism_section", schema["required"])
+            frame = schema["properties"]["framing"]
+            self.assertEqual(set(frame["required"]), set(script.PAPER_FRAMING))
+            for key in script.PAPER_FRAMING:
+                self.assertEqual(set(frame["properties"][key]["required"]),
+                                 {"said", "claims", "section"})
+            self.assertEqual(schema["properties"]["mechanism_section"]["type"], "integer")
+        self.assertEqual(script.PAPER_FRAMING, ("problem", "contribution", "significance",
+                                                "implications", "consequences",
+                                                "limitations"))
+        self.assertNotIn("framing", script.PLAN_SCHEMA["properties"])
+        self.assertNotIn("framing", script.PLAN_FIELDS_SCHEMA["required"])
+
+
+class PaperThroughTheHarness(unittest.TestCase):
+    setUp = ThroughTheHarness.setUp
+    writer = ThroughTheHarness.writer
+
+    def test_a_paper_plan_without_framing_is_asked_again_then_fails(self):
+        answer = blank(script.plan_schema(True))
+        del answer["framing"]
+        FakeEngine.answer = answer
+        with self.assertRaises(harness.HarnessError) as caught:
+            self.writer(paper=PAPER_DIGEST, claims=PAPER_CLAIMS).plan()
+        self.assertIn("framing", str(caught.exception))
+        self.assertEqual(len(FakeEngine.json_calls), 2)
+
+
+class PaperPrompts(unittest.TestCase):
+    def test_every_plan_ask_carries_the_paper_schema_the_brief_and_the_digest(self):
+        calls = every_plan_ask(paper_writer(), paper_writer(outline=OUTLINE_2), paper=True)
+        self.assertEqual([c["name"] for c in calls],
+                         ["plan", "plan-2", "plan-fields", "plan-fields-retry",
+                          "plan-fields-2"])
+        for call in calls:
+            self.assertIn("framing", call["schema"]["required"], call["name"])
+            self.assertIn("mechanism_section", call["schema"]["required"], call["name"])
+            prompt = call["prompt"]
+            self.assertIn(script.PAPER_BRIEF, prompt, call["name"])
+            self.assertLess(prompt.index(script.STORY_BRIEF), prompt.index(script.PAPER_BRIEF))
+            self.assertIn("The paper this film explains", prompt, call["name"])
+            self.assertIn("the digest's significance", prompt, call["name"])
+
+    def test_the_paper_brief_says_where_each_item_lands(self):
+        text = script.PAPER_BRIEF
+        for words in ("before mechanism_section", "contribution may land at "
+                      "mechanism_section", "section 1 or later", "quotes the research "
+                      "claims", "apart from what others say it means"):
+            self.assertIn(words, text)
+
+    def test_a_plan_without_a_paper_never_mentions_framing(self):
+        calls = every_plan_ask(writer(), writer(outline=OUTLINE_2))
+        for call in calls:
+            self.assertNotIn("framing", call["prompt"], call["name"])
+            self.assertNotIn("mechanism_section", call["prompt"], call["name"])
+            self.assertNotIn("framing", call["schema"]["properties"], call["name"])
+
+    def test_an_outline_paper_plan_keeps_framing_and_the_mechanism(self):
+        w = paper_writer(outline=OUTLINE_2)
+        asked(w, fields=[outline_fields(2, paper=True)])
+        plan = w.plan()
+        self.assertEqual(plan["framing"], outline_fields(2, paper=True)["framing"])
+        self.assertEqual(plan["mechanism_section"], 2)
+        self.assertEqual(script.paper_prechecks(plan, PAPER_CLAIMS, PAPER_URL), [])
+
+    def test_an_outline_plan_without_a_paper_keeps_neither(self):
+        w = writer(outline=OUTLINE_2)
+        asked(w, fields=[outline_fields(2, paper=True)])
+        plan = w.plan()
+        self.assertNotIn("framing", plan)
+        self.assertNotIn("mechanism_section", plan)
+
+    def test_each_section_is_handed_the_framing_items_it_carries(self):
+        specs = FRAMED["sections"]
+        first = "\n".join(script.section_story_lines(specs[0], FRAMED, index=1, total=3))
+        self.assertIn("This section carries the paper's problem: the film's problem", first)
+        self.assertIn(f"resting on: {PAPER_CLAIMS[1]['claim']}", first)
+        self.assertNotIn("significance", first)
+        second = "\n".join(script.section_story_lines(specs[1], FRAMED, index=2, total=3))
+        self.assertIn("the paper's significance: the film's significance", second)
+        self.assertIn("the paper's implications", second)
+        self.assertNotIn("the paper's problem", second)
+        bare = "\n".join(script.section_story_lines(specs[0], PLAN, index=1, total=3))
+        self.assertNotIn("paper", bare)
+
+    def test_the_plan_view_carries_framing_and_the_mechanism(self):
+        view = script.plan_view(FRAMED)
+        self.assertEqual(view["framing"], FRAMED["framing"])
+        self.assertEqual(view["mechanism_section"], 3)
+        self.assertNotIn("framing", script.plan_view(PLAN))
+
+
+def plan_prompts() -> dict[str, str]:
+    """Every plan prompt and schema a film without a paper is asked, by
+    decision name, the plan review's included."""
+    w = writer(research="R", reviewer_model="opus")
+    calls = asked(w)
+    w.plan()
+    w.plan(previous=PLAN, review=SENT_BACK)
+    w.review_plan(PLAN)
+    o = writer(research="R", outline=OUTLINE_2)
+    more = asked(o, fields=[outline_fields(1), outline_fields(2), outline_fields(2)])
+    o.plan()
+    o.plan(previous=PLAN, review=SENT_BACK)
+    calls += more
+    out = {c["name"]: c["prompt"] for c in calls}
+    out.update({f"{c['name']}:schema": json.dumps(c["schema"], sort_keys=True) for c in calls})
+    return out
+
+
+#: sha256 of each plan prompt and schema, taken on develop 57fd5a5 before
+#: AUTO-131: a film without a paper is asked exactly what it was. A later
+#: card that changes the plan's prompts on purpose takes new values here.
+PLAN_PROMPTS = {
+    "plan":
+        "c54cd83f289628f35031ca00713bbb2f8da80debfcfac13e8517070417077d0c",
+    "plan-2":
+        "05abfbf402e7cbc031bef6145cd46bde3604caee2e8fe646bdb5f3f6f371399b",
+    "plan-2:schema":
+        "aeaa2f07b820be5b2889d2ca39c1599adaebf79e8dce9afb22c5b186cdcaa248",
+    "plan-fields":
+        "3cbd691331a06b4b98733ce66181f894e70fefac02301ee0b758629d332d330f",
+    "plan-fields-2":
+        "74fb527e47996d7b9744a363e350e141f1e1356f5813f4941d62d5d196fca457",
+    "plan-fields-2:schema":
+        "64eb01458f88d0326db38e64a0b8c8fb6ffa6342597c82da2a00379fbd567bca",
+    "plan-fields-retry":
+        "a36991291601b561b0c7209b15ef74b5876adef33e2d3eb1a348567cb2547509",
+    "plan-fields-retry:schema":
+        "64eb01458f88d0326db38e64a0b8c8fb6ffa6342597c82da2a00379fbd567bca",
+    "plan-fields:schema":
+        "64eb01458f88d0326db38e64a0b8c8fb6ffa6342597c82da2a00379fbd567bca",
+    "plan-review":
+        "4dd160ad50459b88c307b74c34b068e20a8f5e7e549211889510c4bae129889a",
+    "plan-review:schema":
+        "54df6d553271e47a5d258ee979450bc3def63951c4b93833663c964c5a284c5f",
+    "plan:schema":
+        "aeaa2f07b820be5b2889d2ca39c1599adaebf79e8dce9afb22c5b186cdcaa248",
+}
+
+
+class PaperUnchanged(unittest.TestCase):
+    def test_a_film_without_a_paper_is_asked_todays_plan_prompts_and_schemas(self):
+        import hashlib
+        got = {k: hashlib.sha256(v.encode()).hexdigest() for k, v in plan_prompts().items()}
+        self.assertEqual(got, PLAN_PROMPTS)
+
+
 if __name__ == "__main__":
     unittest.main()
