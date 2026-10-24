@@ -58,11 +58,12 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import sys
 from dataclasses import dataclass, field
 from itertools import permutations
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 #: The four labels, best first (coverage's Excellent, Good, Fair, Poor).
 LEVELS = ("Excellent", "Good", "Fair", "Poor")
@@ -431,7 +432,15 @@ def rubric_text(audience: str, *, keys: Iterable[str] | None = None,
     return "\n".join(lines)
 
 
-def reviewer_role(*, window: str = OPENING_WINDOW, seed: int = 0, plan: bool = False) -> str:
+#: The plan review's sameness ground (AUTO-137), added to the role only when
+#: the channel has counted earlier films: a repeat sends a plan back to be
+#: planned again, never out of the pipeline.
+CHANNEL_GROUND = (", and a repeat of an earlier channel film that a returning viewer "
+                  "would notice, as a ground to revise only, never to reject")
+
+
+def reviewer_role(*, window: str = OPENING_WINDOW, seed: int = 0, plan: bool = False,
+                  channel: bool = False) -> str:
     """The story reviewer's role: how to read, the rubric with each criterion's
     strength, and what each verdict requires.
 
@@ -441,8 +450,15 @@ def reviewer_role(*, window: str = OPENING_WINDOW, seed: int = 0, plan: bool = F
     the payoff. The script review's rules (a synopsis first, recommend or
     consider, a Poor stakes rejects, the first minute read twice) would
     contradict that prompt in the same call, so they are left out of it;
-    the rubric rows a plan shows are in the plan review's prompt."""
+    the rubric rows a plan shows are in the plan review's prompt.
+
+    `channel` (the plan review with counted earlier films, AUTO-137) adds
+    one ground after the four: a repeat a returning viewer would notice,
+    to revise only. Without it the role is today's, byte for byte."""
     if plan:
+        grounds = ("Only the train, the order, a section that moves nothing and the "
+                   "payoff are grounds to revise or reject"
+                   + (CHANNEL_GROUND if channel else "") + ".")
         return "\n\n".join([
             "You are the film's story reviewer, reading its plan (the beat sheet) before "
             "any line of it is written, the way a coverage reader reads a treatment "
@@ -454,8 +470,7 @@ def reviewer_role(*, window: str = OPENING_WINDOW, seed: int = 0, plan: bool = F
             "is a story with concrete problems that planning again can fix, each named "
             "with its section and a fix. reject: it is not a story: the train names "
             "only a topic, the sections are a list that survives any order, or the "
-            "payoff is empty. Only the train, the order, a section that moves nothing "
-            "and the payoff are grounds to revise or reject. A weak stakes line, an "
+            "payoff is empty. " + grounds + " A weak stakes line, an "
             "open loop, a thin reveal setup or a device that maps onto the wrong thing "
             "is a problem to name with its fix, never on its own a reason to send the "
             "plan back.",
@@ -673,7 +688,59 @@ PLAN_REVIEW_SCHEMA = {
 }
 
 
-def check_plan_review(review: Any) -> list[str]:
+#: What the plan review adds with counted earlier films (AUTO-137): the
+#: repeats a returning viewer would notice, each naming the earlier film by
+#: its slug, and, optionally, the measured `channel:` lines it dismisses.
+REPEATS_PROPERTY = {
+    "type": "array",
+    "description": (
+        "only the repeats of an earlier channel film a returning viewer would notice: "
+        "the film by its slug as listed, which of its devices this plan repeats, and "
+        "the problem. Each is also a problem of section 0 that names the film, with "
+        "its fix; a repeat is a ground to revise, never to reject. Empty when none "
+        "would be noticed."),
+    "items": {
+        "type": "object",
+        "properties": {
+            "film": {"type": "string", "description": "the earlier film's slug, as listed"},
+            "dimension": {"type": "string", "enum": ["opening", "structure", "closing"]},
+            "problem": {"type": "string"},
+        },
+        "required": ["film", "dimension", "problem"],
+    },
+}
+DISMISSED_PROPERTY = {
+    "type": "array",
+    "description": ("each measured `channel:` pre-check you do not list under repeats, "
+                    "with why a returning viewer would not notice it"),
+    "items": {
+        "type": "object",
+        "properties": {"film": {"type": "string"},
+                       "dimension": {"type": "string"},
+                       "why": {"type": "string"}},
+        "required": ["film", "why"],
+    },
+}
+CHANNEL_PLAN_REVIEW_SCHEMA = copy.deepcopy(PLAN_REVIEW_SCHEMA)
+CHANNEL_PLAN_REVIEW_SCHEMA["properties"]["repeats"] = REPEATS_PROPERTY
+CHANNEL_PLAN_REVIEW_SCHEMA["properties"]["dismissed"] = DISMISSED_PROPERTY
+CHANNEL_PLAN_REVIEW_SCHEMA["required"] = [*PLAN_REVIEW_SCHEMA["required"], "repeats"]
+
+
+def plan_review_schema(channel: bool) -> dict:
+    """The plan review's schema: PLAN_REVIEW_SCHEMA itself, or with counted
+    earlier films (AUTO-137) one copy that also requires `repeats` (and
+    may carry `dismissed`). The same object each call, so the stage can
+    route the decision to its reviewer by identity."""
+    return CHANNEL_PLAN_REVIEW_SCHEMA if channel else PLAN_REVIEW_SCHEMA
+
+
+def _names(text: Any, slug: str) -> bool:
+    return bool(slug) and re.search(rf"(?<![\w-]){re.escape(slug.lower())}(?![\w-])",
+                                    str(text or "").lower()) is not None
+
+
+def check_plan_review(review: Any, earlier_slugs: Sequence[str] = ()) -> list[str]:
     """What a plan review says that contradicts its own verdict, one line
     per problem: a revise or a reject that names no problem (a second plan
     would be told to fix nothing), and an accept whose own fields find the
@@ -704,6 +771,29 @@ def check_plan_review(review: Any) -> list[str]:
             found.append(f"an accept has every section move the train, and this one names "
                          f"section {', '.join(idle)} under sections_advancing_none: change "
                          "the verdict or the list")
+    # AUTO-137: the repeats of earlier channel films, only in a review that
+    # was asked for them. A repeat is a ground to revise, so an accept that
+    # lists one contradicts it; each names a film the prompt listed and is
+    # mirrored in problems (section 0, the film named, a fix), so a revise
+    # carrying only repeats still tells the second plan what to change.
+    repeats = [r for r in review.get("repeats") or [] if isinstance(r, dict)]
+    if verdict == "accept" and repeats:
+        found.append("an accept sends nothing back, and this one lists repeats of earlier "
+                     "films: change the verdict to revise, or empty the repeats")
+    known = [str(s) for s in earlier_slugs]
+    for r in repeats:
+        film = str(r.get("film") or "").strip()
+        if film not in known:
+            found.append(f"a repeat names {film!r}, which is not one of the earlier films "
+                         f"listed ({', '.join(known) or 'none'}): name a listed slug, or "
+                         "drop it")
+            continue
+        if not any(isinstance(p, dict) and p.get("section") == 0
+                   and str(p.get("fix") or "").strip()
+                   and (_names(p.get("problem"), film) or _names(p.get("fix"), film))
+                   for p in problems):
+            found.append(f"the repeat of {film} has no matching entry in problems: add a "
+                         f"section 0 problem naming {film}, with its fix")
     return found
 
 
