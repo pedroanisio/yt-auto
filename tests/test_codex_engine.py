@@ -343,6 +343,19 @@ class IgnoredFields(CodexCase):
         argv = (eng.ask("x"), self.fake.calls()[-1]["argv"])[1]
         self.assertNotIn("--betas", argv)
 
+    def test_a_turn_cap_has_no_codex_meaning_and_says_so(self):
+        # AUTO-116: codex exec has no turn limit to pass it to; the cap is
+        # accepted, warned once, and the feature map says it is not supported.
+        self.assertIn("max_turns", codex_engine.IGNORED_FIELDS)
+        self.assertRegex(codex_engine.__doc__, r"\bmax_turns\b")   # not _budget_usd
+        with warnings.catch_warnings(record=True) as seen:
+            warnings.simplefilter("always")
+            eng = self.engine(max_turns=5)
+        self.assertEqual(sum("max_turns" in str(w.message) for w in seen), 1)
+        self.fake.plan([{"lines": ok_lines()}])
+        eng.ask("x")
+        self.assertFalse(any("turns" in a for a in self.fake.calls()[-1]["argv"]))
+
     def test_defaults_do_not_warn(self):
         with warnings.catch_warnings(record=True) as seen:
             warnings.simplefilter("always")

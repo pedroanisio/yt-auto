@@ -112,6 +112,10 @@ meaning: accepted, ignored, one warning when set to a non-default value):
                                     or $CODEX_BUDGET_TOKENS; works for priced
                                     and unpriced models; same stop as above
                                     (error_max_budget_tokens)
+    max_turns                       not supported: codex exec has no limit    N
+                                    on its agent's turns, so a capped call
+                                    runs uncapped by turns (warned once);
+                                    the dollar and token caps above hold
     session id pinning              not available: the id is Codex's          N
                                     thread_id, known once thread.started
     fallback_model, betas, system_prompt_snapshot,                            N
@@ -220,7 +224,8 @@ IGNORED_FIELDS = (
     "disallowed_tools", "restricted", "disable_slash_commands", "mcp_config",
     "agents", "plugin_dirs", "plugin_urls", "settings", "autocompact", "name",
     "setting_sources", "safe_mode", "bare", "include_partial_messages",
-    "include_hook_events", "forward_subagent_text", "debug", "debug_file")
+    "include_hook_events", "forward_subagent_text", "debug", "debug_file",
+    "max_turns")
 
 #: Model names that mean a Claude model; Codex cannot run them.
 CLAUDE_MODEL_NAMES = frozenset({"fable", "opus", "sonnet", "haiku", "default",

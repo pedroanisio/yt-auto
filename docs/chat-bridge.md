@@ -110,8 +110,10 @@ Invalid submissions are rejected before publication, allowing correction.
 - Chat token/cost data is unavailable. Usage carries `unmetered_calls`; legacy
   numeric totals contain only measured costs and must not be read as free
   execution. The request/response log uses `total_cost_usd: null`. A USD budget
-  is refused because it cannot be enforced. Use normal timeouts and a bounded
-  research depth; do not pass `--budget-usd` with this adapter.
+  is refused because it cannot be enforced, and so is a turn cap
+  (`EngineConfig.max_turns`), since the operator's turns are not counted. Use
+  normal timeouts and a bounded research depth; do not pass `--budget-usd` with
+  this adapter.
 - Existing caches are still controlled by each stage. Use a fresh project or
   `--fresh` when switching engines if you want all research regenerated.
 

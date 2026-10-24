@@ -558,13 +558,20 @@ class Harness:
 
     def inspect(self, name: str, prompt: str, schema: dict, *, cwd: Path,
                 tools: Sequence[str] = INSPECT_TOOLS, form: str | None = None,
-                on_tool: Callable[[str, str], None] | None = None) -> Any:
+                on_tool: Callable[[str, str], None] | None = None,
+                max_turns: int | None = None) -> Any:
         """Let an agent read the files under `cwd` before it answers.
 
         The agent may file the form itself (`form`, a JSON file under `cwd`);
         otherwise its own words are handed to a structured pass that fills the
         schema from them, adding nothing. Tools are read-only: an inspection
         changes no file, so its evidence stays what it was.
+
+        `max_turns` caps the agent that looks (EngineConfig.max_turns), as
+        `budget_usd` caps it in dollars; None, every stage's default, sets
+        no cap. A run the cap stops is a permanent error, billed as a failed
+        row and never saved, so the cap is not part of the digest: an answer
+        saved under one cap or none finished within it.
         """
         if self.engine == GATEWAY_ENGINE:
             raise HarnessError(f"[{self.stage}] {name}: a gateway harness cannot inspect, "
@@ -587,7 +594,8 @@ class Harness:
 
         self._say(f"[{self.stage}] {name}: {self._asked_as} is reading {cwd}")
         prompt = prompt + FORM_INSTRUCTION % json.dumps(schema, ensure_ascii=False)
-        engine = self._engine(tools=tuple(tools), cwd=cwd, permission_mode="dontAsk")
+        engine = self._engine(tools=tuple(tools), cwd=cwd, permission_mode="dontAsk",
+                              max_turns=max_turns)
         texts: list[str] = []
         calls = 0
         cost = 0.0

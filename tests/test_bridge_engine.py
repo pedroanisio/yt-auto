@@ -129,7 +129,8 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(writer.usage.unmetered_calls, 1)
 
     def test_unsupported_permissions_budgets_resume_and_traversal_fail(self):
-        for config in (EngineConfig(tools=("Bash",)), EngineConfig(tools=(), max_turns_budget_usd=1)):
+        for config in (EngineConfig(tools=("Bash",)), EngineConfig(tools=(), max_turns_budget_usd=1),
+                       EngineConfig(tools=(), max_turns=3)):
             with self.assertRaises(BridgeError):
                 BridgeEngine(config).ask("Refuse")
         with self.assertRaises(BridgeError):

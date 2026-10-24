@@ -164,6 +164,8 @@ class BridgeEngine(ClaudeEngine):
             raise BridgeError("Bridge v1 does not support session resume")
         if self.config.max_turns_budget_usd is not None:
             raise BridgeError("Bridge cannot meter chat billing or enforce a USD budget")
+        if self.config.max_turns is not None:
+            raise BridgeError("Bridge cannot count the operator's turns or enforce max_turns")
         allowed = list((self.config.tools if tools is ... else tools) or ())
         if any(t not in READ_ONLY_TOOLS for t in allowed):
             raise BridgeError("Bridge v1 supports reasoning and read-only research, not code authors")

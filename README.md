@@ -208,11 +208,12 @@ it, else a price row (`GATEWAY_PRICES` first), and its row says which
 **402 and 429.** A gateway budget's 402 (`quota_for_entity_exceeded`, a
 team or project's "budget exceeded", an API key's "Quota limit exceeded")
 is permanent: the call stops at the first one, with no retry, as it does on
-the engines' other permanent failures (a spent `--max-budget-usd`, a refused
-sign-in). A 429 is retried as any transient failure is, within the engine's
-retries. Any other failure text, an exhausted credit balance's included
-(Vercel does not document its wording), is treated as transient and retried
-up to the engine's retries before the call fails.
+the engines' other permanent failures (a spent `--max-budget-usd`, a
+`--max-turns` stop, a refused sign-in). A 429 is retried as any transient
+failure is, within the engine's retries. Any other failure text, an
+exhausted credit balance's included (Vercel does not document its wording),
+is treated as transient and retried up to the engine's retries before the
+call fails.
 
 **Models.** A gateway id (`anthropic/claude-opus-5.5`, `openai/gpt-5`) is
 priced and judged for family as its direct name, so the reviewer still
@@ -456,7 +457,9 @@ Every stage decides through `claude_engine`; the Python around it is
 plumbing. `ytstudio/harness.py` is the one door: `Harness.decide(name, prompt,
 schema)` asks one structured question and `Harness.inspect(name, prompt,
 schema, cwd=…)` lets an agent read files — frames, a PDF, a report — before it
-answers, with read-only tools. Both write the answer under
+answers, with read-only tools (`max_turns=N` caps that agent by turns, as
+`budget_usd` caps it in dollars; no stage sets one, and a run the cap
+stops is a failed, billed row, never saved). Both write the answer under
 `decisions/<stage>/<name>.json` with a digest of everything the model saw, so
 a stage re-run with the same inputs costs nothing (the answers are served from
 `decisions/<stage>/`) and a changed input is asked again; `--fresh` asks
@@ -2173,6 +2176,7 @@ environment (`CLAUDE_ENGINE_MODEL`, `CLAUDE_ENGINE_EFFORT`,
 | `auto_allow_tools` | allow-list whatever `tools` selected (default `True`) |
 | `strict_mcp_config` | ignore the user's MCP servers (default `True`) |
 | `max_turns_budget_usd` | hard spend cap per call |
+| `max_turns` | hard cap on agentic turns per call (`--max-turns`); the CLI's stop, `error_max_turns`, is a permanent error that names it. 1 or more; 0 is refused. Codex has no equivalent: ignored, warned once; the chat bridge refuses it |
 | `timeout`, `max_retries` | per-call wall clock and retry policy |
 | `cwd`, `add_dirs` | which directories the agent may touch |
 | `restricted`, `skip_permissions` | no code-running tools; or `--dangerously-skip-permissions` |
