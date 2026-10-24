@@ -51,7 +51,8 @@ from pathlib import Path
 from . import design, house, spend, workspace
 from .harness import Harness, HarnessError, brief
 from .core import Idea, read_json, timecode, write_json
-from .script import Section, has_marks, load_script, mark_at, mark_tokens, shot_marks
+from .script import (Section, has_marks, load_script, mark_at, mark_tokens,
+                     persona_of, shot_marks)
 from .script import sentences as split_sentences
 
 #: Caption rule the delivery gate enforces: 17 characters per second.
@@ -571,6 +572,23 @@ def cast_instruction(engine: str, lang: str, *, marked: bool = True) -> str:
                "its own `speed` (and, for elevenlabs, `settings`) only where its tone "
                "needs a different read from the cast's." if marked else
                "delivery note per section."))
+
+
+def film_brief(idea, styles: dict, script: dict) -> dict:
+    """The casting brief's Film block: the idea, the first treatment's name
+    and, when the plan named one (AUTO-158), the narrator's temperament for
+    this film with its reason, read from the script.json `run` already
+    loaded. Without a temperament the dict is the one casting was always
+    handed, key for key, so the casting decision's cache key does not move."""
+    out = {"title": idea.title, "premise": idea.description, "genre": idea.genre,
+           "treatment": (styles.get("styles") or [{}])[0].get("name", "")
+           if isinstance(styles.get("styles"), list) else ""}
+    # Read through persona_of, as the section writer's story_lines is, so
+    # casting and the writer agree on whether the plan named a temperament.
+    temperament, why = persona_of(script or {})
+    if temperament:
+        out["persona"] = f"{temperament} ({why})" if why else temperament
+    return out
 
 
 def apply_cast(cast: dict, offered: list[dict], *, engine: str,
@@ -2002,10 +2020,7 @@ def run(args) -> int:
     try:
         cast = director.decide("casting", "\n\n".join([
             cast_instruction(engine, args.lang, marked=marked),
-            brief("Film", {"title": idea.title, "premise": idea.description,
-                           "genre": idea.genre,
-                           "treatment": (styles.get("styles") or [{}])[0].get("name", "")
-                           if isinstance(styles.get("styles"), list) else ""}),
+            brief("Film", film_brief(idea, styles, script)),
             brief("Candidates", offered),
             brief("Sections", [{"heading": sec.heading, "purpose": sec.purpose,
                                 "opening_line": next((sh.narration for sh in sec.shots

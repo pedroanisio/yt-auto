@@ -423,22 +423,27 @@ film's `promise` and `payoff`, its `train` (who wants what, what is in the
 way), the `stakes` and `viewer_stake`, the `misconception` it breaks (cited
 as `[M1]` from the research block, which numbers the dossier's sourced
 misconceptions and names its identifiable case), the `audience` (lay,
-enthusiast, expert), the `reveal` and the section that constrains it, a
-question ledger (`questions`, each opened in one section and answered in
-the same section or a later one, or marked left open, `closed_in` 0, with
-`left_open_why`) and the `ending` (`payoff_line`, `callback`, `next_film`). Each
-section names the questions it `opens` and `closes`, its `connective` to the
-one before (and, but, therefore, because), a `rehook`, an `escalation` and
-an `anchor_visual`, and may declare `devices` (AUTO-135): each a `kind`
-(analogy, visual_metaphor, prediction, thought_experiment), the `device`,
-what it `maps` (which familiar part stands for which part of the
-mechanism), where it `breaks_at`, its `framing` ("imagine..." for a
-thought experiment) and, for a prediction, the section whose reveal it is
-`scored_in`. The section's writer is told to use each device and say where
-it breaks; the scoring section is told to say whether the guess was right.
-A kind off the list is asked again once, then recorded as a `note:` finding
-and the device ignored; script.md prints the devices on the story line.
-With `--outline` the outline keeps its sections and these
+enthusiast, expert), an optional `persona` (AUTO-158: the narrator's
+`temperament` for this film, free text, and `why` the subject calls for it;
+the house format's temperament when it names one), told to every section
+writer as one line beside the audience and to `yt voice`'s casting in its
+Film brief (absent, both prompts are as before; one given but left empty is
+a `house:` pre-check for the plan reviewer), the `reveal` and the section
+that constrains it, a question ledger (`questions`, each opened in one
+section and answered in the same section or a later one, or marked left
+open, `closed_in` 0, with `left_open_why`) and the `ending` (`payoff_line`,
+`callback`, `next_film`). Each section names the questions it `opens` and
+`closes`, its `connective` to the one before (and, but, therefore, because),
+a `rehook`, an `escalation` and an `anchor_visual`, and may declare
+`devices` (AUTO-135): each a `kind` (analogy, visual_metaphor, prediction,
+thought_experiment), the `device`, what it `maps` (which familiar part
+stands for which part of the mechanism), where it `breaks_at`, its `framing`
+("imagine..." for a thought experiment) and, for a prediction, the section
+whose reveal it is `scored_in`. The section's writer is told to use each
+device and say where it breaks; the scoring section is told to say whether
+the guess was right. A kind off the list is asked again once, then recorded
+as a `note:` finding and the device ignored; script.md prints the devices on
+the story line. With `--outline` the outline keeps its sections and these
 fields come from one `plan-fields` decision (an answer with another number of
 sections is asked once more as `plan-fields-retry`; wrong twice, both are
 dropped and the stage fails). Every shot names its `function`

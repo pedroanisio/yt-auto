@@ -151,6 +151,17 @@ class Loading(unittest.TestCase):
         self.assertEqual(loaded.sections["voice"], "This film's pacing.")
         self.assertEqual(loaded.sections["sound"], self.shipped["sound"])
 
+    def test_a_channel_format_that_fixes_a_temperament_reaches_the_writer(self):
+        # AUTO-158: no code reads the temperament; the writer reads the
+        # channel's `## format`, which replaces the default's whole
+        (self.work / "house.md").write_text(
+            "## format\n- Narrator: one narrator, the viewer's proxy.\n"
+            "- Temperament: wry, every film.\n", encoding="utf-8")
+        block = house.load(self.work, self.project).for_stage("script")
+        self.assertIn("Temperament: wry, every film.", block)
+        self.assertNotIn("with none set here, this film's own", block)
+        self.assertIn("with none set here, this film's own", self.shipped["format"])
+
     def test_no_house_is_an_empty_house(self):
         loaded = house.load(self.work, self.project, enabled=False)
         self.assertEqual((loaded.sections, loaded.sources, loaded.sha256), ({}, [], ""))
@@ -330,7 +341,7 @@ class TheShippedText(unittest.TestCase):
     def test_every_format_device_is_neutral_until_the_channel_sets_it(self):
         # The script stage knows no other film and no series: a device the
         # default asks for unconditionally is one the writer makes up.
-        for device in ("Opening", "Ending", "Hand-off", "Series"):
+        for device in ("Opening", "Ending", "Hand-off", "Series", "Temperament"):
             with self.subTest(device=device):
                 self.assertRegex(self.line("format", f"- {device}:"), r"\bnone\b")
         self.assertNotRegex(self.line("format", "- Hand-off:"), r"^- Hand-off: one spoken")
@@ -348,6 +359,20 @@ class TheShippedText(unittest.TestCase):
         for rule in (("attention", 18), ("attention", 21), ("attention", 25)):
             self.assertIn(rule, said)
         self.assertLess(len(self.raw["format"]), 1500)
+
+    def test_the_format_keeps_one_proxy_narrator_and_leaves_the_temperament_to_the_film(self):
+        # AUTO-158: structure 37's "same narrator persona" is held as one
+        # proxy narrator; the temperament is each film's, named in its plan
+        narrator = self.line("format", "- Narrator:")
+        self.assertIn("one narrator across films", narrator)
+        self.assertIn("viewer's proxy", narrator)
+        self.assertIn("expertise belongs to named sources", narrator)
+        self.assertNotIn("one persona across films", narrator)
+        temperament = self.line("format", "- Temperament:")
+        self.assertIn("with none set here, this film's own", temperament)
+        self.assertIn("persona", temperament)
+        self.assertIn("a temperament per film is a house extension", self.raw["format"])
+        self.assertNotIn("house extension", self.parsed["format"])
 
     def test_the_strength_is_the_corpus_strength(self):
         # attention 8 says "whenever possible"; structure 19 lets a section

@@ -57,8 +57,11 @@ The narration carries the message on first listen: a viewer who cannot rewind un
 <!-- rules: structure 36, 37; attention 18, 21, 25 -->
 <!-- Structure 37 also asks for a thumbnail grammar. That is a look, which
 is styles.json's under invariant 2, so it is left out here on purpose. -->
+<!-- Structure 37's 'same narrator persona' is held as the same proxy
+narrator; a temperament per film is a house extension (owner), not a corpus rule. -->
 The channel is a repeatable format. These are neutral defaults until the channel's own house file states its format.
-- Narrator: one persona across films, the viewer's proxy who is finding out, not the expert who already knows; expertise belongs to named sources. The narrator says 'you' and 'we', asks aloud the question the viewer is about to ask, warns before the step most likely to lose them, and may be funny when the joke makes the point.
+- Narrator: one narrator across films, the viewer's proxy who is finding out, not the expert who already knows; expertise belongs to named sources. The narrator says 'you' and 'we', asks aloud the question the viewer is about to ask, warns before the step most likely to lose them, and may be funny when the joke makes the point.
+- Temperament: the same every film when set here; with none set here, this film's own, chosen from its subject and named in the plan's persona.
 - Opening: the same device every film; with none set here, open on this film's question.
 - Ending: the same device every film; with none set here, end on the payoff.
 - Hand-off: when the channel or the plan names the next film, one spoken pointer to that film, which continues this film's question, never a generic invitation to watch more; with none named, no hand-off.
