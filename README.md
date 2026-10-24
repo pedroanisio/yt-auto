@@ -345,7 +345,7 @@ Or all of it at once, for one idea:
 |---|---|---|
 | `yt ideas` | titles, genres, premises; deduplicated against a growing store | cents |
 | `yt research` | claims with sources, a vetted source list, licence-checked footage, gaps, an outline | **$0.78** for a cut-down run; more at the defaults; `--paper` adds the paper read and the `06b-paper` digest (`spend.PAPER_USD`, assumed $1.00) |
-| `yt styles` | visual treatments ranked against the video's message, with shots, palette, type, motion | $0.06–0.10 |
+| `yt styles` | visual treatments ranked against the video's message, with shots, palette, type, motion; with `--rich`, the film's identity (atmosphere, personality, motif, signature), swap-tested under `--deliberate critique` by a reviewer of another family | $0.06–0.10 |
 | `yt script` | the full AV screenplay: picture, narration verbatim, supers, assets, citations | **$0.51** for 3 minutes with polish and fact-check |
 | `yt props` | CC0 glTF models, HDRIs and texture maps from Poly Haven under `props/`, listed in `props.json` for the vfx brief | two cached model decisions when no phrase is given, else none; no key |
 | `yt keyframe` | the look-lock from the film itself: `yt vfx`'s plan for every section and the lead section authored once, judged by the mechanical gate, its frames awaiting the operator's approval; `yt vfx` then carries it and authors the rest against it (`--sheet`: the older separate style frame) | the vfx plan and one author session; no vision review |
@@ -684,6 +684,33 @@ one film's, is printed as a `warning: channel:` line and saved under
 `styles.json` `channel`. It is a measurement, not a judgement: no prompt sees
 the earlier films, since the critique is the author's own family, and the pick
 and its order are what they would be without it.
+
+**The film's identity** (AUTO-146). `--rich` also writes down what makes the
+pick this film's and no other's, in `styles.json` `identity`: its
+`atmosphere` (the feeling of being inside it), its `personality` (how the
+film carries itself), a `motif` (one visual or sonic idea that recurs and
+develops), a `signature` (the one thing a viewer would remember it by), and
+`belongs_because` (why this look and sound belong to this subject, and would
+be wrong for a film about something else). With `--deliberate critique` (or
+`full`), a reviewer of another model family (`--reviewer-model`, default
+`opus`; refused with exit 2 before the project is read when it is the
+author's own family, and a `pool` or `sdk:` reviewer is refused in this
+round) swap-tests it: could it be moved onto a film about something else
+without anyone noticing? It scores `fit_to_subject` and `distinct` (0-10)
+and names a swap target when it can. A swappable identity, or a score under
+`styles.IDENTITY_BAR` (6.0, a starting value, not a standard), goes back to
+the author once with the objection quoted (`identity-revise`) and is judged
+again (`identity-r2`). The verdict is recorded under `identity.review`:
+`pass`, `weak` (the objection, the scores, the swap target) or
+`not_evidenced` (the reviewer failed or answered out of shape), never a
+silent pass. A weak or unevidenced identity prints a `warning: identity:`
+line and gates nothing: the look is the operator's call at
+`yt keyframe --approve`. `styles.md` gains an `## Identity` section with the
+swap test's result, and `yt keyframe` and `yt vfx` carry an `Identity:` line
+(atmosphere, personality, motif, signature) in each author's brief beside
+the palette. `--fresh` asks every choice again rather than reading the cached
+ones. Without `--rich`, or without critique, nothing about the identity is
+asked; the plain prompt is as before.
 
 ### `yt script`
 
@@ -1113,6 +1140,17 @@ naming `yt styles --rich`, then `yt keyframe --fresh`, and `yt run` stops
 before `yt vfx` naming the same in place of `--approve` (`--skip keyframe`
 runs without a look). `yt build` and `yt render` still run on such a film,
 but `yt qa` blocks READY and `yt doctor` refuses delivery (AUTO-155).
+`yt doctor` names the fix for the cause `build.json` recorded: with no
+`styles.json` it is `yt styles --rich`, then `yt build`; with a
+`styles.json` that lists no treatment it says the styles run returned
+none, and with one whose primary palette names no hex code it says to add
+hex codes; for both the fix is `yt styles --rich --fresh`, then `yt build`,
+since a cached choice would give the same palette back (AUTO-146). A rich
+`styles.json` with no identity, or one whose swap test was not evidenced,
+is a `styles` warning naming `yt styles --rich --deliberate critique`; a
+weak swap test names the same with `--fresh`, since the cached choice and
+judgements would give the same verdict back. An identity no critique was
+asked for (`yt run --quick`) is a `styles` note naming the same command.
 
 `--section` · `--jobs` · `--budget-usd` · `--fresh` · `--approve` ·
 `--reject` · `--sheet` · `--inspo` · `--per-section` · `--width` · `--height`
@@ -1960,7 +1998,7 @@ twelve at once (a formula counts four), is `text-dense`; a node named
 `quote-`, `headline-` or `credit-` is timed against its reading time
 instead. Then the model reads the frames and the sheet —
 with the shot each should show, the editorial decisions, the numbers and the
-mechanical findings beside each — and files the ten-category scorecard under
+mechanical findings beside each — and files the eleven-category scorecard under
 a schema, every finding with a timestamp, what is visible, why it lowers
 quality, the root cause, the owning stage and the fix. What stills cannot
 evidence (the voice as heard, the mix, the music) is scored only from a
@@ -2183,7 +2221,7 @@ One reading is not a measurement: scored once, a category moves about ±0.5
 from run to run on the same frames, the size of the steps a pass is read
 for. So the scorecard is asked `qa.QA_SAMPLES` (3) times on the same
 evidence, each its own inspection (`pass-NN-scorecard-s1`, `-s2`, `-s3`)
-with the ten categories in a different order. Each category scores the
+with the eleven categories in a different order. Each category scores the
 median of the valid samples, and the scorecard records its `spread` (max -
 min; the overall's as `spread.overall`) beside it and in `findings.md`. The
 samples' findings are grouped by one decision (`pass-NN-scorecard-merge`,
@@ -2239,6 +2277,13 @@ seconds from its words. It takes `beat_sync` and the listen's picture
 timeline as given and does not judge them again, so cue-to-reveal sync stays
 AUTO-140's. Its judge must be of another model family than the
 screenplay's author (`listen.family`).
+
+The eleventh category, `editorial_identity` (AUTO-146), asks whether the film
+has an atmosphere and a personality of its own, tied to its subject, with
+look, sound and voice as one: the swap test, judged against `styles.json`'s
+`identity` when the film has one. A film that could be any subject's
+explainer scores under the bar there, and the reviewer names what reads as
+generic, never a look of its own.
 
 The bar is applied mechanically on top: READY TO PUBLISH needs an overall of
 9.0, no category under 8.5 and nothing blocking, where blocking includes what
@@ -2309,7 +2354,9 @@ harness of its own that takes no revision notes. It asks twice, once with the
 previous cut as Cut A and once with the new one, each request blind: the
 files are linked as `cut-a.mp4` and `cut-b.mp4` and labelled `Cut A:` and
 `Cut B:`, and nothing names a pass, a score or which cut is new. Each of the
-ten categories is answered A, B, same or cannot_tell. A category both orders
+eleven categories is answered A, B, same or cannot_tell (the eleventh,
+`editorial_identity`, asks whether each cut has a look and personality of its
+own rather than a generic explainer style). A category both orders
 call for the new cut is better, for the previous one worse; two answers that
 name different cuts are a tie (same), and cannot_tell in either files nothing.
 Each category is one entry with `source: "video"`, and their tally is the
@@ -2388,7 +2435,9 @@ pass is kept only if the overall
 improves, no category drops more than 0.5 and no new blocking mechanical
 finding appears (a category QA left not evidenced has no score, so it neither
 drops nor gains, and when two passes scored different categories the overall
-is compared over the ones both scored); a change smaller than the scoring
+is compared over the ones both scored, as a pass scored before
+`editorial_identity` existed is against one scored after, AUTO-146, the
+report printing the older pass's cell empty); a change smaller than the scoring
 samples' spread is no change, so a gain inside it is not kept and a drop
 inside it is no regression. Otherwise the snapshot in `improve/pass-NN/snapshot/` is
 restored. A QA pass that is `not_evidenced` leaves the pass unjudged, and
@@ -2644,11 +2693,14 @@ quality. `cli.run_extras` is the flags each stage gets (`--download` for
 research on every run, `--quick` included, with `--fresh` beside it on a
 `--redo` without `--quick`, so build and vfx have the vetted pictures and
 clips on disk (AUTO-143); `--rich` and
-`--deliberate critique` for styles, `--polish --verify --review` for script
+`--deliberate critique` for styles (with `--reviewer-model`, AUTO-146, so the
+identity's swap test is of another family; `--quick` keeps `--rich` alone),
+`--polish --verify --review` for script
 (with `--reviewer-model` and `--review-budget-usd`, as keyframe and vfx get them;
 a `pool` reviewer is resolved once and handed to script alone as `sdk:<id>`,
-keyframe and vfx keep `opus`, so with `--model opus` the run is refused
-unless they are skipped),
+keyframe, vfx and styles keep `opus`, so with `--model opus` the run is refused
+unless they are skipped; a same-family reviewer is refused before any stage
+spends),
 `--fetch --synth` and `--review` for sound), and `cli.stage_argv` builds each
 stage's argv; `yt props` gets no extras, only the flags every model stage
 gets (only `yt render` goes without the model flags). Only the build reads

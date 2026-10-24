@@ -40,7 +40,7 @@ guess, and guesses are how a placeholder gets shipped as a proof of concept.
 
 ## 2. The publication bar
 
-Scored 0–10 in ten categories, by professional standards, against the whole
+Scored 0–10 in eleven categories, by professional standards, against the whole
 runtime:
 
 | # | Category | What it measures |
@@ -55,6 +55,20 @@ runtime:
 | 8 | Music / score | progression, emotional fit, transitions, repetition |
 | 9 | Narrative clarity | hook, stakes, re-hooks, open questions closed, escalation, payoff on the promise, visual support for each claim |
 | 10 | Overall production | does it read as a documentary, or as a slideshow |
+| 11 | Editorial identity | atmosphere and personality of its own, tied to the subject; look, sound and voice as one; passes the swap test |
+
+Editorial identity (AUTO-146) asks whether the film has a look and a
+personality of its own, or a generic explainer style that would fit any
+subject. The swap test: could this look, this sound and this voice be
+moved onto a film about something else without anyone noticing? The film's
+intended identity is written by `yt styles --rich` (atmosphere,
+personality, motif, signature, and why it belongs to this subject), swap
+tested there by a reviewer of another model family, and carried into the
+keyframe and vfx briefs; QA judges whether the cut delivers it. QA's
+evidence carries the identity's fields and not the styles reviewer's
+verdict or scores, so the judge scores the frames, not an earlier opinion. A pass
+scored before the category existed is compared with a later one on the
+ten both scored.
 
 Narrative clarity and editing / pacing are read against the narrative
 rubric's rows for the hook, the stakes, open loops, reveal setup, tension
@@ -584,7 +598,7 @@ work/<slug>/qa/
 ├── pass-01/comparison.json    with --against: both cuts watched whole in both orders, each answer and the reconciled categories
 ├── pass-01/watch.json         with --watch: the watcher's record, its findings W1.. and what was not watched
 ├── pass-01/watch/             with --watch: the pieces a render host cut the video into
-├── pass-01/scorecard.json     ten categories (the scoring samples' medians and spread), overall, verdict, the caps, the mechanical and low-confidence findings, each scoring sample
+├── pass-01/scorecard.json     eleven categories (the scoring samples' medians and spread), overall, verdict, the caps, the mechanical and low-confidence findings, each scoring sample
 ├── pass-01/findings.md        timestamp → problem → root cause → owner → fix → result, with the burst numbers
 └── pass-02/…                  the next cycle, for before-and-after comparison
 ```
@@ -601,7 +615,8 @@ two scorecards afterwards, and the old findings, when wanted as a checklist
 ## 11. The final report
 
 1. **Verdict** — READY TO PUBLISH or NOT READY.
-2. **Scorecard** — all ten categories plus overall.
+2. **Scorecard** — all eleven categories plus overall (a category an
+   older pass was never scored on is an empty cell).
 3. **Changes implemented** — for each: timestamp or scene → problem → root
    cause → correction → verified result. A retention finding has no
    verified result until the new cut is published and measured: it reads

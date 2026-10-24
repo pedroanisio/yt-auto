@@ -470,3 +470,72 @@ class EnvHints(unittest.TestCase):
     def test_the_freesound_keys_are_named(self):
         self.assertIn("FREESOUND_CLIENT_ID", env.KNOWN)
         self.assertIn("FREESOUND_CLIENT_SECRET", env.KNOWN)
+
+
+class StylesReviewer(unittest.TestCase):
+    """AUTO-146: styles swap-tests the identity with a reviewer of another
+    family, so `yt run` hands it --reviewer-model and checks that reviewer
+    before anything spends, as for keyframe and vfx."""
+
+    def args(self, *argv):
+        return cli.build_parser().parse_args(["run", "--title", "T", *argv])
+
+    def walk(self, *argv):
+        import contextlib
+        import io
+        args = self.args(*argv)
+        with mock.patch.object(workspace, "resolve",
+                               side_effect=AssertionError("passed the check")), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            try:
+                code = cli._run_pipeline(args)
+            except AssertionError as exc:
+                self.assertEqual(str(exc), "passed the check")
+                code = None
+        return code, err.getvalue()
+
+    def test_the_reviewer_reaches_the_styles_argv(self):
+        parser = cli.build_parser()
+        extra = cli.run_extras(self.args("--model", "opus", "--reviewer-model", "sonnet",
+                                         "--review-budget-usd", "3"), redo=set())
+        self.assertEqual(extra["styles"], ["--rich", "--deliberate", "critique",
+                                           "--reviewer-model", "sonnet"])
+        base = ["--project", "work/x", "--model", "opus", "--quiet"]
+        ns = parser.parse_args(cli.stage_argv("styles", base, extra))
+        self.assertEqual(ns.reviewer_model, "sonnet")
+
+    def test_unset_styles_keeps_its_default(self):
+        extra = cli.run_extras(self.args(), redo=set())
+        self.assertEqual(extra["styles"], ["--rich", "--deliberate", "critique"])
+
+    def test_quick_gives_styles_no_reviewer(self):
+        extra = cli.run_extras(self.args("--quick", "--reviewer-model", "sonnet"), redo=set())
+        self.assertEqual(extra["styles"], ["--rich"])
+
+    def test_a_pool_reviewer_is_not_handed_to_styles(self):
+        extra = cli.run_extras(self.args("--reviewer-model", "sdk:zai/glm-5.3"), redo=set())
+        self.assertNotIn("--reviewer-model", extra["styles"])
+
+    def test_the_authors_family_is_refused_for_styles_alone(self):
+        code, said = self.walk("--model", "opus", "--skip", "keyframe,vfx,script")
+        self.assertEqual(code, 2, said)
+        self.assertIn("different model", said)
+        code, said = self.walk("--model", "opus", "--reviewer-model", "sonnet",
+                               "--skip", "keyframe,vfx,script")
+        self.assertIsNone(code, said)
+
+    def test_quick_makes_no_styles_family_check(self):
+        code, said = self.walk("--model", "opus", "--quick", "--skip", "keyframe,vfx")
+        self.assertIsNone(code, said)
+
+    def test_skipping_styles_drops_its_check(self):
+        # build's joins review (AUTO-142) is checked too, so it is skipped
+        code, said = self.walk("--model", "opus", "--skip", "keyframe,vfx,script,build,styles")
+        self.assertIsNone(code, said)
+
+    def test_a_pool_reviewer_names_styles_among_the_stages_keeping_their_default(self):
+        code, said = self.walk("--model", "opus", "--reviewer-model", "pool",
+                               "--skip", "keyframe,vfx")
+        self.assertEqual(code, 2, said)
+        self.assertIn("styles", said)
+        self.assertIn("keep their default reviewer", said)

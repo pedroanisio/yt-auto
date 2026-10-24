@@ -95,9 +95,12 @@ VERSION_RE = re.compile(r"^v(\d{2,})$")
 #: A section's symbol is its world; the id says so.
 WORLD_PREFIX = "world-"
 
-#: The ten categories of docs/production.md section 2, in its order. The
+#: The first ten categories of docs/production.md section 2, in its order. The
 #: review of proof frames scores what frames can show; the audio categories
 #: are listed so the reviewer names them as not evidenced rather than guesses.
+#: The eleventh, editorial_identity (AUTO-146), is judged of the whole film by
+#: `yt qa`; one section's proof frames are not asked it, so this review's
+#: prompt and cache are as before.
 CATEGORIES = ("visual_quality", "animation_vfx", "cinematography", "editing_pacing",
               "graphics_overlays", "voiceover", "sound_design", "music_score",
               "narrative_clarity", "overall_production")
@@ -3429,6 +3432,12 @@ class VfxPlanner:
             parts.append(line)
         if self.direction.get("combination"):
             parts.append(f"How they combine: {self.direction['combination']}")
+        # The film's identity (AUTO-146), when styles.json has one; without it
+        # the block is what it was, so no decision digest moves. Imported here:
+        # styles reaches vfx through assess.
+        from .styles import identity_line
+        if line := identity_line(self.direction):
+            parts.append(line)
         return "\n".join(parts)
 
     @staticmethod

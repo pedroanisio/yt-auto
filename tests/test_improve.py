@@ -2008,6 +2008,44 @@ class UnheardAudio(unittest.TestCase):
         self.assertIn("READY is out of reach", section)
 
 
+class ElevenCategories(unittest.TestCase):
+    """AUTO-146: a best pass scored on ten categories, before
+    editorial_identity existed, against a new pass scored on eleven: keep or
+    revert compares the overall on the ten both scored, and the report shows
+    the old pass's missing score and its delta as empty."""
+
+    OLD = [k for k in qa.CATEGORIES if k != "editorial_identity"]
+
+    def best(self, score=8.0):
+        return {"pass": "pass-01", "overall": score, "scores": {k: score for k in self.OLD}}
+
+    def new(self, score, identity):
+        scores = {k: score for k in self.OLD} | {"editorial_identity": identity}
+        return {"pass": "pass-02", "scores": scores,
+                "overall": round((score * 10 + identity) / 11, 2)}
+
+    def test_a_low_new_identity_score_does_not_revert_a_real_gain(self):
+        verdict = improve.judge(self.best(), self.new(8.6, 2.0))
+        self.assertTrue(verdict["keep"], verdict["reasons"])
+        self.assertAlmostEqual(verdict["overall_delta"], 0.6)
+        self.assertIsNone(verdict["deltas"]["editorial_identity"])
+
+    def test_a_high_new_identity_score_does_not_keep_a_drop(self):
+        verdict = improve.judge(self.best(), self.new(7.8, 10.0))
+        self.assertFalse(verdict["keep"])
+        self.assertAlmostEqual(verdict["overall_delta"], -0.2)
+        self.assertIn("did not improve", " ".join(verdict["reasons"]))
+
+    def test_the_report_row_against_an_old_pass_is_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            record = {"idea": {"title": "A film"}, "passes": [],
+                      "stop": {"reason": "nothing", "detail": "-"},
+                      "start": self.best(), "best": self.new(8.6, 8.0)}
+            md = improve.report_md(record, Path(tmp))
+        self.assertIn("| editorial_identity |  | 8.0 |  |", md)
+        self.assertIn("| visual_quality | 8.0 | 8.6 | +0.6 |", md)
+
+
 class JudgeCalibration(unittest.TestCase):
     """AUTO-156: qa.json's judge_calibration is informational. A READY pass
     is reached whether or not its judge was fixture-calibrated."""

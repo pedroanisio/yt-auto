@@ -451,8 +451,12 @@ class StoryRole(unittest.TestCase):
         self.assertIn("tension", qa.STORY_RUBRIC)
         self.assertIn(narrative.criterion("tension").levels["Excellent"], qa.ROLE)
 
-    def test_the_categories_stay_ten(self):
-        self.assertEqual(len(qa.CATEGORIES), 10)
+    def test_the_categories_are_eleven(self):
+        # AUTO-146: editorial_identity is the eleventh, judged on the frames
+        # and the narration, so not one of the listener's
+        self.assertEqual(len(qa.CATEGORIES), 11)
+        self.assertEqual(qa.CATEGORIES[-1], "editorial_identity")
+        self.assertNotIn("editorial_identity", qa.AUDIO)
         self.assertNotIn("story", qa.CATEGORIES)
 
     def test_the_screenplays_duty_names_the_story(self):
@@ -1071,6 +1075,88 @@ class Advisory(unittest.TestCase):
                     "shot": "1.2", "world": "fx-open", "shots": ["1.2"], "problem": "d"}
         self.assertEqual(qa.reown_by_proof(found + [mismatch], [mismatch]), 1)
         self.assertEqual([f["owner"] for f in found], ["build", "vfx"])
+
+
+class EditorialIdentity(unittest.TestCase):
+    """AUTO-146: QA scores the film's identity, under the same 8.5 bar, and a
+    pass scored before the category existed still compares on the ones both
+    passes scored."""
+
+    def test_the_role_says_what_it_scores(self):
+        self.assertIn("editorial_identity", qa.ROLE)
+        self.assertIn("swap test", qa.ROLE)
+        self.assertIn("editorial_identity", qa.ROLE_LISTENED)
+        para = next(p for p in qa.ROLE.split("\n\n") if "editorial_identity" in p)
+        self.assertIn("never a look of your own", para)
+
+    def test_the_styles_duty_owns_the_identity(self):
+        duty = qa.DUTIES["styles"]
+        for word in ("identity", "atmosphere", "personality", "motif", "signature"):
+            self.assertIn(word, duty)
+
+    def test_the_scorecard_asks_for_it(self):
+        self.assertIn("editorial_identity", qa.SCORECARD_SCHEMA["properties"]["scores"]
+                      ["required"])
+
+    def test_eleven_distinct_rotations(self):
+        orders = [qa.category_order(seed) for seed in range(len(qa.CATEGORIES))]
+        self.assertEqual(len({o[0] for o in orders}), 11)
+        for order in orders:
+            self.assertEqual(sorted(order), sorted(qa.CATEGORIES))
+        doc = qa.category_order.__doc__
+        self.assertIn("eleven", doc)
+        self.assertIn("1 to 11", doc)
+
+    def test_a_generic_polished_film_is_not_ready(self):
+        scores = {k: 9.5 for k in qa.CATEGORIES} | {"editorial_identity": 8.0}
+        verdict, reasons = qa.verdict_of(scores, 9.4, blocking=[])
+        self.assertEqual(verdict, qa.NOT_READY)
+        self.assertTrue(any(r.startswith("editorial_identity 8.0") for r in reasons), reasons)
+
+    def test_a_ten_category_pass_compares_on_the_shared_ones(self):
+        old = {k: 8.0 for k in qa.CATEGORIES if k != "editorial_identity"}
+        prev = {"pass": "pass-01", "scores": old, "overall": 8.0}
+        cur = {"scores": {k: 8.5 for k in qa.CATEGORIES} | {"editorial_identity": 2.0},
+               "overall": 7.95}
+        diff = qa.compare(prev, cur)
+        self.assertIsNone(diff["deltas"]["editorial_identity"])
+        self.assertEqual(diff["regressions"], [])
+        self.assertEqual(diff["unscored"], ["editorial_identity"])
+        self.assertAlmostEqual(diff["overall_delta"], 0.5)
+        # and the other way round: no +9 jump from a category one side lacks
+        back = qa.compare(dict(cur, **{"pass": "pass-02"}), {"scores": old, "overall": 8.0})
+        self.assertIsNone(back["deltas"]["editorial_identity"])
+        self.assertAlmostEqual(back["overall_delta"], -0.5)
+
+    def test_the_evidence_carries_the_identity(self):
+        ident = {"atmosphere": "a", "personality": "p", "motif": "m", "signature": "s",
+                 "belongs_because": "b", "review": {"verdict": "pass"}}
+        styles = {"styles": [{"name": "Diagram"}], "identity": ident}
+        got = qa.stage_measurements(_build(), None, sound={}, gate=None, geometry={},
+                                    styles=styles, reach=None)
+        # the five fields only: the styles reviewer's verdict would anchor
+        # the judge's score instead of the frames
+        self.assertEqual(got["identity"], {k: v for k, v in ident.items() if k != "review"})
+        self.assertNotIn("review", got["identity"])
+        self.assertEqual(got["treatment"], {"name": "Diagram"})
+        plain = qa.stage_measurements(_build(), None, sound={}, gate=None, geometry={},
+                                      styles={"styles": [{"name": "Diagram"}]}, reach=None)
+        self.assertNotIn("identity", plain)
+
+    def test_the_prompt_scores_eleven(self):
+        prompt = qa.review_prompt(
+            title="t", pass_name="pass-01", sheet_name="s.png", has_narration=False,
+            missing=[], total_shots=1, dropped_lines=[], narrated_total=0, story=None,
+            evidence=[], mechanical=[], listening=[], unheard={}, silent_film=False,
+            measurements={}, blockers=[])
+        self.assertIn("score the eleven categories", prompt)
+        self.assertNotIn("ten categories", prompt)
+
+    def test_a_still_pair_can_bear_on_it(self):
+        self.assertIn("editorial_identity", qa.SIDE_CATEGORIES)
+        enum = (qa.SIDE_SCHEMA["properties"]["moments"]["items"]["properties"]["bears_on"]
+                ["items"]["enum"])
+        self.assertIn("editorial_identity", enum)
 
 
 if __name__ == "__main__":

@@ -48,6 +48,7 @@ without it.
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import json
 import sys
@@ -57,9 +58,9 @@ from pathlib import Path
 from typing import Sequence
 
 from claude_engine import ClaudeError
-from .core import Idea, _key, compact, wrap
+from .core import Idea, _key, _merge_usage, compact, wrap
 from .core import write_json as dump_json
-from . import channel, fonts, harness, house, spend, workspace
+from . import channel, flags, fonts, harness, house, reviewers, spend, workspace
 from .assess import stack_brief
 
 #: Deliberation stages, as accepted by --deliberate. See the module docstring.
@@ -196,7 +197,93 @@ def style_schema(rich: bool) -> dict:
     if rich:
         schema["properties"]["thumbnail"] = {"type": "string"}
         schema["required"].append("thumbnail")
+        schema["properties"]["identity"] = copy.deepcopy(IDENTITY_REVISE_SCHEMA)
+        schema["required"].append("identity")
     return schema
+
+
+#: The film's identity under --rich (AUTO-146): what makes this film's look
+#: its own, as opposed to which treatment carries it. The treatment pool
+#: says which looks can carry the message; nothing said what is particular
+#: to this film, so a polished, generic one could reach READY. Each field,
+#: with what the prompt asks of it.
+IDENTITY_FIELDS = {
+    "atmosphere": "the mood a viewer should feel, in words",
+    "personality": "how the film carries itself",
+    "motif": "one recurring visual motif taken from the subject's own material, not a "
+             "generic shape",
+    "signature": "the one device that belongs to this film",
+    "belongs_because": "why this look belongs to this subject, naming something in the "
+                       "message or the demands",
+}
+
+#: The identity on its own: what the author answers when the reviewer sends
+#: it back, and the `identity` object of the rich schema.
+IDENTITY_REVISE_SCHEMA = {
+    "type": "object",
+    "properties": {k: {"type": "string"} for k in IDENTITY_FIELDS},
+    "required": list(IDENTITY_FIELDS),
+}
+
+#: The reviewer's swap test of the identity: could it be moved onto another
+#: topic unchanged, how well it fits this subject, how distinct it is, the
+#: strongest objection, and optionally the fields it would replace.
+IDENTITY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "swappable": {"type": "boolean"},
+        "swap_target": {"type": "string"},
+        "fit_to_subject": {"type": "number"},
+        "distinct": {"type": "number"},
+        "objection": {"type": "string"},
+        "revised": {"type": "object",
+                    "properties": {k: {"type": "string"} for k in IDENTITY_FIELDS}},
+    },
+    "required": ["swappable", "swap_target", "fit_to_subject", "distinct", "objection"],
+}
+
+#: Under this, either identity score sends the identity back once.
+#: NO STANDARD: a starting value, to be calibrated on real films.
+IDENTITY_BAR = 6.0
+
+#: The identity's reviewer, never the author's family. Spelled here rather
+#: than read from vfx, which styles does not import; a test holds the two
+#: equal, so `yt run` checks one default for every stage that reviews.
+REVIEWER_MODEL = "opus"
+
+#: The outcomes identity.review records. `not_evidenced` is a reviewer that
+#: did not answer: no score is filled in and nothing is called a pass.
+IDENTITY_VERDICTS = ("pass", "weak", "not_evidenced")
+
+IDENTITY_ROLE = (
+    "You review the art direction of factual YouTube films. You are shown one "
+    "film's subject, its message, the treatment chosen for it and the identity "
+    "its director wrote down: atmosphere, personality, a recurring motif, a "
+    "signature device, and why it belongs to this subject. You apply the swap "
+    "test: could this identity be moved onto another topic unchanged? An "
+    "identity that would suit any other film fails, however well it is written. "
+    "You judge it against this subject and this treatment, never against a look "
+    "of your own, and you do not demote everything to look rigorous."
+)
+
+
+def clean_identity(raw) -> dict:
+    """The identity's five fields as stripped strings, the ones present only."""
+    if not isinstance(raw, dict):
+        return {}
+    return {k: str(raw[k]).strip() for k in IDENTITY_FIELDS if raw.get(k) is not None}
+
+
+def identity_line(direction: dict | None) -> str:
+    """The identity as one line for the keyframe and vfx authors, or "" when
+    styles.json has none, so a brief without one is what it was before."""
+    ident = (direction or {}).get("identity")
+    if not isinstance(ident, dict):
+        return ""
+    bits = [f"{k}: {str(ident[k]).strip()}"
+            for k in ("atmosphere", "personality", "motif", "signature")
+            if str(ident.get(k) or "").strip()]
+    return "Identity: " + "; ".join(bits) if bits else ""
 
 
 #: Stage one: every candidate scored, with nothing else asked for.
@@ -464,6 +551,12 @@ def build_prompt(idea: Idea, *, count: int, pool: list[str], rich: bool,
         "choice everyone would reach for, if it is wrong here."
     )
     if rich:
+        parts.append(
+            "Then write down the film's identity: what makes its look its own, built "
+            "from this subject and never a genre label. "
+            + "; ".join(f"{k} is {v}" for k, v in IDENTITY_FIELDS.items()) + ". "
+            "It must pass the swap test: an identity that would suit any other topic "
+            "unchanged fails, so make each field from this video's own material.")
         parts.append("Also give one thumbnail and title-card direction that "
                      "reads at 120 px wide and matches the primary treatment.")
     return "\n\n".join(parts)
@@ -487,6 +580,7 @@ class Director:
                  keep: int = 0, jobs: int = 3, house: str = "",
                  house_digest: dict | None = None, stack: str = "",
                  earlier: Sequence[dict] = (),
+                 reviewer_model: str = REVIEWER_MODEL, fresh: bool = False,
                  verbose: bool = True, root: Path | str | None = None) -> None:
         self.idea = idea
         self.root = root            # the project, for its open revision notes
@@ -509,8 +603,16 @@ class Director:
         #: The stage's one door to the model; each question is a named decision.
         self.harness = harness.Harness(
             root or ".", "styles", model=model, role=SYSTEM,
-            house_digest=self.house_digest, verbose=verbose)
+            house_digest=self.house_digest, fresh=fresh, verbose=verbose)
         self.usage = self.harness.usage
+        #: The identity's reviewer (AUTO-146): another model family, asked
+        #: only the swap test. It reads no revision notes: it judges what
+        #: it is shown, as the script's cold reader does.
+        self.reviewer_model = reviewer_model
+        self.reviewer = harness.Harness(
+            root or ".", "styles", model=reviewer_model, role=IDENTITY_ROLE,
+            house_digest=self.house_digest, fresh=fresh, verbose=verbose,
+            feedback=False)
 
     # -- plumbing ----------------------------------------------------------
 
@@ -672,6 +774,97 @@ class Director:
                 style.fit_before, style.fit = style.fit, revised
         return verdicts.get("overlooked", [])
 
+    # -- the identity's swap test (AUTO-146) --------------------------------
+
+    def _identity_text(self, data: dict, primary: Style, identity: dict) -> list[str]:
+        """What both sides of the swap test read: the message and demands,
+        the primary treatment, and the identity as written."""
+        treatment = "\n".join(
+            [f"{primary.name}: {primary.why}"]
+            + [f"{label}: {value}" for label, value in (
+                ("palette", primary.palette), ("typography", primary.typography),
+                ("motion", primary.motion), ("sound", primary.sound)) if value])
+        return [f"Stated message: {data.get('message', '')}",
+                "Visual demands:\n" + "\n".join(f"- {d}" for d in data.get("demands", [])),
+                f"The primary treatment:\n{treatment}",
+                "The film's identity:\n" + "\n".join(f"- {k}: {identity.get(k, '')}"
+                                                     for k in IDENTITY_FIELDS)]
+
+    def _judge(self, name: str, data: dict, primary: Style, identity: dict) -> dict:
+        """One swap test by the reviewer, as the record identity.review keeps:
+        pass, weak (with the objection), or not_evidenced when the reviewer
+        did not answer usably. A failure is never kept as a pass, and the
+        choice is not carried on as if it had been judged."""
+        prompt = "\n\n".join([
+            self.idea.block(), *self._identity_text(data, primary, identity),
+            "Apply the swap test: could this identity be moved onto another topic "
+            "unchanged? If it could, swappable is true and swap_target names that "
+            "topic; otherwise swap_target is empty. Score fit_to_subject 0-10, how "
+            "much of the identity comes from this subject's own material and "
+            "message, and distinct 0-10, how far it is from the identity any film "
+            "of its genre would be given. Give the single strongest objection. When "
+            "it fails, you may put in `revised` the fields you would replace, built "
+            "from this subject; otherwise leave `revised` out."])
+        try:
+            got = self.reviewer.decide(name, prompt, IDENTITY_SCHEMA)
+        except ClaudeError as exc:          # HarnessError is one
+            return {"verdict": "not_evidenced", "error": str(exc)}
+
+        def number(value):
+            # A score off the 0-10 scale the prompt asks for (an answer out of
+            # 100, say) is as unusable as a word: compared with IDENTITY_BAR
+            # it would record a pass or a weak verdict on nonsense.
+            ok = isinstance(value, (int, float)) and not isinstance(value, bool)
+            return float(value) if ok and 0 <= value <= 10 else None
+        scores = {k: number(got.get(k)) for k in ("fit_to_subject", "distinct")}
+        if None in scores.values() or not isinstance(got.get("swappable"), bool):
+            # kept, the same unusable answer would be served on every rerun
+            self.reviewer.forget(name)
+            return {"verdict": "not_evidenced",
+                    "error": f"{name}: the reviewer's swappable or scores are not of "
+                             "the schema's types (a bool, and numbers 0-10)"}
+        failing = got["swappable"] or min(scores.values()) < IDENTITY_BAR
+        if not failing:
+            return {"verdict": "pass", "scores": scores, "swap_target": ""}
+        out = {"verdict": "weak", "objection": str(got.get("objection") or "").strip(),
+               "scores": scores, "swap_target": str(got.get("swap_target") or "").strip()}
+        suggested = clean_identity(got.get("revised"))
+        if suggested:
+            out["suggested"] = suggested
+        return out
+
+    def review_identity(self, data: dict, primary: Style) -> dict:
+        """The identity with its review: judged by the reviewer, sent back to
+        the author once when it fails (swappable, or a score under
+        IDENTITY_BAR), and judged again. A revise that fails keeps the first
+        identity and the first judgement's weak verdict."""
+        identity = clean_identity(data.get("identity"))
+        self._say(f"[identity] swap test by {self.reviewer_model}")
+        review = self._judge("identity", data, primary, identity)
+        if review["verdict"] != "weak":
+            return identity | {"review": review}
+        sent = [f"A reviewer of another model family applied the swap test and "
+                f"objected: {review['objection']}"
+                + (f" It would fit {review['swap_target']} unchanged."
+                   if review["swap_target"] else "")
+                + f" Scores: fit to subject {review['scores']['fit_to_subject']:g}/10, "
+                  f"distinct {review['scores']['distinct']:g}/10."]
+        if review.get("suggested"):
+            sent.append("The reviewer would replace these fields; take or leave each:\n"
+                        + "\n".join(f"- {k}: {v}" for k, v in review["suggested"].items()))
+        try:
+            raw = self._ask("identity-revise", self._preamble(
+                *self._identity_text(data, primary, identity), *sent,
+                "Write the identity again, built from this subject's own material and "
+                "never a genre label, so that it could not be moved onto another topic "
+                "unchanged. Return all five fields."), IDENTITY_REVISE_SCHEMA)
+        except ClaudeError as exc:
+            self._say(f"[identity] the revise failed ({exc}); keeping the first identity")
+            return identity | {"review": review}
+        revised = identity | {k: v for k, v in clean_identity(raw).items() if v}
+        again = self._judge("identity-r2", data, primary, revised) | {"revised": True}
+        return revised | {"review": again}
+
     # -- run ---------------------------------------------------------------
 
     def run(self, pairs: list[tuple[str, str]]) -> tuple[dict, list[Style]]:
@@ -694,6 +887,12 @@ class Director:
         # it here -- after any critique has had its say on the order.
         styles.sort(key=lambda s: -s.fit)
         styles = styles[:min(self.count, len(pool))]
+        # The identity is judged against the row that is primary now, by the
+        # reviewer, when the critique is asked for (`yt run`'s default).
+        if isinstance(data.get("identity"), dict):
+            data["identity"] = clean_identity(data["identity"])
+            if self.rich and "critique" in self.modes and styles:
+                data["identity"] = self.review_identity(data, styles[0])
         # Measured on the row that is primary now, after the critique's
         # reorder (AUTO-137): a warning only, which moves nothing.
         if self.earlier and styles:
@@ -706,6 +905,9 @@ class Director:
                                     "pool_scores": scores,
                                     "overlooked": overlooked}
         data["engine"] = self.harness.report()
+        if self.reviewer.decisions:
+            data["engine"]["reviewer"] = self.reviewer.report()
+            _merge_usage(self.usage, self.reviewer.usage)
         return data, styles
 
 
@@ -719,6 +921,10 @@ def print_styles(idea: Idea, data: dict, styles: list[Style]) -> None:
     print(wrap(f"message: {data.get('message', '')}", "  "))
     for demand in data.get("demands", []):
         print(wrap(f"- {demand}", "  "))
+    identity = data.get("identity") if isinstance(data.get("identity"), dict) else {}
+    for key in ("atmosphere", "signature"):
+        if identity.get(key):
+            print(wrap(f"{key}: {identity[key]}", "  "))
 
     for n, style in enumerate(styles, 1):
         score = f"{style.fit:g}/10"
@@ -778,6 +984,8 @@ def write_json(path: str, idea: Idea, data: dict, styles: list[Style],
            "avoid": data.get("avoid", [])}
     if data.get("thumbnail"):
         doc["thumbnail"] = data["thumbnail"]
+    if data.get("identity"):
+        doc["identity"] = data["identity"]
     if data.get("deliberation"):
         doc["deliberation"] = data["deliberation"]
     if data.get("channel"):
@@ -801,6 +1009,37 @@ def write_csv(path: str, styles: list[Style]) -> None:
             writer.writerow({c: row[c] for c in cols})
 
 
+def review_words(review: dict | None) -> str:
+    """identity.review in words: the verdict, then its scores, objection or
+    error. An identity no reviewer judged says so."""
+    if not isinstance(review, dict) or not review.get("verdict"):
+        return "not reviewed (no `--deliberate critique`)"
+    verdict = str(review["verdict"])
+    scores = review.get("scores") or {}
+    bits = [f"{k.replace('_', ' ')} {v:g}/10" for k, v in scores.items()
+            if isinstance(v, (int, float))]
+    out = verdict + (f" ({', '.join(bits)})" if bits else "")
+    if review.get("swap_target"):
+        out += f"; would fit {review['swap_target']} unchanged"
+    if review.get("objection") and verdict != "pass":
+        out += f": {review['objection']}"
+    if review.get("error"):
+        out += f": {review['error']}"
+    if review.get("revised"):
+        out += " (after one revision)"
+    return out
+
+
+def identity_md(identity: dict | None) -> list[str]:
+    """The Identity section of styles.md, or nothing without one."""
+    if not isinstance(identity, dict) or not identity:
+        return []
+    md = ["## Identity", ""]
+    md += [f"- **{k.replace('_', ' ').capitalize()}.** {identity[k]}"
+           for k in IDENTITY_FIELDS if identity.get(k)]
+    return md + ["", f"**Swap test.** {review_words(identity.get('review'))}", ""]
+
+
 def write_md(path: str, idea: Idea, data: dict, styles: list[Style]) -> None:
     md = [f"# Visual direction — {idea.title}", "",
           f"`{idea.genre}`" + (f" · {idea.length}" if idea.length else ""), "",
@@ -808,6 +1047,8 @@ def write_md(path: str, idea: Idea, data: dict, styles: list[Style]) -> None:
     if data.get("demands"):
         md += ["**What has to be seen**", ""]
         md += [f"- {d}" for d in data["demands"]] + [""]
+
+    md += identity_md(data.get("identity"))
 
     md += ["| # | style | fit | effort | shows |", "|---|---|---|---|---|"]
     md += [f"| {n} | {s.name} | {s.fit:g}/10 | {s.effort} | "
@@ -885,12 +1126,18 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
     p.add_argument("--dossier", metavar="DIR",
                    help="research to judge styles against (default: the project's)")
     p.add_argument("--rich", action="store_true",
-                   help="also get palette, type, motion, sound, tools, refs")
+                   help="also get palette, type, motion, sound, tools, refs, and the "
+                        "film's identity")
     p.add_argument("--deliberate", default="", metavar="STAGES",
                    help="comma-separated: sweep (score the whole pool first), "
                         "independent (score each candidate in its own call), "
                         "critique (attack the choice afterwards), full "
                         "(sweep + critique)")
+    flags.reviewer_model(p, default=REVIEWER_MODEL,
+                         help="the model that swap-tests the identity under --rich with "
+                              "--deliberate critique; never the author's family, and a "
+                              f"claude or codex model (default {REVIEWER_MODEL})")
+    flags.fresh(p)
     p.add_argument("--shortlist", type=int, default=0, metavar="N",
                    help="candidates the sweep keeps (default count x2)")
     p.add_argument("--jobs", type=int, default=3,
@@ -921,7 +1168,27 @@ def run(args) -> int:
             print(f"{name:<28} {brief}")
         return 0
 
+    reviewer = getattr(args, "reviewer_model", REVIEWER_MODEL) or REVIEWER_MODEL
+    if reviewers.is_gateway(reviewer):
+        # The pool reviewers (AUTO-125) are the script's; a later card may
+        # resolve them here as script.py does.
+        print(f"error: --reviewer-model {reviewer} is the gateway reviewer pool; yt styles "
+              "takes a claude or codex model in this round", file=sys.stderr)
+        return 2
     split = lambda s: [p.strip() for p in s.split(",") if p.strip()]  # noqa: E731
+    modes = set(split(args.deliberate))
+    if unknown := modes - set(DELIBERATION):
+        print(f"error: unknown deliberation stage(s) {', '.join(sorted(unknown))}; "
+              f"pick from {', '.join(DELIBERATION)}", file=sys.stderr)
+        return 1
+    if "full" in modes:
+        modes = (modes - {"full"}) | {"sweep", "critique"}
+    # The identity is judged only with --rich and the critique; a model never
+    # grades its own work, so then the author's family is refused here.
+    if args.rich and "critique" in modes and (own := flags.own_reviewer(args.model,
+                                                                         reviewer)):
+        print(own, file=sys.stderr)
+        return 2
     args.tools = split(args.tools)
     idea, project = workspace.resolve(args, inputs=("dossier",))
     pairs = candidates(split(args.only), split(args.avoid), split(args.add))
@@ -934,13 +1201,6 @@ def run(args) -> int:
               file=sys.stderr)
         args.count = len(pairs)
 
-    modes = set(split(args.deliberate))
-    if unknown := modes - set(DELIBERATION):
-        print(f"error: unknown deliberation stage(s) {', '.join(sorted(unknown))}; "
-              f"pick from {', '.join(DELIBERATION)}", file=sys.stderr)
-        return 1
-    if "full" in modes:
-        modes = (modes - {"full"}) | {"sweep", "critique"}
     if {"sweep", "independent"} <= modes:
         print("warning: independent scoring supersedes sweep", file=sys.stderr)
         modes.discard("sweep")
@@ -961,6 +1221,7 @@ def run(args) -> int:
     director = Director(
         idea, house=rules, house_digest=digest, stack=stack, root=project.root,
         earlier=channel.for_project(work, project),
+        reviewer_model=reviewer, fresh=getattr(args, "fresh", False),
         model=args.model, count=args.count, rich=args.rich,
         constraints=constraint_lines(args), modes=modes, keep=args.shortlist,
         jobs=args.jobs, verbose=not args.quiet,
@@ -975,6 +1236,12 @@ def run(args) -> int:
         return 1
 
     print_styles(idea, data, styles)
+    review = (data.get("identity") or {}).get("review") or {}
+    if review.get("verdict") in ("weak", "not_evidenced"):
+        # The stage still exits 0: the look is the operator's call at the
+        # keyframe's approval, and doctor warns until a review passes it.
+        print(f"warning: identity: {review_words(review)}; the look is the "
+              "operator's call at `yt keyframe --approve`", file=sys.stderr)
 
     json_out = project.out("styles", args.json_out)
     md_out = project.out("styles_md", args.md_out)

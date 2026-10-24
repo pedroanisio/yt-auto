@@ -1,0 +1,78 @@
+{
+  "title": "Why a comet's tail runs ahead of it",
+  "scene": {
+    "duration": 40.0,
+    "fps": 30,
+    "width": 1920,
+    "height": 1080
+  },
+  "shots": [
+    {
+      "label": "1.1",
+      "at": 0.0,
+      "seconds": 5.0,
+      "asset": "effect",
+      "section": "The tail",
+      "function": "hook"
+    },
+    {
+      "label": "1.2",
+      "at": 5.0,
+      "seconds": 5.0,
+      "asset": "effect",
+      "section": "The tail",
+      "function": "context"
+    },
+    {
+      "label": "1.3",
+      "at": 10.0,
+      "seconds": 5.0,
+      "asset": "effect",
+      "section": "The tail",
+      "function": "context"
+    },
+    {
+      "label": "2.1",
+      "at": 15.0,
+      "seconds": 5.0,
+      "asset": "effect",
+      "section": "The push",
+      "function": "rehook"
+    },
+    {
+      "label": "2.2",
+      "at": 20.0,
+      "seconds": 5.0,
+      "asset": "effect",
+      "section": "The push",
+      "function": "reveal"
+    },
+    {
+      "label": "2.3",
+      "at": 25.0,
+      "seconds": 5.0,
+      "asset": "effect",
+      "section": "The push",
+      "function": "context"
+    },
+    {
+      "label": "3.1",
+      "at": 30.0,
+      "seconds": 5.0,
+      "asset": "effect",
+      "section": "The wind",
+      "function": "context"
+    },
+    {
+      "label": "3.2",
+      "at": 35.0,
+      "seconds": 5.0,
+      "asset": "effect",
+      "section": "The wind",
+      "function": "payoff"
+    }
+  ],
+  "placeholders": [],
+  "findings": [],
+  "audio_tracks": 2
+}

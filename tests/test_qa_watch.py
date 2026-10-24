@@ -605,14 +605,16 @@ class Sampling(unittest.TestCase):
         self.assertNotIn("W17", got)                          # later minor ones left out
 
     def test_watch_off_is_byte_identical(self):
-        # digests captured before --watch existed, for the same inputs
+        # digests captured before --watch existed, for the same inputs; the
+        # schemas re-pinned for AUTO-146's eleventh category, editorial_identity,
+        # and with it taken out they hash to the digests before it
         def sha(data):
             return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
         self.assertEqual([sha(qa.sample_schema(k)) for k in range(4)], [
-            "83027dc6763ca1189e377f39e59306bb5d03b30fce9eedd121d84db48a205844",
-            "724d43dc76e7b1af23d9798cf0b151c670d3d381a35034dba6a9ca1ee878a7ba",
-            "83fb053b8f474b89e31b1a614959ea34da6ad654d434faf8903ded1d2401d7f7",
-            "d2584ae523845131522d119125a82ffb777f74c77162360ec75aceef3a2fcd52"])
+            "444e70f7dc3cdb484fcb0e17f2847cc9d89560a99e7e58f2924a1175faa9644a",
+            "85b31a7ef009989244df789f5ccaa3c0ee9c50a5689496572cbcd8fecf2bbe84",
+            "9b979106fdb2e78082e21385a017cef470f1cc3aa82aa1778feab93748e22925",
+            "0c4f80a1eae8d708235702777940af146301be19a35cb8890a9059e645ece717"])
         self.assertIs(qa.sample_schema(0), qa.SCORECARD_SCHEMA)
         self.assertEqual(sha(qa.sample(self.build(), limit=4, voice=listening._voice())),
                          "4530923ca6ea0518be6d902a6a9ba65da276f50097c751d3a39137c5795cc808")
