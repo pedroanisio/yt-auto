@@ -731,7 +731,9 @@ rounds. `--report-only` keeps the old report-without-fixing behaviour.
 `--reviewer-model` (default `opus`), never by the author, so `--model opus`
 with a dossier needs a reviewer of another family (`--reviewer-model
 <other family>`) or `--no-verify`, and is refused with exit 2 before
-anything is paid; the fact-check's revisions stay the author's. Verify
+anything is paid; the fact-check's revisions stay the author's. It reads
+each shot's supers beside its line, since a number on screen is a claim too,
+and its revise may change a super when the flag is about it. Verify
 decisions cached before this change are asked once more, by the new reader.
 A blocker still standing after the revisions leaves `narration.txt`
 unwritten and exits 1, naming the shot and the `yt script --revise <label>
@@ -963,7 +965,8 @@ arrangement, path or interior given only in words or a flat label, with no
 human-scale comparison, cutaway or camera move through it
 (`picture:spatial`, AUTO-145). Each is a flag for one `revise-picture`
 decision, the only revision allowed to change a shot's picture (the
-fact-check's revise still rewrites only the narration). A flag the writer
+fact-check's revise rewrites the narration, and a super only when its flag
+is about what the screen shows, AUTO-150). A flag the writer
 keeps, with its reason, binds nothing: the reviewer never heard the line,
 so a number compared aloud or a claim the line carries reads as a fault to
 it, and the writer, who sees both, has answered. It goes to `picture.kept`

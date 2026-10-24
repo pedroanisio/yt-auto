@@ -1171,7 +1171,7 @@ class StatusCheck(unittest.TestCase):
                                               "why": "fine"}]}])
         check = w.verify_and_revise(shots)
         self.assertEqual([c["name"] for c in calls], ["verify", "revise-1"])
-        self.assertIs(calls[1]["schema"], script.REVISE_SCHEMA)
+        self.assertIs(calls[1]["schema"], script.FACT_REVISE_SCHEMA)
         self.assertNotIn("status", check)
 
     def test_an_older_screenplay_asks_what_it_always_did(self):
@@ -1182,7 +1182,7 @@ class StatusCheck(unittest.TestCase):
                                               "why": "fine"}]}])
         w.verify_and_revise(shots)
         self.assertEqual([c["name"] for c in calls], ["verify", "revise-1"])
-        self.assertIs(calls[1]["schema"], script.REVISE_SCHEMA)
+        self.assertIs(calls[1]["schema"], script.FACT_REVISE_SCHEMA)
 
 
 class StatusRevise(unittest.TestCase):
@@ -1197,7 +1197,7 @@ class StatusRevise(unittest.TestCase):
                                "status": "speculation", "why": "one lab only"}]}
         w._ask = ask
         result = w.revise(shots, [flag(2)], name="revise-1")
-        self.assertIs(seen[0], script.FACT_REVISE_SCHEMA)
+        self.assertIs(seen[0], script.STATUS_REVISE_SCHEMA)
         self.assertEqual(shots[1].status, "speculation")
         self.assertEqual(result["applied"][0]["status_before"], "hypothesis")
         self.assertEqual(result["applied"][0]["status_after"], "speculation")
@@ -1249,7 +1249,7 @@ class StatusRevise(unittest.TestCase):
             result = w.revise(shots, [dict(flag(2), rule="rule:unframed-status")], **kw)
             self.assertEqual(shots[1].status, "hypothesis", kw)
             self.assertEqual(result["applied"], [], kw)
-            self.assertIsNot(seen[0], script.FACT_REVISE_SCHEMA, kw)
+            self.assertIsNot(seen[0], script.STATUS_REVISE_SCHEMA, kw)
 
     def test_a_line_read_at_none_is_never_raised_to_established(self):
         # none ranks below established in _doubt, so "weaker than none" must

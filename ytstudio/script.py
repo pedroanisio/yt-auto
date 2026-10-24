@@ -556,10 +556,10 @@ REVISE_SCHEMA = {
     "required": ["fixes"],
 }
 
-#: `revise` over the fact-check's flags when the shots carry a status
-#: (AUTO-132): REVISE_SCHEMA with an optional `status`, so a line can be
-#: made defensible by saying it is less sure instead of by losing words.
-#: REVISE_SCHEMA itself is unchanged: the schema is in the cache key.
+#: `revise` over the fact-check's flags (AUTO-150): REVISE_SCHEMA with an
+#: optional `on_screen_text`, since the fact-check reads the supers too and a
+#: wrong figure on screen is fixed on screen. REVISE_SCHEMA itself is
+#: unchanged: the schema is in the cache key, and other revises use it.
 FACT_REVISE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -569,6 +569,31 @@ FACT_REVISE_SCHEMA = {
                 "type": "object",
                 "properties": {
                     **REVISE_SCHEMA["properties"]["fixes"]["items"]["properties"],
+                    "on_screen_text": {"type": "array", "items": {"type": "string"},
+                                       "description": (
+                                           "the shot's on-screen strings after the fix, "
+                                           "only when the flag is about them; omit to "
+                                           "leave them")},
+                },
+                "required": ["n", "action", "narration", "why"],
+            },
+        }
+    },
+    "required": ["fixes"],
+}
+
+#: The fact-check's revise when the shots carry a status (AUTO-132):
+#: FACT_REVISE_SCHEMA with an optional `status`, so a line can be made
+#: defensible by saying it is less sure instead of by losing words.
+STATUS_REVISE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "fixes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    **FACT_REVISE_SCHEMA["properties"]["fixes"]["items"]["properties"],
                     "status": {"type": "string", "enum": list(STATUSES), "description": (
                         "the line's status after the fix, only to weaken it; omit to "
                         "leave it as it is. A status as strong as the line's or "
@@ -4126,15 +4151,19 @@ class Screenwriter:
             self._say("[verify] no research supplied; nothing to check against")
             return {}
         self._say(f"[verify] checking {len(shots)} shots against the research")
+        # The supers too (AUTO-150): a figure on screen is a claim, and no
+        # later check reads the screenplay's supers against the research.
         parts = [self._brief(), self.research,
                  "The script as written, with the source each shot cites:\n\n"
-                 + shot_listing(shots, cite=True, lang=self.lang),
+                 + shot_listing(shots, cite=True, supers=True, lang=self.lang),
                  "Check every line against the research above. Flag a line "
                  "when it states a fact the research does not contain, when it "
                  "overstates what its own cited source says, when it cites a "
                  "source that does not cover it, when it presents a low "
                  "confidence or caveated claim as settled, or when it is "
-                 "marked UNSOURCED. Give the shot number, the problem, how "
+                 "marked UNSOURCED. A number or label on screen is a claim too: "
+                 "flag it as you would the line, and say in the problem that it "
+                 "is the on-screen text. Give the shot number, the problem, how "
                  "severe it is, and the smallest fix that makes the line "
                  "defensible. Shots marked picture-only carry no claim, so "
                  "skip them. Do not flag ordinary connective narration that "
@@ -4218,8 +4247,11 @@ class Screenwriter:
         (AUTO-98): the writer sees each shot's picture beside its line, every
         flag is answered whatever its severity, and only there may the answer
         change a shot's `visual`, `shows` and on-screen text. Under any other
-        name a picture field in the answer is ignored, so the fact-check's
-        revise still rewrites the narration only.
+        name a picture field in the answer is ignored. The fact-check's own
+        revise (AUTO-150) sees the supers, since the fact-check reads them,
+        and may change a shot's on-screen text only where its answer names
+        new strings; the story's, the ledger's and the rules' revises never
+        reach that path.
 
         A decision named `revise-ledger..` (AUTO-96) also asks, for each line
         flagged about a question, which flagged questions the line answers
@@ -4229,10 +4261,11 @@ class Screenwriter:
         """
         picture = name.startswith("revise-picture")
         ledger = name.startswith("revise-ledger")
-        # Only the fact-check's own revise may weaken a line's status
-        # (AUTO-132), and only on a film whose lines carry one.
-        facts_status = (not (picture or ledger or rules or back)
-                        and flagged_by == "the fact-check" and self._statused(shots))
+        # Only the fact-check's own revise may fix a super it flagged
+        # (AUTO-150), or weaken a line's status (AUTO-132), the status only on
+        # a film whose lines carry one.
+        fact = not (picture or ledger or rules or back) and flagged_by == "the fact-check"
+        facts_status = fact and self._statused(shots)
         answered = narrative.SEVERITIES if picture else REVISABLE
         by_n = {s.n: s for s in shots}
         todo: dict[int, list[dict]] = {}
@@ -4361,10 +4394,12 @@ class Screenwriter:
         else:
             parts = [self._brief(), *([self.research] if self.research else []),
                      "The script as written:\n\n"
-                     + shot_listing(shots, cite=True, lang=self.lang),
+                     + shot_listing(shots, cite=True, supers=True, lang=self.lang),
                      f"These lines were flagged by {flagged_by}:\n\n" + problems,
-                     "For each flagged line make the smallest change to its "
-                     "narration that removes the problem: cut or soften the claim, "
+                     "For each flagged line make the smallest change that removes "
+                     "the problem: to its narration, or to its on-screen text when "
+                     "the flag is about what the screen shows (on_screen_text, every "
+                     "string it should show). Cut or soften the claim, "
                      "or state only what the research supports. Keep its length "
                      "within a couple of words, its voice, and every fact the "
                      "research does support. Never add a fact. When the line is "
@@ -4382,7 +4417,8 @@ class Screenwriter:
                              else LEDGER_REVISE_SCHEMA if ledger
                              else RULE_REVISE_SCHEMA if rules
                              else BACK_REVISE_SCHEMA if back
-                             else FACT_REVISE_SCHEMA if facts_status else REVISE_SCHEMA)
+                             else STATUS_REVISE_SCHEMA if facts_status
+                             else FACT_REVISE_SCHEMA if fact else REVISE_SCHEMA)
         except ClaudeError as exc:
             self._say(f"[revise] failed ({exc}); keeping the lines as written")
             result["failed"] = True
@@ -4435,7 +4471,8 @@ class Screenwriter:
                     self._say(f"[revise] shot {shot.label}: status {given_status!r} "
                               f"is not weaker than {read_at}; kept {before}")
             # The screen is changed only where a rule measured it, or where
-            # the line was sent back and the answer names new supers: an
+            # the line was sent back, the picture-check or the fact-check
+            # (AUTO-150) flagged it and the answer names new supers: an
             # optional `[]` beside a narration fix is the field left empty,
             # not an order to clear the shot's supers.
             given = fix.get("on_screen_text")
@@ -4443,7 +4480,7 @@ class Screenwriter:
                     if isinstance(given, list) else [])
             screen = (rules and isinstance(given, list)
                       and any(f.get("rule") in SCREEN_RULES for f in todo[n])) \
-                or ((bool(back) or picture) and bool(text))
+                or ((bool(back) or picture or fact) and bool(text))
             if screen:
                 if text != list(shot.on_screen_text or []):
                     row |= {"on_screen_before": list(shot.on_screen_text or []),
@@ -7757,8 +7794,10 @@ def run_revise(args, idea: Idea, project, *, reviewer=None) -> int:
     # is stale and the fact-check reads it) or the supers (the rules
     # measure them, the take still holds).
     changed = {r["n"] for r in result["applied"]}
+    # What the fact-check reads again: a changed line, and a changed super
+    # (AUTO-150), since a figure on screen is a claim too.
     moved = [s for s in targets if s.n in {r["n"] for r in result["applied"]
-                                            if "before" in r}]
+                                            if "before" in r or "on_screen_before" in r}]
 
     # The fact-check is never skipped on a changed line when there is
     # research to hold it to, and what it flags goes to the fact revision
@@ -7775,7 +7814,10 @@ def run_revise(args, idea: Idea, project, *, reviewer=None) -> int:
     # Only the changed shots are written into the record as read: every
     # other shot stays the dict it was, byte for byte.
     raw = {shot.get("label"): shot for sec in data["sections"] for shot in sec["shots"]}
-    screen = {r["n"] for r in result["applied"] if "on_screen_before" in r}
+    # A super the fact-check's own revise corrected (AUTO-150) is written
+    # back as one the first revise changed is.
+    screen = {r["n"] for r in result["applied"] + list((again or {}).get("revisions") or [])
+              if "on_screen_before" in r}
     for s in targets:
         if s.n in changed:
             raw[s.label]["narration"] = s.narration
@@ -7918,9 +7960,14 @@ def run_revise(args, idea: Idea, project, *, reviewer=None) -> int:
         if not line.startswith("not_evidenced:"):
             print(wrap(line, "  "))
     print(f"{writer.usage}", file=sys.stderr)
-    if moved:
+    # A take is stale only where the words changed: a super-only change
+    # (AUTO-150) leaves its shot's take as it was recorded.
+    reworded = {r["n"] for r in result["applied"] + list((again or {}).get("revisions") or [])
+                if "before" in r}
+    stale = [s for s in targets if s.n in reworded]
+    if stale:
         print(f"\nthe changed lines' takes are stale; record them again: "
-              f"yt voice --redo {','.join(s.label for s in moved)} "
+              f"yt voice --redo {','.join(s.label for s in stale)} "
               f"--project {project.root}, then `yt retime`")
     if blocked:
         if errors:
