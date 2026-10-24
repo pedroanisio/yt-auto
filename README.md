@@ -418,14 +418,17 @@ other than `./work`, `--index N` picks the Nth idea, and `-` reads one idea as
 JSON on stdin. Each stage writes its own files into the project *and* prints to
 stdout, so `--json` / `--md` / `--csv` are only for sending a copy elsewhere.
 
-`work/channel.json` is the channel record: every time `yt script` or `yt
-styles` writes, the film's row is refreshed with its opening (the plan's
+`work/channel.json` is the channel record: every time `yt script`, `yt
+styles` or `yt qa` writes, the film's row is refreshed with its opening (the plan's
 `hook.trigger`), its closing (`ending.device`), its section shape, its primary
 treatment, the palette roles its own swatches fill and the type families it
 names. A film counts once its `qa.json` says READY TO PUBLISH; drafts and
 remakes are recorded but never compared. The next film's plan and its review
-are shown how the last twelve counted films opened, unfolded and closed, and
-`yt styles` warns when its primary row reuses one's treatment or palette. A
+are shown how the last twelve films to count opened, unfolded and closed
+(ordered by when each first counted, so a re-run on an old film reorders
+nothing), and `yt styles` warns when its primary row reuses one's treatment
+or palette. A project whose files cannot be read keeps its last row, with a
+warning, and stops no other film. A
 standalone project has no channel and none of this happens; a channel's first
 film is asked exactly what it always was. Typography is recorded, never
 compared: eleven shipped families make a shared one the catalogue's, not the
@@ -722,7 +725,8 @@ by its slug), the pre-checks gain `channel:` lines (an opening or closing
 device, or an exact section shape, an earlier film had), and the attack gains
 a fifth objection: could a returning viewer predict this film from one of
 them? A noticeable repeat is listed under `repeats` with a section 0 problem
-naming the film, and is a ground to revise, never to reject; a `channel:`
+naming the film, and is a ground to revise, never to reject (a reject whose
+only grounds are repeats is asked again); a `channel:`
 line the reviewer sets aside goes under `dismissed` with why. Without
 `--review` the measured lines are kept as `note: channel:` findings. With no
 counted earlier film the prompts, the schema and the role are what they were.

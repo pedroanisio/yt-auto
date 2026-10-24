@@ -693,15 +693,18 @@ holds a row per film (its opening, the plan's `hook.trigger`; its closing,
 `ending.device`, one of `script.CLOSINGS`; its section shape; its primary
 treatment; `design.Design.parsed_roles()`, the palette roles its own swatches
 fill; the type families it names, recorded and never compared), refreshed
-whenever `yt script` or `yt styles` writes. A row counts only once the film's
-`qa.json` is READY TO PUBLISH, and `channel.earlier` returns at most
-`EARLIER_LIMIT` (12) counted rows of the other films, newest first. With any,
+whenever `yt script`, `yt styles` or `yt qa` writes. A row counts only once the
+film's `qa.json` is READY TO PUBLISH, and `channel.earlier` returns at most
+`EARLIER_LIMIT` (12) counted rows of the other films, latest first by
+`counted_at` (when each first counted, so rewriting an old film's files
+reorders nothing and asks no plan again); a project whose files cannot be
+read keeps its last row, with a warning. With any,
 the plan's writer and its reviewer are shown how they opened, unfolded and
 closed, `plan_prechecks` adds `channel:` lines (`channel.repeats`: the same
 device, the exact section shape), and the other-family reviewer may list a
 noticeable repeat under `repeats` as a ground to revise, never to reject
 (`narrative.check_plan_review` holds each to a listed slug and a section 0
-problem naming it); without `--review` the lines are `note: channel:`
+problem naming it, and asks again a reject whose only grounds are repeats); without `--review` the lines are `note: channel:`
 findings. `yt styles` measures its final primary row, after any critique's
 reorder, for the same treatment or a background and accent within
 `PALETTE_DISTANCE` (12 ΔE) and prints and saves the lines under
