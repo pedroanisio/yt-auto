@@ -698,10 +698,11 @@ class Command(unittest.TestCase):
 
     def test_run_hands_the_paper_to_research(self):
         args = cli.build_parser().parse_args(["run", "--title", "T", "--paper", ARXIV])
-        # AUTO-143: every run downloads beside the paper
+        # AUTO-143: every run downloads beside the paper; AUTO-134: and
+        # cross-checks eight claims unless --quick
         self.assertEqual(cli.run_extras(args, redo=set())["research"],
-                         ["--download", "--paper", ARXIV])
-        args = cli.build_parser().parse_args(["run", "--title", "T"])
+                         ["--download", "--paper", ARXIV, "--crosscheck", "8"])
+        args = cli.build_parser().parse_args(["run", "--title", "T", "--quick"])
         self.assertEqual(cli.run_extras(args, redo=set())["research"], ["--download"])
 
 

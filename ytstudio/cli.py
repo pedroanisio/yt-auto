@@ -157,8 +157,9 @@ def _register_run(sub, parents: list) -> None:
                       "--stage-budget-usd (default: no cap)")
     flags.reviewer_model(p, default=None,
                          help="the model that reviews the script's plan, keyframe and "
-                              "vfx; never the author's own (default "
-                              f"{vfx.REVIEWER_MODEL}; --quick drops the plan review). "
+                              "vfx, and judges research's cross-check; never the "
+                              f"author's own (default {vfx.REVIEWER_MODEL}; --quick drops "
+                              "the plan review and the cross-check). "
                               "`pool` or sdk:<id>, a reviewer from another maker on the "
                               "gateway engine, reaches the script's review only")
     flags.review_budget(p, default=None,
@@ -173,6 +174,10 @@ def _register_run(sub, parents: list) -> None:
 #: flag, not the model flags (props asks a model and takes them like the rest).
 NO_MODEL = ("render",)
 MODEL_FLAGS = ("--model", "--effort", "--fallback-model")
+
+#: The claims `yt run` cross-checks against independent sources unless
+#: --quick (AUTO-134); whether 8 is worth its cost is TO VERIFY on one film.
+CROSSCHECK_CLAIMS = 8
 
 
 def run_extras(args, *, redo: set) -> dict[str, list[str]]:
@@ -203,9 +208,14 @@ def run_extras(args, *, redo: set) -> dict[str, list[str]]:
         # --download (AUTO-143): build and vfx place only files on disk, so a
         # run fetches the vetted pictures and clips; it costs no model money,
         # so --quick keeps it.
+        # --crosscheck (AUTO-134): the key claims checked against sources the
+        # research did not cite, judged by the run's reviewer, never a gateway
+        # one. Research has no review budget of its own, so the cap stays here.
+        # 8 claims is the default until a real film measures it (TO VERIFY).
         "research": ["--download"]
                     + (["--fresh"] if redo & {"research", "all"} and not quick else [])
-                    + paper,
+                    + paper
+                    + ([] if quick else ["--crosscheck", str(CROSSCHECK_CLAIMS)] + named_cli),
         # The critique swap-tests the identity with the run's reviewer
         # (AUTO-146); styles takes no review budget, and --quick runs no review.
         "styles": ["--rich"] + ([] if quick else ["--deliberate", "critique"] + named_cli),
@@ -425,15 +435,16 @@ def _run_pipeline(args) -> int:
         print(f"error: {why}", file=sys.stderr)
         return 2
     # keyframe and vfx review, and unless --quick the script's plan review,
-    # build's joins review (AUTO-142) and styles' swap test of the identity
-    # (AUTO-146): a model never grades its own work, so a run that would
-    # reach them is refused here, before any stage spends.
+    # build's joins review (AUTO-142), styles' swap test of the identity
+    # (AUTO-146) and research's independent cross-check (AUTO-134): a model
+    # never grades its own work, so a run that would reach them is refused
+    # here, before any stage spends.
     reviews = ({"keyframe", "vfx"}
-               | (set() if args.quick else {"script", "build", "styles"})) - skip
+               | (set() if args.quick else {"script", "build", "styles", "research"})) - skip
     asked = getattr(args, "reviewer_model", None)
     if reviewers.is_gateway(asked):
         # A pool reviewer (AUTO-125) reads the script only; keyframe, vfx,
-        # build and styles keep their default, vfx.REVIEWER_MODEL
+        # build, styles and research keep their default, vfx.REVIEWER_MODEL
         # (styles.REVIEWER_MODEL is the same), checked by family as before. It is
         # resolved once here and handed to the script as its gateway id. A
         # dry run checks what this machine can (the switch, the engine's
@@ -444,7 +455,7 @@ def _run_pipeline(args) -> int:
                   f"makes no script review ({'--quick' if args.quick else '--skip script'}); "
                   "pass a claude or codex model, or leave the flag out", file=sys.stderr)
             return 2
-        inspected = sorted(reviews & {"keyframe", "vfx", "build", "styles"})
+        inspected = sorted(reviews & {"keyframe", "vfx", "build", "styles", "research"})
         if inspected and (own := flags.own_reviewer(args.model, vfx.REVIEWER_MODEL)):
             print(f"{own}\n  --reviewer-model {asked} reaches the script's review only; "
                   f"{', '.join(inspected)} keep their default reviewer, "

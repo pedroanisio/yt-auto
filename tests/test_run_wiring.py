@@ -64,18 +64,20 @@ class Pipeline(unittest.TestCase):
     def test_research_downloads_on_every_run_quick_or_not(self):
         # AUTO-143: build and vfx place only downloaded files, and a download
         # costs no model money, so --quick keeps it; a redo adds --fresh.
+        # AUTO-134: unless --quick it also cross-checks eight claims.
         for quick in (False, True):
             args = argparse.Namespace(quick=quick, minutes=1.0)
-            self.assertEqual(cli.run_extras(args, redo=set())["research"], ["--download"])
+            self.assertEqual(cli.run_extras(args, redo=set())["research"],
+                             ["--download"] if quick else RUN_RESEARCH_ARGV)
         redo = cli.run_extras(argparse.Namespace(quick=False, minutes=1.0), redo={"research"})
-        self.assertEqual(sorted(redo["research"]), ["--download", "--fresh"])
+        self.assertEqual(sorted(redo["research"]), sorted(RUN_RESEARCH_ARGV + ["--fresh"]))
         quick = cli.run_extras(argparse.Namespace(quick=True, minutes=1.0), redo={"all"})
         self.assertEqual(quick["research"], ["--download"])
         parser = cli.build_parser()
         base = ["--project", "work/x", "--model", "sonnet", "--quiet"]
         extra = cli.run_extras(argparse.Namespace(quick=False, minutes=1.0), redo=set())
         argv = cli.stage_argv("research", base, extra)
-        self.assertEqual(argv, ["research", *base, "--download"])     # nothing else changes
+        self.assertEqual(argv, ["research", *base, *RUN_RESEARCH_ARGV])   # nothing else changes
         self.assertTrue(parser.parse_args(argv).download)
 
     def test_every_pipeline_stage_parses_its_argv(self):
@@ -132,6 +134,10 @@ def review_usd(argv=("--review",), root=None) -> float:
 
 #: What `yt run` hands the script by default: its runtime and the quality passes.
 RUN_SCRIPT_ARGV = ["--minutes", "10.0", "--polish", "--verify", "--review"]
+
+#: What `yt run` hands research by default: the downloads, and the cross-check
+#: of eight claims (AUTO-134).
+RUN_RESEARCH_ARGV = ["--download", "--crosscheck", "8"]
 
 
 class ReviewIncrement(unittest.TestCase):
@@ -415,9 +421,12 @@ class WalkOrder(_RunCase):
         self.assertEqual(rows["sound"], 0.5, self.out)
         up_to_sound = sum(rows[s] for s in ("research", "styles", "script", "props", "voice",
                                             "retime", "sound"))
-        # the script is priced with its plan review (AUTO-92)
+        # the script is priced with its plan review (AUTO-92), research with
+        # its cross-check of eight claims (AUTO-134)
         review = review_usd(RUN_SCRIPT_ARGV)
-        self.assertAlmostEqual(up_to_sound, 13.0 + review)
+        crosscheck = dict(spend.flag_increments(None, "research", RUN_RESEARCH_ARGV))[
+            "--crosscheck"]
+        self.assertAlmostEqual(up_to_sound, 13.0 + review + crosscheck)
         # the rows are printed to the cent, so their sum is compared to the cent
         self.assertAlmostEqual(rows["total"], up_to_sound + rows["keyframe"], places=2)
         # Each stage reports what it was assumed to cost, so after retime the
@@ -426,7 +435,9 @@ class WalkOrder(_RunCase):
         self.costs.update({s: spend.DEFAULT_USD[s] for s in cli.PIPELINE})
         self.costs["script"] += review
         self.order.clear()
-        self.assertEqual(self.run_yt("--budget-usd", f"{up_to_sound - 0.1:.2f}"),
+        # Research reports its $5 default, not the estimate's cross-check, so
+        # the run has spent that much less by the time sound is priced.
+        self.assertEqual(self.run_yt("--budget-usd", f"{up_to_sound - crosscheck - 0.1:.2f}"),
                          retime.UNSETTLED)
         self.assertIn("== sound: estimated at $0.50", self.err)
         self.assertIn(f"${12.5 + review:.2f}", self.err)
@@ -529,8 +540,10 @@ class StylesReviewer(unittest.TestCase):
         self.assertIsNone(code, said)
 
     def test_skipping_styles_drops_its_check(self):
-        # build's joins review (AUTO-142) is checked too, so it is skipped
-        code, said = self.walk("--model", "opus", "--skip", "keyframe,vfx,script,build,styles")
+        # build's joins review (AUTO-142) and research's cross-check (AUTO-134)
+        # are checked too, so they are skipped
+        code, said = self.walk("--model", "opus", "--skip",
+                               "keyframe,vfx,script,build,styles,research")
         self.assertIsNone(code, said)
 
     def test_a_pool_reviewer_names_styles_among_the_stages_keeping_their_default(self):
