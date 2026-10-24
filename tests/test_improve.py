@@ -233,8 +233,20 @@ class Routing(ImproveCase):
 
     def test_every_mechanical_kind_is_known(self):
         for kind in ("penetration", "reads-merged", "flat", "clipped", "frozen", "jump",
-                     "off_camera"):
+                     "off_camera", *qa.RHYTHM_KINDS):
             self.assertIn(kind, improve.MECHANICAL_KINDS)
+
+    def test_rhythm_findings_route_to_their_owner_without_the_model(self):
+        # AUTO-141: wpm is the voice's, a shot-basis metronomic the script's.
+        findings = improve.collect(card(5.0, mechanical=[
+            mech("wpm", "2.1", owner="voice"), mech("metronomic", "1.1", owner="script"),
+            mech("hold", "1.3", owner="vfx"), mech("slow-opening", "1.1", owner="vfx")]))
+        FakeEngine.route = route_all_to("sound")
+        h = harness.Harness(self.root, "improve", verbose=False)
+        routing = improve.route(h, findings, name="route-pass-01")
+        self.assertEqual([routing["routes"][f"F{n}"]["stage"] for n in range(1, 5)],
+                         ["voice", "script", "vfx", "vfx"])
+        self.assertEqual({r["by"] for r in routing["routes"].values()}, {"mechanical"})
 
     def test_prose_findings_are_routed_by_the_model(self):
         findings = improve.collect(card(5.0, findings=[

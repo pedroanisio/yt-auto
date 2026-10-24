@@ -92,8 +92,12 @@ HUMAN = (UPSTREAM, EXTERNAL)
 ROUTES = ROUTABLE + HUMAN
 
 #: Measured by `yt qa` before anyone looks; routed to their stated owner.
+#: The last four are the film's rhythm (AUTO-141, rhythm.KINDS): a hold or a
+#: slow opening goes to vfx (or the build), a metronomic film to script or
+#: vfx, a section read too fast or slow to voice.
 MECHANICAL_KINDS = ("penetration", "reads-merged", "flat", "clipped", "frozen", "jump",
-                    "off_camera", "proof-mismatch")
+                    "off_camera", "proof-mismatch",
+                    "hold", "metronomic", "slow-opening", "wpm")
 
 #: Expensive, and they change the film's facts: never re-run as a side effect.
 EXPENSIVE = ("research", "script")
