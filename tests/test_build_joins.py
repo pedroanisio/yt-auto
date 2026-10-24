@@ -771,5 +771,47 @@ class YtRun(unittest.TestCase):
         self.assertIn("build", said)
 
 
+class Spend(unittest.TestCase):
+    """yt run prices build with its joins decision and review unless it is
+    handed --hard-cuts: until a build.json measures them, an assumed
+    spend.JOINS_REVIEW_USD (TO VERIFY), not the old 0.1 alone."""
+
+    def setUp(self):
+        from ytstudio import spend
+        self.spend = spend
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name) / "film"
+        self.root.mkdir()
+
+    def row(self, argv):
+        return self.spend.stage_estimates(self.root, ["build"], extras={"build": argv})[0]
+
+    def record(self, cost, names):
+        (self.root / "build.json").write_text(json.dumps({"engine": {
+            "cost_usd": cost, "decisions": [{"name": n} for n in names]}}))
+
+    def test_an_unmeasured_build_adds_the_joins_review_unless_hard_cuts(self):
+        spend = self.spend
+        self.assertGreater(spend.JOINS_REVIEW_USD, 0)
+        row = self.row([])
+        self.assertEqual((row["usd"], row["basis"]),
+                         (round(spend.DEFAULT_USD["build"] + spend.JOINS_REVIEW_USD, 2),
+                          "assumed"))
+        self.assertIn("joins review", row["source"])
+        self.assertEqual(self.row(["--reviewer-model", "haiku"])["usd"], row["usd"])
+        cuts = self.row(["--hard-cuts"])
+        self.assertEqual(cuts["usd"], spend.DEFAULT_USD["build"])
+        self.assertNotIn("joins review", cuts["source"])
+
+    def test_a_record_with_the_joins_already_counts_them(self):
+        self.record(0.4, ["edit", "look", "joins", "joins-review"])
+        self.assertEqual(self.row([])["usd"], 0.4)
+        # one written before AUTO-142 asked edit and look alone
+        self.record(0.4, ["edit", "look"])
+        self.assertEqual(self.row([])["usd"], round(0.4 + self.spend.JOINS_REVIEW_USD, 2))
+        self.assertEqual(self.row(["--hard-cuts"])["usd"], 0.4)
+
+
 if __name__ == "__main__":
     unittest.main()
