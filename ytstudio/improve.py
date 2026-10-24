@@ -225,6 +225,29 @@ def _measured_only_by_an_audience(defect: dict) -> bool:
     return str(defect.get("fingerprint") or "").startswith("retention|")
 
 
+#: Doctor's voice row for a stub or espeak narration says this (AUTO-152);
+#: it is also the finding's kind, which routes it by lookup.
+SCRATCH_TAKE = "scratch take"
+#: What only a human can do for a scratch take when no real engine is here.
+SCRATCH_INSTALL = "pip install kokoro, or set ELEVENLABS_API_KEY"
+
+
+def scratch_take(message: str, fix: str) -> dict:
+    """Doctor's scratch-take warning as a finding (AUTO-152). QA blocks
+    READY on a scratch narration, so it is blocking either way. With a real
+    engine usable here it is voice's to redo (`yt voice --engine auto`, the
+    fix doctor gives); with none, `yt voice` would read the film into
+    espeak again, so it goes to a human with the install as its fix, and
+    the loop stops on it instead of paying for that pass."""
+    from . import doctor
+    if doctor.real_engines():
+        return {"owner": "voice", "problem": message, "fix": fix, "severity": "blocking"}
+    return {"owner": EXTERNAL, "problem": message, "severity": "blocking",
+            "why": "no narration engine that may be published is usable here, so "
+                   "`yt voice --engine auto` can only make another scratch take",
+            "fix": SCRATCH_INSTALL}
+
+
 def collect(card: dict, *, gate: dict | None = None,
             doctor: Iterable[tuple] = (), retention: Iterable[dict] = ()) -> list[dict]:
     """Every finding of one pass, numbered F1..: the mechanical ones, the
@@ -256,6 +279,9 @@ def collect(card: dict, *, gate: dict | None = None,
                          "fix": b.get("fix", ""), "severity": "blocking"})
     for level, area, message, fix in doctor:
         if level in ("fail", "warn") and area in ROUTABLE:
+            if area == "voice" and SCRATCH_TAKE in str(message):
+                add("doctor", scratch_take(message, fix), kind=SCRATCH_TAKE)
+                continue
             # A fix naming one section (`--sections N`, AUTO-144) is where the
             # finding lives: routed_sections re-authors that section alone.
             one = re.search(r"--sections\s+(\d+)(?![\d,])", str(fix or ""))
@@ -499,9 +525,12 @@ def route(h: Harness, findings: list[dict], *, name: str,
         return out
     # A lookup, not a decision: a measured finding goes to its stated stage, and a
     # reviewer's finding to its owner when QA named one of the routes (qa.OWNERS).
+    # Doctor's scratch take (AUTO-152) is routed where collect placed it:
+    # to voice, or to a human when no real engine is installed.
     fixed = {f["id"]: f["owner"] for f in findings
              if (f.get("kind") in MECHANICAL_KINDS and f.get("owner") in ROUTABLE)
-             or (f.get("source") == "qa" and f.get("owner") in ROUTES)}
+             or (f.get("source") == "qa" and f.get("owner") in ROUTES)
+             or (f.get("kind") == SCRATCH_TAKE and f.get("owner") in ROUTES)}
     looked_up = {f["id"] for f in findings if f.get("source") == "qa"}
     prompt = _route_prompt(findings, fixed, context)
     answer = h.decide(name, prompt, ROUTE_SCHEMA)
@@ -523,11 +552,13 @@ def route(h: Harness, findings: list[dict], *, name: str,
         dup = str(r.get("duplicate_of") or "")
         dup = dup if dup in by_id and dup != f["id"] else ""
         if f["id"] in fixed:
-            by = "owner" if f["id"] in looked_up else "mechanical"
-            routes[f["id"]] = {"stage": fixed[f["id"]], "by": by,
-                               "why": (f"QA named {fixed[f['id']]} as the owner"
-                                       if by == "owner" else
-                                       f"measured {f['kind']}, owned by {fixed[f['id']]}"),
+            by = ("owner" if f["id"] in looked_up else
+                  "doctor" if f.get("kind") == SCRATCH_TAKE else "mechanical")
+            why = {"owner": f"QA named {fixed[f['id']]} as the owner",
+                   "doctor": (f"doctor's scratch take: {f.get('why')}" if f.get("why")
+                              else "doctor's scratch take, which a real engine here redoes"),
+                   "mechanical": f"measured {f['kind']}, owned by {fixed[f['id']]}"}[by]
+            routes[f["id"]] = {"stage": fixed[f["id"]], "by": by, "why": why,
                                "duplicate_of": dup}
         else:
             routes[f["id"]] = {"stage": str(r.get("stage", "")), "by": "model",
@@ -541,7 +572,7 @@ def route(h: Harness, findings: list[dict], *, name: str,
         if not primary:
             continue
         stage = routes[primary]["stage"]
-        if r["by"] in ("mechanical", "owner") and stage != r["stage"]:
+        if r["by"] in ("mechanical", "owner", "doctor") and stage != r["stage"]:
             r["duplicate_of"] = ""
             continue
         r["stage"] = stage

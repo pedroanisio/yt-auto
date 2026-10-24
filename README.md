@@ -358,7 +358,7 @@ Or all of it at once, for one idea:
 | `yt pilot` | 30/60/180-second cuts of the finished film, nested, with what each proves | no model calls |
 | `yt gate` | the delivery verdict: loudness, scopes, frames, caption limits, run on a render host and naming the requirement that stopped it; plus the geometry check (a hero that penetrates the set, or reads merged into it on screen, blocks whatever the tool and the triage said) | one triage call |
 | `yt review` | the PDF review sheet: frames, captions, markers, sources, credits | no model calls |
-| `yt qa` | the scorecard per pass: every shot sampled at its midpoint and each narrated line where it starts (`line: <first words>`, AUTO-104), up to 60 stills (`--frames N` above the shot count adds the line stills first, then evenly spaced stills; below it, or past 60 shots by default, names the shots left out; the lines left without a still are named in `lines_unsampled`), one frame window per sample (the still is its middle frame), a contact sheet, the mechanical findings (flat, clipped, frozen, jump, off-camera, `penetration`: the hero inside a set solid, and `reads-merged`: the hero over a surface on screen with no shadow, from the engine's evaluated geometry and camera), the model's review, scored as the median of three samples (an audio category no current listening review covers is null in every sample, never a median), and a side-by-side comparison with the previous kept cut at the same timestamps | `qa.QA_SAMPLES` (3) inspection calls per pass, at most one merge decision and one `<pass>-compare-pass` inspection when an earlier scored pass exists (`--recheck` adds one `<pass>-recheck` inspection, AUTO-106); one render job per sample (by default one per shot and per narrated line, at most 60; `--frames N` sets it), one eval job per pass; `yt improve` pays this every pass; `--listen` (gateway, opt-in, AUTO-126) adds one `listen-<audio sha>` decision on the film's audio and at most one `-again`, priced by its preflight and refused over `--listen-budget-usd` (0.50), none when the same mix was heard before; `--watch` (gateway, opt-in, AUTO-127) adds one `watch-sNN` decision per piece of the cut and at most one `-again` each, plus up to 12 render jobs for the moments it reports, none when the same cut was watched before |
+| `yt qa` | the scorecard per pass: every shot sampled at its midpoint and each narrated line where it starts (`line: <first words>`, AUTO-104), up to 60 stills (`--frames N` above the shot count adds the line stills first, then evenly spaced stills; below it, or past 60 shots by default, names the shots left out; the lines left without a still are named in `lines_unsampled`), one frame window per sample (the still is its middle frame), a contact sheet, the mechanical findings (flat, clipped, frozen, jump, off-camera, `penetration`: the hero inside a set solid, and `reads-merged`: the hero over a surface on screen with no shadow, from the engine's evaluated geometry and camera), the model's review, scored as the median of three samples (an audio category no current listening review covers is null in every sample, never a median), and a side-by-side comparison with the previous kept cut at the same timestamps | `qa.QA_SAMPLES` (3) inspection calls per pass, at most one merge decision and one `<pass>-compare-pass` inspection when an earlier scored pass exists (`--recheck` adds one `<pass>-recheck` inspection, AUTO-106); one render job per sample (by default one per shot and per narrated line, at most 60; `--frames N` sets it), one eval job per pass; `yt improve` pays this every pass; `--listen` (gateway, opt-in, AUTO-126) adds one `listen-<audio sha>` decision on the film's audio and at most one `-again`, and on a narrated film one `transcript-<audio sha>` decision and at most one `-again` (AUTO-152), priced by its preflight and refused over `--listen-budget-usd` (0.50), none when the same mix was heard before; `--watch` (gateway, opt-in, AUTO-127) adds one `watch-sNN` decision per piece of the cut and at most one `-again` each, plus up to 12 render jobs for the moments it reports, none when the same cut was watched before |
 | `yt improve` | routes each QA finding to the stage that owns it, briefs that stage through `feedback/`, re-runs it and everything downstream, keeps the pass only if it measurably improved | one routing decision per pass, plus the stages it runs |
 | `yt doctor` | every video's state and the command that advances it | no model calls |
 | `yt probe` | the realism probe suite: one neutral brief per class of material, light or motion, composed by an agent coding with the SDK, built and framed by the harness, scored by a different model with each defect's cause | **$1.06** for one probe and one round; up to three author sessions and three reviews per probe |
@@ -1847,6 +1847,33 @@ revert. A wordless film has no take review, so in the default pipeline its
 and `improve.md` say so. Only the opt-in `--listen` below hears the
 rendered track.
 
+Every listening row carries its `basis`: `read` for the listen-back and the
+take review, which read the cue sheet and the takes, and `heard` for the
+`--listen` row. `heard` is still the sha256 digest of what the review
+covered, never a flag. The scorecard and `qa.json` record `audio_basis`, the
+basis of each scored audio category: `heard` when a current row covering it
+heard the rendered track, else `read`. An unscored category has none, and
+neither do a silent film's sound and music. Each `read` category adds one
+line under `not_evidenced`, for example "voiceover: scored from the take
+review (voice.json: words, lengths, pace), not from the rendered track; run
+yt qa --listen". The scores, the bar, the overall and
+`audio_not_evidenced` are left as they were, and nothing caps a read
+voiceover. The rows go to the reviewer without `basis`, so the scorecard
+prompt is unchanged and a cached pass is not asked again.
+
+A narration read by a scratch engine (stub or espeak,
+`doctor.SCRATCH_ENGINES`) proves the timeline and is never published. When
+voice.json's engine or any take's is one, QA adds a mechanical blocker
+naming the engine and how many takes it read: "voice: narration is an
+espeak scratch take (12 of 40 takes); run `yt voice --engine auto`" (with
+the film's `--project`). The film is then NOT READY whatever it scores. A
+wordless film has no narration to block on. The blocker counts in the
+verdict and the scorecard's `blocking` but is not briefed to the reviewer:
+briefed, it would change a stub or espeak film's scorecard prompt and ask
+its cached pass again. `yt doctor` warns on the same takes by the same rule
+(`doctor.scratch_reads`), so a kokoro voice.json that kept stub takes is a
+doctor warning too, and `yt improve` has it to route.
+
 `--listen` (AUTO-126, `ytstudio/listen.py`) is the review that hears the
 film itself. It is off by default, and `YT_GATEWAY` never turns it on.
 Before a frame renders or a pass directory is made, it checks every piece
@@ -1862,7 +1889,9 @@ and not older than `scene.xml`; an audio track in build.json; `ffmpeg` and
 scene's digest; the track under `listen.LISTEN_MAX_MB` (14); a price row for
 the model; and an estimate within `--listen-budget-usd` (0.50). The estimate
 is the track at `LISTEN_TOKENS_PER_SECOND` (32) plus the prompt, and
-`LISTEN_OUTPUT_TOKENS` out, doubled for the one retry. The track is the
+`LISTEN_OUTPUT_TOKENS` out, doubled for the one retry; for a narrated film
+it adds the transcript below the same way, the same track in and
+`TRANSCRIPT_OUTPUT_TOKENS` (8000) out, doubled. The track is the
 film's first audio stream by stream copy (`ffmpeg -vn -map 0:a:0 -c copy -f
 adts`) into `qa/listen/<film sha256[:16]>.aac`. It is reused while the film
 is the same, and its length is ffprobe's stream duration of `video.mp4`. One
@@ -1899,6 +1928,53 @@ under today's role. `yt improve` and `yt run` do not pass `--listen`, so
 the next pass's estimate leaves a past listen out of a plain `yt qa`
 (`qa.pass_usd`) and adds the listen's own estimate each time `--listen` is
 asked, whether the last one was paid, served from the cache or failed.
+
+A listen that answered on a narrated film also checks the words (AUTO-152),
+unless a render landed during the listen: then nothing more is asked, and a
+render that lands during the transcript leaves both not current. The
+transcript check is one more decision on the same harness, model and
+track, `transcript-<audio sha256[:16]>` (`listen.TRANSCRIPT_SCHEMA`: per shot
+its `label`, `start`, `end` and `words`). It is cached, budgeted and billed
+like the listen. Its prompt gives each voiced shot's label, `at` and
+`seconds` from build.json and never the words the shot should say. A voiced
+shot is one whose placed `narration` is words, not a bracketed direction.
+`listen.transcript_check` keeps a shot that is answered, with `0 <= start <
+end` and `end` at most the track's length plus `TRANSCRIPT_TIME_SLACK_S`
+(1.0), and a start within that slack of the shot's place. The shots that
+fail are asked once more, alone (`-again`). Those that still fail are named
+under `not_evidenced`, and a call that fails leaves them all there. Each
+kept shot's words are held to its narration as placed, never to the voice's
+`spoken` text or `narration.txt`. build.json keeps 300 characters of a
+shot's narration, so the text compared is the whole take text from
+voice.json (the caption text), else the screenplay shot's, whenever it
+begins with what build.json placed; otherwise the placed text stands. Both
+sides are normalised first (`listen.normalise_words`: lower case,
+punctuation gone but for an apostrophe or hyphen inside a word, numbers
+spelled out, so "1.5%" is "one point five percent", "$5" "five dollars" and
+"the 1990s" a plural). `listen.compare_words` then splits each hyphenated
+word into its parts on both sides, so "twenty-one" and "twenty one" are the
+same words, and holds each year written (four digits from 1100 to 2099, no
+comma or decimals) to whichever reading is nearer what was heard: "one
+thousand eight hundred fifty-nine" or "eighteen fifty-nine" ("nineteen oh
+five", "nineteen hundred", "twenty twenty-six"). Units ("5km") are compared
+as written. The screenplay's pronouncer terms are dropped from both sides
+and counted. `listen.wer` is the word error rate: replaced (the longer
+run), deleted and inserted words over the words expected.
+
+A shot over `INTELLIGIBILITY_WER` (0.15, provisional, with no standard
+behind it) is a minor `voiceover` finding owned by voice at the shot's
+time, joining the scorecard with the listen's: "shot 1.2: heard 'And its
+sail is in front.' for 'And its tail is in front.' (WER 0.17)". The record
+is `transcript` in `listening.json` (`status`, `reason`, `model`,
+`served_model` and `provider` for the transcript call itself, `shots`
+with `label`, `at`, `expected`, `heard`, `wer` and `pronounced`, `flagged`,
+`not_evidenced`), and the scorecard's `listen.transcript` is its tally. A
+wordless film, or one with no voiced shot, is recorded `not_evidenced` with
+its reason and asks nothing. Without `--listen`, or with the gateway off,
+there is no listen and so no transcript. The model's transcript fidelity on a
+real mix with music under it, the call's tokens, whether 8000 output tokens
+hold a ten-minute film, whether the start times land within the slack, and
+the 0.15 bar against a kokoro and an ElevenLabs film are TO VERIFY.
 
 `--watch` (AUTO-127, `ytstudio/watch.py`) is the review that watches the
 cut in motion, for what falls between the stills: a frame that pops, a
@@ -2002,6 +2078,21 @@ satisfaction. That prediction scores nothing and is listed under
 `work/retention.json`; the per-film `work/<slug>/retention.json` that `yt
 retention` writes does not count. A pass written before this has no `story` and still
 compares, since the comparison reads the scores only.
+
+Nothing judges picture and sound together. `--listen` hears without seeing
+and `--watch` sees without hearing. A pass that checks whether each shot's
+`on_screen_text` and supers appear while their matching words are spoken is
+gated, and no code exists for it (AUTO-152 Part C). It is built only when
+both of two conditions hold. First, the owner records that AUTO-127's
+visual-only default is reopened for an opt-in mode. Second, a live test
+shows that a `models.LISTEN_MODELS` or watch model on the gateway accepts
+picture and sound in one request, and records that request's size and
+duration limits. Until both hold, `--watch` sends no sound. If the gate
+opens, the pass measures only what AUTO-140 cannot: each text's offset in
+seconds from its words. It takes `beat_sync` and the listen's picture
+timeline as given and does not judge them again, so cue-to-reveal sync stays
+AUTO-140's. Its judge must be of another model family than the
+screenplay's author (`listen.family`).
 
 The bar is applied mechanically on top: READY TO PUBLISH needs an overall of
 9.0, no category under 8.5 and nothing blocking, where blocking includes what
@@ -2197,7 +2288,12 @@ lists it as not re-measured, never as fixed, until the new cut is published
 and `yt retention` reads it. A voice, sound or music category the best pass
 left not evidenced (no current listening review) is listed under "Not
 evidenced (READY cannot be judged)" with what is missing and the command
-that produces it.
+that produces it. Doctor's warning that the narration is a stub or espeak
+scratch take, which QA blocks READY on, is routed by lookup and blocking:
+to `voice` when `doctor.real_engines` finds an engine that may be published
+on this machine, else to `external` with the fix "pip install kokoro, or
+set ELEVENLABS_API_KEY". It is then listed under "Needs a human decision",
+and the loop stops there rather than reading the film into espeak again.
 
 ### `yt retention`
 

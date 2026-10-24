@@ -182,6 +182,64 @@ class Bar(unittest.TestCase):
                                                 gate=None), [])
 
 
+class ScratchTake(unittest.TestCase):
+    """A stub or espeak narration proves the timeline and is never published
+    (doctor.SCRATCH_ENGINES): QA blocks READY on it (AUTO-152), where doctor
+    only warned and the film could still pass."""
+
+    EMPTY = {"placeholders": [], "findings": []}
+    WHERE = "--project /films/one-take"
+
+    def voice(self, engine, takes):
+        return {"engine": engine, "takes": [{"label": f"1.{n}", "text": "a line",
+                                             "engine": e} for n, e in enumerate(takes, 1)]}
+
+    def blockers(self, voice):
+        return qa.mechanical_blockers(self.EMPTY, gate=None, voice=voice, where=self.WHERE)
+
+    def test_espeak_and_stub_takes_block(self):
+        for engine in doctor.SCRATCH_ENGINES:
+            with self.subTest(engine=engine):
+                got = self.blockers(self.voice(engine, [engine] * 4))
+                self.assertEqual(len(got), 1, got)
+                self.assertTrue(got[0].startswith("voice: narration is a"), got[0])
+                self.assertIn(f"{engine} scratch take (4 of 4 takes)", got[0])
+                self.assertIn(f"run yt voice {self.WHERE} --engine auto", got[0])
+        self.assertIn("an espeak scratch take",
+                      self.blockers(self.voice("espeak", ["espeak"]))[0])
+        # a kokoro read with three takes left from a stub run
+        got = self.blockers(self.voice("kokoro", ["kokoro", "stub", "stub", "kokoro", "stub"]))
+        self.assertEqual(len(got), 1, got)
+        self.assertIn("a stub scratch take (3 of 5 takes)", got[0])
+        # a take that names no engine was read by the voice's own
+        got = self.blockers({"engine": "espeak", "takes": [{"label": "1.1"}, {"label": "1.2"}]})
+        self.assertIn("(2 of 2 takes)", got[0])
+        # two scratch engines, one line each
+        got = self.blockers(self.voice("espeak", ["espeak", "stub"]))
+        self.assertEqual(len(got), 2, got)
+        self.assertTrue(all(g.startswith("voice:") for g in got))
+
+    def test_elevenlabs_and_kokoro_do_not_block(self):
+        for engine in ("elevenlabs", "kokoro", "chatterbox"):
+            with self.subTest(engine=engine):
+                self.assertEqual(self.blockers(self.voice(engine, [engine] * 3)), [])
+
+    def test_wordless_and_voice_none_do_not_block(self):
+        self.assertEqual(self.blockers(None), [])
+        self.assertEqual(self.blockers({}), [])
+        self.assertEqual(self.blockers({"engine": "stub", "wordless": True, "takes": []}), [])
+        # the old call, with no voice at all, is unchanged
+        self.assertEqual(qa.mechanical_blockers(self.EMPTY, gate=None), [])
+
+    def test_a_scratch_blocker_makes_verdict_not_ready(self):
+        scores = {k: 9.5 for k in qa.CATEGORIES}
+        self.assertEqual(qa.verdict_of(scores, 9.5, blocking=[])[0], qa.READY)
+        blockers = self.blockers(self.voice("espeak", ["espeak"] * 2))
+        verdict, reasons = qa.verdict_of(scores, 9.5, blocking=blockers)
+        self.assertEqual(verdict, qa.NOT_READY)
+        self.assertEqual(reasons, ["1 blocking item(s)"])
+
+
 class FallbackPalette(unittest.TestCase):
     """A film in design.py's house fallback palette is not READY, whatever it
     scores (AUTO-155); the blocker names the stage that owns the fix."""

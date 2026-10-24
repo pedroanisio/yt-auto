@@ -285,6 +285,10 @@ AUDIO = ("voiceover", "sound_design", "music_score")
 #: again. The review that hears the rendered track, `yt qa --listen`
 #: (AUTO-126, ytstudio/listen.py), is made in the pass itself, so it joins
 #: these two as one more row (`listen.evidence_row`), not as an entry here.
+#: `basis` says how each review knows what it says (AUTO-152): both of these
+#: read what the film was made from, the sheet and the takes, and neither
+#: heard the rendered mix, so a score resting on them alone is "read";
+#: only the listen's row is "heard". `read_as` is the basis line's words.
 LISTENERS = {
     "sound": {"file": "sound.json", "covers": ("sound_design", "music_score"),
               "review": "the listen-back of `yt sound --review`: the cue sheet as "
@@ -292,12 +296,19 @@ LISTENERS = {
                         "palette's mix targets, read cue by cue, not the rendered track "
                         "and not the recorded narration; its mark also covers the "
                         "master's normalise mode",
-              "redo": "sound --fresh --review --fetch --synth"},
+              "redo": "sound --fresh --review --fetch --synth",
+              "basis": "read",
+              "read_as": "the cue-sheet review (sound.json: each cue's place, level, "
+                         "fades and design, and the mix targets)"},
     "voice": {"file": "voice.json", "covers": ("voiceover",),
               "review": "the director's take review in `yt voice`: the recorded takes, "
                         "by their words, lengths and pace",
-              "redo": "voice"},
+              "redo": "voice",
+              "basis": "read",
+              "read_as": "the take review (voice.json: words, lengths, pace)"},
 }
+#: The two values of a listening row's `basis`.
+BASES = ("heard", "read")
 #: The contact sheet: stills tiled with their timestamps, for the reviewer.
 SHEET_COLUMNS, SHEET_TILE, SHEET_CAPTION = 4, (480, 270), 28
 
@@ -2037,7 +2048,8 @@ def listening_evidence(sound: dict | None, voice: dict | None, *,
         row = {"source": source, "file": spec["file"], "review": spec["review"],
                "covers": list(spec["covers"]), "heard": mark.get("sha256"),
                "now": now["sha256"] if data else None, "current": False, "why": "",
-               "command": _then_rebuild(_yt(spec["redo"], where), where)}
+               "command": _then_rebuild(_yt(spec["redo"], where), where),
+               "basis": spec["basis"]}
         if not data:
             row["why"] = f"no {spec['file']}"
         elif source == "voice" and data.get("wordless"):
@@ -2082,6 +2094,35 @@ def audio_unheard(rows: list[dict], *, silent: bool = False) -> dict[str, dict]:
                     or "no listening review covers it",
                     "command": next((r["command"] for r in covering if r.get("command")), "")}
     return out
+
+
+def audio_basis(rows: list[dict], *, silent: bool = False) -> dict[str, str]:
+    """How each scored AUDIO category is known (AUTO-152): "heard" when a
+    current row that covers it heard the rendered track (`yt qa --listen`),
+    "read" when the current rows that cover it only read the cue sheet or
+    the takes. A category audio_unheard names is unscored, not read, so it
+    has no basis; nor has a silent film's SILENT pair, scored by rule."""
+    unheard = audio_unheard(rows, silent=silent)
+    out = {}
+    for key in AUDIO:
+        if (silent and key in SILENT) or key in unheard:
+            continue
+        current = [r for r in rows if r.get("current") and key in (r.get("covers") or [])]
+        if current:
+            out[key] = "heard" if any(r.get("basis") == "heard" for r in current) else "read"
+    return out
+
+
+def basis_lines(basis: dict[str, str], where: str = "") -> list[str]:
+    """One not_evidenced line per category whose score rests on a review
+    that read and did not hear (AUTO-152), naming that review and the pass
+    that hears the mix. A record for the reader: it changes no score, the
+    bar or the overall, and nothing caps a read voiceover (AUTO-138's
+    deferral stands)."""
+    reads = {key: spec["read_as"] for spec in LISTENERS.values() for key in spec["covers"]}
+    return [f"{key}: scored from {reads[key]}, not from the rendered track; run "
+            f"{_yt('qa --listen', where)}"
+            for key in AUDIO if basis.get(key) == "read"]
 
 
 def score_unheard(card: dict, unheard: dict[str, dict]) -> dict:
@@ -2211,8 +2252,27 @@ def verdict_of(scores: dict, overall: float, *, blocking: list,
     return (READY if not reasons else NOT_READY), reasons
 
 
-def mechanical_blockers(build: dict, *, gate: dict | None) -> list[str]:
-    """What the manifests already prove blocks publication, before anyone looks."""
+def scratch_blockers(voice: dict | None, where: str = "") -> list[str]:
+    """A narration read by a scratch engine (doctor.SCRATCH_ENGINES: stub,
+    espeak) proves the timeline and is never published (AUTO-152). Each
+    scratch engine in use, the voice's own or a take's, is one line naming
+    how many takes it read and the command doctor gives; doctor.scratch_reads
+    counts them, for doctor's warning too. A wordless film, or none, has no
+    narration to block on."""
+    from .doctor import scratch_reads, scratch_take
+    fix = _yt("voice --engine auto", where)
+    return [f"voice: narration is {scratch_take(*used)}; run {fix}"
+            for used in scratch_reads(voice)]
+
+
+def mechanical_blockers(build: dict, *, gate: dict | None, voice: dict | None = None,
+                        where: str = "") -> list[str]:
+    """What the manifests already prove blocks publication, before anyone
+    looks: build.json's placeholders, errors and editorial blockers, the
+    fallback palette, a failed gate, and a scratch narration in voice.json
+    (`scratch_blockers`, read only when `voice` is given). qa.run asks
+    scratch_blockers on its own and adds it after the brief, so the
+    reviewer's "Blocking, already proven" stays what it was."""
     out = []
     for label in build.get("placeholders", []):
         out.append(f"placeholder card at shot {label} (disqualifying)")
@@ -2234,6 +2294,7 @@ def mechanical_blockers(build: dict, *, gate: dict | None) -> list[str]:
             out.append(f"gate: {row.get('what', '')}")
         if not (gate.get("triage") or {}).get("blocking"):
             out.append(f"gate failed (exit {gate.get('exit')})")
+    out += scratch_blockers(voice, where)
     return out
 
 
@@ -2888,8 +2949,11 @@ def findings_md(name: str, card: dict, samples: list[dict], diff: dict, *,
                   "the film carries; a stale or absent one scores nothing.", ""]
         for row in card["listening"]:
             covers = ", ".join(row.get("covers") or [])
+            # `basis` (AUTO-152): whether the review heard the rendered track
+            # or read what it was made from; a row written before it says neither.
+            basis = f"basis {row['basis']}, " if row.get("basis") in BASES else ""
             if row.get("current"):
-                lines.append(f"- {row.get('file')} ({covers}): current, heard "
+                lines.append(f"- {row.get('file')} ({covers}): current, {basis}heard "
                              f"{str(row.get('heard') or '')[:12]} -- {row.get('review')}")
             else:
                 lines.append(f"- {row.get('file')} ({covers}): not used -- {row.get('why')}"
@@ -3529,7 +3593,11 @@ def review_prompt(*, title: str, pass_name: str, sheet_name: str, has_narration:
         brief("Listening evidence: the reviews that heard the film's sound, each "
               "marked with what it heard (`heard`) and whether that is what the film "
               "carries (`current`); what a stale or absent one said is left out and "
-              "`why` says what is missing", listening),
+              "`why` says what is missing",
+              # `basis` (AUTO-152) is the record's, not the reviewer's: briefed,
+              # it would change every scorecard prompt and re-ask every cached
+              # pass, so the rows go as they went before it.
+              [{k: v for k, v in row.items() if k != "basis"} for row in listening]),
         (f"No current listening review covers {', '.join(unheard)}: do not score "
          f"{'it' if len(unheard) == 1 else 'them'} (enter 0; the number is discarded "
          "and each is recorded not evidenced), leave them out of `overall` (it is "
@@ -4372,7 +4440,12 @@ def run(args) -> int:
         build, voice, sound=sound, gate=gate, geometry=geometry_report, styles=styles,
         reach=(vfx_doc or {}).get("reach") if project.source("vfx") else None,
         rhythm=rhythm_block)
+    where = "" if project.standalone else f"--project {project.root}"
+    # A scratch narration (AUTO-152) blocks the verdict but is not briefed:
+    # briefed under "Blocking, already proven" it would change the scorecard
+    # prompt of every stub or espeak film and ask its cached pass again.
     blockers = mechanical_blockers(build, gate=gate) + vfx_blockers(vfx_doc) + problems
+    scratch = scratch_blockers(voice, where)
     previous = chosen
     for earlier in [] if named else reversed(_passes(home)):
         if earlier != pass_dir:
@@ -4553,8 +4626,14 @@ def run(args) -> int:
               "mechanical or rhythm finding stands", file=sys.stderr)
     card["not_evidenced"] = list(card.get("not_evidenced") or []) + rhythm_not_evidenced(
         rhythm_block)
-    all_blocking = blockers + [str(b) for b in card.get("blocking", [])
-                               if str(b) not in blockers]
+    # Whether each audio score rests on a review that heard the rendered
+    # track or one that read the sheet or the takes (AUTO-152): recorded,
+    # and a read one named under not_evidenced with the pass that hears it.
+    # No score, the bar or the overall reads it.
+    card["audio_basis"] = audio_basis(listening, silent=silent(build))
+    card["not_evidenced"] += basis_lines(card["audio_basis"], where)
+    all_blocking = blockers + scratch
+    all_blocking += [str(b) for b in card.get("blocking", []) if str(b) not in all_blocking]
     all_blocking += [f"{f.get('problem')} at {f.get('timestamp')}s"
                      for f in card.get("findings", []) if f.get("severity") == "blocking"]
     all_blocking += [mechanical_line(f) for f in mechanical if f["severity"] == "blocking"]
@@ -4634,6 +4713,7 @@ def run(args) -> int:
         "low_confidence": len(card.get("low_confidence") or []),
         "mechanical": len(mechanical), "capped": capped,
         "audio_not_evidenced": card.get("audio_not_evidenced") or {},
+        "audio_basis": card.get("audio_basis") or {},
         "regressions": diff["regressions"], "reasons": reasons,
         "side_by_side": {"against": side["against"], "status": side["status"],
                          "total": side["tally"]["total"]},

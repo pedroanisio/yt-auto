@@ -25,6 +25,13 @@ the two the pipeline had heard the cue sheet and the takes, never the mix.
 5. The record, `qa/<pass>/listening.json`, filed as the current listening
    evidence (`evidence_row`) that AUTO-105's rule reads, its findings merged
    into the scorecard as the listener's, its cost merged into the usage.
+6. The transcript (AUTO-152), for a narrated film: one more decision on the
+   same harness and track, `transcript-<audio sha256[:16]>`, asking each
+   voiced shot's words and times by label and place alone, never the words
+   it should hear. Each shot is held to its narration as build.json placed
+   it (`normalise_words`, `wer`); one over INTELLIGIBILITY_WER is a minor
+   voiceover finding owned by voice at the shot's time, and one whose
+   answer fails `transcript_check` is asked once more, then not evidenced.
 
 The listener's criteria are docs/production.md §2 rows 6-8, word for word
 (LISTEN_CRITERIA, pinned against the doc by test_doc_production).
@@ -32,8 +39,10 @@ The listener's criteria are docs/production.md §2 rows 6-8, word for word
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import math
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -61,6 +70,20 @@ LISTEN_TOKENS_PER_SECOND = 32
 LISTEN_OUTPUT_TOKENS = 4000
 #: The length an estimate assumes when no build says how long the film is.
 ASSUMED_SECONDS = 600
+
+#: The transcript's answer, for the estimate: every voiced shot's words and
+#: times (AUTO-152). TO VERIFY live: that a ten-minute film's fits.
+TRANSCRIPT_OUTPUT_TOKENS = 8000
+#: The transcript question's characters, for an estimate made before it is
+#: written (spend's `--listen` increment).
+TRANSCRIPT_PROMPT_CHARS = 4000
+#: The word error rate over which a shot's narration is filed as not heard as
+#: written. NO STANDARD: provisional, until a kokoro and an ElevenLabs film
+#: are measured against it.
+INTELLIGIBILITY_WER = 0.15
+#: How far a shot's heard speech may start outside its place on the film, and
+#: end past the track, in seconds.
+TRANSCRIPT_TIME_SLACK_S = 1.0
 
 #: Where the extracted tracks live, under the project's qa/, and the record
 #: each listening pass leaves in its pass directory.
@@ -133,6 +156,18 @@ LISTEN_SCHEMA = {
         "not_heard": {"type": "array", "items": {"type": "string"}},
     },
     "required": ["heard", "categories", "not_heard"],
+}
+
+#: What the transcript answers (AUTO-152): per shot asked, the words heard and
+#: where on the audio they were said.
+TRANSCRIPT_SCHEMA = {
+    "type": "object",
+    "properties": {"shots": {"type": "array", "items": {
+        "type": "object",
+        "properties": {"label": {"type": "string"}, "start": {"type": "number"},
+                       "end": {"type": "number"}, "words": {"type": "string"}},
+        "required": ["label", "start", "end", "words"]}}},
+    "required": ["shots"],
 }
 
 #: What the scorecard's reviewer is told when a current listen heard the
@@ -226,18 +261,25 @@ def family(stage: str, author: str, model: str) -> str:
 # the estimate
 # --------------------------------------------------------------------------- #
 
-def estimate_usd(model: str, seconds: float, chars: int) -> float | None:
+def estimate_usd(model: str, seconds: float, chars: int, *, transcript: bool = True,
+                 transcript_chars: int = TRANSCRIPT_PROMPT_CHARS) -> float | None:
     """What one listen costs at most: the track's tokens and the prompt's
-    in, LISTEN_OUTPUT_TOKENS out, twice (the one ask-again). None when
-    nobody priced the model."""
+    in, LISTEN_OUTPUT_TOKENS out, twice (the one ask-again); and, for a
+    narrated film, the transcript the same way (the same track in,
+    TRANSCRIPT_OUTPUT_TOKENS out, twice). None when nobody priced the model."""
     import gateway_engine
     row = gateway_engine.price_for(model)
     if not row:
         return None
-    tokens_in = seconds * LISTEN_TOKENS_PER_SECOND + chars / 4
-    once = (tokens_in * float(row.get("input", 0))
-            + LISTEN_OUTPUT_TOKENS * float(row.get("output", 0))) / 1_000_000
-    return round(2 * once, 4)
+
+    def once(chars: float, out: int) -> float:
+        tokens_in = seconds * LISTEN_TOKENS_PER_SECOND + chars / 4
+        return (tokens_in * float(row.get("input", 0))
+                + out * float(row.get("output", 0))) / 1_000_000
+    total = 2 * once(chars, LISTEN_OUTPUT_TOKENS)
+    if transcript:
+        total += 2 * once(transcript_chars, TRANSCRIPT_OUTPUT_TOKENS)
+    return round(total, 4)
 
 
 def _flag(argv: list[str], name: str) -> str | None:
@@ -252,10 +294,15 @@ def _flag(argv: list[str], name: str) -> str | None:
 def estimate_for(root: Path | None, argv=()) -> float | None:
     """The listen's estimate for the project under `root` (spend's
     `--listen` increment): the film's length from build.json, else
-    ASSUMED_SECONDS, and a narration of 15 characters a second."""
+    ASSUMED_SECONDS, and a narration of 15 characters a second; the
+    transcript too unless the build has no voiced shot or the film is
+    wordless (with no build, a narrated film is assumed)."""
     argv = [str(a) for a in argv or ()]
     model = _flag(argv, "--listen-model") or LISTEN_MODEL
     build = read_json(Path(root) / "build.json", warn=False) if root is not None else None
+    voice = read_json(Path(root) / "voice.json", warn=False) if root is not None else None
+    narrated = not (isinstance(voice, dict) and voice.get("wordless")) and (
+        bool(voiced_shots(build)) if isinstance(build, dict) else True)
     seconds = ((build or {}).get("scene") or {}).get("duration") if isinstance(build, dict) else None
     try:
         seconds = float(seconds)
@@ -263,7 +310,7 @@ def estimate_for(root: Path | None, argv=()) -> float | None:
         seconds = float(ASSUMED_SECONDS)
     if not math.isfinite(seconds) or seconds <= 0:
         seconds = float(ASSUMED_SECONDS)
-    return estimate_usd(model, seconds, int(seconds * 15) + 6000)
+    return estimate_usd(model, seconds, int(seconds * 15) + 6000, transcript=narrated)
 
 
 # --------------------------------------------------------------------------- #
@@ -283,6 +330,10 @@ class Prepared:
     system: str
     estimate_usd: float
     budget_usd: float
+    #: The voiced shots the transcript asks after (`voiced_shots`), and why
+    #: none is asked when there are none (a wordless film, no voiced shot).
+    shots: list = field(default_factory=list)
+    transcript_skip: str = ""
 
 
 def _sha256(path: Path) -> str:
@@ -392,7 +443,18 @@ def preflight(args, project, *, home: Path, scene: str, build: dict, script: dic
     prompt = listen_prompt(title, seconds, script=script, build=build, voice=voice,
                            sound=sound)
     system = "\n\n".join(p for p in (LISTEN_ROLE, house) if p)
-    estimate = estimate_usd(model, seconds, len(prompt) + len(system) + 2000)
+    # The transcript (AUTO-152): the shots that carry words, unless the film
+    # is wordless; neither asks anything.
+    shots: list[dict] = []
+    if isinstance(voice, dict) and voice.get("wordless"):
+        skip = "a wordless film: voice.json has no takes, so there are no words to hear"
+    else:
+        shots = voiced_shots(build, script, voice)
+        skip = "" if shots else "no shot in build.json is voiced: there are no words to hear"
+    estimate = estimate_usd(model, seconds, len(prompt) + len(system) + 2000,
+                            transcript=bool(shots),
+                            transcript_chars=len(transcript_prompt(shots, seconds))
+                            + len(system) + 2000)
     if estimate is None:
         raise Refused(f"{model} has no price (GATEWAY_PRICES or the price table), so its "
                       "cost cannot be held to --listen-budget-usd; set its row")
@@ -402,7 +464,8 @@ def preflight(args, project, *, home: Path, scene: str, build: dict, script: dic
     return Prepared(model=model, providers=list(spec.get("providers") or ()), film=film,
                     audio=audio, scene_sha256=scene_sha, scene_path=str(scene_path),
                     prompt=prompt, system=system,
-                    estimate_usd=estimate, budget_usd=budget)
+                    estimate_usd=estimate, budget_usd=budget,
+                    shots=shots, transcript_skip=skip)
 
 
 def listen_prompt(title: str, seconds: float, *, script: dict, build: dict, voice: dict,
@@ -507,15 +570,19 @@ def served_before(pass_dir: Path, decisions: list[dict]) -> tuple[str | None, st
     so the same question) and says who answered. The cache keeps the
     answer, not the routing, so the record of the pass that asked does.
     ("cached", "cached") when no such record is left."""
-    asked = [(d.get("name"), d.get("digest")) for d in decisions if isinstance(d, dict)]
+    def listens(rows) -> list[tuple]:
+        # the listen's own: the transcript's (AUTO-152) records who served it
+        return [(d.get("name"), d.get("digest")) for d in rows or []
+                if isinstance(d, dict) and d.get("kind") != "failed"
+                and not str(d.get("name") or "").startswith("transcript-")]
+    asked = listens(decisions)
     for path in sorted(Path(pass_dir).parent.glob(f"pass-*/{LISTENING}"), reverse=True):
         if path.parent == Path(pass_dir):
             continue
         old = read_json(path, warn=False)
         if not isinstance(old, dict) or old.get("served_model") in (None, "cached"):
             continue
-        if [(d.get("name"), d.get("digest")) for d in old.get("decisions") or []
-                if isinstance(d, dict) and d.get("kind") != "failed"] == asked:
+        if listens(old.get("decisions")) == asked:
             return old.get("served_model"), old.get("provider")
     return "cached", "cached"
 
@@ -594,6 +661,419 @@ def check(result: Any, seconds: float) -> tuple[list[dict], list[dict], list[str
     return kept, dropped, problems
 
 
+# --------------------------------------------------------------------------- #
+# the transcript: did the narration say the placed words? (AUTO-152)
+# --------------------------------------------------------------------------- #
+
+_ONES = ("zero one two three four five six seven eight nine ten eleven twelve thirteen "
+         "fourteen fifteen sixteen seventeen eighteen nineteen").split()
+_TENS = "_ _ twenty thirty forty fifty sixty seventy eighty ninety".split()
+_SCALES = ((10 ** 9, "billion"), (10 ** 6, "million"), (1000, "thousand"))
+_ORDINALS = {"one": "first", "two": "second", "three": "third", "five": "fifth",
+             "eight": "eighth", "nine": "ninth", "twelve": "twelfth"}
+#: A number as written: thousands grouped by commas or not, a decimal part,
+#: an ordinal ending or a decade's "s", a percent sign.
+_NUMBER = re.compile(r"(?<![\w.,])(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?(st|nd|rd|th|s)?(?!\w)"
+                     r"(\s*%)?")
+#: An amount of dollars: "$5" is said "five dollars", "$1.5 million" "one
+#: point five million dollars".
+_MONEY = re.compile(r"\$\s?(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)"
+                    r"(\s+(?:thousand|million|billion|trillion)\b)?", re.IGNORECASE)
+#: A year as written: four digits from 1100 to 2099, no comma, no decimal
+#: part, no percent, with a decade's "s" or not. A narrator says it either
+#: way ("eighteen fifty-nine" or "one thousand eight hundred fifty-nine"),
+#: so the comparison takes the reading nearer what was heard (`_readings`).
+_YEAR = re.compile(r"(?<![\w.,$])(1[1-9]\d\d|20\d\d)(s?)(?![\w%]|[.,]\d|\s*%)")
+#: A word: letters and digits, joined inside by apostrophes and hyphens.
+_WORD = re.compile(r"[^\W_]+(?:['\-][^\W_]+)*")
+
+
+def _hundreds(n: int) -> list[str]:
+    out: list[str] = []
+    if n >= 100:
+        out += [_ONES[n // 100], "hundred"]
+        n %= 100
+    if n >= 20:
+        out.append(_TENS[n // 10] + (f"-{_ONES[n % 10]}" if n % 10 else ""))
+    elif n or not out:
+        out.append(_ONES[n])
+    return out
+
+
+def number_words(n: int) -> list[str]:
+    """An integer as it is said ("twenty-one", "three hundred five", no
+    "and"), up to a billion; a longer one digit by digit."""
+    if n > 10 ** 9:
+        return [_ONES[int(d)] for d in str(n)]
+    if n < 1000:
+        return _hundreds(n)
+    out: list[str] = []
+    for scale, name in _SCALES:
+        if n >= scale:
+            out += _hundreds(n // scale) + [name]
+            n %= scale
+    return out + (_hundreds(n) if n else [])
+
+
+def _ordinal(word: str) -> str:
+    head, sep, last = word.rpartition("-")
+    last = (_ORDINALS.get(last) or (last[:-1] + "ieth" if last.endswith("y") else last + "th"))
+    return head + sep + last
+
+
+def _plural(word: str) -> str:
+    """A decade's last word: "ninety" is "nineties", "hundred" "hundreds"."""
+    return word[:-1] + "ies" if word.endswith("y") else word + "s"
+
+
+def _spell(m: re.Match) -> str:
+    whole, decimals, ordinal, percent = m.groups()
+    words = number_words(int(whole.replace(",", "")))
+    if ordinal == "s" and not decimals:
+        words[-1] = _plural(words[-1])
+    elif ordinal and not decimals:
+        words[-1] = _ordinal(words[-1])
+    if decimals:
+        words += ["point"] + [_ONES[int(d)] for d in decimals]
+    if percent:
+        words.append("percent")
+    return f" {' '.join(words)} "
+
+
+def _dollars(m: re.Match) -> str:
+    amount, scale = m.group(1), (m.group(2) or "").strip().lower()
+    unit = "dollar" if amount == "1" and not scale else "dollars"
+    return f" {amount} {scale} {unit} "
+
+
+def normalise_words(text: Any) -> list[str]:
+    """The words of `text` for comparing what was said with what was
+    written: lower case, punctuation gone but an apostrophe or hyphen inside
+    a word kept, and numbers spelled out (1.5% is "one point five percent",
+    $5 "five dollars", the 1990s "one thousand nine hundred nineties")."""
+    text = str(text or "").replace("’", "'").replace("‘", "'")
+    text = _MONEY.sub(_dollars, text)
+    text = _NUMBER.sub(_spell, text).replace("%", " percent ")
+    return _WORD.findall(text.lower())
+
+
+def _split(words: list[str]) -> list[str]:
+    """Each hyphenated word as its parts: a transcriber writes "twenty-one"
+    or "twenty one", "well-known" or "well known", for the same sound, so
+    the comparison counts neither as an error."""
+    return [part for word in words for part in word.split("-") if part]
+
+
+def _year_readings(year: int, decade: bool) -> list[list[str]]:
+    """The ways a year is said: as a number ("one thousand eight hundred
+    fifty-nine") and in pairs ("eighteen fifty-nine", "nineteen oh five",
+    "nineteen hundred"; "twenty oh five" beside "two thousand five"), each
+    plural for a decade ("nineteen nineties")."""
+    head, tail = divmod(year, 100)
+    paired = number_words(head)
+    if tail == 0:
+        paired += ["hundred"]
+    elif tail < 10:
+        paired += ["oh"] + number_words(tail)
+    else:
+        paired += number_words(tail)
+    out = []
+    for reading in (number_words(year), paired):
+        words = _split(reading)
+        if decade:
+            words[-1] = _plural(words[-1])
+        if words not in out:
+            out.append(words)
+    return out
+
+
+def _readings(text: Any) -> list:
+    """`text` as compared: its words, hyphens split, with each year as the
+    list of its readings (`_year_readings`) where the words would have one."""
+    text = str(text or "").replace("’", "'").replace("‘", "'")
+    pieces = _YEAR.split(text)
+    out: list = []
+    for i in range(0, len(pieces), 3):
+        out += _split(normalise_words(pieces[i]))
+        if i + 1 < len(pieces):
+            out.append(_year_readings(int(pieces[i + 1]), bool(pieces[i + 2])))
+    return out
+
+
+def _words(readings: list, choice: dict[int, int]) -> list[str]:
+    out: list[str] = []
+    for i, part in enumerate(readings):
+        out += part[choice.get(i, 0)] if isinstance(part, list) else [part]
+    return out
+
+
+def wer(expected: list[str], heard: list[str]) -> float:
+    """The word error rate of `heard` against `expected`: the words replaced
+    (the longer side of each replaced run), deleted and inserted, over the
+    words expected. 0.0 when both are empty, 1.0 for words where none were
+    expected."""
+    if not expected:
+        return 0.0 if not heard else 1.0
+    errors = 0
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, expected, heard,
+                                                      autojunk=False).get_opcodes():
+        if op == "replace":
+            errors += max(i2 - i1, j2 - j1)
+        elif op == "delete":
+            errors += i2 - i1
+        elif op == "insert":
+            errors += j2 - j1
+    return errors / len(expected)
+
+
+def _drop(words: list[str], seq: list[str]) -> tuple[list[str], int]:
+    """`words` without each run of `seq`, and how many there were."""
+    if not seq:
+        return words, 0
+    out, n, i = [], 0, 0
+    while i < len(words):
+        if words[i:i + len(seq)] == seq:
+            i += len(seq)
+            n += 1
+        else:
+            out.append(words[i])
+            i += 1
+    return out, n
+
+
+def compare_words(expected: str, heard: str, *, pronounce=()) -> dict:
+    """What was written against what was heard: the WER, with each pronouncer
+    term left out of both sides (written as the term, heard as the term or
+    its `say`, which a transcriber spells as it likes), and how many of the
+    written terms were left out. Hyphenated words count as their parts on
+    both sides, and each year written is held to whichever of its readings
+    is nearer what was heard, one year at a time."""
+    readings = _readings(expected)
+    got = _split(normalise_words(heard))
+    terms = [row for row in pronounce or () if isinstance(row, dict)]
+    for row in terms:
+        for said in (row.get("term"), row.get("say")):
+            got, _ = _drop(got, _split(normalise_words(said)))
+
+    def scored(choice: dict[int, int]) -> tuple[float, int]:
+        want, dropped = _words(readings, choice), 0
+        for row in terms:
+            want, n = _drop(want, _split(normalise_words(row.get("term"))))
+            dropped += n
+        return wer(want, got), dropped
+    choice: dict[int, int] = {}
+    for i, part in enumerate(readings):
+        if isinstance(part, list) and len(part) > 1:
+            choice[i] = min(range(len(part)), key=lambda k: scored({**choice, i: k})[0])
+    rate, dropped = scored(choice)
+    return {"wer": round(rate, 4), "pronounced": dropped}
+
+
+def voiced_shots(build: dict | None, script: dict | None = None,
+                 voice: dict | None = None) -> list[dict]:
+    """The shots build.json placed with words to say, in film order: label,
+    `at`, `seconds`, the narration (what the transcript is held to) and the
+    screenplay's pronouncers for the shot.
+
+    build.json keeps 300 characters of a shot's narration (build.py's shots
+    manifest), and a longer shot cut there, often mid-word, would be held
+    to words it was never meant to end on. So the narration is the whole
+    take text from voice.json (the caption text), else the screenplay
+    shot's, whenever that begins with what build.json placed; a take that
+    does not is another read, and the placed text stands."""
+    from .script import spoken
+    terms: dict[str, list] = {}
+    whole: dict[str, str] = {}
+    sections = script.get("sections") if isinstance(script, dict) else None
+    for sec in sections if isinstance(sections, list) else []:
+        planned = sec.get("shots") if isinstance(sec, dict) else None
+        for shot in planned if isinstance(planned, list) else []:
+            if not isinstance(shot, dict):
+                continue
+            if isinstance(shot.get("pronounce"), list):
+                terms[str(shot.get("label"))] = [r for r in shot["pronounce"]
+                                                 if isinstance(r, dict)]
+            if isinstance(shot.get("narration"), str):
+                whole.setdefault(str(shot.get("label")), spoken(shot["narration"]))
+    takes = voice.get("takes") if isinstance(voice, dict) else None
+    for take in takes if isinstance(takes, list) else []:
+        if isinstance(take, dict) and isinstance(take.get("text"), str):
+            whole[str(take.get("label"))] = spoken(take["text"])
+    out = []
+    built = build.get("shots") if isinstance(build, dict) else None
+    for shot in built if isinstance(built, list) else []:
+        if not isinstance(shot, dict):
+            continue
+        # the take text as placed (the caption's), whitespace collapsed;
+        # spoken() only says whether it is words or a bracketed direction
+        words = spoken(shot.get("narration") or "")
+        try:
+            at, seconds = float(shot.get("at")), float(shot.get("seconds"))
+        except (TypeError, ValueError):
+            continue
+        if words and math.isfinite(at) and math.isfinite(seconds):
+            label = str(shot.get("label"))
+            full = whole.get(label, "")
+            words = full if full.startswith(words) else words
+            out.append({"label": label, "at": at, "seconds": seconds, "narration": words,
+                        "pronounce": terms.get(label, [])})
+    return sorted(out, key=lambda s: s["at"])
+
+
+def transcript_prompt(shots: list[dict], seconds: float) -> str:
+    """What the transcriber is asked: each shot's label and place on the
+    film, never the words it should hear, so it writes what it hears."""
+    return "\n\n".join([
+        f"Transcribe the attached audio, {seconds:g} s long, shot by shot. For each shot "
+        "listed below, write in `words` exactly what the narrator says during it, as you "
+        "hear it: no correcting, no tidying, a word you cannot make out written as it "
+        "sounded. Give `start` and `end`, in seconds from the beginning of the audio, for "
+        "where its speech begins and ends. Answer for every shot listed, by its `label`, "
+        "and for no other.",
+        brief("The shots, each at its place on the film (`at` and `seconds`, in seconds)",
+              [{"label": s["label"], "at": s["at"], "seconds": s["seconds"]} for s in shots]),
+    ])
+
+
+def _number(value: Any) -> bool:
+    return (not isinstance(value, bool) and isinstance(value, (int, float))
+            and math.isfinite(float(value)))
+
+
+def transcript_check(result: Any, shots: list[dict], seconds: float
+                     ) -> tuple[dict[str, dict], dict[str, str]]:
+    """The transcript past the schema: ({label: {start, end, words}} kept,
+    {label: why} for each planned shot that is missing, has no words, ends
+    before it starts, runs past the track, or starts outside its shot (each
+    give or take TRANSCRIPT_TIME_SLACK_S)."""
+    slack = TRANSCRIPT_TIME_SLACK_S
+    rows = result.get("shots") if isinstance(result, dict) else None
+    answered: dict[str, dict] = {}
+    for row in rows if isinstance(rows, list) else []:
+        if isinstance(row, dict):
+            answered.setdefault(str(row.get("label")), row)
+    kept: dict[str, dict] = {}
+    problems: dict[str, str] = {}
+    for shot in shots:
+        label = shot["label"]
+        row = answered.get(label)
+        if row is None:
+            problems[label] = f"shot {label} is missing from the answer"
+            continue
+        start, end = row.get("start"), row.get("end")
+        if not (_number(start) and _number(end)):
+            problems[label] = (f"shot {label}: its start {start!r} and end {end!r} are not "
+                               "both numbers of seconds")
+            continue
+        start, end = float(start), float(end)
+        at, length = float(shot["at"]), float(shot["seconds"])
+        if not isinstance(row.get("words"), str):
+            problems[label] = f"shot {label}: its words are not text"
+        elif start < 0 or end > seconds + slack:
+            problems[label] = (f"shot {label}: {start:g} to {end:g} s runs outside the track "
+                               f"(0 to {seconds:g} s)")
+        elif end <= start:
+            problems[label] = (f"shot {label}: it ends at {end:g} s, before or at its start "
+                               f"{start:g} s")
+        elif not at - slack <= start <= at + length + slack:
+            problems[label] = (f"shot {label}: its speech starts at {start:g} s, outside its "
+                               f"shot ({at:g} to {at + length:g} s, give or take {slack:g} s)")
+        else:
+            kept[label] = {"start": start, "end": end, "words": row["words"]}
+    return kept, problems
+
+
+def _clip(text: Any, n: int = 200) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= n else text[:n - 1] + "…"
+
+
+def transcript_record(reason: str, model: str, shots: list[dict], *, why: str = "") -> dict:
+    """A transcript that compared nothing, not evidenced for `reason`: every
+    shot in `shots` named unheard for `why` (none when it was skipped, with
+    no call, for a wordless film or one with no voiced shot)."""
+    return {"status": "not_evidenced", "reason": reason, "model": model,
+            "served_model": None, "provider": None, "shots": [], "flagged": [],
+            "not_evidenced": [{"label": s["label"], "why": why or reason} for s in shots],
+            "findings": []}
+
+
+def transcribe(listener: Harness, prepared: Prepared, shots: list[dict], *,
+               where: str = "") -> dict:
+    """The transcript, on the listener's harness with the same track: each
+    voiced shot's words as heard and where, held to its narration as built.
+    A shot whose answer fails the check is asked once more, alone with the
+    others that failed, then named under not_evidenced; one heard over
+    INTELLIGIBILITY_WER is a voiceover finding owned by voice at the shot's
+    time. A call that fails leaves every shot not evidenced."""
+    from . import qa
+    seconds = float(prepared.audio["seconds"])
+    name = f"transcript-{prepared.audio['sha256'][:16]}"
+    media = [prepared.audio["path"]]
+    try:
+        result = listener.decide(name, transcript_prompt(shots, seconds), TRANSCRIPT_SCHEMA,
+                                 media=media)
+    except HarnessError as exc:
+        return transcript_record(str(exc), prepared.model, shots,
+                                 why="the transcript did not answer")
+    kept, problems = transcript_check(result, shots, seconds)
+    if problems:
+        failing = [s for s in shots if s["label"] in problems]
+        again = (transcript_prompt(failing, seconds) + "\n\nYour last answer for these "
+                 "shots could not be kept: " + "; ".join(problems[s["label"]] for s in failing)
+                 + ". Answer again for these shots only, each by its label, its `start` "
+                 "inside its shot and its `end` inside the audio.")
+        try:
+            second = listener.decide(f"{name}-again", again, TRANSCRIPT_SCHEMA, media=media)
+        except HarnessError as exc:
+            listener._say(f"[qa] {name}-again: {exc}; the shots it asked after are not "
+                          "evidenced")
+        else:
+            more, problems = transcript_check(second, failing, seconds)
+            kept.update(more)
+    rows, flagged, findings = [], [], []
+    for shot in shots:
+        label = shot["label"]
+        if label not in kept:
+            continue
+        heard = kept[label]["words"]
+        said = compare_words(shot["narration"], heard, pronounce=shot.get("pronounce"))
+        rows.append({"label": label, "at": shot["at"], "expected": shot["narration"],
+                     "heard": heard, "wer": said["wer"], "pronounced": said["pronounced"]})
+        if said["wer"] > INTELLIGIBILITY_WER:
+            flagged.append(label)
+            findings.append({
+                "timestamp": float(shot["at"]),
+                "problem": (f"shot {label}: heard '{_clip(heard)}' for "
+                            f"'{_clip(shot['narration'])}' (WER {said['wer']:.2f})"),
+                "why": (f"the narration is not heard as written: a word error rate of "
+                        f"{said['wer']:.2f}, over INTELLIGIBILITY_WER "
+                        f"{INTELLIGIBILITY_WER:g} (provisional)"),
+                "root_cause": f"the take of shot {label} is unclear here, or the mix covers it",
+                "owner": "voice",
+                "fix": (f"hear it, then retake it ({qa._yt(f'voice --redo {label}', where)}), "
+                        "or lower what covers it in the mix"),
+                "severity": "minor", "category": "voiceover", "source": "listen",
+                "frame": LISTENING})
+    unheard = [{"label": s["label"], "why": problems[s["label"]]} for s in shots
+               if s["label"] not in kept]
+    return {"status": "done" if rows else "not_evidenced",
+            "reason": "" if rows else "no shot's transcript could be kept",
+            "model": prepared.model, "shots": rows, "flagged": flagged,
+            "not_evidenced": unheard, "findings": findings}
+
+
+def _changed(prepared: Prepared) -> str:
+    """Why the film there is not the film the listener heard, or "": the
+    video changed, or the scene was edited after it was rendered."""
+    video, scene = Path(prepared.film["path"]), Path(prepared.scene_path)
+    if not video.is_file() or _sha256(video) != prepared.film["sha256"]:
+        return f"{video.name} changed while the listener heard it; listen again"
+    if scene.is_file() and video.stat().st_mtime < scene.stat().st_mtime:
+        return f"{video.name} is now older than {scene.name}; render and listen again"
+    return ""
+
+
 def listen(project, pass_dir: Path, prepared: Prepared, args, *, house: str = "",
            house_digest: dict | None = None) -> dict:
     """Ask, check, record: the listen's record, also written to
@@ -639,18 +1119,36 @@ def listen(project, pass_dir: Path, prepared: Prepared, args, *, house: str = ""
                 kept, dropped = merged((kept, dropped), (more, failed))
     except HarnessError as exc:
         reason = str(exc)
-    if not reason:
-        # Current only while the film heard is the film there: a render
-        # that landed during the call carries another mix.
-        video, scene = Path(prepared.film["path"]), Path(prepared.scene_path)
-        if not video.is_file() or _sha256(video) != prepared.film["sha256"]:
-            reason = f"{video.name} changed while the listener heard it; listen again"
-        elif scene.is_file() and video.stat().st_mtime < scene.stat().st_mtime:
-            reason = f"{video.name} is now older than {scene.name}; render and listen again"
-        kept, dropped = ([], []) if reason else (kept, dropped)
+    # Who served the listen, read before the transcript makes a call of its
+    # own (served() reads the last one made).
     served, provider = listener.served()
+    asked = len(listener.built)
+    # Current only while the film heard is the film there: a render that
+    # landed during the call carries another mix, and nothing is asked of
+    # it, the transcript included.
+    reason = reason or _changed(prepared)
+    if reason:
+        kept, dropped = [], []
+    # The transcript (AUTO-152): what the narration said, shot by shot, on
+    # the same harness and track; asked only after the listen answered.
+    shots = list(prepared.shots or [])
+    if not shots:
+        transcript = transcript_record(prepared.transcript_skip, prepared.model, [])
+    elif reason:
+        transcript = transcript_record(f"the listen is not current: {reason}",
+                                       prepared.model, shots)
+    else:
+        transcript = transcribe(listener, prepared, shots, where=_where(project))
+        transcript["served_model"], transcript["provider"] = (
+            listener.served() if len(listener.built) > asked else ("cached", "cached"))
+        # and a render that landed during the transcript takes both
+        reason = _changed(prepared)
+        if reason:
+            kept, dropped = [], []
+            transcript = transcript_record(reason, prepared.model, shots)
+    kept = kept + transcript.pop("findings")
     report = listener.report()
-    if served is None and not listener.built and report["decisions"]:
+    if served is None and not asked and report["decisions"]:
         # Nothing was asked: every answer came from decisions/qa/.
         served, provider = served_before(pass_dir, report["decisions"])
     current = not reason
@@ -674,6 +1172,7 @@ def listen(project, pass_dir: Path, prepared: Prepared, args, *, house: str = ""
         "findings": findings, "dropped": dropped,
         "not_heard": [str(x) for x in ((result or {}).get("not_heard") or [])
                       if str(x).strip()] if isinstance(result, dict) and current else [],
+        "transcript": transcript,
         "engine": report,
     }
     write_json(pass_dir / LISTENING, record)
@@ -695,7 +1194,9 @@ def evidence_row(record: dict, where: str = "") -> dict:
                      "(`yt qa --listen`): the whole mix as the viewer hears it",
            "covers": list(qa.AUDIO), "heard": sha, "now": sha,
            "current": bool(record.get("current")), "why": "",
-           "command": qa._yt("qa --listen", where)}
+           "command": qa._yt("qa --listen", where),
+           # the one review that hears the rendered track (AUTO-152)
+           "basis": "heard"}
     if row["current"]:
         row["said"] = {"heard": (record.get("result") or {}).get("heard"),
                        "categories": {k: ((record.get("result") or {}).get("categories")
@@ -732,14 +1233,32 @@ def merge_into(card: dict, record: dict) -> dict:
                      f"({row.get('category')}): {row.get('why')}")
     for item in record.get("not_heard") or []:
         noted.append(f"listen: not heard -- {item}")
+    words = record.get("transcript") if isinstance(record.get("transcript"), dict) else {}
+    unheard = words.get("not_evidenced") or []
+    if words.get("status") == "not_evidenced" and not words.get("shots"):
+        noted.append("listen: transcript not evidenced"
+                     + (f" for {len(unheard)} voiced shot(s)" if unheard else "")
+                     + f" -- {words.get('reason')}")
+    else:
+        for row in unheard:
+            noted.append(f"listen: transcript of shot {row.get('label')} not evidenced -- "
+                         f"{row.get('why')}")
     card["not_evidenced"] = noted
     return card
 
 
 def card_entry(record: dict) -> dict:
-    """The scorecard's `listen`: whether it is current, who heard, and what it cost."""
-    return {k: record.get(k) for k in ("current", "model", "served_model", "provider",
-                                       "reason", "decisions", "engine")} | {
+    """The scorecard's `listen`: whether it is current, who heard, what it
+    cost, and the transcript's tally."""
+    entry = {k: record.get(k) for k in ("current", "model", "served_model", "provider",
+                                        "reason", "decisions", "engine")} | {
         "audio_sha256": (record.get("audio") or {}).get("sha256"),
         "film_sha256": (record.get("film") or {}).get("sha256"),
         "file": LISTENING}
+    words = record.get("transcript")
+    if isinstance(words, dict):
+        entry["transcript"] = {"status": words.get("status"), "reason": words.get("reason"),
+                               "shots": len(words.get("shots") or []),
+                               "flagged": len(words.get("flagged") or []),
+                               "not_evidenced": len(words.get("not_evidenced") or [])}
+    return entry

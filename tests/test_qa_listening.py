@@ -19,6 +19,7 @@ import os
 import shutil
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from ytstudio import harness, qa, sound, voice
@@ -404,6 +405,163 @@ class Stage(unittest.TestCase):
             self.assertIn(key, told)
         self.assertIn("## Listening evidence", self.md)
         self.assertIn("yt voice", self.md)
+
+
+class Basis(unittest.TestCase):
+    """Each audio score records whether a review heard the rendered track or
+    only read what the film was made from (AUTO-152). The take review reads
+    the takes by their words, lengths and pace, and the listen-back reads the
+    cue sheet; only `yt qa --listen` hears the mix. The basis is a record and
+    a not_evidenced line: no score, bar, overall or prompt moves for it."""
+
+    def listen_row(self, current=True):
+        from ytstudio import listen
+        record = {"pass": "pass-01", "model": "google/gemini-3.6-flash",
+                  "current": current, "reason": "" if current else "a 402",
+                  "audio": {"sha256": "ab" * 32, "seconds": 12.0},
+                  "result": {"heard": {"seconds": 12.0}, "categories": {}},
+                  "findings": [], "not_heard": []}
+        return listen.evidence_row(record)
+
+    def test_listeners_carry_basis_read_and_the_listen_row_basis_heard(self):
+        self.assertEqual(qa.LISTENERS["sound"]["basis"], "read")
+        self.assertEqual(qa.LISTENERS["voice"]["basis"], "read")
+        for snd, vo in ((_sound(), _voice()), (None, None)):
+            for row in qa.listening_evidence(snd, vo):
+                self.assertEqual(row["basis"], "read", row)
+        self.assertEqual(self.listen_row()["basis"], "heard")
+        self.assertEqual(self.listen_row(current=False)["basis"], "heard")
+
+    def test_heard_stays_the_sha256_digest_for_sound_voice_and_listen(self):
+        snd, vo = _sound(), _voice()
+        rows = {r["source"]: r for r in qa.listening_evidence(snd, vo)}
+        rows["listen"] = self.listen_row()
+        self.assertEqual(rows["sound"]["heard"], snd["review"]["heard"]["sha256"])
+        self.assertEqual(rows["voice"]["heard"], vo["review"]["heard"]["sha256"])
+        self.assertEqual(rows["listen"]["heard"], "ab" * 32)
+        for row in rows.values():
+            self.assertIsInstance(row["heard"], str)
+            self.assertEqual(len(row["heard"]), 64)
+
+    def test_audio_basis_names_each_audio_category_by_its_current_rows(self):
+        rows = qa.listening_evidence(_sound(), _voice())
+        self.assertEqual(qa.audio_basis(rows, silent=False),
+                         {k: "read" for k in qa.AUDIO})
+        self.assertEqual(qa.audio_basis(rows + [self.listen_row()], silent=False),
+                         {k: "heard" for k in qa.AUDIO})
+        # a listen that did not answer is not current: the reads stand
+        self.assertEqual(qa.audio_basis(rows + [self.listen_row(current=False)],
+                                        silent=False), {k: "read" for k in qa.AUDIO})
+        # an unheard category is unscored, not read: it has no basis
+        stale = _voice()
+        stale["takes"][0]["file"] = "voice/1.1-retake.wav"
+        self.assertEqual(qa.audio_basis(qa.listening_evidence(_sound(), stale),
+                                        silent=False),
+                         {"sound_design": "read", "music_score": "read"})
+        self.assertEqual(qa.audio_basis(qa.listening_evidence(None, None), silent=False), {})
+        # a silent film's sound and music are scored by rule
+        self.assertEqual(qa.audio_basis(rows, silent=True), {"voiceover": "read"})
+
+    def test_the_basis_lines_name_the_review_and_the_command_that_hears(self):
+        lines = qa.basis_lines({k: "read" for k in qa.AUDIO}, where="--project /f/one")
+        self.assertEqual(len(lines), 3)
+        said = dict(zip(qa.AUDIO, lines))
+        self.assertIn("take review", said["voiceover"])
+        self.assertIn("voice.json", said["voiceover"])
+        for key in ("sound_design", "music_score"):
+            self.assertIn("cue-sheet review", said[key])
+            self.assertIn("sound.json", said[key])
+        for key, line in said.items():
+            self.assertTrue(line.startswith(f"{key}: "), line)
+            self.assertIn("not from the rendered track", line)
+            self.assertIn("run yt qa --project /f/one --listen", line)
+        self.assertEqual(qa.basis_lines({k: "heard" for k in qa.AUDIO}), [])
+
+    def test_the_scorecard_prompt_is_unchanged_by_basis(self):
+        rows = qa.listening_evidence(_sound(), _voice())
+        bare = [{k: v for k, v in r.items() if k != "basis"} for r in rows]
+
+        def prompt(listening):
+            return qa.review_prompt(
+                title="t", pass_name="pass-01", sheet_name="contact-sheet.png",
+                has_narration=True, missing=[], total_shots=4, dropped_lines=[],
+                narrated_total=0, story=None, evidence=[], mechanical=[],
+                listening=listening, unheard={}, silent_film=False, measurements={},
+                blockers=[])
+        self.assertTrue(all("basis" in r for r in rows))
+        self.assertEqual(prompt(rows), prompt(bare))
+        self.assertNotIn('"basis"', prompt(rows))
+
+
+class BasisStage(unittest.TestCase):
+    """The whole stage: a card whose audio was only read gains the basis
+    lines and nothing else, and its scorecard is served from the cache."""
+
+    # Stage's project and runner, without running Stage's own tests again
+    setUp, put, built_last = Stage.setUp, Stage.put, Stage.built_last
+    args, run_qa = Stage.args, Stage.run_qa
+
+    def again(self):
+        """The same project scored afresh as pass-01, its decisions kept."""
+        shutil.rmtree(self.root / "qa")
+        (self.root / "qa.json").unlink()
+
+    def test_a_read_only_card_gains_only_the_basis_lines(self):
+        self.put("sound.json", _sound())
+        self.put("voice.json", _voice())
+        self.built_last()
+        with unittest.mock.patch.object(qa, "audio_basis", lambda rows, *, silent: {}):
+            self.assertEqual(self.run_qa(), 0)
+        before, before_md = self.card, self.md
+        before_qa = json.loads((self.root / "qa.json").read_text())
+        asked = len(motion.FakeEngine.stream_calls)
+        self.again()
+        self.assertEqual(self.run_qa(), 0)
+        after = self.card
+        after_qa = json.loads((self.root / "qa.json").read_text())
+        # the same prompt: the cached scorecard samples answer, nothing is paid
+        self.assertEqual(len(motion.FakeEngine.stream_calls), asked)
+        for key in ("verdict", "bar", "scores", "overall", "audio_not_evidenced",
+                    "blocking", "spread"):
+            self.assertEqual(after[key], before[key], key)
+            if key in before_qa:
+                self.assertEqual(after_qa[key], before_qa[key], key)
+        self.assertEqual(after["audio_basis"], {k: "read" for k in qa.AUDIO})
+        self.assertEqual(after_qa["audio_basis"], {k: "read" for k in qa.AUDIO})
+        added = after["not_evidenced"][len(before["not_evidenced"]):]
+        self.assertEqual(after["not_evidenced"][:len(before["not_evidenced"])],
+                         before["not_evidenced"])
+        self.assertEqual(len(added), 3, added)
+        for key, line in zip(qa.AUDIO, added):
+            self.assertTrue(line.startswith(f"{key}: "), line)
+            self.assertIn("--listen", line)
+        self.assertFalse(any("--listen" in r for r in after["bar"]))
+        for line in added:
+            self.assertIn(line, self.md)
+            self.assertNotIn(line, before_md)
+        # the listening section says what each row is based on
+        self.assertIn("read", self.md.split("## Listening evidence", 1)[1])
+
+    def test_an_espeak_narration_is_not_ready_whatever_it_scores(self):
+        takes = [dict(t, engine="espeak") for t in _takes()]
+        vo = dict(_voice(takes), engine="espeak")
+        self.put("sound.json", _sound())
+        self.put("voice.json", vo)
+        self.built_last()
+        self.assertEqual(self.run_qa(), 1)
+        self.assertEqual(self.card["scores"], _scores())
+        self.assertEqual(self.card["verdict"], qa.NOT_READY)
+        line = next(b for b in self.card["blocking"] if b.startswith("voice:"))
+        self.assertIn("narration is an espeak scratch take (2 of 2 takes)", line)
+        self.assertIn(f"run yt voice --project {self.root} --engine auto", line)
+        # a record, not a brief: the scorecard reviewer is asked what it
+        # would be asked of the same film read by a real engine, so no cached
+        # scorecard is asked again for it (AUTO-152's "no re-asked scorecards")
+        self.assertTrue(motion.FakeEngine.stream_calls)
+        for call in motion.FakeEngine.stream_calls:
+            self.assertNotIn("scratch take", call["prompt"])
+        self.assertEqual(json.loads((self.root / "qa.json").read_text())["verdict"],
+                         qa.NOT_READY)
 
 
 class Measured(unittest.TestCase):
