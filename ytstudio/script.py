@@ -3382,7 +3382,7 @@ class Screenwriter:
             # revise-N and the rule and picture flags of the same shape
             # are not named so, and stay below.
             return self.fact_reviewer.decide(name, prompt, schema)
-        drafting =("shots" in schema.get("properties", {}) and self.draft_effort
+        drafting = ("shots" in schema.get("properties", {}) and self.draft_effort
                     and not claude_engine.default_for("effort"))
         return (self._drafter if drafting else self.harness).decide(name, prompt, schema)
 
