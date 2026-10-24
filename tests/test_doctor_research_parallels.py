@@ -63,6 +63,11 @@ class Note(unittest.TestCase):
     def test_a_kept_parallel_is_no_note(self):
         self.assertEqual(self.notes(parallels=[row()], parallels_why=""), [])
 
+    def test_a_paper_film_is_asked_too(self):
+        # a paper film is spoken and gets the explainer's outline text
+        found = self.notes(scope="paper", parallels=[], parallels_why="")
+        self.assertEqual([f.level for f in found], ["note"])
+
     def test_a_wordless_film_is_never_asked(self):
         self.assertEqual(self.notes(scope="cinematic", parallels=[], parallels_why=""), [])
 

@@ -613,10 +613,10 @@ before. The outline returns `parallels` (each `event`, `year`, `how_it_maps`,
 `where_it_breaks`, `source_url`) or an empty list and `parallels_why`. The
 dossier keeps at most two, and only rows whose `source_url` is a page the
 research opened (`research.parallels_of`); a row whose source was never
-opened, an incomplete row and a third one are dropped and listed in
-`warnings` as `historical parallel dropped:`, which `yt doctor` shows as
-research warns, and an explainer with none and no reason gets one research
-note. The dossier's README gains `## Historical parallels`, and `yt script`'s
+opened, an incomplete or malformed row and a third one are dropped and
+listed in `warnings` as `historical parallel dropped:`, which `yt doctor`
+shows as research warns, and an explainer or paper film with none and no
+reason gets one research note. The dossier's README gains `## Historical parallels`, and `yt script`'s
 research block lists the kept rows as PL1, PL2, each told with where it
 breaks. None is ever required. The idea's stakes (`yt ideas --rich`) open
 every research prompt as a `Stakes:` line. Stages are cached, so an

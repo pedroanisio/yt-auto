@@ -1135,10 +1135,11 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
             if blind:
                 report.add("warn", "research", f"question(s) {', '.join(blind)} "
                            "opened no page; those facts rest on search snippets")
-        # An explainer asked for parallels (AUTO-151) that named none and said
+        # A spoken film asked for parallels (AUTO-151) that named none and said
         # nothing of why: noted, never enforced, since none is a valid answer.
-        # A wordless film is never asked, and an older dossier has no key.
-        if dossier.get("scope") == "explainer" and "parallels" in dossier \
+        # A paper film is spoken and shares the explainer's outline text; a
+        # wordless film is never asked, and an older dossier has no key.
+        if dossier.get("scope") in ("explainer", "paper") and "parallels" in dossier \
                 and not dossier.get("parallels") \
                 and not str(dossier.get("parallels_why") or "").strip():
             report.add("note", "research", "no historical parallel and no reason given",
