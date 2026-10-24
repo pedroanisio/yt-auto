@@ -62,7 +62,20 @@ class FactBlockers(unittest.TestCase):
     def test_a_shot_the_script_does_not_have_is_named_by_its_number(self):
         rows = script.fact_blockers({"flags": [{"n": 9, "severity": "blocker",
                                                  "problem": "p", "fix": "f"}]}, shots())
-        self.assertEqual(rows[0]["label"], "shot 9")
+        self.assertEqual(rows[0]["label"], "shot 9 (not in the script)")
+        # no line to send back: `--revise shot 9` is no spec --revise reads,
+        # so the screenplay is checked again with the fix as a note
+        self.assertEqual(script.fact_shot(rows[0]), "")
+        self.assertEqual(script.fact_command(rows[0]), 'yt script --verify --notes "f"')
+        self.assertEqual(script.fact_shot(script.fact_blockers(CHECK, shots())[0]), "1.2")
+
+
+class Commands(unittest.TestCase):
+    def test_a_shot_is_revised_and_the_script_wide_one_checked_again(self):
+        shot, wide, _ = script.fact_blockers(CHECK, shots())
+        self.assertEqual(script.fact_command(shot), 'yt script --revise 1.2 --why "say a bolt"')
+        self.assertEqual(script.fact_command(wide, "--project", "p"),
+                         'yt script --project p --verify --notes "retitle it"')
 
 
 class DoctorReadsThem(unittest.TestCase):
@@ -80,6 +93,13 @@ class DoctorReadsThem(unittest.TestCase):
         report = doctor.check_project(workspace.Project(self.root))
         return [(f.message, f.fix) for f in report.findings
                 if f.level == "fail" and f.area == "fact-check"]
+
+    def test_a_blocker_on_a_shot_the_script_lacks_reads_as_before(self):
+        data = json.loads((self.root / "script.json").read_text())
+        data["check"] = {"flags": [{"n": 9, "severity": "blocker", "problem": "p",
+                                    "fix": "f"}]}
+        (self.root / "script.json").write_text(json.dumps(data))
+        self.assertEqual(self.fails(), [("shot 9: p", "f")])
 
     def test_the_fails_read_exactly_as_before(self):
         self.assertEqual(self.fails(), [

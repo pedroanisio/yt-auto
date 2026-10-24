@@ -1685,6 +1685,13 @@ class FactCheckRows(ImproveCase):
                       found[2]["why"])
         self.assertEqual(self.facts(improve.collect(card(5.0))), [])
 
+    def test_a_row_on_a_shot_the_script_lacks_reruns_the_screenplay(self):
+        # `shot 9` is no label --revise feedback could match (sent_back)
+        lost = {"n": 9, "label": "shot 9 (not in the script)", "problem": "p",
+                "fix": "f", "kept": False}
+        found = self.facts(improve.collect(self.fact_card([lost])))
+        self.assertEqual([(f["shot"], f["owner"]) for f in found], [(None, "script")])
+
     def test_they_are_routed_by_lookup_whatever_the_model_says(self):
         found = improve.collect(self.fact_card([self.SHOT, self.KEPT]))
         FakeEngine.route = route_all_to("vfx")

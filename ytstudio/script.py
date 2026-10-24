@@ -7218,15 +7218,19 @@ def story_gate(args, data: dict) -> str:
 #: What a whole-script fact-check flag (n 0, the verify prompt's marker for a
 #: problem with the script as a whole) is called wherever a blocker is named.
 SCRIPT_WIDE = "script-wide"
+#: What follows the number of a flag whose shot the screenplay does not
+#: have (a stale check, or a reviewer's slip): it has no line to send back.
+NOT_IN_SCRIPT = " (not in the script)"
 
 
 def fact_blockers(check: dict | None, shots: list[dict]) -> list[dict]:
     """The fact-check blockers that stand (AUTO-133): every flag of
     script.json's `check` whose severity is blocker and that nobody marked
     `resolved`, the whole-script ones (n 0) included. Each row is {n,
-    label, problem, fix, kept}: the shot's label, or "script-wide" for n 0,
-    and whether the writer kept the line with a reason. A kept blocker is
-    still a blocker: the writer is the author, and doctor fails on it.
+    label, problem, fix, kept}: the shot's label, "script-wide" for n 0, or
+    "shot N (not in the script)" for a number no shot has, and whether the
+    writer kept the line with a reason. A kept blocker is still a blocker:
+    the writer is the author, and doctor fails on it.
 
     The one definition the script gate, doctor, QA's bar and improve read,
     so none of them can drift from the others. Important and minor flags
@@ -7239,20 +7243,30 @@ def fact_blockers(check: dict | None, shots: list[dict]) -> list[dict]:
             continue
         n = _number(f.get("n"))
         rows.append({"n": n,
-                     "label": (SCRIPT_WIDE if not n else labels.get(n) or f"shot {n}"),
+                     "label": (SCRIPT_WIDE if not n
+                               else labels.get(n) or f"shot {n}{NOT_IN_SCRIPT}"),
                      "problem": str(f.get("problem") or ""), "fix": str(f.get("fix") or ""),
                      "kept": bool(f.get("kept"))})
     return rows
 
 
+def fact_shot(row: dict) -> str:
+    """The label of the shot a fact_blockers row can send back on its own,
+    or "" for a script-wide row and one on a shot the screenplay does not
+    have, which no `--revise` spec or feedback row could name."""
+    label = str(row.get("label") or "")
+    return label if row.get("n") and not label.endswith(NOT_IN_SCRIPT) else ""
+
+
 def fact_command(row: dict, *where: str) -> str:
     """The command that clears one fact_blockers row: a shot's line goes
     back on its own (`--revise`, whose fact-check reads the changed line
-    again); a whole-script blocker has no line to send, so the screenplay
-    is checked again with the fix as a note. `where` is the project flag a
-    report names (doctor's `--project <root>`)."""
+    again); a whole-script blocker, or one on a shot the screenplay lacks,
+    has no line to send, so the screenplay is checked again with the fix as
+    a note. `where` is the project flag a report names (doctor's
+    `--project <root>`)."""
     fix = (row.get("fix") or "...").replace('"', "'")
-    if row.get("n"):
+    if fact_shot(row):
         return " ".join(["yt script", *where, "--revise", str(row["label"]),
                          "--why", f'"{fix}"'])
     return " ".join(["yt script", *where, "--verify", "--notes", f'"{fix}"'])
@@ -7272,13 +7286,14 @@ def fact_gate_lines(rows: list[dict]) -> list[str]:
     """One error line per standing blocker, naming where it is and what clears it."""
     out = []
     for row in rows:
-        if row["n"]:
+        if fact_shot(row):
             out.append(f"error: fact-check blocker at {row['label']}: {row['problem']}; "
                        "narration.txt was not written. Run "
                        f"`{fact_command(row)}` (the fact-check reads the changed lines "
                        "again), or --report-only to record it and go on.")
         else:
-            out.append(f"error: fact-check blocker ({SCRIPT_WIDE}): {row['problem']}; "
+            where = SCRIPT_WIDE if not row["n"] else row["label"]
+            out.append(f"error: fact-check blocker ({where}): {row['problem']}; "
                        f"narration.txt was not written. Rerun `{fact_command(row)}`, or "
                        "--report-only.")
     return out

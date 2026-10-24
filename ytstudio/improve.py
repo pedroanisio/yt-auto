@@ -307,11 +307,13 @@ def fact_row(row: dict) -> dict:
     """One finding for a fact-check blocker QA recorded under `accuracy`
     (AUTO-133, script.fact_blockers). An open one is the script's: a shot's
     line goes back on its own (`--revise feedback`, by_shot), a script-wide
-    one has no shot, so the screenplay is written again. One the writer kept
-    with a reason is not the writer's to change again: the dossier is
-    corrected, or a person marks the flag resolved."""
+    one (or one on a shot the screenplay lacks) has no shot, so the
+    screenplay is written again. One the writer kept with a reason is not
+    the writer's to change again: the dossier is corrected, or a person
+    marks the flag resolved."""
+    from . import script as script_stage
     label = str(row.get("label") or "")
-    shot = label if row.get("n") else None
+    shot = script_stage.fact_shot(row) or None
     problem = f"fact-check blocker at {label}: {row.get('problem') or ''}"
     if row.get("kept"):
         return {"shot": shot, "owner": UPSTREAM, "severity": "blocking", "problem": problem,
