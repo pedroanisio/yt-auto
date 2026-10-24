@@ -40,7 +40,8 @@ from . import (env, gateway, house, keyframe, narrative, render, retention, rhyt
 from . import script as script_stage
 from .assets import kind_for, licence_tier
 from .core import read_json, timecode, write_json
-from .research import PARALLEL_DROPPED, PARALLEL_MIN_DEPTH, STORY_DROPPED
+from .research import (CROSSCHECK_WARNING, PARALLEL_DROPPED, PARALLEL_MIN_DEPTH,
+                       STORY_DROPPED, UNVERIFIED)
 
 #: Levels, in the order the report sorts them.
 LEVELS = ("fail", "warn", "note", "ok")
@@ -1206,8 +1207,10 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
         # named a precedent it could not source, but no provenance trouble
         # either: no --fresh is asked for, and the blind-question check stands.
         warnings = [str(w) for w in dossier.get("warnings") or []]
+        # A blind cross-check pass (AUTO-134) is warned like a blind question,
+        # but it is no question: it must not hide the blind-question check.
         provenance = [w for w in warnings
-                      if not w.startswith((STORY_DROPPED, PARALLEL_DROPPED))]
+                      if not w.startswith((STORY_DROPPED, PARALLEL_DROPPED, CROSSCHECK_WARNING))]
         for warning in warnings:
             if warning.startswith(STORY_DROPPED):
                 report.add("note", "research", warning)
@@ -1238,6 +1241,28 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
                       if len(asked) < PARALLEL_MIN_DEPTH else ())
             report.add("note", "research", "no historical parallel and no reason given",
                        _cmd("research", project, "--fresh", *deeper))
+        # The independent cross-check (AUTO-134): a claim other sources
+        # contradict is the fact-check's to flag or clear, so the fix is
+        # `yt script --verify`, whose blockers the fact-check rows below fail
+        # on; what it could not verify is counted. A spoken dossier never
+        # cross-checked is noted only, so a --quick run or an older project
+        # gains a note and nothing it must act on.
+        checked = [e for e in dossier.get("crosscheck") or [] if isinstance(e, dict)]
+        for e in checked:
+            if e.get("status") == "contradicted":
+                report.add("warn", "research", "independent sources contradict "
+                           f"\"{_clip(e.get('claim', ''))}\": {_clip(e.get('correction', ''))}",
+                           _cmd("script", project, "--verify"))
+        unverified = [e for e in checked if e.get("status") == UNVERIFIED]
+        if unverified:
+            report.add("warn", "research", f"{len(unverified)} of {len(checked)} cross-checked "
+                       "claim(s) unverified: no valid independent verdict",
+                       _cmd("research", project, "--fresh", "--crosscheck", str(len(checked))))
+        if dossier.get("scope") in ("explainer", "paper") and claims \
+                and "crosscheck" not in dossier and not dossier.get("crosscheck_skipped"):
+            report.add("note", "research", "key claims were not cross-checked independently; "
+                       "run yt research --crosscheck N",
+                       _cmd("research", project, "--crosscheck", "8"))
         for gap in blockers:
             report.add("fail", "research", f"blocker: {_clip(gap.get('issue', ''))}",
                        _clip(gap.get("how_to_resolve", "")))
