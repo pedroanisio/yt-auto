@@ -861,7 +861,8 @@ digest. A look authored on `design.py`'s house fallback palette (no
 `styles.json`, or a primary treatment whose palette names no hex code:
 `keyframe.json`'s `palette_source` is `fallback`) is refused with exit 1 and
 `yt styles --rich` named; `yt build` and `yt render` still run on such a film,
-but `yt qa` blocks READY and `yt doctor` refuses delivery (AUTO-155). `yt vfx` then carries the section forward at $0 and every other
+but `yt qa` blocks READY and `yt doctor` refuses delivery (AUTO-155).
+`yt vfx` then carries the section forward at $0 and every other
 author's brief and review name its program (`keyframe/look.py`, copied into
 every section workspace as an importable `look.py`; a later look pass's own
 workspace gets none, it makes the next look) as the look to build on
