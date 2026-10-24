@@ -4394,20 +4394,22 @@ class VfxPlanner:
                 "findings": {d["file"]: d["findings"] for d in authored},
                 "cost_usd": round(sum(d.get("cost_usd", 0) for d in authored), 2)}
 
-    def reach(self, effects: list[dict], scene: dict) -> dict:
+    def reach(self, effects: list[dict], scene: dict, outline: dict | None = None) -> dict:
         """How far the authored documents reach into the engine, and whether
-        each effect uses the strongest construct for what it must convey.
+        each effect uses the strongest construct for what it must convey;
+        then the motion audit (`motion`, AUTO-144): whether the viewer
+        watches the change an effect must show.
 
         The usage and the family coverage are computed; the verdicts are the
         model's. With nothing authored there is nothing to judge, and no call.
+        A cached record made before the motion audit gets only the motion
+        audit, on top of what it holds, and is saved again.
         """
         authored = [e for s in effects for e in s["effects"] if authored_as(scene, e["id"])]
         files = sorted({authored_as(scene, e["id"])["file"] for e in authored})
+        nothing = "nothing was authored, so there is nothing to audit"
 
-        def work() -> dict:
-            if not authored:
-                return {"usage": None, "report": None, "audit": None,
-                        "reason": "nothing was authored, so there is nothing to audit"}
+        def texts_of() -> dict[str, str]:
             texts = {}
             for file in files:
                 path = self.ws.root / file
@@ -4415,6 +4417,18 @@ class VfxPlanner:
                     texts[file] = path.read_text(encoding="utf-8")
                 except OSError as exc:
                     texts[file] = f"<unreadable error='{exc}'/>"
+            return texts
+
+        def motion_of(texts: dict[str, str]) -> dict:
+            if not authored:
+                return {"answer": None, "static": [], "reason": nothing}
+            return self._motion(authored, effects, scene, texts, outline)
+
+        def work() -> dict:
+            if not authored:
+                return {"usage": None, "report": None, "audit": None,
+                        "reason": nothing, "motion": motion_of({})}
+            texts = texts_of()
             usage = reach.usage_of(texts)
             # A phase is judged by the constructs of the world it lives in.
             for eid, wid in (scene.get("phases") or {}).items():
@@ -4425,13 +4439,103 @@ class VfxPlanner:
                 idea_block=self._idea_block(), direction_block=self._direction_block(),
                 mission=MISSION, effects=authored, usage=usage, rep=rep,
                 element_names=names), reach.REACH_SCHEMA)
-            return {"usage": usage, "report": rep, "audit": audit, "reason": ""}
-        return self._stage("14-reach", work)
+            return {"usage": usage, "report": rep, "audit": audit, "reason": "",
+                    "motion": motion_of(texts)}
+        record = self._stage("14-reach", work)
+        if reach.needs_motion(record):
+            # A record of nothing authored (usage None) says so again; any
+            # other gets the audit on the documents it was made from.
+            record = dict(record, motion=(
+                {"answer": None, "static": [], "reason": str(record.get("reason") or nothing)}
+                if record.get("usage") is None else motion_of(texts_of())))
+            self.dossier.save("14-reach", record)
+        return record
+
+    def _phase_windows(self, effect: dict, world_id: str, effects: list[dict],
+                       outline: dict | None) -> list[tuple[float, float]] | None:
+        """The (start, end) in its world of each of an effect's shots, from
+        world_symbols over its section's shots; the whole world for an effect
+        with no shots; None (the whole symbol) when the world is not found."""
+        sections = (outline or {}).get("sections") or getattr(self, "script", None) or []
+        section = next((s for s in sections if isinstance(s, dict)
+                        and s.get("heading") == effect.get("section")), None)
+        group = next((g for g in effects if g.get("section") == effect.get("section")), None)
+        if section is None or group is None:
+            return None
+        world = next((w for w in self._worlds(section, group) if w["id"] == world_id), None)
+        if world is None:
+            return None
+        labels = {str(s) for s in effect.get("shots") or []}
+        windows = [(float(s["at"]), float(s["at"]) + float(s["seconds"]))
+                   for s in world["shots"] if s["label"] in labels]
+        return windows or [(0.0, float(world["seconds"]))]
+
+    def _motion(self, authored: list[dict], effects: list[dict], scene: dict,
+                texts: dict[str, str], outline: dict | None) -> dict:
+        """The motion audit (AUTO-144): each authored effect's slice of its
+        document (reach.motion_slice over its shots' windows in its world, or
+        its whole symbol), asked of the reviewer's model as `reach-motion`,
+        its answer checked against the slices and asked once more as
+        `reach-motion-again` with the problems named. {answer, static,
+        reason}: an answer still unreadable, or a reviewer that failed, is
+        recorded with its reason and no static process -- not evidenced,
+        never passed and never failed. Nothing fails the stage."""
+        reviewer_model = getattr(self, "reviewer_model", None)
+        if not reviewer_model:
+            return {"answer": None, "static": [],
+                    "reason": "no reviewer model, so the motion audit was not asked"}
+        slices = {}
+        for e in authored:
+            row = authored_as(scene, e["id"]) or {}
+            windows = (self._phase_windows(e, row.get("id", ""), effects, outline)
+                       if row.get("id") != e["id"] else None)
+            slices[e["id"]] = reach.motion_slice(texts.get(row.get("file", ""), ""),
+                                                 row.get("id", ""), windows)
+        ids = [e["id"] for e in authored]
+        prompt = reach.motion_prompt(
+            authored, slices, (getattr(self, "bundle", None) or {}).get("picture_check") or [],
+            idea_block=self._idea_block())
+        # Its own harness, of the reviewer's model: a model never judges the
+        # documents it planned. The text default timeout, not the image
+        # review's; plan-reach above stays on the planner's harness.
+        reviewer = harness.Harness(self.ws.root, "vfx", model=reviewer_model,
+                                   role=reach.MOTION_ROLE, house=self.house,
+                                   house_digest=self.house_digest, fresh=self.fresh,
+                                   verbose=self.verbose)
+        try:
+            answer = reviewer.decide("reach-motion", prompt, reach.MOTION_SCHEMA)
+            problems = reach.motion_problems(answer, ids, slices)
+            if problems:
+                answer = reviewer.decide(
+                    "reach-motion-again", prompt + "\n\nYour previous answer could not be "
+                    "read against the listed changes: " + "; ".join(problems[:10])
+                    + ". Answer every effect once, by its id, naming only listed targets.",
+                    reach.MOTION_SCHEMA)
+                problems = reach.motion_problems(answer, ids, slices)
+        except harness.HarnessError as exc:
+            return {"answer": None, "static": [], "reason": f"the motion audit failed: {exc}"}
+        finally:
+            self._account(reviewer.usage)
+        if problems:
+            return {"answer": answer, "static": [],
+                    "reason": "the motion audit's answer could not be read after asking "
+                              "again: " + "; ".join(problems[:10])}
+        return {"answer": answer, "static": reach.static_processes(answer), "reason": ""}
 
     def plan(self, effects: list[dict], totals: dict, scene: dict,
              reach_data: dict | None = None) -> dict:
         flat = [e for s in effects for e in s["effects"]]
         audit = (reach_data or {}).get("audit") or {}
+        # AUTO-144: what the motion audit found shown static is the plan's
+        # first work, ahead of any upgrade; with none the prompt is unchanged.
+        static = [s for s in ((reach_data or {}).get("motion") or {}).get("static") or []
+                  if isinstance(s, dict)]
+        required = ("Required refinement work, first and not optional: the motion audit "
+                    "found these effects show a process the viewer must watch change in a "
+                    "static picture.\n"
+                    + "\n".join(f"- `{s.get('id', '')}` REQUIRED: {s.get('what_changes', '')} "
+                                f"is shown static -- {s.get('fix', '')}" for s in static)
+                    + "\n\n") if static else ""
         upgrades = {e["id"]: e for e in audit.get("effects", [])
                     if e.get("verdict") == "upgrade"}
         listing = "\n".join(
@@ -4453,7 +4557,7 @@ class VfxPlanner:
                           "treat the upgrade as refinement work, ordered by its gain. ")
         return self._stage("15-plan", lambda: self._decide(
             "plan-refine",
-            f"{self._idea_block()}\n\nEvery specified visual, and whether the "
+            f"{self._idea_block()}\n\n{required}Every specified visual, and whether the "
             f"author produced a valid scene-render symbol for it:\n{listing}\n\n"
             f"Totals: {totals['hours']:.0f} hours over {totals['count']} "
             f"effects, {totals['seconds']:.0f}s of animated screen time.\n\n"
@@ -4674,7 +4778,7 @@ class VfxPlanner:
         scene = self.scene_map(effects, authored)
         self.dossier.save("13-scene", scene)
         totals = summarise(effects)
-        reached = self.reach(effects, scene)
+        reached = self.reach(effects, scene, outline)
         plan = self.plan(effects, totals, scene, reached)
         version = next((d.get("version") for d in authored if d.get("version")), self.ws.version)
         return {
@@ -4754,6 +4858,27 @@ def _label_key(label: str) -> list:
     return [int(p) if p.isdigit() else p for p in label.split(".")]
 
 
+def motion_lines(motion) -> list[str]:
+    """vfx.json `reach.motion` as vfx.md's "### Static processes": each
+    effect the motion audit found must show a change and shows it static,
+    with what changes and the fix; why it could not be read, when it could
+    not; a line saying there are none otherwise."""
+    motion = motion if isinstance(motion, dict) else {}
+    static = [s for s in motion.get("static") or [] if isinstance(s, dict)]
+    out = ["### Static processes", ""]
+    if motion.get("reason"):
+        out += [f"*{motion['reason']}*", ""]
+    if static:
+        out += ["Required refinement work: each must let the viewer watch the change "
+                "(`yt doctor` warns, `yt improve` re-authors its section).", "",
+                "| effect | what must change | fix |", "|---|---|---|"]
+        out += [f"| `{s.get('id', '')}` | {str(s.get('what_changes', ''))[:160]} | "
+                f"{str(s.get('fix', ''))[:200]} |" for s in static]
+    elif not motion.get("reason"):
+        out += ["*None: every effect that must show a change is shown changing.*"]
+    return out
+
+
 def write_vfx(dossier: Dossier, data: dict) -> list[Path]:
     style, totals, plan = data["style"], data["totals"], data["plan"]
     idea = data["idea"]
@@ -4781,8 +4906,15 @@ def write_vfx(dossier: Dossier, data: dict) -> list[Path]:
                f"review bar {authoring.get('author_bar')}/10, up to "
                f"{authoring.get('revisions')} revision(s); scores: {scores or '—'}*", ""]
     glance = reach.summary(data.get("reach"))
-    if glance:
-        audit = data["reach"]["audit"]
+    audit = (data.get("reach") or {}).get("audit")
+    if glance and not audit:
+        # The motion audit without the reach audit (AUTO-144): its table, and
+        # the reach record's reason, under the same heading.
+        md += ["## Reach", ""]
+        if data["reach"].get("reason"):
+            md += [f"*{data['reach']['reason']}*", ""]
+        md += motion_lines(data["reach"].get("motion")) + [""]
+    elif glance:
         md += ["## Reach", "",
                f"**{glance['score']}/10** -- {glance['summary']}", "",
                "| family | used / available |", "|---|---|"]
@@ -4802,6 +4934,8 @@ def write_vfx(dossier: Dossier, data: dict) -> list[Path]:
                    + (f" when {', '.join(c['when'])}" if c.get("when") else "")
                    + (f" -- {c['note']}" if c.get("note") else "")
                    for c in data["reach"]["report"]["caveats"]]
+        if isinstance(data["reach"].get("motion"), dict):
+            md += [""] + motion_lines(data["reach"]["motion"])
         md.append("")
     elif (data.get("reach") or {}).get("reason"):
         md += ["## Reach", "", f"*{data['reach']['reason']}*", ""]
@@ -5154,6 +5288,8 @@ def run(args) -> int:
           f"{len(scene['by_label'])} shots covered · {totals['hours']:.0f}h to refine"
           + (f" · {len(scene['dropped'])} not authored" if scene["dropped"] else "")
           + (f" · reach {glance['score']}/10, {len(glance['upgrades'])} upgrade(s)"
-             if glance else ""))
+             if glance and glance["score"] is not None else "")
+          + (f" · {len(glance['static_processes'])} static process(es)"
+             if glance and glance["static_processes"] else ""))
     print(f"{planner.usage}", file=sys.stderr)
     return 1 if scene["dropped"] and not scene["symbols"] else 0
