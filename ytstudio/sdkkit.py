@@ -321,7 +321,7 @@ def facts_lines(version: str, facts: dict) -> list[str]:
                 + (" that names no version of its own" if own else "")
                 + " with a frame before relying on it."), ""]
     for f in rows:
-        line =f"- **{f.get('topic', '')}**: {f['text']} (source: {f.get('source', '?')}"
+        line = f"- **{f.get('topic', '')}**: {f['text']} (source: {f.get('source', '?')}"
         stamp = str(f.get("verified_on") or "")
         if stamp:
             line += f"; verified on {stamp}" + (
