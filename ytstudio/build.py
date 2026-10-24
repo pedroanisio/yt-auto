@@ -941,6 +941,33 @@ def resolve_tokens(tokens: dict[str, str]) -> dict[str, str]:
     return out
 
 
+def _symbol_durations(root) -> dict[str, float]:
+    """Each <symbol id>'s authored length: its own `duration`, else the
+    document's project duration."""
+    out: dict[str, float] = {}
+    project = root.find("project")
+    project_seconds = project.get("duration") if project is not None else None
+    for s in root.iter("symbol"):
+        length = s.get("duration") or project_seconds
+        if s.get("id") and length:
+            try:
+                out[s.get("id")] = float(length)
+            except ValueError:
+                pass
+    return out
+
+
+def symbol_durations(path: Path) -> dict[str, float]:
+    """The authored length of every symbol in one document, read only: what
+    cleaned_include records as `durations`, without writing the include
+    copy. {} when the file cannot be read. The joins (`joins_of`) bound a
+    transition's handle by it."""
+    try:
+        return _symbol_durations(ElementTree.parse(path).getroot())
+    except (OSError, ElementTree.ParseError):
+        return {}
+
+
 def cleaned_include(src: Path, dest: Path,
                     pinner: fonts.Pinner | None = None) -> dict:
     """Write the copy of an authored document that an <include> points at.
@@ -994,15 +1021,7 @@ def cleaned_include(src: Path, dest: Path,
             out["paint_refs"].update(PAINT_REF.findall(value))
     out["unresolved"] = sorted(unresolved)
     out["symbols"] = [s.get("id") for s in root.iter("symbol") if s.get("id")]
-    project = root.find("project")
-    project_seconds = project.get("duration") if project is not None else None
-    for s in root.iter("symbol"):
-        length = s.get("duration") or project_seconds
-        if s.get("id") and length:
-            try:
-                out["durations"][s.get("id")] = float(length)
-            except ValueError:
-                pass
+    out["durations"] = _symbol_durations(root)
     if pinner is not None:
         pinner.pin_xml(root, Path(dest).parent, styles)
     try:
@@ -1070,6 +1089,579 @@ def timeline(sections: list[Section], voice: dict | None) -> list[Placed]:
                 function=str(getattr(shot, "function", "") or "")))
             cursor = max(cursor, at + seconds)
     return sorted(out, key=lambda p: p.at)
+
+
+@dataclass
+class Layout:
+    """Where everything sits before a byte is written (SceneBuilder.layout):
+    the placed shots, what draws each before any decision, the editor's
+    decisions resolved against what exists, and each world's authored
+    length by (file, symbol). Pure: no model, no file written."""
+    placed: list[Placed]
+    drawn: dict[str, tuple]
+    edit: dict
+    authored: dict[tuple[str, str], float] = field(default_factory=dict)
+
+
+# --------------------------------------------------------------------------- #
+# joins: how the picture crosses from one node to the next (AUTO-142)
+# --------------------------------------------------------------------------- #
+
+#: Where a transition's window lies against its cut, in the schema's words.
+JOIN_ALIGN = ("center", "end", "start")
+#: How far each alignment runs the outgoing node past its end, as a share
+#: of the window: the engine extends both handles (sr-core D19), so a
+#: centred window holds the outgoing node half the window longer, one that
+#: starts at the cut the whole window, and one that ends at it not at all.
+JOIN_OUTGOING = {"center": 0.5, "start": 1.0, "end": 0.0}
+#: The longest window a join gets, whatever its neighbours. NO STANDARD: a
+#: house bound that keeps a transition a join, not a scene of its own.
+JOIN_MAX_S = 1.2
+#: The shortest: under three frames at 30 fps a window reads as a flicker,
+#: and a cut is the honest answer. NO STANDARD.
+JOIN_MIN_S = 0.1
+#: The types that need another node, a matte or GLSL (C21, C22, morph's
+#: second shape): deferred, never offered.
+JOIN_DEFERRED = ("morph", "luma", "shader")
+#: The types that travel, so `direction` means something for them: sr-core
+#: D19's wipes, pushes, covers and reveals, and the renderer's whip-pan.
+JOIN_DIRECTED = ("wipe", "barn-door", "push", "cover", "slide", "reveal", "whip-pan")
+#: The directions offered; `angle` needs the angle attribute, which is not.
+JOIN_DIRECTIONS = ("left", "right", "up", "down")
+#: The kinds of join the editor is asked about, in the order QA samples them.
+JOIN_ASKED_KINDS = ("section", "world", "shot")
+
+
+def join_types() -> tuple[str, ...]:
+    """The transition types the editor may choose (JOIN_TYPES): the schema's
+    enumeration less JOIN_DEFERRED, or pilot.JOIN when the schema gives
+    none. `cut` is always among them: it writes no element."""
+    global _JOIN_TYPES
+    if _JOIN_TYPES is None:
+        from .pilot import JOIN
+        menu = [t for t in (enum_of("transition", "type") or JOIN) if t not in JOIN_DEFERRED]
+        _JOIN_TYPES = tuple(menu if "cut" in menu else ["cut", *menu])
+    return _JOIN_TYPES
+
+
+_JOIN_TYPES: tuple[str, ...] | None = None
+
+
+def joins_schema() -> dict:
+    """JOINS_SCHEMA: one entry per join asked, a `cut` among the types."""
+    return {
+        "type": "object",
+        "properties": {
+            "joins": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "at_join": {"type": "integer", "description": "the join's `at_join`"},
+                        "type": {"type": "string", "enum": list(join_types())},
+                        "duration": {"type": "number",
+                                     "description": "seconds, from 0.1 to the join's "
+                                                    "max_seconds (read only for a transition)"},
+                        "alignment": {"type": "string", "enum": list(JOIN_ALIGN),
+                                      "description": "one of the join's `alignments`"},
+                        "direction": {"type": "string", "enum": list(JOIN_DIRECTIONS),
+                                      "description": "only for a type that travels: "
+                                                     + ", ".join(JOIN_DIRECTED)},
+                        "why": {"type": "string",
+                                "description": "the narrative purpose of this join"},
+                    },
+                    "required": ["at_join", "type", "duration", "alignment", "why"],
+                },
+                "description": "one entry per join listed",
+            },
+            "notes": {"type": "string"},
+        },
+        "required": ["joins", "notes"],
+    }
+
+
+def __getattr__(name: str):
+    # JOIN_TYPES and JOINS_SCHEMA read the schema's enumeration, which loads
+    # sr-core: they are made on first use, not when the module is imported.
+    if name == "JOIN_TYPES":
+        return join_types()
+    if name == "JOINS_SCHEMA":
+        return joins_schema()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+JOIN_REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "accept": {"type": "boolean"},
+        "problems": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "at_join": {"type": "integer"},
+                    "problem": {"type": "string"},
+                    "fix": {"type": "string"},
+                },
+                "required": ["at_join", "problem", "fix"],
+            },
+            "description": "one per join that does not serve the film; empty on accept",
+        },
+    },
+    "required": ["accept", "problems"],
+}
+
+JOIN_REVIEW_ROLE = (
+    "You are the second editor of this film, reading the joins another editor "
+    "chose: for each place where one picture gives way to the next, a "
+    "transition or a hard cut. You judge whether each join serves the story at "
+    "that moment, from the narration on either side, what each side is for and "
+    "what it shows: a transition with no narrative purpose is a defect, and so "
+    "is a cut that throws away a change the viewer should feel. No type is "
+    "better than another for its own sake; a hard cut is often right. Accept "
+    "when the joins serve the film; otherwise name each join that does not, "
+    "what is wrong with it and the fix."
+)
+
+
+@dataclass
+class Join:
+    """One boundary between two nodes of the composition, in time order.
+
+    `kind` is "section" (the screenplay's section changes), "world" (the
+    same section, another include: a vfx plan cut), "shot" (a picture layer
+    on either side) or "gap" (the nodes do not meet within a frame, and the
+    background shows). `max_seconds` is the longest window that fits and
+    `alignments` the ones the outgoing node's slack allows at that window.
+    `asked` is whether the editor is asked about it: a gap, or a placeholder
+    card on either side, stays a hard cut, and `note` says why."""
+    n: int
+    at: float
+    kind: str
+    from_id: str
+    to_id: str
+    from_label: str = ""
+    to_label: str = ""
+    from_function: str = ""
+    to_function: str = ""
+    max_seconds: float = 0.0
+    alignments: tuple[str, ...] = JOIN_ALIGN
+    asked: bool = True
+    #: How far past its end the outgoing node may run, or None: unbounded
+    #: (a still holds). For an include, authored minus span plus TIMING_SLACK.
+    slack: float | None = None
+    from_section: str = ""
+    to_section: str = ""
+    from_picture: str = ""
+    to_picture: str = ""
+    note: str = ""
+
+
+def _nodes(layout: Layout) -> list[dict]:
+    """The composition's nodes as build() will write them, from the layout's
+    decisions (not from Placed.include, which build() sets): one include per
+    span owner, carrying the shots merged into it and those extended over,
+    and one layer per other shot, a picture or a placeholder card."""
+    edit, drawn = layout.edit, layout.drawn
+    merged = edit.get("merged") or {}
+    covered = edit.get("covered_by") or {}
+    images, clips = edit.get("images") or {}, edit.get("clips") or {}
+    nodes: dict[str, dict] = {}
+    for label, span in (edit.get("spans") or {}).items():
+        kind, hit = drawn.get(label, ("none", None))
+        if kind != "effect" or not isinstance(hit, dict):
+            continue
+        nodes[ident(f"shot-{label}")] = {
+            "id": ident(f"shot-{label}"), "kind": "include",
+            "start": round(span[0], 3), "end": round(span[1], 3),
+            "file": hit.get("file", ""), "symbol": hit.get("symbol", ""),
+            "picture": f"world {hit.get('symbol', '')} ({hit.get('file', '')})", "shots": []}
+    for p in layout.placed:
+        kind, hit = drawn.get(p.label, ("none", None))
+        owner = (merged.get(p.label, p.label) if kind == "effect" else
+                 merged.get(covered[p.label], covered[p.label]) if p.label in covered else None)
+        if owner is not None and ident(f"shot-{owner}") in nodes:
+            nodes[ident(f"shot-{owner}")]["shots"].append(p)
+            continue
+        picture = hit if kind in ("image", "footage") else (images.get(p.label)
+                                                             or clips.get(p.label))
+        node_kind = ("placeholder" if picture is None else
+                     "footage" if getattr(picture, "kind", "") == "video" else "image")
+        nodes[ident(f"shot-{p.label}")] = {
+            "id": ident(f"shot-{p.label}"), "kind": node_kind,
+            "start": p.at, "end": round(p.at + p.seconds, 3), "shots": [p],
+            "seconds": getattr(picture, "seconds", None),
+            "picture": (f"{node_kind} {picture.path}" if picture is not None
+                        else "placeholder card")}
+    out = [n for n in nodes.values() if n["shots"]]
+    for n in out:
+        n["shots"].sort(key=lambda p: p.at)
+    return sorted(out, key=lambda n: (n["start"], n["end"]))
+
+
+def joins_of(layout: Layout, fps: float) -> list[Join]:
+    """Every join of the film, in time order: pure, from the layout alone.
+
+    Two nodes meet when the outgoing one ends within one frame of where the
+    incoming one starts; otherwise the boundary is a `gap`, listed and never
+    transitioned, since the window would sit over bare background. Shots
+    folded into one include have no join inside them, and neither have two
+    includes of one {file, symbol} (split_worlds): a transition there would
+    hide the snap the build reports. A placeholder on either side is a hard
+    cut, not asked. The window is at most half the shorter neighbour (so it
+    reaches at most a quarter of a node, away from the midpoint stills QA
+    samples and the proof frames) and JOIN_MAX_S; an alignment is listed
+    only when, at that window, it runs the outgoing node no further past
+    its end than its slack."""
+    frame = 1.0 / (float(fps) or 30.0)
+    nodes = _nodes(layout)
+    out: list[Join] = []
+    for a, b in zip(nodes, nodes[1:]):
+        if (a["kind"] == b["kind"] == "include"
+                and (a["file"], a["symbol"]) == (b["file"], b["symbol"])):
+            continue
+        last, first = a["shots"][-1], b["shots"][0]
+        apart = round(b["start"] - a["end"], 3)
+        meets = abs(apart) <= frame + 1e-6
+        placeholder = "placeholder" in (a["kind"], b["kind"])
+        if not meets:
+            kind = "gap"
+        elif last.section != first.section:
+            kind = "section"
+        elif a["kind"] == b["kind"] == "include":
+            kind = "world"
+        else:
+            kind = "shot"
+        spans = (a["end"] - a["start"], b["end"] - b["start"])
+        window = round(max(0.0, min(0.5 * min(spans), JOIN_MAX_S)), 3)
+        slack = None
+        if a["kind"] == "include":
+            authored = layout.authored.get((a["file"], a["symbol"]))
+            if authored is not None:
+                slack = round(authored - spans[0] + TIMING_SLACK, 3)
+        elif a["kind"] == "footage" and a.get("seconds") is not None:
+            # a clip runs out as a world does: past its length it holds or vanishes
+            slack = round(float(a["seconds"]) - spans[0] + TIMING_SLACK, 3)
+        alignments = tuple(al for al in JOIN_ALIGN
+                           if slack is None or JOIN_OUTGOING[al] * window <= slack + 1e-9)
+        note = ""
+        if not meets:
+            note = (f"the nodes do not meet: {apart:.2f} s of background shows between them"
+                    if apart > 0 else f"the nodes overlap by {-apart:.2f} s")
+        elif placeholder:
+            note = "a placeholder card is on one side: a defect card, not a picture"
+        out.append(Join(
+            n=len(out) + 1, at=round(a["end"], 3), kind=kind,
+            from_id=a["id"], to_id=b["id"], from_label=last.label, to_label=first.label,
+            from_function=last.function, to_function=first.function,
+            max_seconds=window, alignments=alignments,
+            asked=meets and not placeholder and window >= JOIN_MIN_S, slack=slack,
+            from_section=last.section, to_section=first.section,
+            from_picture=a["picture"], to_picture=b["picture"],
+            note=note or ("" if window >= JOIN_MIN_S else
+                          f"the neighbours leave a window of {window:g} s, under "
+                          f"{JOIN_MIN_S:g} s")))
+    return out
+
+
+def _join_entries(answer) -> dict[int, dict]:
+    """The answer's entries by join index, held to what a join records."""
+    out = {}
+    for row in (answer or {}).get("joins") or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            n = int(row.get("at_join"))
+        except (TypeError, ValueError):
+            continue
+        kind = str(row.get("type") or "cut")
+        entry = {"n": n, "type": kind, "why": str(row.get("why") or "")}
+        if kind != "cut":
+            entry["duration"] = round(float(row.get("duration")), 3)
+            entry["alignment"] = str(row.get("alignment"))
+            if row.get("direction"):
+                entry["direction"] = str(row["direction"])
+        out.setdefault(n, entry)
+    return out
+
+
+def validate_joins(answer, joins: list[Join]) -> list[str]:
+    """What breaks the bounds in an editor's joins answer: [] when it holds.
+
+    One entry per asked join, no other index and none twice; a type from
+    JOIN_TYPES (`cut` among them); for a transition, a duration from
+    JOIN_MIN_S to the join's max_seconds, one of the join's alignments,
+    an outgoing extension at that duration within the outgoing node's
+    slack, and a direction only on a type that travels. These are the
+    technical bounds; which join is a transition is the editor's."""
+    asked = {j.n: j for j in joins if j.asked}
+    rows = (answer or {}).get("joins") if isinstance(answer, dict) else None
+    if not isinstance(rows, list):
+        return ["the answer has no `joins` list"]
+    types = join_types()
+    out: list[str] = []
+    seen: set[int] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            out.append(f"an entry is not an object: {row!r}")
+            continue
+        try:
+            n = int(row.get("at_join"))
+        except (TypeError, ValueError):
+            out.append(f"an entry names no join index: at_join {row.get('at_join')!r}")
+            continue
+        if n not in asked:
+            out.append(f"join {n} is not one of the joins asked "
+                       f"({', '.join(str(k) for k in asked) or 'none'})")
+            continue
+        if n in seen:
+            out.append(f"join {n} is answered more than once")
+            continue
+        seen.add(n)
+        j = asked[n]
+        kind = str(row.get("type") or "")
+        if kind not in types:
+            deferred = " (it needs another node, a matte or a shader)" if kind in JOIN_DEFERRED else ""
+            out.append(f"join {n}: type {kind!r} is not one of the types offered{deferred}")
+            continue
+        if kind == "cut":
+            continue
+        try:
+            seconds = float(row.get("duration"))
+        except (TypeError, ValueError):
+            out.append(f"join {n}: duration {row.get('duration')!r} is not a number")
+            continue
+        if not JOIN_MIN_S <= seconds <= j.max_seconds + 1e-9:
+            out.append(f"join {n}: duration {seconds:g} s is outside {JOIN_MIN_S:g}.."
+                       f"{j.max_seconds:g} s")
+        alignment = str(row.get("alignment") or "")
+        if alignment not in j.alignments:
+            out.append(f"join {n}: alignment {alignment!r} is not one this join allows "
+                       f"({', '.join(j.alignments)})")
+        elif (j.slack is not None and alignment in JOIN_OUTGOING
+              and JOIN_OUTGOING[alignment] * seconds > j.slack + 1e-9):
+            out.append(f"join {n}: a {alignment} window of {seconds:g} s runs {j.from_label} "
+                       f"{JOIN_OUTGOING[alignment] * seconds:g} s past its end, beyond its "
+                       f"slack of {j.slack:g} s")
+        direction = row.get("direction")
+        if direction:
+            if kind not in JOIN_DIRECTED:
+                out.append(f"join {n}: {kind} takes no direction (got {direction!r})")
+            elif direction not in JOIN_DIRECTIONS:
+                out.append(f"join {n}: direction {direction!r} is not one of "
+                           f"{', '.join(JOIN_DIRECTIONS)}")
+    for n in asked:
+        if n not in seen and not any(f"join {n}" in s for s in out):
+            out.append(f"join {n} has no entry")
+    return out
+
+
+def _join_row(j: Join, data: dict) -> dict:
+    """One asked join as the editor and the reviewer read it."""
+    shots = {row.get("label"): row for row in data.get("shots") or []}
+
+    def side(label: str, section: str, function: str, picture: str) -> dict:
+        row = shots.get(label) or {}
+        return {"label": label, "section": section,
+                **({"function": function} if function else {}),
+                "picture": picture, "visual": row.get("visual", ""),
+                "narration": row.get("narration", "")}
+    return {"at_join": j.n, "kind": j.kind, "at": j.at, "max_seconds": j.max_seconds,
+            "alignments": list(j.alignments),
+            "from": side(j.from_label, j.from_section, j.from_function, j.from_picture),
+            "to": side(j.to_label, j.to_section, j.to_function, j.to_picture)}
+
+
+def joins_prompt(data: dict, joins: list[Join], *, violations: list[str] | None = None,
+                 problems: list[dict] | None = None, previous: dict | None = None) -> str:
+    """The question the editor answers for the joins: the film's own words
+    on transitions (styles.json, the vfx style) and, for each join asked,
+    what is said and shown on either side, how long a window fits and
+    which alignments the outgoing node allows. `violations` (the bounds a
+    first answer broke) and `problems` (the reviewer's, with `previous`,
+    the answer it read) make the second asking and the revision."""
+    asked = [_join_row(j, data) for j in joins if j.asked]
+    parts = [
+        "Decide how the picture crosses each join listed under `joins`: the moment "
+        "one picture gives way to the next. Give one entry per join, by its "
+        "`at_join`: `cut` for a hard cut, or a transition `type` from the list, "
+        "with a `duration` from 0.1 s to the join's `max_seconds`, an `alignment` "
+        "from the join's own `alignments` (center lays the window across the cut, "
+        "end finishes it at the cut, start begins it there) and, for a type that "
+        f"travels ({', '.join(JOIN_DIRECTED)}), a `direction`. A join with no "
+        "narrative purpose is a defect, so a hard cut is a legitimate choice and "
+        "often the right one; a transition says something a cut does not (time "
+        "passing, a thought carried over, a chapter turning, a place giving way "
+        "to its picture). In `why`, name the narrative purpose of each join, from "
+        "the narration and what each side is for and shows. Follow the film's own "
+        "notes on transitions and camera below where they speak to a join.",
+        brief("Film", {k: data.get(k) for k in ("title", "treatment")}),
+        brief("The film's notes on transitions and camera", data.get("style") or {}),
+        brief("Transition types", list(join_types())),
+        brief("Joins", asked),
+    ]
+    if violations:
+        parts.append("Your previous answer broke these bounds; answer every join again "
+                     "within them:\n" + "\n".join(f"- {v}" for v in violations))
+    if problems is not None:
+        parts += [brief("Your joins, as the reviewer read them", previous or {}),
+                  brief("The reviewer sent them back with these problems", problems),
+                  "Revise the joins once: answer every join again, changing the ones "
+                  "a problem names where you agree, and keeping one with your `why` "
+                  "where you do not."]
+    return "\n\n".join(parts)
+
+
+def joins_review_prompt(data: dict, joins: list[Join], answer: dict) -> str:
+    """The question the reviewer answers: the same brief, and the joins the
+    editor chose."""
+    return "\n\n".join([
+        "Read the joins the editor chose for this film, one per join listed, and "
+        "judge whether each serves the story at that moment. `accept` when they "
+        "do; otherwise list under `problems` each join that does not (by "
+        "`at_join`), what is wrong and the fix. A hard cut is a legitimate "
+        "choice; a transition with no narrative purpose is a defect.",
+        brief("Film", {k: data.get(k) for k in ("title", "treatment")}),
+        brief("The film's notes on transitions and camera", data.get("style") or {}),
+        brief("Joins", [_join_row(j, data) for j in joins if j.asked]),
+        brief("The editor's joins", answer),
+    ])
+
+
+def _same_join(a: dict | None, b: dict | None) -> bool:
+    keys = ("type", "duration", "alignment", "direction")
+    return {k: (a or {}).get(k) for k in keys} == {k: (b or {}).get(k) for k in keys}
+
+
+def decide_joins(author, reviewer, data: dict, joins: list[Join]) -> dict:
+    """The editor's joins, validated, reviewed once and revised once.
+
+    {"chosen": an entry per asked join with its `review` status, "warnings":
+    build.json warnings, "review": the joins_review record}. Nothing here
+    stops the build: an answer that breaks the bounds is asked once more
+    (`joins-2`, the violations named); a second that does, or an editor
+    whose call fails, leaves every join a hard cut (`fallback`) with a
+    warning. A review whose call fails leaves the editor's joins
+    `unresolved`; a reject gets one revision (`joins-revise`), validated and
+    not reviewed again, and each problem the revision did not act on stays
+    a warning naming its join."""
+    asked = {j.n: j for j in joins if j.asked}
+    review = {"model": str(getattr(reviewer, "model", "") or ""), "accept": None,
+              "problems": [], "status": "nothing asked"}
+    out = {"chosen": [], "warnings": [], "review": review}
+    if not asked:
+        return out
+    schema = joins_schema()
+    answer, problems, failure = None, [], ""
+    try:
+        for name in ("joins", "joins-2"):
+            answer = author.decide(name, joins_prompt(data, joins, violations=problems),
+                                   schema)
+            problems = validate_joins(answer, joins)
+            if not problems:
+                break
+    except HarnessError as exc:
+        failure = str(exc)
+    if failure or problems:
+        why = failure or "; ".join(problems[:6])
+        out["warnings"].append(f"warning: the editor's joins did not hold ({why}); "
+                               "the film uses hard cuts")
+        out["chosen"] = [{"n": n, "type": "cut", "why": "", "review": "fallback"}
+                         for n in asked]
+        review["status"] = "not asked: the editor's joins did not hold"
+        return out
+    first = _join_entries(answer)
+    try:
+        verdict = reviewer.decide("joins-review", joins_review_prompt(data, joins, answer),
+                                  JOIN_REVIEW_SCHEMA)
+    except HarnessError as exc:
+        out["warnings"].append(f"warning: the joins review did not answer ({exc}); the "
+                               "editor's joins stand unreviewed")
+        out["chosen"] = [dict(first[n], review="unresolved") for n in asked]
+        review["status"] = "unresolved"
+        return out
+    accept = bool((verdict or {}).get("accept"))
+    named = [p for p in (verdict or {}).get("problems") or [] if isinstance(p, dict)]
+    review.update(accept=accept, problems=named)
+    if accept:
+        out["chosen"] = [dict(first[n], review="accepted") for n in asked]
+        review["status"] = "accepted"
+        return out
+    final, failed = first, ""
+    try:
+        revised = author.decide("joins-revise", joins_prompt(
+            data, joins, problems=named, previous=answer), schema)
+        bad = validate_joins(revised, joins)
+        if bad:
+            failed = "; ".join(bad[:6])
+        else:
+            final = _join_entries(revised)
+    except HarnessError as exc:
+        failed = str(exc)
+    if failed:
+        out["warnings"].append(f"warning: the editor's revision of the joins did not hold "
+                               f"({failed}); the joins stand as first chosen")
+
+    def index(p) -> int | None:
+        try:
+            return int(p.get("at_join"))
+        except (TypeError, ValueError):
+            return None
+    # A reject that names no join rejects them all.
+    flagged = {index(p) for p in named} if named else set(asked)
+    status = {n: ("accepted" if n not in flagged else
+                  "revised" if not _same_join(final[n], first[n]) else "unresolved")
+              for n in asked}
+    for p in named:
+        j = asked.get(index(p))
+        if j is None:
+            out["warnings"].append(f"warning: the joins review names join {p.get('at_join')}, "
+                                   f"which was not asked: {p.get('problem', '')}")
+        elif status[j.n] == "unresolved":
+            out["warnings"].append(
+                f"warning: join {j.n} ({j.from_label} -> {j.to_label}, {j.kind}): the "
+                f"reviewer's problem stands: {p.get('problem', '')} (fix: {p.get('fix', '')})")
+    if not named and failed:
+        out["warnings"].append("warning: the joins review rejected the joins and named no "
+                               "join; they stand as first chosen")
+    out["chosen"] = [dict(final[n], review=status[n]) for n in asked]
+    review["status"] = "revised" if any(s == "revised" for s in status.values()) else "unresolved"
+    return out
+
+
+def join_rows(joins: list[Join], chosen: list[dict] | None) -> list[dict]:
+    """build.json's `joins`: every join, gaps and placeholder joins included,
+    with what was chosen and how it was reviewed (`off` under --hard-cuts,
+    `not-asked` for a gap or a placeholder join)."""
+    picked = {e.get("n"): e for e in chosen or [] if isinstance(e, dict)}
+    rows = []
+    for j in joins:
+        entry = picked.get(j.n) if chosen is not None and j.asked else None
+        review = ("off" if chosen is None else "not-asked" if not j.asked
+                  else (entry or {}).get("review", "fallback"))
+        kind = (entry or {}).get("type") or "cut"
+        row = {"n": j.n, "at": j.at, "kind": j.kind, "from": j.from_id, "to": j.to_id,
+               "from_label": j.from_label, "to_label": j.to_label, "type": kind,
+               "duration": entry.get("duration") if kind != "cut" else None,
+               "alignment": entry.get("alignment") if kind != "cut" else None,
+               **({"direction": entry["direction"]}
+                  if kind != "cut" and entry.get("direction") else {}),
+               "why": (entry or {}).get("why") or j.note, "review": review,
+               "max_seconds": j.max_seconds, "alignments": list(j.alignments)}
+        rows.append(row)
+    return rows
+
+
+def fps_value(fps) -> float:
+    """A frame rate as the schema writes it ("30", "29.97", "30000/1001")."""
+    text = str(fps or "30")
+    try:
+        if "/" in text:
+            top, bottom = text.split("/", 1)
+            return float(top) / float(bottom)
+        return float(text)
+    except (ValueError, ZeroDivisionError):
+        return 30.0
 
 
 # --------------------------------------------------------------------------- #
@@ -2007,8 +2599,11 @@ class SceneBuilder:
                    for k in ("slope", "offset", "power")})
             pipeline.looks = LOOK_ID
 
-    def build(self) -> tuple[bytes, dict]:
-        S = sdk()
+    def layout(self) -> Layout:
+        """Where every shot sits and what draws it, before anything is
+        written: the timeline, what draws each shot, the editor's decisions
+        resolved against what exists, and each world's authored length.
+        Pure: build() writes exactly this."""
         placed = timeline(self.sections, self.voice)
         if not placed:
             raise RuntimeError("the screenplay has no shots to place")
@@ -2017,6 +2612,65 @@ class SceneBuilder:
         drawn = self._drawn(placed, media, notes)
         edit = self._decisions(placed, drawn, media)
         edit["findings"][:0] = notes
+        authored: dict[tuple[str, str], float] = {}
+        read: dict[str, dict[str, float]] = {}
+        for kind, hit in drawn.values():
+            if kind == "effect" and isinstance(hit, dict):
+                file = hit["file"]
+                if file not in read:
+                    read[file] = symbol_durations(self.root / file)
+                if hit["symbol"] in read[file]:
+                    authored[(file, hit["symbol"])] = read[file][hit["symbol"]]
+        return Layout(placed=placed, drawn=drawn, edit=edit, authored=authored)
+
+    def joins_brief(self) -> dict:
+        """What the editor and the reviewer of the joins read: the edit's
+        brief and the film's own words on transitions and camera (the vfx
+        style, and the treatment's motion note in styles.json)."""
+        data = self.brief()
+        vstyle = (self.vfx_report or {}).get("style") or {}
+        style = {k: str(vstyle[k]) for k in ("transitions", "camera_language")
+                 if isinstance(vstyle, dict) and vstyle.get(k)}
+        motion = next((str(s["motion"]) for s in (self.styles or {}).get("styles", [])
+                       if isinstance(s, dict) and s.get("motion")), "")
+        if motion:
+            style["motion"] = motion
+        data["style"] = style
+        return data
+
+    def _transitions(self, composition, joins: list[Join],
+                     chosen: list[dict] | None) -> int:
+        """The chosen joins as engine <transition>s between sibling nodes,
+        once every node is in the composition; a cut writes nothing. The
+        nodes keep their times: the engine extends both handles (D19)."""
+        if not chosen:
+            return 0
+        asked = {j.n: j for j in joins if j.asked}
+        written = 0
+        for entry in chosen:
+            j = asked.get(entry.get("n")) if isinstance(entry, dict) else None
+            kind = (entry or {}).get("type") or "cut"
+            if j is None or kind == "cut" or kind not in join_types():
+                continue
+            t = composition.add_transition(id=ident(f"join-{j.n}"), type=kind,
+                                           from_=j.from_id, to=j.to_id)
+            t.duration = f"{float(entry['duration']):g}"
+            t.alignment = entry["alignment"]
+            if entry.get("direction") and kind in JOIN_DIRECTED:
+                t.direction = entry["direction"]
+            if kind == "dip-to-color":
+                t.color = self.background
+            written += 1
+        return written
+
+    def build(self, layout: Layout | None = None,
+              chosen: list[dict] | None = None) -> tuple[bytes, dict]:
+        """The scene document and its manifest, from `layout` (computed when
+        not given). `chosen` is the editor's joins (decide_joins); None means
+        every join is a hard cut and no <transition> is written."""
+        S = sdk()
+        layout = layout if layout is not None else self.layout()
+        placed, drawn, edit = layout.placed, layout.drawn, layout.edit
         duration = round(max(p.at + p.seconds for p in placed) + edit["tail"], 3)
 
         scene = S.Scene(version="auto")
@@ -2185,6 +2839,9 @@ class SceneBuilder:
                 layer.fit = fit
                 layer.boxWidth = str(self.width)
                 layer.boxHeight = str(self.height)
+
+        joins = joins_of(layout, fps_value(self.fps))
+        self._transitions(composition, joins, chosen)
 
         # What the includes do not carry: the design's tokens first, then
         # each included document's tokens and lights, the lights gated to the
@@ -2593,6 +3250,8 @@ class SceneBuilder:
             "stale_takes": stale_takes(self.sections, self.voice),
             "findings": findings + [f for f in reparse if f not in findings],
             "shots": [asdict(p) | {"words": len(p.words)} for p in placed],
+            # Every join, gaps and placeholder joins too, and what crosses it.
+            "joins": join_rows(joins, chosen),
         }
         return data, manifest
 
@@ -2778,6 +3437,27 @@ def edit_prompt(data: dict) -> str:
     ])
 
 
+def joins_line(manifest: dict) -> str:
+    """One line for the joins: "9 joins: 4 crossfade, 2 push, 3 cut, 1 gap
+    (reviewed by opus: accepted)". A gap is counted as a gap, not a cut."""
+    rows = manifest.get("joins") or []
+    counts: dict[str, int] = {}
+    for row in rows:
+        if row.get("kind") != "gap" and row.get("type") != "cut":
+            counts[row["type"]] = counts.get(row["type"], 0) + 1
+    order = sorted(counts, key=lambda k: (-counts[k], k))
+    parts = [f"{counts[k]} {k}" for k in order]
+    cuts = sum(1 for r in rows if r.get("kind") != "gap" and r.get("type") == "cut")
+    gaps = sum(1 for r in rows if r.get("kind") == "gap")
+    parts += ([f"{cuts} cut"] if cuts else []) + ([f"{gaps} gap"] if gaps else [])
+    review = manifest.get("joins_review")
+    if review is None:
+        how = "hard cuts: not reviewed"
+    else:
+        how = f"reviewed by {review.get('model') or '?'}: {review.get('status', '?')}"
+    return f"{len(rows)} joins: {', '.join(parts)} ({how})"
+
+
 def print_build(manifest: dict) -> None:
     scene, line = manifest["scene"], manifest["timeline"]
     print(f"\n{manifest['idea']['title']} — SCENE")
@@ -2807,6 +3487,8 @@ def print_build(manifest: dict) -> None:
           f"{manifest['markers']['beats']} shot markers · "
           f"{manifest.get('includes', 0)} include(s) for "
           f"{manifest['markers']['beats']} shots")
+    if manifest.get("joins"):
+        print(f"  {joins_line(manifest)}")
     for row in manifest.get("split_worlds") or []:
         print(f"  error: {row['symbol']} is split into {row['includes']} "
               f"include(s) over shots {', '.join(row['shots'])}: the world "
@@ -2945,11 +3627,82 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                    help="write the scene even when the checks found errors")
     p.add_argument("--fresh", action="store_true",
                    help="ask the editor again even if the inputs did not change")
+    from . import flags
+    from .vfx import REVIEW_USD, REVIEWER_MODEL
+    flags.reviewer_model(p, default=REVIEWER_MODEL,
+                         help="the model that reviews the editor's joins; never the "
+                              f"author's own family, and a claude or codex model "
+                              f"(default {REVIEWER_MODEL})")
+    flags.review_budget(p, default=REVIEW_USD,
+                        help=f"what the joins review may cost (default {REVIEW_USD:g})")
+    p.add_argument("--hard-cuts", action="store_true", dest="hard_cuts",
+                   help="no joins decision and no review: every join is a hard cut "
+                        "and scene.xml is what it was before transitions")
     p.set_defaults(run=run)
     return p
 
 
+#: Why `yt build` refuses a pool reviewer (reviewers.is_gateway): its joins
+#: review is a text decision, but the stage is not wired to the pool yet.
+POOL_REFUSAL = ("the joins review of `yt build` takes a claude or codex model; "
+                "the gateway pool is not wired to this stage")
+
+
+def reviewer_refusal(args) -> str:
+    """The error, before anything is paid, for a joins reviewer this stage
+    cannot use: a pool value, or the author's own family. "" when it can,
+    and always under --hard-cuts, which asks no reviewer."""
+    if getattr(args, "hard_cuts", False):
+        return ""
+    from . import flags, reviewers
+    from .vfx import REVIEWER_MODEL
+    value = getattr(args, "reviewer_model", REVIEWER_MODEL) or REVIEWER_MODEL
+    if reviewers.is_gateway(value):
+        return f"error: --reviewer-model {value}: {POOL_REFUSAL}"
+    return flags.own_reviewer(getattr(args, "model", "") or "", value)
+
+
+def joins_decision(args, project, engine, builder, joins: list[Join], rules,
+                   digest) -> dict:
+    """The joins, decided by the editor (`engine`) and reviewed by
+    --reviewer-model on the editor's books, so the stage record bills and
+    lists both. Its own failures never stop the build: decide_joins falls
+    back, and a reviewer that cannot be made leaves the editor unreviewed."""
+    from .vfx import REVIEW_USD, REVIEWER_MODEL
+    if not any(j.asked for j in joins):
+        out = decide_joins(engine, None, {}, joins)
+        out["review"]["model"] = getattr(args, "reviewer_model", REVIEWER_MODEL)
+        return out
+    data = builder.joins_brief()
+    try:
+        reviewer = Harness(project.root, "build",
+                           model=getattr(args, "reviewer_model", REVIEWER_MODEL),
+                           role=JOIN_REVIEW_ROLE, house=rules, house_digest=digest,
+                           budget_usd=getattr(args, "review_budget_usd", REVIEW_USD),
+                           usage=engine.usage, decisions=engine.decisions,
+                           lock=engine.lock, fresh=getattr(args, "fresh", False),
+                           verbose=not args.quiet)
+    except HarnessError as exc:
+        reviewer = _Unavailable(getattr(args, "reviewer_model", REVIEWER_MODEL), exc)
+    return decide_joins(engine, reviewer, data, joins)
+
+
+class _Unavailable:
+    """A reviewer that could not be made: every question fails as its call would."""
+
+    def __init__(self, model: str, exc: Exception) -> None:
+        self.model, self.exc = model, exc
+
+    def decide(self, *_a, **_kw):
+        raise HarnessError(str(self.exc))
+
+
 def run(args) -> int:
+    # A model never grades its own work, and the pool is not wired here:
+    # both refused before anything is read or paid (--hard-cuts asks no one).
+    if refused := reviewer_refusal(args):
+        print(refused, file=sys.stderr)
+        return 2
     idea, project = workspace.resolve(args, inputs=("script",))
     script_file = project.source("script", workspace.override(args, "script"))
     if not script_file:
@@ -3013,7 +3766,16 @@ def run(args) -> int:
         chosen = clean_look(engine.decide(
             "look", look_prompt(builder.brief()), LOOK_SCHEMA))
         builder.look, check = check_look(builder, engine, chosen)
-        data, manifest = builder.build()
+        layout = builder.layout()
+        joins = joins_of(layout, fps_value(args.fps))
+        decided = None
+        if not getattr(args, "hard_cuts", False):
+            decided = joins_decision(args, project, engine, builder, joins, rules, digest)
+        data, manifest = builder.build(layout, decided["chosen"] if decided else None)
+        if decided is not None:
+            manifest["joins_review"] = decided["review"]
+            manifest["findings"] += [w for w in decided["warnings"]
+                                     if w not in manifest["findings"]]
         manifest["look_check"] = check
         if chosen and not builder.look:
             manifest["look_declined"] = chosen

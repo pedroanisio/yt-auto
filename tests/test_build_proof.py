@@ -13,6 +13,7 @@ renderer is a fake: no engine, no ssh.
 import argparse
 import io
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -273,15 +274,28 @@ class ProofCheck(_Project):
 
 
 class FakeHarness:
-    """Stands in for Harness in build.run: the edit and no look."""
+    """Stands in for Harness in build.run: the edit, no look, every join a
+    hard cut and a joins review that accepts (AUTO-142), on shared books."""
 
-    def __init__(self, *a, **kw):
-        pass
+    def __init__(self, *a, model="sonnet", usage=None, decisions=None, lock=None, **kw):
+        import threading
+        from claude_engine import Usage
+        self.model = model
+        self.usage = usage if usage is not None else Usage()
+        self.decisions = decisions if decisions is not None else []
+        self.lock = lock if lock is not None else threading.Lock()
 
     def decide(self, name, prompt, schema):
         if name == "edit":
             return {"coverage": [], "captions_off": [], "tail_seconds": 0.5,
                     "notes": "", "blocking": []}
+        if name.startswith("joins") and name != "joins-review":
+            asked = re.findall(r'"at_join": (\d+)', prompt)
+            return {"joins": [{"at_join": int(n), "type": "cut", "duration": 0.5,
+                               "alignment": "end", "why": "a hard cut"}
+                              for n in dict.fromkeys(asked)], "notes": ""}
+        if name == "joins-review":
+            return {"accept": True, "problems": []}
         return None
 
     def report(self):
