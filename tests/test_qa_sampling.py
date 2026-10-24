@@ -11,6 +11,7 @@ keeps the priority rows and names the shots it left out.
 
 import argparse
 import unittest
+from pathlib import Path
 
 from ytstudio import qa
 from tests.test_qa import _build
@@ -416,6 +417,63 @@ class BuildStills(unittest.TestCase):
         self.assertEqual([r["why"] for r in _builds(rows, "2.3")],
                          ["build: first", "build: last"])
         self.assertEqual(_builds(rows, "2.4"), [])
+
+    def test_build_stills_of_their_own_sit_apart_from_the_judged_frames(self):
+        # Measured for ink and judged by no model: their files are under
+        # frames/build/, not directly under frames/ where the reviewer reads.
+        build, vfx = _diagram_film()
+        rows = qa.sample(build, builds=qa.build_shots(vfx, build))
+        own = [r for r in _builds(rows, "1.2") if "burst" not in r]
+        self.assertEqual(len(own), 2)
+        for r in own:
+            self.assertEqual(r["frame"], f"{qa.BUILD_DIR}/{qa.frame_name(r['t'])}")
+            self.assertEqual(r["builds"][0]["frame"], r["frame"])
+        self.assertEqual(qa.judged(rows), [r for r in rows if not any(r is o for o in own)])
+
+    def test_build_stills_of_their_own_reach_neither_the_evidence_nor_the_sheet(self):
+        import tempfile
+        from PIL import Image
+        build, vfx = _diagram_film()
+        rows = qa.sample(build, builds=qa.build_shots(vfx, build))
+        own = {r["frame"] for r in rows if r.get("builds") and "burst" not in r}
+        self.assertEqual(len(own), 2)
+        evidence = qa.evidence_rows(rows, {"sections": []}, None, have=set(),
+                                    diagnostics={}, mechanical=[])
+        self.assertEqual(len(evidence), len(rows) - 2)
+        self.assertFalse(own & {e["frame"] for e in evidence})
+        with tempfile.TemporaryDirectory() as tmp:
+            frames = Path(tmp) / "frames"
+            with_builds = qa.contact_sheet(rows, frames, Path(tmp) / "a.png")
+            without = qa.contact_sheet(qa.judged(rows), frames, Path(tmp) / "b.png")
+            with Image.open(with_builds) as a, Image.open(without) as b:
+                self.assertEqual(a.size, b.size)
+                self.assertEqual(a.tobytes(), b.tobytes())
+        prompt = qa.review_prompt(
+            title="t", pass_name="pass-01", sheet_name="contact-sheet.png",
+            has_narration=False, missing=[], total_shots=1, dropped_lines=[],
+            narrated_total=0, story=None, evidence=[], mechanical=[], listening=[],
+            unheard={}, silent_film=True, measurements={}, blockers=[], measured_stills=2)
+        self.assertIn(f"The 2 stills under `frames/{qa.BUILD_DIR}/`", prompt)
+        self.assertIn("measured for ink, not judged", prompt)
+        plain = qa.review_prompt(
+            title="t", pass_name="pass-01", sheet_name="contact-sheet.png",
+            has_narration=False, missing=[], total_shots=1, dropped_lines=[],
+            narrated_total=0, story=None, evidence=[], mechanical=[], listening=[],
+            unheard={}, silent_film=True, measurements={}, blockers=[])
+        self.assertNotIn(qa.BUILD_DIR + "/", plain)    # no diagram: the prompt as before
+
+    def test_a_shot_whose_only_still_is_a_build_still_is_unsampled(self):
+        # Under a tight --frames a build still can be all a shot has; it
+        # carries none of the shot's checks, so the shot reads unsampled.
+        build, vfx = _diagram_film()
+        rows = qa.sample(build, limit=1, builds=qa.build_shots(vfx, build))
+        mine = [r for r in rows if r["label"] == "1.2"]
+        self.assertEqual([r["why"] for r in mine], ["build: first", "build: last"])
+        self.assertTrue(all("burst" not in r for r in mine))
+        self.assertIn("1.2", qa.unsampled(build, rows))
+        # a shot with a still of its own is sampled, whatever else it has
+        self.assertNotIn("1.2", qa.unsampled(build, qa.sample(
+            build, builds=qa.build_shots(vfx, build))))
 
     def test_with_no_vfx_json_the_samples_are_unchanged(self):
         build, _ = _diagram_film()

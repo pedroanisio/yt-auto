@@ -272,6 +272,11 @@ BUILD_TYPES = ("2d-diagram", "data-animation")
 BUILD_MIN_SECONDS = 3.0
 BUILD_SAMPLES_MAX = 12
 BUILD_WHY = "build: "
+#: Where a build still of its own is written, under frames/: it is measured
+#: for ink and judged by no model, and the reviewer reads the PNGs directly
+#: under frames/, so it is kept out of their way (and out of the contact
+#: sheet, the evidence rows and the side by side, `judged`).
+BUILD_DIR = "build"
 #: A still's `ink`: the share of its THUMB luma thumbnail whose edge
 #: magnitude (PIL's FIND_EDGES) exceeds INK_EDGE. A build shot whose ink
 #: never rises by more than BUILD_STEP of its last value between two
@@ -1198,6 +1203,7 @@ def _add_builds(out: list[dict], shots: list[dict], builds, row, *, fps: float) 
                           if at < m < at + seconds and m not in used), t)
             new = row(shot, t, why)
             new.pop("burst", None)
+            new["frame"] = f"{BUILD_DIR}/{new['frame']}"
             new["builds"] = [{"which": which, "t": t, "frame": new["frame"],
                               "effect": effect}]
             out.append(new)
@@ -1498,8 +1504,10 @@ def _free_moment(shot: dict, used: set[float], fps: float) -> float:
 
 def unsampled(build: dict, samples: list[dict]) -> list[str]:
     """The labels of the build's shots no sampled still belongs to, in
-    label order: what a --frames below the shot count left unseen."""
-    seen = {str(r.get("label", "")) for r in samples}
+    label order: what a --frames below the shot count left unseen. A build
+    still of its own (`measured_only`) does not count: no per-shot check is
+    filed on it and the reviewer is not shown it."""
+    seen = {str(r.get("label", "")) for r in judged(samples)}
     return sorted({str(s.get("label", "")) for s in build.get("shots", [])} - seen)
 
 
@@ -1975,6 +1983,20 @@ def _build_only(row: dict) -> bool:
     return all(why.startswith(BUILD_WHY) for why in str(row.get("why", "")).split("; "))
 
 
+def measured_only(row: dict) -> bool:
+    """A row no model is shown (AUTO-145): a build still of its own, with no
+    burst. It sits a quarter second from a cut, where a transition can be
+    mid-dissolve, and is there to be measured for ink, not judged; it is no
+    shot's home and does not count as a shot's still."""
+    return bool(row.get("builds")) and "burst" not in row and _build_only(row)
+
+
+def judged(samples: list[dict]) -> list[dict]:
+    """The rows a model is shown: every sample but the measured-only build
+    stills (`measured_only`)."""
+    return [row for row in samples if not measured_only(row)]
+
+
 def _norm(text) -> str:
     return " ".join(str(text or "").lower().split())
 
@@ -2118,13 +2140,13 @@ def mechanical_findings(samples: list[dict], diagnostics: dict | None = None,
                    for why in str(row.get("why", "")).split("; "))
     home: dict[tuple, int] = {}
     for i, row in enumerate(samples):
-        if row.get("builds") and "burst" not in row and _build_only(row):
+        if measured_only(row):
             continue
         key = (str(row.get("label", "")), row.get("at", row.get("t")))
         if key not in home or (extra(samples[home[key]]) and not extra(row)):
             home[key] = i
     for i, row in enumerate(samples):
-        if row.get("builds") and "burst" not in row and _build_only(row):
+        if measured_only(row):
             continue
         base = {"timestamp": row["t"], "frame": row.get("frame", ""),
                 "shot": str(row.get("label", "")),
@@ -2568,9 +2590,10 @@ def score_unheard(card: dict, unheard: dict[str, dict]) -> dict:
 def contact_sheet(samples: list[dict], frames_dir: Path, out: Path) -> Path:
     """Every still tiled in time order with its timestamp, shot and motion
     verdict, so the reviewer sees the runtime at once. A missing still is an
-    empty, labelled tile."""
+    empty, labelled tile. A build still of its own is left out (`judged`):
+    it is measured, not looked at."""
     from PIL import Image, ImageDraw
-    rows = list(samples)
+    rows = judged(samples)
     cols = max(1, min(len(rows), SHEET_COLUMNS))
     lines = max(1, -(-len(rows) // cols))
     tw, th = SHEET_TILE
@@ -2963,7 +2986,7 @@ def side_by_side(args, reviewer: Harness, pass_dir: Path, previous: dict | None,
     frames = pass_dir / "frames"
     out_dir = pass_dir / PREVIOUS_DIR
     rows, todo, unpaired = [], [], []
-    for row in samples:
+    for row in judged(samples):
         if not (frames / row["frame"]).is_file():
             continue                     # this pass has no still there: nothing to pair
         if (prev_frames / row["frame"]).is_file():
@@ -3470,6 +3493,7 @@ def render_frames(args, project, scene: str, samples: list[dict],
         if source is not None and source.is_file():
             shutil.copyfile(source, still)
             continue
+        still.parent.mkdir(parents=True, exist_ok=True)       # frames/build/ (AUTO-145)
         code = render({"still": row["t"], "out": str(still)})
         if code or not still.is_file():
             problems.append(f"no frame at {row['t']}s (shot {row['label']}): "
@@ -3837,13 +3861,14 @@ def evidence_rows(samples: list[dict], script: dict, voice: dict | None, *, have
     line said there, the take, and what was measured of it (the still's
     statistics, the burst's motion, the engine's diagnostics and the
     mechanical findings already filed on its shot). `have` is the stills
-    that exist under frames/."""
+    that exist under frames/. A build still of its own is not evidence
+    (`judged`): its ink is already in the mechanical findings."""
     voice = voice or {}
     shots = {s.get("label"): s for sec in script.get("sections", [])
              for s in sec.get("shots", [])}
     takes = {t.get("label"): t for t in voice.get("takes", [])}
     evidence = []
-    for row in samples:
+    for row in judged(samples):
         shot = shots.get(row["label"], {})
         take = takes.get(row["label"], {})
         evidence.append({
@@ -3924,10 +3949,13 @@ def review_prompt(*, title: str, pass_name: str, sheet_name: str, has_narration:
                   narrated_total: int, story: dict | None, evidence: list[dict],
                   mechanical: list[dict], listening: list[dict], unheard: dict,
                   silent_film: bool, measurements: dict, blockers: list[str],
-                  extra_briefs=()) -> str:
+                  extra_briefs=(), measured_stills: int = 0) -> str:
     """The scorecard's prompt, before each sample's category order is added.
     `extra_briefs` are the listener's and the watcher's text (`--listen`,
-    `--watch`), placed after the measurements."""
+    `--watch`), placed after the measurements. `measured_stills`, the
+    build stills of their own under frames/build/ (AUTO-145), adds one
+    sentence saying they are not to be scored; with none the prompt is
+    as before, so a film with no diagram is not asked again."""
     return "\n\n".join([
         f"Review {pass_name} of \"{title}\". Read `{sheet_name}` first "
         "(every still tiled in time order with its timestamp), then every PNG "
@@ -3952,6 +3980,11 @@ def review_prompt(*, title: str, pass_name: str, sheet_name: str, has_narration:
         "mechanical findings are measured, not judged: do not repeat them as "
         "your own, but score as if they stand, because they do. Blocking items "
         "already proven by the manifests are listed; add what the frames show."
+        + (f" The {measured_stills} stills under `frames/{BUILD_DIR}/` are measured "
+           "for ink, not judged: each sits a quarter second from a cut, where a "
+           "transition can be mid-dissolve, and what they measure is in the "
+           "mechanical findings; neither read nor score them."
+           if measured_stills else "")
         + (" " + unseen_brief(missing, total_shots) if missing else "")
         + (" " + unseen_lines_brief(dropped_lines, narrated_total)
            if dropped_lines else ""),
@@ -4046,7 +4079,7 @@ def score_evidence(reviewer: Harness, pass_dir: Path, *, title: str, build: dict
         narrated_total=len(narrated_lines(build, voice)), story=story, evidence=evidence,
         mechanical=mechanical, listening=listening, unheard=unheard,
         silent_film=silent(build), measurements=measurements, blockers=blockers,
-        extra_briefs=extra_briefs)
+        extra_briefs=extra_briefs, measured_stills=len(samples) - len(judged(samples)))
     # QA_SAMPLES readings of the same evidence (AUTO-107): one reading's
     # noise is the size of the steps read as progress. structure 20 is
     # checked past the schema in each (one non-blank line per screenplay
