@@ -2100,10 +2100,12 @@ PLAN_ATTACK = (
 SAMENESS_OBJECTION = (
     " and its sameness (could a returning viewer predict how it opens, unfolds or "
     "closes from one of the earlier films listed?)")
+#: It goes inside the "Only ... are grounds" sentence, so the attack never
+#: says there are four grounds and then names a fifth.
 SAMENESS_GROUND = (
-    " A repeat of an earlier film that a returning viewer would notice is a ground to "
-    "revise, never to reject: list it under repeats, with a section 0 problem naming "
-    "the film and its fix.")
+    ", and a repeat of an earlier film that a returning viewer would notice is a "
+    "ground to revise, never to reject. List each such repeat under repeats, with a "
+    "section 0 problem naming the film and its fix.")
 
 
 def plan_attack(channel: bool) -> str:
@@ -2116,7 +2118,7 @@ def plan_attack(channel: bool) -> str:
     out = out.replace("or is it empty or generic?)", "or is it empty or generic?)"
                       + SAMENESS_OBJECTION, 1)
     return out.replace("are grounds to revise or reject.",
-                       "are grounds to revise or reject." + SAMENESS_GROUND, 1)
+                       "are grounds to revise or reject" + SAMENESS_GROUND, 1)
 
 
 #: Said to the reviewer above the pre-checks: they are measured, not judged.

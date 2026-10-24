@@ -745,8 +745,10 @@ def check_plan_review(review: Any, earlier_slugs: Sequence[str] = ()) -> list[st
     per problem: a revise or a reject that names no problem (a second plan
     would be told to fix nothing), and an accept whose own fields find the
     train failing, the order a list, the payoff not concrete or a section
-    that moves nothing. The schema cannot refuse these. As with
-    `check_review`, the caller asks once more (`<name>-again`) with these
+    that moves nothing. With earlier channel films (AUTO-137): an accept
+    that lists repeats, a repeat of a film not listed or with no section 0
+    problem naming it, and a reject whose only grounds are repeats. The
+    schema cannot refuse these. As with `check_review`, the caller asks once more (`<name>-again`) with these
     lines and records what still stands; the verdict stays the model's."""
     if not isinstance(review, dict):
         return []
@@ -780,6 +782,22 @@ def check_plan_review(review: Any, earlier_slugs: Sequence[str] = ()) -> list[st
     if verdict == "accept" and repeats:
         found.append("an accept sends nothing back, and this one lists repeats of earlier "
                      "films: change the verdict to revise, or empty the repeats")
+    # A repeat sends a plan back to be planned again, never out of the
+    # pipeline: a reject whose fields find the story sound and whose every
+    # problem is the section 0 mirror of a listed repeat rejects on
+    # sameness alone, which the role and the attack both forbid.
+    films = [str(r.get("film") or "").strip() for r in repeats]
+    story_failing = (review.get("train_ok") is False or review.get("reorder_survives") is True
+                     or review.get("payoff_concrete") is False
+                     or bool(review.get("sections_advancing_none")))
+    if (verdict == "reject" and repeats and problems and not story_failing
+            and all(isinstance(p, dict) and p.get("section") == 0
+                    and any(_names(p.get("problem"), f) or _names(p.get("fix"), f)
+                            for f in films)
+                    for p in problems)):
+        found.append("a repeat is a ground to revise, never to reject, and every problem "
+                     "this reject names is a repeat: change the verdict to revise, or name "
+                     "the story ground that rejects it")
     known = [str(s) for s in earlier_slugs]
     for r in repeats:
         film = str(r.get("film") or "").strip()

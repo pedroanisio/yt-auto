@@ -1108,6 +1108,9 @@ EARLIER = [{"slug": "old-bridge", "title": "The old bridge", "counted": True,
 REPEAT = {"film": "old-bridge", "dimension": "closing",
           "problem": "it closes on the same callback as the film before"}
 MIRRORED = (0, "it closes as old-bridge did", "end on the sheared bolt, not the river")
+#: A review's fields when they find nothing wrong with the story itself.
+STORY_HOLDS = {"train_ok": True, "reorder_survives": False, "payoff_concrete": True,
+               "sections_advancing_none": []}
 
 
 def channel_faked(w, verdicts, plan=PLAN):
@@ -1166,6 +1169,13 @@ class Channel(unittest.TestCase):
         self.assertIn("old-bridge", review)
         self.assertIs(asked["plan-review"]["schema"], narrative.plan_review_schema(True))
         self.assertIn("a repeat of an earlier channel film", w.reviewer.system)
+        # the "only ... are grounds" sentence names the repeat itself, so a
+        # fifth ground never follows a sentence that says there are four
+        self.assertNotIn("and the payoff are grounds to revise or reject.", review)
+        self.assertNotIn("and the payoff are grounds to revise or reject.",
+                         script.plan_attack(True))
+        self.assertIn("and the payoff are grounds to revise or reject, and a repeat of "
+                      "an earlier film", script.plan_attack(True))
         # the drafting writers are not handed the channel
         writes = [c["prompt"] for c in calls if c["name"].startswith("write-")]
         self.assertTrue(writes)
@@ -1190,6 +1200,10 @@ class Channel(unittest.TestCase):
             "an unknown film": dict(verdict("revise", [(0, "like nowhere", "change it")]),
                                     repeats=[dict(REPEAT, film="nowhere")]),
             "no matching problem": dict(verdict("revise", [SWAPPABLE]), repeats=[REPEAT]),
+            # a repeat is a ground to revise only: a reject whose every
+            # problem is the repeat would take the film out on sameness
+            "a reject on repeats alone": dict(verdict("reject", [MIRRORED]),
+                                              repeats=[REPEAT], **STORY_HOLDS),
         }
         for case, first in cases.items():
             with self.subTest(case=case):
@@ -1198,6 +1212,21 @@ class Channel(unittest.TestCase):
                 w.run(review=True)
                 self.assertEqual(names(calls)[:3], ["plan", "plan-review",
                                                     "plan-review-again"])
+
+    def test_a_reject_on_a_story_ground_beside_a_repeat_stands(self):
+        story = (1, "the train names a topic, not a pursuer", "give it a pursuer")
+        review = dict(verdict("reject", [MIRRORED, story]), repeats=[REPEAT], **STORY_HOLDS)
+        self.assertEqual(narrative.check_plan_review(review, earlier_slugs=["old-bridge"]),
+                         [])
+        # the review's own fields are a story ground too: here the train fails
+        fields = dict(verdict("reject", [MIRRORED]), repeats=[REPEAT],
+                      **dict(STORY_HOLDS, train_ok=False))
+        self.assertEqual(narrative.check_plan_review(fields, earlier_slugs=["old-bridge"]),
+                         [])
+        alone = dict(verdict("reject", [MIRRORED]), repeats=[REPEAT], **STORY_HOLDS)
+        found = narrative.check_plan_review(alone, earlier_slugs=["old-bridge"])
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("a repeat is a ground to revise, never to reject", found[0])
 
     def test_without_review_the_channel_lines_are_notes(self):
         w = writer(earlier=EARLIER, reviewer_model=None)
@@ -1248,6 +1277,11 @@ class ChannelCommand(unittest.TestCase):
         rows = json.loads((self.root / "work" / "channel.json").read_text())["films"]
         self.assertEqual({r["slug"]: r["counted"] for r in rows},
                          {"old-bridge": True, "a-film": False})
+        # the row is read from the script.json a real run wrote, not a fixture
+        mine = next(r for r in rows if r["slug"] == "a-film")
+        self.assertEqual(mine["opening"], PLAN["hook"]["trigger"])
+        self.assertEqual(mine["closing"], "callback")
+        self.assertEqual(mine["shape"]["tokens"], ["open", "constraint", "reveal"])
 
     def test_a_reviewed_run_shows_the_reviewer_the_channel(self):
         code, asked, said = self.run_stage(
