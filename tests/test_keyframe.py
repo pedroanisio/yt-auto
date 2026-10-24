@@ -595,6 +595,28 @@ class GridCells(ProjectCase):
         record = self.run_stage(rounds=0)
         self.assertIsNone(record["rounds"][0]["score"])
 
+    def test_a_still_with_no_copy_leaves_no_earlier_copy_behind(self):
+        # Round 2's copy cannot be made (a still Pillow cannot read): the
+        # copy round 1 left is gone, and the review does not name one.
+        FakeEngine.reviews = [
+            {"seen": "a plane", "scores": {c: 5 for c in keyframe.CATEGORIES},
+             "findings": [self.LOCATED], "score": 5, "summary": "low"},
+            {"seen": "a plane", "scores": {c: 8 for c in keyframe.CATEGORIES},
+             "findings": [], "score": 8, "summary": "reads"}]
+        real, made = vfx.grid_copy, []
+
+        def copy_once(png):
+            made.append(png)
+            return real(png) if len(made) == 1 else None
+        with patch.object(keyframe.vfx, "grid_copy", copy_once):
+            self.run_stage()
+        self.assertEqual(len(made), 2)
+        first, second = (r["prompt"] for r in self.reviews()[:2])
+        self.assertIn("grid/keyframe.png", first)
+        self.assertNotIn("grid/keyframe.png", second)
+        self.assertNotIn(vfx.GRID_NOTE, second)
+        self.assertFalse((self.root / "keyframe" / "grid" / keyframe.FRAME_NAME).exists())
+
 
 def fake_renderer_sequence(pngs: list[bytes]):
     queue = list(pngs)

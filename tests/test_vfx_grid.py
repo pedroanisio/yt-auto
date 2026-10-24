@@ -12,6 +12,8 @@ them. No model is called and the engine is a fake eval frame.
 
 import io
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,7 +21,7 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from ytstudio import framecheck, geometry, harness, vfx
+from ytstudio import framecheck, geometry, harness, render, vfx
 from ytstudio.core import Idea
 from ytstudio.research import Dossier
 from tests.test_vfx_world import (EFFECTS, SECTION, STYLE, WORLD_DOC, FakeEngine,
@@ -167,6 +169,39 @@ class GridCopies(PlannerCase):
                          [f"{self.stem}__world-open__1.5s.png"])
 
 
+    def test_without_pillow_the_review_runs_and_lists_no_grid(self):
+        # The vfx review ran without Pillow before the grid copies came: the
+        # copy is a viewing aid, so a python3 with no PIL loses it and nothing else.
+        self.frames(1.5, 5)
+        reviewer = StubReviewer({"frames": [], "score": 8, "summary": "ok"})
+        with patch.dict(sys.modules, {"PIL": None}), \
+                patch.object(vfx, "EVAL_RUNNER", lambda *a, **k: None):
+            review = self.planner._review(reviewer, 1, self.name, SECTION, self.worlds, 0)
+        self.assertEqual(review, {"frames": [], "score": 8, "summary": "ok"})
+        prompt = reviewer.calls[0]["prompt"]
+        self.assertNotIn('"grid":', prompt)
+        self.assertNotIn(vfx.GRID_NOTE, prompt)                 # no copy, so no word of one
+        self.assertFalse(any((self.ws.dir / "frames" / "grid").glob("*.png")))
+
+    def test_a_frame_that_cannot_be_read_gets_no_copy(self):
+        good, bad = self.frames(1.5, 5)
+        bad.write_bytes(b"not a png")
+        self.assertIsNone(vfx.grid_copy(bad))
+        reviewer = StubReviewer({"frames": [], "score": 8, "summary": "ok"})
+        with patch.object(vfx, "EVAL_RUNNER", lambda *a, **k: None):
+            self.planner._review(reviewer, 1, self.name, SECTION, self.worlds, 0)
+        prompt = reviewer.calls[0]["prompt"]
+        self.assertIn(f'"grid": "frames/grid/{good.name}"', prompt)
+        self.assertNotIn(f'"grid": "frames/grid/{bad.name}"', prompt)
+        self.assertIn(vfx.GRID_NOTE, prompt)                    # one frame has a copy
+        bad_only = self.frames(9)[0]
+        good.unlink()
+        (self.ws.dir / "frames" / f"{self.stem}__world-open__5s.png").unlink()
+        bad_only.write_bytes(b"not a png")
+        self.planner._review(reviewer, 1, self.name, SECTION, self.worlds, 1)
+        self.assertNotIn(vfx.GRID_NOTE, reviewer.calls[1]["prompt"])  # none has one
+
+
 class Schema(unittest.TestCase):
     def review(self, cells):
         return {"frames": [{"frame": "frames/a.png", "seen": "s", "findings": [
@@ -265,6 +300,25 @@ class CellObjects(unittest.TestCase):
         self.assertEqual(called, [])                              # no object3D: no eval paid
 
 
+    def test_an_eval_that_raises_is_none_with_the_reason(self):
+        args = (self.name, "world-g", 2.0, ["B2"], (1920, 1080))
+        for exc in (subprocess.CalledProcessError(23, ["rsync"]), OSError("ssh: no route"),
+                    render.RemoteRefused("YT_NO_REMOTE is set"),
+                    subprocess.TimeoutExpired(["ssh"], 5)):
+            def run(times, exc=exc):
+                raise exc
+            found, why = self.ws.locate(*args, runner=run)
+            self.assertIsNone(found, exc)
+            self.assertIn("eval at 2s failed", why)
+
+            def factory(doc_path, *, files=None, root=None, host="", exc=exc):
+                raise exc
+            with patch.object(vfx, "EVAL_RUNNER", factory):
+                found, why = self.ws.locate(*args)
+            self.assertIsNone(found, exc)
+            self.assertIn("failed", why)
+
+
 class Listing(unittest.TestCase):
     def finding(self, **kw):
         return dict({"category": "cinematography", "problem": "the hero sits low",
@@ -301,6 +355,12 @@ class Listing(unittest.TestCase):
         self.assertNotIn("cells", text)
         self.assertNotIn("px (", text)
         self.assertIn("- [major] frames/x.png (shot 2, cinematography): the grade is flat", text)
+
+
+    def test_cells_that_are_not_a_list_name_no_cell(self):
+        text = self.listing(self.finding(cells="C3,C4", objects=None, unmapped="x"))
+        self.assertNotIn("cells", text)
+        self.assertNotIn("px (", text)
 
 
 class Locating(PlannerCase):
@@ -345,6 +405,57 @@ class Locating(PlannerCase):
         self.assertIn(located["unmapped"], listing)
 
 
+    def test_a_host_failure_at_locate_time_keeps_the_paid_review(self):
+        (self.ws.dir / self.name).write_text(WORLD_DOC, encoding="utf-8")
+        self.frames(5)
+
+        def factory(doc_path, *, files=None, root=None, host=""):
+            def run(times):
+                raise subprocess.CalledProcessError(23, ["rsync"])
+            return run
+        with patch.object(vfx, "EVAL_RUNNER", factory):
+            review = self.planner._review(StubReviewer(grid_review()), 1, self.name, SECTION,
+                                          self.worlds, 0)
+        self.assertIsNotNone(review)
+        located = review["frames"][0]["findings"][0]
+        self.assertEqual(located["cells"], ["C3"])
+        self.assertIsNone(located["objects"])
+        self.assertIn("failed", located["unmapped"])
+
+    def test_a_finding_on_another_sections_frame_is_not_evaluated(self):
+        (self.ws.dir / self.name).write_text(WORLD_DOC, encoding="utf-8")
+        self.frames(5)
+        runs = []
+
+        def factory(doc_path, *, files=None, root=None, host=""):
+            return lambda times: runs.append(times) or [eval_frame() for _ in times]
+        with patch.object(vfx, "EVAL_RUNNER", factory):
+            review = self.planner._review(
+                StubReviewer(grid_review(frame="frames/02-other__w__1s.png")), 1, self.name,
+                SECTION, self.worlds, 0)
+        located = review["frames"][0]["findings"][0]
+        self.assertEqual(runs, [])
+        self.assertIsNone(located["objects"])
+        self.assertIn("not one of this section's proof frames", located["unmapped"])
+
+    def test_cells_given_as_a_string_pay_no_eval_and_map_nothing(self):
+        (self.ws.dir / self.name).write_text(WORLD_DOC, encoding="utf-8")
+        self.frames(5)
+        answer = grid_review()
+        answer["frames"][0]["findings"][0]["cells"] = "C3,C4"
+        answer["frames"][0]["findings"][1]["cells"] = ["Z9"]   # nothing on the grid
+        runs = []
+
+        def factory(doc_path, *, files=None, root=None, host=""):
+            return lambda times: runs.append(times) or [eval_frame() for _ in times]
+        with patch.object(vfx, "EVAL_RUNNER", factory):
+            review = self.planner._review(StubReviewer(answer), 1, self.name, SECTION,
+                                          self.worlds, 0)
+        self.assertEqual(runs, [])
+        for f in review["frames"][0]["findings"]:
+            self.assertNotIn("objects", f)
+
+
 class Rounds(PlannerCase):
     """Through the stage: the record keeps the cells and objects, the next
     author is told them, and a cell off the grid fails the review."""
@@ -371,9 +482,10 @@ class Rounds(PlannerCase):
         doc = self.author(factory)
         first = doc["rounds"][0]["review"]["frames"][0]["findings"][0]
         self.assertEqual(first["cells"], ["C3", "C4"])
-        self.assertIn("objects", first)
+        self.assertEqual(first["objects"], ["shot/wall"])
         authors = [c for c in FakeEngine.stream_calls if "Write" in c["tools"]]
-        self.assertIn("cells C3,C4 = px (480,360)-(720,720)", authors[1]["prompt"])
+        self.assertIn("cells C3,C4 = px (480,360)-(720,720), objects: shot/wall",
+                      authors[1]["prompt"])
         grid = self.ws.dir / "frames" / "grid"
         shown = [c for c in FakeEngine.stream_calls if "Write" not in c["tools"]][0]["prompt"]
         for png in sorted((self.ws.dir / "rounds" / self.stem / "r00" / "frames").glob("*.png")):
