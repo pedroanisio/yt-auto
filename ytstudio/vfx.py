@@ -249,9 +249,10 @@ VFX_SYSTEM = (
 )
 
 AUTHOR_SYSTEM = (
-    sdkkit.AUTHOR_SYSTEM + " A section is one world: one set, one hero model, one "
-    "light rig and one camera whose path is keyed across the whole section, so the "
-    "shots are phases of a single continuous take, never separate builds. Its proof "
+    sdkkit.AUTHOR_SYSTEM + " Each symbol is one world: one set, one hero model, one "
+    "light rig and one camera whose path is keyed across the whole symbol, so the "
+    "shots inside it are phases of a single continuous take, never separate builds; "
+    "a section is one symbol unless its plan cuts it into worlds of their own. Its proof "
     "frames come from `python3 sr.py frame <file>`, which renders each shot's "
     "midpoint the way `yt build` includes the world; Read every one. You never write "
     "prose where the brief asks for a program."
@@ -522,8 +523,13 @@ EFFECTS_SCHEMA = {
                              "technique", "fallback"],
             },
         },
-        # A section is one continuous world by default; a cut is the exception
-        # the plan has to ask for, by the shot label where the new world starts.
+        # The place, scale and time the section's first world shows (AUTO-143),
+        # so a film that never leaves one set is visible in its plan.
+        "setting": {"type": "string",
+                    "description": "the place, scale and time the section's first "
+                                   "world shows"},
+        # A section is one continuous world by default; a cut is asked for by
+        # the shot label where the new world starts, with that world's setting.
         "cuts": {
             "type": "array",
             "items": {
@@ -531,13 +537,19 @@ EFFECTS_SCHEMA = {
                 "properties": {
                     "before": {"type": "string"},
                     "why": {"type": "string"},
+                    "setting": {"type": "string",
+                                "description": "the place, scale and time of the "
+                                               "world that starts here"},
                 },
-                "required": ["before", "why"],
+                "required": ["before", "why", "setting"],
             },
         },
     },
-    "required": ["effects"],
+    "required": ["effects", "setting"],
 }
+
+#: How the effects planner's list of the film's sections marks the one it plans.
+THIS_SECTION = "<- the section you are planning"
 
 PLAN_SCHEMA = {
     "type": "object",
@@ -1586,7 +1598,8 @@ INPUT_SHOT_FIELDS = ("label", "narration", "super", "on_screen", "visual", "show
 def section_inputs_digest(section: dict, group: dict, tokens: dict, look_digest: str) -> str:
     """The sha256 of what one section was authored and reviewed against: its
     heading and shots (with the measured `at` and `seconds` the section dict
-    already carries), its effects group (effects and cuts), the style tokens
+    already carries), its effects group (effects, cuts and, once planned, the
+    first world's setting), the style tokens
     and the approved look's digest, as canonical JSON. A carried record whose
     `inputs_sha256` differs was never reviewed against these inputs. JSON
     only: no frame is read, and a whole second equals its float.
@@ -1612,6 +1625,10 @@ def section_inputs_digest(section: dict, group: dict, tokens: dict, look_digest:
             "effects": (group or {}).get("effects") or [],
             "cuts": (group or {}).get("cuts") or [],
             "tokens": dict(tokens or {}), "look": str(look_digest or "")}
+    # Only a planned setting enters (AUTO-143), so a group planned before
+    # settings keeps the sha its review was recorded against.
+    if (group or {}).get("setting"):
+        body["setting"] = group["setting"]
     text = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
                       default=str)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -1649,7 +1666,9 @@ def world_span(shots: list[dict]) -> float:
 
 
 def world_symbols(section: dict, effects: list[dict],
-                  cuts: list[str] | None = None) -> list[dict]:
+                  cuts: list[str] | None = None, *,
+                  settings: dict[str, str] | None = None,
+                  first_setting: str = "") -> list[dict]:
     """The symbol(s) one section is authored as: by default ONE world holding
     every shot of the section at its offset from the section's start, with
     the section's effects as its phases. A cut (a shot label where a new
@@ -1657,15 +1676,18 @@ def world_symbols(section: dict, effects: list[dict],
 
     Each world: id, start (film time of its first shot), offset (seconds into
     the section), seconds, shots (label, at within the world, seconds, and
-    the screenplay's words) and phases (the effects whose shots it covers; an
-    effect with no shots belongs to all).
+    the screenplay's words), phases (the effects whose shots it covers; an
+    effect with no shots belongs to all) and setting (AUTO-143: the place,
+    scale and time the plan gave it -- `first_setting` for the first world,
+    `settings[label]` for the world a cut at `label` starts; "" unplanned).
     """
+    settings = settings or {}
     slug = ident(slugify(section.get("heading", "section"), 40))
     shots = list(section.get("shots") or [])
     if not shots:
         return [{"id": f"{WORLD_PREFIX}{slug}", "start": 0, "offset": 0,
                  "seconds": float(section.get("seconds") or 0),
-                 "shots": [], "phases": list(effects)}]
+                 "shots": [], "phases": list(effects), "setting": first_setting}]
     origin = float(shots[0].get("at", 0))
     labels = [str(s["label"]) for s in shots]
     cut_at = {c for c in (cuts or []) if c in labels[1:]}
@@ -1689,8 +1711,19 @@ def world_symbols(section: dict, effects: list[dict],
         out.append({"id": f"{WORLD_PREFIX}{slug}" + (f"-{n}" if n > 1 else ""),
                     "start": round(start, 3), "offset": round(start - origin, 3),
                     "seconds": world_span(world_shots),
-                    "shots": world_shots, "phases": phases})
+                    "shots": world_shots, "phases": phases,
+                    "setting": first_setting if n == 1
+                    else str(settings.get(str(run[0]["label"])) or "")})
     return out
+
+
+def world_rows(worlds: list[dict]) -> list[dict]:
+    """The worlds as a section record keeps them: ids, times, shot labels,
+    phase ids and the planned setting, which the continuity review reads."""
+    return [{"id": w["id"], "start": w["start"], "seconds": w["seconds"],
+             "shots": [s["label"] for s in w["shots"]],
+             "phases": [e["id"] for e in w["phases"]],
+             "setting": str(w.get("setting") or "")} for w in worlds]
 
 
 #: What the engine imports as a `<mesh>` (`mesh/@format`).
@@ -2170,16 +2203,35 @@ class Workspace:
             lines += ["", "Avoid: " + "; ".join(style["avoid"])]
         doc = self.doc_name(n, section)
         ids = ", ".join(f'`{w["id"]}`' for w in worlds)
-        lines += ["", f"## The world to author ({'one <symbol>' if len(worlds) == 1 else 'these <symbol>s'}: {ids})", "",
-                  "A section is one world: one set, one set of materials, one light rig, "
-                  "one hero model and ONE camera whose path is keyed across the whole "
-                  "symbol. The shots below are phases of that world at their offsets, "
-                  "not separate builds: the hero keeps its size, colour and material "
-                  "from the first phase to the last, the room does not change, and the "
-                  "camera moves through the phases in one continuous path (ease between "
-                  "keys; no jump in position, yaw or focal length at a shot boundary "
-                  "unless the plan lists a cut). Give the symbol `duration` equal to its "
-                  "length below and key every animation on that one timeline.", "",
+        lines += ["", f"## The world to author ({'one <symbol>' if len(worlds) == 1 else 'these <symbol>s'}: {ids})", ""]
+        if len(worlds) == 1:
+            lines += ["Each symbol is one world: one set, one set of materials, one light rig, "
+                      "one hero model and ONE camera whose path is keyed across the whole "
+                      "symbol. The shots below are phases of that world at their offsets, "
+                      "not separate builds: the hero keeps its size, colour and material "
+                      "from the first phase to the last, the room does not change, and the "
+                      "camera moves through the phases in one continuous path (ease between "
+                      "keys; no jump in position, yaw or focal length at a shot boundary "
+                      "unless the plan lists a cut). Give the symbol `duration` equal to its "
+                      "length below and key every animation on that one timeline.", ""]
+        else:
+            # AUTO-143: the plan cut this section where the story moves to
+            # another place, scale, time or record; each world is its own set.
+            lines += ["Each symbol is one world: its own set, materials and light rig, and "
+                      "ONE camera whose path is keyed across the whole symbol. The plan cuts "
+                      "this section between these settings:", ""]
+            lines += [f"- `{w['id']}`: {w.get('setting') or '(no setting planned)'}"
+                      for w in worlds]
+            lines += ["", "Inside one symbol the shots are phases of one continuous take at "
+                      "their offsets, not separate builds: within a symbol the set and the "
+                      "light stay as they are, and the camera moves through the phases in "
+                      "one continuous path (ease between keys; no jump in position, yaw or "
+                      "focal length at a shot boundary). At a cut the set, the room and the "
+                      "light rig belong to the world that starts there; the hero keeps its "
+                      "scale, material and colour across worlds, and the grade and type "
+                      "language carry across. Give each symbol `duration` equal to its "
+                      "length below and key its animation on its own timeline.", ""]
+        lines += [
                   "Hero convention: give every object the camera must never lose an id "
                   "starting with `hero-` (e.g. `hero-subject`); the frame gate reads the "
                   "engine's off-camera report and a `hero-` object outside the camera's "
@@ -2361,7 +2413,10 @@ class Workspace:
                       "program with the same values (its own program, beside it, shows how "
                       "they were built), keep its camera language, and change only what "
                       "the shots require (the camera path, the motion, the set beyond the "
-                      "frame). The review scores fidelity to it.", ""]
+                      "frame). Its environment is the lead section's first world: a world "
+                      "the plan cuts to another setting may stand in another set, keeping "
+                      "the hero, the grade and the type. The review scores fidelity to it.",
+                      ""]
             for el in look.get("elements") or []:
                 if isinstance(el, dict):
                     lines.append(f"- {el.get('kind', '')}: **{el.get('name', '')}** "
@@ -3283,7 +3338,11 @@ class VfxPlanner:
             "carry meaning by red/green alone.",
             STYLE_SCHEMA))
 
-    def _section_effects(self, section: dict, style: dict) -> dict:
+    def _section_effects(self, section: dict, style: dict, *, film: list[dict] = ()) -> dict:
+        """One section's effects plan. `film` is the film's sections in order
+        (heading and first picture, from effects()): static context, so the
+        planner can move to another setting where the story moves instead of
+        re-using its neighbour's."""
         claims = self.bundle["claims"]
         heading = section.get("heading", "")
         quoted = [c for c in claims
@@ -3295,10 +3354,16 @@ class VfxPlanner:
             f"- {s['label']} ({s['seconds']}s): {s['visual'][:160]}"
             + (f" | super: {s['super'][:60]}" if s.get("super") else "")
             for s in shots) or "- (no screenplay yet; leave `shots` empty)"
+        film_lines = "".join(
+            f"{n}. {row.get('heading', '')}: {row.get('visual') or '(no shot yet)'}"
+            + (f"  {THIS_SECTION}" if row.get("heading", "") == heading else "") + "\n"
+            for n, row in enumerate(film, 1))
         prompt = (
             f"{self._idea_block()}\n\n"
             f"Visual system:\n{json.dumps(style, indent=2, ensure_ascii=False)[:1400]}\n\n"
-            f"SECTION: {heading} ({section.get('seconds', 0)}s)\n"
+            + (f"The film's sections, in order, each with its opening picture:\n"
+               f"{film_lines}\n" if film_lines else "")
+            + f"SECTION: {heading} ({section.get('seconds', 0)}s)\n"
             "Beats:\n" + "\n".join(f"- {b}" for b in section.get("beats", []))
             + f"\n\nIts shots, by label:\n{shot_lines}"
             + "\n\nFacts available for this section:\n"
@@ -3311,19 +3376,24 @@ class VfxPlanner:
                "decides which families carry this video, and a flat treatment still "
                f"has motion, depth and post to draw on:\n{self.vocabulary()}\n\n"
                if self.vocabulary() else "")
-            + "A separate author will build this section as ONE scene-render "
-            "symbol: the world -- one set, one light rig, one hero model and one "
-            "camera keyed across the whole section -- and the effects you "
-            "specify are the phases that world passes through, at the time of "
-            "the shots each names. So the brief must say exactly what is on "
-            "screen, where, in which treatment (3D with a camera move, a flat "
-            "diagram, a photoreal simulation, a composite over footage -- as the "
-            "chosen treatment says), with which numbers and in what order, which "
-            "spoken words the beats land on, and how the camera arrives from the "
-            "previous phase. Only when the section genuinely needs a cut -- a "
-            "different place or scale no camera move can bridge -- list in `cuts` "
-            "the shot label where the new world starts and why; the default is "
-            "none, one continuous take.\n\n"
+            + "A separate author will build each world of this section as ONE "
+            "scene-render symbol -- one set, one light rig, one hero model and one "
+            "camera keyed across it -- and the effects you specify are the phases "
+            "the worlds pass through, at the time of the shots each names. So the "
+            "brief must say exactly what is on screen, where, in which treatment "
+            "(3D with a camera move, a flat diagram, a photoreal simulation, a "
+            "composite over footage -- as the chosen treatment says), with which "
+            "numbers and in what order, which spoken words the beats land on, and "
+            "how the camera arrives from the previous phase. Name in `setting` the "
+            "place, scale and time the section's first world shows (for example "
+            "\"1953 Cavendish lab, archival footage\" or \"inside one cell membrane, "
+            "molecular scale\"). A cut is warranted when the story moves to another "
+            "place, scale, time or real-world record (a historical moment, a real "
+            "location, archival footage), and when no camera move can bridge the "
+            "change: list in `cuts` the shot label where the new world starts, why, "
+            "and that world's `setting`. Where the story moves, choose a setting the "
+            "neighbouring sections do not already show rather than re-using theirs. "
+            "Inside one setting, one continuous take stays the rule: no cut.\n\n"
             f"Specify at most {self.per_section} effects for this section. "
             "Each one: what the viewer must understand that words alone would "
             "not deliver, what is literally on screen, the exact number or "
@@ -3370,18 +3440,26 @@ class VfxPlanner:
         cuts = [c for c in answer.get("cuts", []) or []
                 if isinstance(c, dict) and c.get("before") in known]
         out = {"section": heading, "seconds": section.get("seconds", 0),
-               "effects": effects, "cuts": cuts}
+               "effects": effects, "cuts": cuts,
+               "setting": str(answer.get("setting") or "")}
         if warnings := cover_warnings(effects, constraints):
             out["warnings"] = warnings
         return out
 
     def effects(self, outline: dict, style: dict) -> list[dict]:
         sections = outline.get("sections", [])
+        # The film's sections once, in order, each with its first picture: every
+        # section's planner sees where the film has been and is going (AUTO-143).
+        film = [{"heading": s.get("heading", ""),
+                 "visual": str(next((sh.get("visual", "") for sh in s.get("shots") or []
+                                     if isinstance(sh, dict)), "") or "")[:160]}
+                for s in sections]
 
         def work() -> list[dict]:
             self._say(f"  {len(sections)} sections, {self.jobs} at a time")
             with ThreadPoolExecutor(max_workers=self.jobs) as pool:
-                futures = [pool.submit(self._section_effects, s, style) for s in sections]
+                futures = [pool.submit(self._section_effects, s, style, film=film)
+                           for s in sections]
                 out = []
                 for section, future in zip(sections, futures):
                     try:
@@ -3410,9 +3488,14 @@ class VfxPlanner:
 
     @staticmethod
     def _worlds(section: dict, group: dict) -> list[dict]:
-        """The world symbol(s) of one section, with the plan's cuts applied."""
-        cuts = [c.get("before") for c in group.get("cuts", []) or [] if isinstance(c, dict)]
-        return world_symbols(section, group.get("effects", []), cuts=cuts)
+        """The world symbol(s) of one section, with the plan's cuts and each
+        world's setting applied; a group planned before settings has none."""
+        rows = [c for c in group.get("cuts", []) or [] if isinstance(c, dict)]
+        return world_symbols(section, group.get("effects", []),
+                             cuts=[c.get("before") for c in rows],
+                             settings={str(c.get("before")): str(c.get("setting") or "")
+                                       for c in rows},
+                             first_setting=str(group.get("setting") or ""))
 
     def _stream(self, engine, n: int, prompt: str, *, resume: bool = False,
                 finish: str | None = None, budget: float | None = None) -> tuple[int, bool]:
@@ -3470,15 +3553,25 @@ class VfxPlanner:
                              "shot": shot["label"] if shot else "",
                              "should_show": shot.get("visual", "") if shot else
                              "(between shots: the world's own start or end)"})
+        # AUTO-143: a section the plan cut into worlds changes set at the cut
+        # by design; the room and the camera's one path are judged per world.
+        planned = ([f"This section is planned as {len(worlds)} worlds, one `symbol` each: "
+                    + "; ".join(f"`{w['id']}` from shot {w['shots'][0]['label'] if w['shots'] else '-'}"
+                                f" ({w.get('setting') or 'no setting planned'})" for w in worlds)
+                    + ". A different set across a planned cut is expected and is not a finding; "
+                    "the hero keeps its scale, material and colour, and the grade carries across."]
+                   if len(worlds) > 1 else [])
         prompt = "\n\n".join([
             f"Review round {round_no} of section {n} (\"{section.get('heading', '')}\") of "
             f"\"{self.idea.title}\". Read every PNG listed under `frames/` -- each is one "
             "proof frame of the section's world, rendered as `yt build` will include it, "
             "at the midpoint of the shot named -- and judge each against the shot it "
             "belongs to, then the frames together for continuity: the same hero at the "
-            "same size, colour and material; the same room and light; one camera on one "
-            "path. Then give a provisional score 0-10 for the section as it would read in "
-            "the finished film, by the publication bar.",
+            "same size, colour and material; within each world (one `symbol`), the same "
+            "room and light and one camera on one path. Then give a provisional score "
+            "0-10 for the section as it would read in the finished film, by the "
+            "publication bar.",
+            *planned,
             # Said only when a copy was made: no Pillow, or no frame it could
             # read, and the reviewer is not sent to look for one.
             *([f"A frame listed with a `grid` path has a grid copy beside it. {GRID_NOTE}"]
@@ -3720,9 +3813,7 @@ class VfxPlanner:
                     "provenance": sdkkit.provenance_of(final) if final.is_file() else None,
                     "symbols": symbols, "findings": findings, "tool_calls": tools_used,
                     "props_declined": props_declined(text),
-                    "worlds": [{"id": w["id"], "start": w["start"], "seconds": w["seconds"],
-                                "shots": [s["label"] for s in w["shots"]],
-                                "phases": [e["id"] for e in w["phases"]]} for w in worlds],
+                    "worlds": world_rows(worlds),
                     "revisions": revisions, "rounds": rounds, "best_round": best_round_no,
                     "score": chosen["score"] if chosen else None,
                     "review": chosen["review"] if chosen else None,
@@ -4263,9 +4354,7 @@ class VfxPlanner:
                 "provenance": None, "symbols": [], "tool_calls": 0, "props_declined": {},
                 "findings": [f"error: the authoring of section {n} failed: "
                              f"{type(exc).__name__}: {str(exc)[:300]}"],
-                "worlds": [{"id": w["id"], "start": w["start"], "seconds": w["seconds"],
-                            "shots": [s["label"] for s in w["shots"]],
-                            "phases": [e["id"] for e in w["phases"]]} for w in worlds],
+                "worlds": world_rows(worlds),
                 "revisions": 0, "rounds": [], "best_round": None, "score": None,
                 "review": None, "cost_usd": round(self.spend.spent(n), 4),
                 "inputs_sha256": self._inputs_sha256(section, group),
@@ -4648,9 +4737,7 @@ class VfxPlanner:
                 "provenance": sdkkit.provenance_of(final) if final.is_file() else None,
                 "symbols": [f["id"] for f in symbol_facts(text)], "findings": findings,
                 "tool_calls": 0, "props_declined": props_declined(text),
-                "worlds": [{"id": w["id"], "start": w["start"], "seconds": w["seconds"],
-                            "shots": [s["label"] for s in w["shots"]],
-                            "phases": [e["id"] for e in w["phases"]]} for w in worlds],
+                "worlds": world_rows(worlds),
                 "revisions": max(numbers) if numbers else 0, "rounds": rounds,
                 "best_round": chosen["round"] if chosen else None,
                 "score": best["score"] if best else None,

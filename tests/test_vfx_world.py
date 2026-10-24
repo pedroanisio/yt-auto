@@ -303,6 +303,10 @@ class Brief(unittest.TestCase):
         self.assertIn("Release", text)                     # the phases
         self.assertIn("Settle", text)
         self.assertIn("midpoint", text)                    # where the proof frames sit
+        # one world, one continuous take (AUTO-143 keeps it inside a setting)
+        self.assertIn("Each symbol is one world", text)
+        self.assertIn("the room does not change", text)
+        self.assertIn("one continuous path", text)
         self.assertNotIn("one <symbol> per effect", text)
         self.assertNotIn("## Props", text)                 # absent file, no section, no error
 
@@ -1453,3 +1457,210 @@ class WorldLength(unittest.TestCase):
         doc = (f'<scene><symbols><symbol id="{world["id"]}" width="8" height="8" '
                f'duration="{world["seconds"]:g}"/></symbols></scene>')
         self.assertEqual(vfx.timing_findings(doc, {world["id"]: required}), [])
+
+
+#: A section planned with one cut and two settings (AUTO-143): the story moves
+#: from a 1953 lab to the inside of a cell at shot 1.3.
+SETTINGS_GROUP = {"section": "Open", "seconds": 15, "effects": EFFECTS,
+                  "setting": "1953 Cavendish lab, archival footage",
+                  "cuts": [{"before": "1.3", "why": "the story moves inside the cell",
+                            "setting": "inside one cell membrane, molecular scale"}]}
+
+#: The two worlds that group asks for, as an author writes them.
+TWO_WORLD_DOC = WORLD_DOC.replace(
+    '<symbol id="world-open" width="1920" height="1080" duration="15">',
+    '<symbol id="world-open" width="1920" height="1080" duration="7">').replace(
+    '<key time="15" value="200"/>', '<key time="7" value="200"/>').replace(
+    "    </symbol>\n  </symbols>",
+    "    </symbol>\n"
+    '    <symbol id="world-open-2" width="1920" height="1080" duration="8">\n'
+    '      <camera id="cam2" x="0" y="-100" z="-400" target="hero-ball2" focalLength="35" active="true"/>\n'
+    '      <object3D id="floor2" primitive="plane" material="m-a" x="0" y="0" z="0" width="900" height="900" rotationX="90"/>\n'
+    '      <object3D id="hero-ball2" primitive="sphere" material="m-a" x="0" y="-150" z="100" radius="20">\n'
+    '        <animate property="x"><key time="0" value="-200"/><key time="8" value="200"/></animate>\n'
+    "      </object3D>\n"
+    "    </symbol>\n  </symbols>").replace(
+    '<instance id="u" symbol="world-open" start="0" end="15"/>',
+    '<instance id="u" symbol="world-open" start="0" end="7"/>\n'
+    '    <instance id="u2" symbol="world-open-2" start="7" end="15"/>')
+
+
+class Settings(unittest.TestCase):
+    """AUTO-143: a cut carries the setting of the world it starts, so a
+    section can move to another place, scale, time or real record; inside
+    one setting the take stays continuous."""
+
+    def test_each_world_carries_its_setting(self):
+        worlds = vfx.world_symbols(SECTION, EFFECTS, cuts=["1.3"],
+                                   settings={"1.3": "inside a cell"},
+                                   first_setting="a 1953 lab")
+        self.assertEqual([(w["id"], w["setting"]) for w in worlds],
+                         [("world-open", "a 1953 lab"), ("world-open-2", "inside a cell")])
+
+    def test_with_no_settings_every_setting_is_empty(self):
+        self.assertEqual([w["setting"] for w in vfx.world_symbols(SECTION, EFFECTS,
+                                                                  cuts=["1.3"])], ["", ""])
+        self.assertEqual(vfx.world_symbols({"heading": "Open", "seconds": 20},
+                                           EFFECTS)[0]["setting"], "")
+
+    def test_the_planner_worlds_read_the_groups_settings(self):
+        worlds = vfx.VfxPlanner._worlds(SECTION, SETTINGS_GROUP)
+        self.assertEqual([w["setting"] for w in worlds],
+                         ["1953 Cavendish lab, archival footage",
+                          "inside one cell membrane, molecular scale"])
+        # a cached 11-effects group from before settings reads as empty settings
+        old = {"section": "Open", "effects": EFFECTS,
+               "cuts": [{"before": "1.3", "why": "another scale"}]}
+        self.assertEqual([w["setting"] for w in vfx.VfxPlanner._worlds(SECTION, old)],
+                         ["", ""])
+
+    def test_the_effects_schema_asks_for_a_setting_per_world(self):
+        props = vfx.EFFECTS_SCHEMA["properties"]
+        self.assertEqual(props["setting"]["type"], "string")
+        cut = props["cuts"]["items"]
+        self.assertIn("setting", cut["properties"])
+        self.assertIn("setting", cut["required"])
+
+    def test_the_digest_takes_the_setting_and_keeps_an_old_groups_sha(self):
+        tokens = {"ink": "#FFFFFF"}
+        plain = {"effects": EFFECTS, "cuts": []}
+        before = "7cbaf6c1c9554fd31a92dbd1072313a40cda258f4bae654ce2946a828e01601c"
+        before_cut = "a01abf772b6ccc2610c924486a44d05c42bfb870f5b1b6ff8a526c8871037af6"
+        # pinned before AUTO-143: a group without a setting keeps its sha
+        self.assertEqual(vfx.section_inputs_digest(SECTION, plain, tokens, ""), before)
+        self.assertEqual(vfx.section_inputs_digest(SECTION, dict(plain, setting=""),
+                                                   tokens, ""), before)
+        old_cut = {"effects": EFFECTS, "cuts": [{"before": "1.3", "why": "a new place"}]}
+        self.assertEqual(vfx.section_inputs_digest(SECTION, old_cut, tokens, ""), before_cut)
+        lab = vfx.section_inputs_digest(SECTION, dict(plain, setting="a lab"), tokens, "")
+        cell = vfx.section_inputs_digest(SECTION, dict(plain, setting="a cell"), tokens, "")
+        self.assertNotIn(lab, (before, cell))
+        moved = dict(old_cut, cuts=[dict(old_cut["cuts"][0], setting="a cell")])
+        self.assertNotEqual(vfx.section_inputs_digest(SECTION, moved, tokens, ""), before_cut)
+
+
+class SettingsPlan(unittest.TestCase):
+    """The planner of each section sees the film's sections in order, its own
+    marked, and is told when a cut is warranted."""
+
+    LATER = dict(SECTION, heading="Inside the cell", shots=[
+        dict(s, label=f"2.{n}", visual=f"membrane {n}")
+        for n, s in enumerate(SECTION["shots"], 1)])
+    CLOSE = dict(SECTION, heading="What it meant", shots=[
+        dict(SECTION["shots"][0], label="3.1", visual="x" * 400)])
+    HEADINGS = ("Open", "Inside the cell", "What it meant")
+
+    def plan(self, answer):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            idea = Idea(title="T", genre="g", description="d")
+            bundle = {"idea": idea, "outline": {}, "claims": [], "assets": [], "premise": ""}
+            planner = vfx.VfxPlanner(bundle, Dossier(root, idea, at=root), vfx.Workspace(root),
+                                     model="sonnet", verbose=False)
+            seen = {}
+
+            def decide(name, prompt, schema):
+                seen[name] = prompt
+                return answer(name)
+            with patch.object(planner, "_decide", decide), \
+                    patch.object(planner, "vocabulary", lambda: ""):
+                got = planner.effects({"sections": [SECTION, self.LATER, self.CLOSE]}, STYLE)
+        return got, seen
+
+    def test_every_sections_prompt_lists_the_film_and_marks_its_own(self):
+        _, seen = self.plan(lambda name: {"effects": [], "cuts": []})
+        self.assertEqual(len(seen), 3)
+        for own in self.HEADINGS:
+            prompt = seen[f"plan-effects-{vfx.slugify(own, 40)}"]
+            lines = [line for line in prompt.splitlines()
+                     if any(f". {h}: " in line for h in self.HEADINGS)]
+            self.assertEqual(len(lines), 3, prompt)
+            for n, (line, heading) in enumerate(zip(lines, self.HEADINGS), 1):
+                self.assertIn(f"{n}. {heading}: ", line)
+                self.assertEqual(vfx.THIS_SECTION in line, heading == own, line)
+            self.assertIn("release", lines[0])                 # its first shot's visual
+            self.assertIn("membrane 1", lines[1])
+            self.assertIn("x" * 160, lines[2])
+            self.assertNotIn("x" * 161, lines[2])               # clipped to 160
+            # a cut is warranted where the story moves to another place, scale,
+            # time or real-world record; inside one setting, one continuous take
+            for words in ("another place, scale, time or real-world record",
+                          "archival footage", "Inside one setting, one continuous take"):
+                self.assertIn(words, prompt)
+            self.assertNotIn("the default is none", prompt)
+
+    def test_the_plan_keeps_the_setting_and_each_cuts_setting(self):
+        def answer(name):
+            if name == "plan-effects-open":
+                return {"effects": [], "setting": "a 1953 lab",
+                        "cuts": [{"before": "1.3", "why": "inside", "setting": "a cell"},
+                                 {"before": "9.9", "why": "nowhere", "setting": "x"}]}
+            return {"effects": [], "cuts": []}
+        got, _ = self.plan(answer)
+        self.assertEqual(got[0]["setting"], "a 1953 lab")
+        self.assertEqual(got[0]["cuts"], [{"before": "1.3", "why": "inside", "setting": "a cell"}])
+        self.assertEqual(got[1]["setting"], "")                # none answered, none kept
+
+
+class SettingsBrief(unittest.TestCase):
+    setUp, tearDown = Brief.setUp, Brief.tearDown
+
+    def brief_of(self, group):
+        ws = vfx.Workspace(self.root, version="v01")
+        worlds = vfx.VfxPlanner._worlds(SECTION, group)
+        path = ws.brief(1, idea=self.idea, house_rules="", style=STYLE,
+                        tokens={"ink": "#FFFFFF"}, frame=(1920, 1080), section=SECTION,
+                        effects=EFFECTS, words={}, assets=[], worlds=worlds)
+        return path.read_text(encoding="utf-8")
+
+    def test_a_two_world_brief_lists_each_setting(self):
+        text = self.brief_of(SETTINGS_GROUP)
+        self.assertIn("Each symbol is one world", text)
+        self.assertNotIn("A section is one world", text)
+        self.assertIn("`world-open`: 1953 Cavendish lab, archival footage", text)
+        self.assertIn("`world-open-2`: inside one cell membrane, molecular scale", text)
+        self.assertNotIn("the room does not change", text)
+        # what carries across the cut, and what belongs to the world
+        self.assertIn("the hero keeps its scale, material and colour across worlds", text)
+        self.assertIn("the grade and type language carry across", text)
+
+    def test_a_single_world_brief_reads_as_one_continuous_take(self):
+        text = self.brief_of({"section": "Open", "effects": EFFECTS, "cuts": []})
+        self.assertIn("Each symbol is one world", text)
+        self.assertIn("the room does not change", text)
+        self.assertIn("one continuous path", text)
+        self.assertNotIn("across worlds", text)
+
+    def test_the_author_system_says_each_symbol_is_one_world(self):
+        self.assertIn("Each symbol is one world", vfx.AUTHOR_SYSTEM)
+        self.assertNotIn("A section is one world", vfx.AUTHOR_SYSTEM)
+
+
+class SettingsReview(unittest.TestCase):
+    setUp, tearDown, author = Review.setUp, Review.tearDown, Review.author
+
+    def test_the_section_review_scopes_the_room_to_one_world(self):
+        FakeEngine.doc = TWO_WORLD_DOC
+        self.group = SETTINGS_GROUP
+        FakeEngine.reviews = [{"frames": [], "score": 9, "summary": "ok"}]
+        doc = self.author()[0]
+        self.assertEqual(doc["symbols"], ["world-open", "world-open-2"])
+        self.assertEqual([w.get("setting") for w in doc["worlds"]],
+                         ["1953 Cavendish lab, archival footage",
+                          "inside one cell membrane, molecular scale"])
+        review = [c for c in FakeEngine.stream_calls if "Write" not in c["tools"]][0]
+        prompt = review["prompt"]
+        self.assertIn("within each world", prompt)
+        self.assertIn("different set across a planned cut is expected and is not a finding",
+                      prompt)
+        self.assertIn("inside one cell membrane, molecular scale", prompt)
+
+    def test_a_cached_group_without_settings_still_authors(self):
+        self.group = {"section": "Open", "seconds": 15, "effects": EFFECTS,
+                      "cuts": [{"before": "1.3", "why": "another scale"}]}
+        FakeEngine.doc = TWO_WORLD_DOC
+        FakeEngine.reviews = [{"frames": [], "score": 9, "summary": "ok"}]
+        doc = self.author()[0]
+        self.assertEqual(doc["score"], 9)
+        self.assertFalse([f for f in doc["findings"] if f.startswith("error")], doc["findings"])
+        self.assertEqual([w.get("setting") for w in doc["worlds"]], ["", ""])
