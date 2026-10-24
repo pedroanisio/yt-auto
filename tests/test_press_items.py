@@ -73,6 +73,20 @@ class PressReference(unittest.TestCase):
                "url": "u", "credit_line": "", "note": ""}
         self.assertTrue(assets.press_reference(rec)["truncated"])
 
+    def test_a_record_with_no_date_is_never_listed(self):
+        # the card's source line is "outlet, date": an undated one would be
+        # attributed by outlet alone and nothing would say so
+        [rec] = news(google=[("Genoa bridge inquiry names 59 defendants", "Reuters")])
+        for undated in (dict(rec, credit_line=""), dict(rec, credit_line="Reuters"),
+                        dict(rec, credit_line="AP, 03 Mar 2024")):
+            self.assertEqual(assets.press_reference(undated)["date"], "")
+            self.assertEqual(assets.press_items([undated]), [])
+        [wiki] = news(wikinews=["Bridge collapses in Genoa, Italy"])
+        self.assertEqual(assets.press_items([dict(wiki, note="")]), [])
+        # the next dated article is still N1
+        self.assertEqual([p["id"] for p in assets.press_items([dict(rec, credit_line=""),
+                                                                rec])], ["N1"])
+
 
 class PressItems(unittest.TestCase):
     IMAGE = {"kind": "image", "title": "A photo", "source": "commons", "url": "img"}

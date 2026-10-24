@@ -371,7 +371,8 @@ deferred or failed.
 dossier's `article` records back into headline, outlet, date and url
 (`assets.press_reference`: only the exact " (outlet)" suffix removed; a
 title cut at 160 characters, or one with no outlet, is `truncated` and left
-out, since a cut headline cannot be quoted verbatim) and numbers at most 8
+out, since a cut headline cannot be quoted verbatim, and so is one with no
+date, which the card's "outlet, date" line could not attribute) and numbers at most 8
 of them N1.. in dossier order: the one place an N id is given. `yt script`'s
 research block lists them as press coverage to stage as a recreated
 headline card (typeset, attributed, never a screenshot), apart from

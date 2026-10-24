@@ -1559,7 +1559,7 @@ def research_block(data: dict, *, limit: int = 60, ids: bool = True) -> str:
                      + "\n".join(assets))
     if press:
         parts.append(f"{PRESS_HEADING}:\n" + "\n".join(
-            f"- {p['id']}: \"{p['headline']}\" — {p['outlet']}, {p['date']} ({p['url']})"
+            f"- {p['id']}: \"{p['headline']}\" — {source_line(p)} ({p['url']})"
             for p in press))
     if data.get("misconceptions"):
         # Numbered, so the plan cites one ("[M2] ...") rather than invents it.

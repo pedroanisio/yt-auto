@@ -898,7 +898,9 @@ def press_reference(record: dict) -> dict:
 def press_items(records: list[dict]) -> list[dict]:
     """The press coverage a film may stage as a recreated headline card: the
     `article` records in dossier order, each read by press_reference, the
-    truncated ones and those with no headline left out, at most PRESS_ITEMS,
+    truncated ones and those with no headline or no date left out (a card
+    is attributed "outlet, date", and an undated one would be attributed by
+    outlet alone with nothing to say so), at most PRESS_ITEMS,
     numbered N1.. under `id`. This is the one place an N id is given, so
     the script brief, the screenplay's checks and the vfx brief all call it
     on the dossier's raw assets and name the same headline by the same id."""
@@ -907,7 +909,7 @@ def press_items(records: list[dict]) -> list[dict]:
         if not isinstance(record, dict) or record.get("kind") != "article":
             continue
         ref = press_reference(record)
-        if ref["truncated"] or not ref["headline"]:
+        if ref["truncated"] or not ref["headline"] or not ref["date"]:
             continue
         out.append({"id": f"N{len(out) + 1}", **ref})
         if len(out) == PRESS_ITEMS:
