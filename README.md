@@ -987,6 +987,24 @@ a film with no section settings makes today's calls. A row that names no
 section reaches no take and is listed in voice.json `delivery.unmatched`;
 `delivery` also counts what was applied and what was only recorded, by kind.
 
+A screenplay with no marks (a pre-marks screenplay, written before them) is
+asked the casting and retake questions as before, word for word: its kept
+cast serves with no model call, the director's section notes stay notes (no
+section speed or settings), and its ElevenLabs calls, scenes.json, audio and
+captions are today's. A marked screenplay is asked the new questions (the
+shots' notes in the Sections brief, a per-section speed and settings
+offered), so its cast is a new decision: a model call, and where the voice,
+speed or settings come back different, re-billed takes, each changed take
+also re-billing the takes after it in its call (the kit's cache key holds
+the neighbours' text and request ids). Before that paid run, pin the voice
+with `--voice`, cap the spend with `--max-chars`, and compare voice.json
+`casting` with the one before; `--dry-run` does not cast and cannot show
+it. The marks come from the screenplay, and the first `yt script` after the
+marks landed asks each section with the new schema, so an existing
+project's sections are drafted again rather than served from their kept
+answers, and the new lines make the paid voice stale; `yt script --revise
+LABELS` changes only the lines it names.
+
 `yt voice --draft` is direction 29's read-aloud before any voice is paid
 for: kokoro, else espeak-ng, reads the screenplay sentence by sentence with
 its marks, with no casting and no model call (elevenlabs and the stub are

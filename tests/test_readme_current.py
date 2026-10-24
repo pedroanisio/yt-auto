@@ -77,6 +77,22 @@ class Missing(unittest.TestCase):
         self.assertIn("speed", text)
         self.assertIn("only the named", text)
 
+    def test_voice_marks_the_draft_and_what_an_old_project_is_asked(self):
+        from ytstudio import voice
+        text = flat(section("voice"))
+        for needle in ("`voice.MARK_SUPPORT`", "`yt voice --draft`", "`--accept-draft`",
+                       "`voice-draft.json`", "`spoken`", "`caption_mismatch`",
+                       "`delivery.unmatched`"):
+            self.assertIn(needle, text)
+        for engine in voice.MARK_SUPPORT:
+            self.assertIn(engine, text)
+        # a pre-marks screenplay keeps its cast; a marked one is cast again,
+        # and the operator is told how to hold the bill
+        self.assertIn("asked the casting and retake questions as before", text)
+        for needle in ("`--voice`", "`--max-chars`", "`--dry-run` does not cast"):
+            self.assertIn(needle, text)
+        self.assertIn("the first `yt script` after the marks", flat(TEXT))
+
     def test_render_names_the_still_cache_and_statuses(self):
         text = flat(section("render"))
         self.assertIn("still", text)
