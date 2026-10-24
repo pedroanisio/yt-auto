@@ -624,15 +624,19 @@ def check_review(review: Any) -> list[str]:
 # descriptions must reconstruct each section's claim. Beside it, three
 # things only a reader can see in a picture: a large number left bare
 # (attention 15), a mechanism a shot says it demonstrates that its picture
-# does not (direction 4's narrated mechanism no shot depicts), and a list
-# the pictures present with nothing to tell its parts apart (attention 22).
+# does not (direction 4's narrated mechanism no shot depicts), a list
+# the pictures present with nothing to tell its parts apart (attention 22),
+# and a change over time a shot says it demonstrates while its picture is
+# one fixed state (direction 7's discrete steps, direction 9's worked
+# example or simulation before the rule; AUTO-144): a mechanism drawn but
+# frozen, which the unshown claim, a mechanism not drawn at all, misses.
 # What a count can find, a super that prints the line, is
 # `rule:wall-of-text` in script.RULES (direction 2); motion is measured from
 # frames at vfx and qa, never here.
 
 #: The corpus rules the picture-check reads by, in the corpus's spelling.
 PICTURE_RULES = ("direction 4", "direction 2", "attention 15", "attention 22",
-                 "attention 23")
+                 "attention 23", "direction 7", "direction 9")
 
 
 def picture_role() -> str:
@@ -649,13 +653,18 @@ def picture_role() -> str:
         "alone, as if the plan were not in front of you; then read the beat the plan gave "
         "that section and say whether the pictures carry it, what of it they leave out, "
         "and the shot numbers where the pictures lose the thread.",
-        "Then report the shots that show one of three faults, and only those: a figure of "
+        "Then report the shots that show one of four faults, and only those: a figure of "
         "1,000 or more put on screen or asked of the picture with no comparison at human "
         "scale and no picture of the quantity (a bare number); a mechanism or claim the "
         "shot says its picture demonstrates that the picture as described does not show "
-        "(an unshown claim); and a list or set of parts the pictures present with no count "
+        "(an unshown claim); a list or set of parts the pictures present with no count "
         "and no label telling the viewer which part is which, or which one is being "
-        "spoken of (an unsignposted list).",
+        "spoken of (an unsignposted list); and a change over time the shot says its "
+        "picture demonstrates (a sequence of states, a flow, growth, a cascade, a cause "
+        "acting on something) while the picture as described is one fixed state, with no "
+        "steps, change or build the viewer watches (a static process). When the mechanism "
+        "is drawn but shown in one state, report static_process and leave unshown_claim "
+        "empty; unshown_claim is for a mechanism the picture does not show at all.",
         "Judge what is shown, never how it looks: the treatment decides the look, so a "
         "report names no colour, typeface, layout or style. Say what the viewer cannot "
         "see or follow; the writer decides how to show it.",
@@ -701,12 +710,23 @@ PICTURE_SCHEMA = {
                         "scale and no picture of the quantity, and where; empty when none")},
                     "unshown_claim": {"type": "string", "description": (
                         "the mechanism or claim the shot says it demonstrates that its "
-                        "picture does not show; empty when none")},
+                        "picture does not show at all; a mechanism drawn but shown in "
+                        "one state is static_process, and this is left empty; empty "
+                        "when none")},
                     "unsignposted_list": {"type": "string", "description": (
                         "the list or set of parts shown with no count and no label for "
                         "which is which; empty when none")},
+                    "static_process": {"type": "string", "description": (
+                        "a change over time that the shot's `shows` says its picture "
+                        "demonstrates (a sequence of states, a flow, growth, a cascade, a "
+                        "cause acting on something), while `visual` describes one fixed "
+                        "state with no steps, change or build the viewer watches; when "
+                        "the mechanism is drawn but shown in one state it is reported "
+                        "here and unshown_claim is left empty; empty when `shows` asks "
+                        "for no change")},
                 },
-                "required": ["n", "bare_number", "unshown_claim", "unsignposted_list"],
+                "required": ["n", "bare_number", "unshown_claim", "unsignposted_list",
+                             "static_process"],
             },
         },
     },

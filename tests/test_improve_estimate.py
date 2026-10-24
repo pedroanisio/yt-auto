@@ -64,6 +64,24 @@ class SectionsOf(ImproveCase):
         write_json(self.root / "vfx.json", {"authoring": {"version": "v01"}})
         self.assertIsNone(improve.routed_sections(self.root, [self.f(shot="3.1")]))
 
+    # AUTO-144: a doctor warn whose fix names one section is routed to it
+    def test_a_doctor_warn_naming_a_section_carries_it(self):
+        rows = improve.collect({}, doctor=[
+            ("warn", "vfx", "two-pressure explains the pressure builds with a static picture",
+             "yt vfx --project p --sections 3"),
+            ("warn", "vfx", "the sections do not read as one film", "re-author them")])
+        self.assertEqual([r.get("section_n") for r in rows], [3, None])
+        self.assertNotIn("section_n", rows[1])
+        self.assertEqual(improve.routed_sections(self.root, rows[:1]), [3])
+        self.assertIsNone(improve.routed_sections(self.root, rows[1:]))   # as today
+
+    def test_a_section_not_authored_is_not_a_route(self):
+        rows = improve.collect({}, doctor=[("warn", "vfx", "x", "yt vfx --sections 9"),
+                                           ("warn", "vfx", "y", "yt vfx --sections 2,3")])
+        self.assertEqual(rows[0]["section_n"], 9)
+        self.assertNotIn("section_n", rows[1])                 # one int, not a list
+        self.assertIsNone(improve.routed_sections(self.root, rows[:1]))
+
 
 class Argvs(ImproveCase):
     base = ["--project", "p"]

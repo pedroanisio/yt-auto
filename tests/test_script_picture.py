@@ -155,7 +155,8 @@ def picture(sections=None, reports=()):
          "confused_at": []} for n in (1, 2, 3)]
     return {"sections": rows,
             "reports": [{"n": 0, "bare_number": "", "unshown_claim": "",
-                         "unsignposted_list": "", **r} for r in reports]}
+                         "unsignposted_list": "", "static_process": "", **r}
+                        for r in reports]}
 
 
 def writer(**kw):
@@ -195,6 +196,11 @@ def faked(w, check, fixes=None):
     return calls
 
 
+#: What revise-picture tells the writer when a static process is flagged.
+STATIC_KEEP = ("A keep does not answer a static process: only a changed `visual` or "
+               "`shows` that lets the viewer watch the change does.")
+
+
 def named(calls, name):
     return [c for c in calls if c["name"] == name]
 
@@ -217,6 +223,9 @@ class Prompt(unittest.TestCase):
                 self.assertIn(f"LABEL {n}{i}", prompt)
                 self.assertNotIn(f"SPOKEN LINE {n}.{i}", prompt)
         self.assertNotIn("SPOKEN", prompt)
+        # AUTO-144: the schema with the fourth fault still reads no narration
+        self.assertIn("static_process", check["schema"]["properties"]["reports"]["items"]
+                      ["required"])
         # the plan's beat for each section, to reconstruct against
         for spec in PLAN["sections"]:
             for beat in spec["beats"]:
@@ -248,6 +257,7 @@ class Prompt(unittest.TestCase):
     def test_the_role_and_schema_name_no_treatment(self):
         # invariant 2: what to show is judged; how it looks is the treatment's
         text = narrative.picture_role() + str(narrative.PICTURE_SCHEMA)
+        self.assertIn("static_process", text)                     # the fourth fault too
         found = re.findall(r"\b(blue|red|green|yellow|highlight|arrow|zoom|glow)\b",
                            text, re.I)
         self.assertEqual(found, [])
@@ -517,6 +527,123 @@ class Corpus(unittest.TestCase):
         table = strength_table()
         for rule in narrative.PICTURE_RULES:
             self.assertIn(rule, table, rule)
+        # AUTO-144: discrete steps keyed to the narration, and the worked
+        # example before the rule
+        self.assertIn("direction 7", narrative.PICTURE_RULES)
+        self.assertIn("direction 9", narrative.PICTURE_RULES)
+
+
+# --------------------------------------------------------------------------- #
+# AUTO-144: a process its picture freezes
+# --------------------------------------------------------------------------- #
+
+class StaticProcess(unittest.TestCase):
+    """A shot whose `shows` asks for a change over time while its `visual`
+    is one fixed state is the picture-check's fourth fault."""
+
+    def test_a_static_process_is_an_important_flag_on_its_shot(self):
+        sections = Flags.sections()
+        review = picture(reports=[
+            {"n": 5, "static_process": "shows says the bolt shears; the picture is one "
+                                       "finished state"},
+            {"n": 2, "static_process": ""}])
+        flags = script.picture_flags(review, sections)
+        self.assertEqual([(f["n"], f["kind"], f["severity"]) for f in flags],
+                         [(5, "picture:static-process", "important")])
+        self.assertEqual(flags[0]["fix"], script.PICTURE_FLAGS["picture:static-process"][1])
+        self.assertTrue(flags[0]["problem"].startswith("picture:static-process: shot 3.1: "))
+        self.assertIn("simulation", flags[0]["fix"])
+
+    def test_a_drawn_but_frozen_mechanism_is_one_flag(self):
+        sections = Flags.sections()
+        review = picture(reports=[{"n": 1, "static_process": "the cascade is drawn whole",
+                                   "unshown_claim": ""}])
+        self.assertEqual([f["kind"] for f in script.picture_flags(review, sections)],
+                         ["picture:static-process"])
+
+    def test_the_role_and_the_schema_state_the_precedence(self):
+        role = narrative.picture_role()
+        self.assertIn("when the mechanism is drawn but shown in one state, report "
+                      "static_process and leave unshown_claim empty", role.lower())
+        self.assertIn("unshown_claim is for a mechanism the picture does not show at all",
+                      role)
+        items = narrative.PICTURE_SCHEMA["properties"]["reports"]["items"]
+        for key in ("static_process", "unshown_claim"):
+            self.assertIn("one state", items["properties"][key]["description"], key)
+        self.assertIn("static_process", items["required"])
+        self.assertIn("four", role)
+
+    def test_a_frozen_reaction_is_flagged_revised_and_binds_when_it_stands(self):
+        # The card's acceptance: shows asks for a change, visual is one state.
+        from ytstudio import vfx
+        w = writer()
+        calls = faked(w, picture(reports=[{"n": 1, "static_process":
+                                           "the rate is said to rise; the diagram is "
+                                           "finished"}]),
+                      fixes=[{"n": 1, "action": "fix", "narration": "SPOKEN LINE 1.1.",
+                              "why": "nothing to change"}])
+        ask = w._ask
+
+        def frozen(name, prompt, schema):
+            got = ask(name, prompt, schema)
+            if kind(schema) == "shots" and int(name.split("-")[1]) == 1:
+                got["shots"][0].update(shows="the reaction rate rising as temperature rises",
+                                       visual="a finished diagram of the reaction")
+            return got
+        w._ask = frozen
+        data = w.run(review=True)
+        [check] = named(calls, "picture-check")
+        self.assertIn("the reaction rate rising as temperature rises", check["prompt"])
+        self.assertIn("a finished diagram of the reaction", check["prompt"])
+        [revise] = named(calls, "revise-picture")
+        self.assertIn("picture:static-process", revise["prompt"])
+        self.assertEqual([f["kind"] for f in data["picture"]["flags"]],
+                         ["picture:static-process"])
+        rows = [r for r in vfx.picture_constraints(data) if r["source"] == "picture"]
+        self.assertEqual([r["label"] for r in rows], ["1.1"])
+        self.assertTrue(rows[0]["problem"].startswith("picture:static-process:"))
+        brief = "\n".join(vfx.constraint_lines(rows, {"1.1"}))
+        self.assertIn("## Story constraints", brief)
+        self.assertIn("picture:static-process", brief)
+
+    def test_a_writers_keep_does_not_answer_a_frozen_process(self):
+        # The line cannot make a still picture move: a kept static-process
+        # flag stands, with the writer's reason, and still binds.
+        from ytstudio import vfx
+        w = writer()
+        calls = faked(w, picture(reports=[{"n": 1, "static_process": "the cascade is drawn whole"},
+                                  {"n": 3, "bare_number": "12,000 bolts, bare"}]),
+              fixes=[{"n": 1, "action": "keep", "narration": "SPOKEN LINE 1.1.",
+                      "why": "the line explains the cascade"},
+                     {"n": 3, "action": "keep", "narration": "SPOKEN LINE 2.1.",
+                      "why": "the line compares it"}])
+        data = w.run(review=True)
+        [standing] = data["picture"]["flags"]
+        self.assertEqual((standing["n"], standing["kind"], standing["kept"]),
+                         (1, "picture:static-process", "the line explains the cascade"))
+        # the writer is told so before spending its one revise on a keep
+        [revise] = named(calls, "revise-picture")
+        self.assertIn(STATIC_KEEP, revise["prompt"])
+        self.assertEqual([k["n"] for k in data["picture"]["kept"]], [3])
+        rows = [r for r in vfx.picture_constraints(data) if r["source"] == "picture"]
+        self.assertEqual([r["label"] for r in rows], ["1.1"])
+        self.assertTrue(any(f.startswith("warning: picture:static-process")
+                            for f in data["findings"]), data["findings"])
+
+    def test_a_film_with_no_process_shot_adds_no_flag(self):
+        w = writer()
+        faked(w, picture())
+        data = w.run(review=True)
+        self.assertEqual(data["picture"]["flags"], [])
+
+    def test_the_keep_sentence_is_only_there_for_a_static_process(self):
+        w = writer()
+        calls = faked(w, picture(reports=[{"n": 3, "bare_number": "12,000 bolts, bare"}]),
+                      fixes=[{"n": 3, "action": "keep", "narration": "SPOKEN LINE 2.1.",
+                              "why": "the line compares it"}])
+        w.run(review=True)
+        [revise] = named(calls, "revise-picture")
+        self.assertNotIn(STATIC_KEEP, revise["prompt"])
 
 
 if __name__ == "__main__":

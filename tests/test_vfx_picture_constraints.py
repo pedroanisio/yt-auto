@@ -165,5 +165,178 @@ class Keyframe(ProjectCase):
         self.assertIn("show the landing", brief)
 
 
+# --------------------------------------------------------------------------- #
+# AUTO-144: a process its picture-check says is shown static
+# --------------------------------------------------------------------------- #
+
+FROZEN = {"n": 2, "severity": "important", "kind": "picture:static-process",
+          "problem": "picture:static-process: shot 1.2: the glide is said to lose height; "
+                     "the picture is one fixed state",
+          "fix": "show the change: a simulation, a step animation or a build the viewer "
+                 "watches, one state per beat"}
+
+
+def frozen_script():
+    data = copy.deepcopy(SCRIPT)
+    data["picture"]["flags"].append(copy.deepcopy(FROZEN))
+    return data
+
+
+def effect(name, kind, shots):
+    return {"name": name, "type": kind, "shots": shots, "conveys": "c", "on_screen": "o",
+            "brief": "b", "seconds": 4, "difficulty": 2, "hours": 1, "technique": [],
+            "fallback": "f"}
+
+
+class StaticCover(unittest.TestCase):
+    def test_a_static_process_flag_is_a_picture_row_with_its_label(self):
+        rows = vfx.picture_constraints(frozen_script())
+        [row] = [r for r in rows if r["problem"].startswith("picture:static-process:")]
+        self.assertEqual((row["source"], row["label"], row["severity"]),
+                         ("picture", "1.2", "important"))
+
+    def test_only_a_static_type_on_a_flagged_shot_is_listed(self):
+        rows = vfx.picture_constraints(frozen_script())
+        effects = [dict(effect("Card", "text-and-callout", ["1.2"]), id="open-card"),
+                   dict(effect("Still", "photo-composite", ["1.1"]), id="open-still"),
+                   dict(effect("Sim", "simulation", ["1.2"]), id="open-sim"),
+                   dict(effect("Steps", "2d-diagram", ["1.2", "1.3"]), id="open-steps")]
+        self.assertEqual(vfx.static_cover(effects, rows), [("open-card", "1.2")])
+        # the unshown claim on 1.3 is not a static process
+        self.assertEqual(vfx.static_cover(
+            [dict(effect("C", "stock-treatment", ["1.3"]), id="x")], rows), [])
+        self.assertEqual(vfx.static_cover(effects, []), [])
+        self.assertEqual(vfx.STATIC_TYPES,
+                         ("text-and-callout", "photo-composite", "stock-treatment"))
+
+
+class PlanAgain(unittest.TestCase):
+    def planner(self, root, answers, script=None):
+        idea = Idea(title="T", genre="g", description="d")
+        bundle = {"idea": idea, "outline": {}, "claims": [], "assets": [], "premise": "",
+                  "picture_check": vfx.picture_constraints(script or frozen_script())}
+        planner = vfx.VfxPlanner(bundle, Dossier(root, idea, at=root), vfx.Workspace(root),
+                                 model="sonnet", verbose=False)
+        asked = []
+
+        def decide(name, prompt, schema):
+            asked.append((name, prompt))
+            return copy.deepcopy(answers.pop(0))
+        return planner, asked, decide
+
+    def test_a_static_cover_is_asked_once_more_then_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            card = {"effects": [effect("Card", "text-and-callout", ["1.1", "1.2"])],
+                    "cuts": []}
+            planner, asked, decide = self.planner(Path(tmp), [card, card])
+            with patch.object(planner, "_decide", decide), \
+                    patch.object(planner, "vocabulary", lambda: ""):
+                got = planner._section_effects(SECTION, STYLE)
+        self.assertEqual([n for n, _ in asked], ["plan-effects-open", "plan-effects-open-again"])
+        again = asked[1][1]
+        self.assertIn("1.2", again)
+        self.assertIn("open-card", again)
+        self.assertIn("watch the change", again)
+        self.assertEqual(got["warnings"], ["open-card covers 1.2, a process its picture-check "
+                                           "says is shown static"])
+
+    def test_an_answer_that_lets_the_change_be_watched_settles_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            card = {"effects": [effect("Card", "text-and-callout", ["1.2"])], "cuts": []}
+            sim = {"effects": [effect("Card", "simulation", ["1.2"])], "cuts": []}
+            planner, asked, decide = self.planner(Path(tmp), [card, sim])
+            with patch.object(planner, "_decide", decide), \
+                    patch.object(planner, "vocabulary", lambda: ""):
+                got = planner._section_effects(SECTION, STYLE)
+        self.assertEqual(len(asked), 2)
+        self.assertNotIn("warnings", got)
+        self.assertEqual(got["effects"][0]["type"], "simulation")
+
+    def test_a_first_answer_that_moves_asks_nothing_more(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = {"effects": [effect("Sim", "simulation", ["1.2"])], "cuts": []}
+            planner, asked, decide = self.planner(Path(tmp), [sim])
+            with patch.object(planner, "_decide", decide), \
+                    patch.object(planner, "vocabulary", lambda: ""):
+                got = planner._section_effects(SECTION, STYLE)
+        self.assertEqual([n for n, _ in asked], ["plan-effects-open"])
+        self.assertNotIn("warnings", got)
+
+    def test_a_film_with_no_process_shot_asks_nothing_more(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            card = {"effects": [effect("Card", "text-and-callout", ["1.2"])], "cuts": []}
+            planner, asked, decide = self.planner(Path(tmp), [card], script=SCRIPT)
+            with patch.object(planner, "_decide", decide), \
+                    patch.object(planner, "vocabulary", lambda: ""):
+                got = planner._section_effects(SECTION, STYLE)
+        self.assertEqual(len(asked), 1)
+        self.assertNotIn("warnings", got)
+
+    def test_a_cached_plan_gains_its_warnings_without_asking(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            planner, asked, decide = self.planner(Path(tmp), [])
+            cached = [{"section": "Open", "seconds": 15, "cuts": [], "effects": [
+                dict(effect("Card", "text-and-callout", ["1.2"]), id="open-card",
+                     section="Open")]}]
+            planner.dossier.save("11-effects", cached)
+            with patch.object(planner, "_decide", decide):
+                got = planner.effects({"sections": [SECTION]}, STYLE)
+        self.assertEqual(asked, [])
+        self.assertEqual(got[0]["warnings"], ["open-card covers 1.2, a process its "
+                                              "picture-check says is shown static"])
+
+
+def plain_data():
+    """A small vfx.json as `yt vfx` writes it, before AUTO-144."""
+    return {
+        "idea": {"title": "T", "genre": "g", "description": "d"},
+        "style": dict(STYLE), "tokens": {"ink": "#F2F5F7"},
+        "sections": [{"section": "Open", "seconds": 15, "cuts": [], "effects": [
+            dict(effect("Card", "text-and-callout", ["1.2"]), id="open-card",
+                 section="Open")]}],
+        "authoring": {"version": "v01", "dir": "vfx/v01", "versions": ["v01"],
+                      "files": ["vfx/v01/01-open.scene.xml"], "author_bar": 7,
+                      "revisions": 1, "scores": {"vfx/v01/01-open.scene.xml": 8}},
+        "authored": [{"file": "vfx/v01/01-open.scene.xml", "symbols": ["world-open"],
+                      "findings": [], "tool_calls": 3, "revisions": 0, "score": 8,
+                      "cost_usd": 1.5, "rounds": []}],
+        "scene": {"symbols": {"world-open": {"file": "vfx/v01/01-open.scene.xml"}},
+                  "phases": {"open-card": "world-open"},
+                  "by_label": {"1.2": {"file": "vfx/v01/01-open.scene.xml",
+                                       "symbol": "world-open"}},
+                  "dropped": {}, "files": ["vfx/v01/01-open.scene.xml"], "cost_usd": 1.5},
+        "totals": vfx.summarise([{"effects": [effect("Card", "text-and-callout", ["1.2"])]}]),
+        "reach": {"usage": None, "report": None, "audit": None,
+                  "reason": "nothing was authored, so there is nothing to audit"},
+        "plan": {"verdict": "finishable", "build_order": ["the card"]},
+        "usage": {"cost_usd": 1.5},
+    }
+
+
+GOLDEN = Path(__file__).resolve().parent / "fixtures" / "vfx_md" / "plain.md"
+
+
+def rendered(data):
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        dossier = Dossier(root, Idea(title="T", genre="g", description="d"), at=root)
+        vfx.write_vfx(dossier, data)
+        return (dossier.dir / "vfx.md").read_text(encoding="utf-8")
+
+
+class Markdown(unittest.TestCase):
+    def test_a_plan_without_warnings_renders_as_before(self):
+        self.assertEqual(rendered(plain_data()), GOLDEN.read_text(encoding="utf-8"))
+
+    def test_a_warning_is_printed_under_its_section(self):
+        data = plain_data()
+        data["sections"][0]["warnings"] = ["open-card covers 1.2, a process its "
+                                           "picture-check says is shown static"]
+        md = rendered(data)
+        section = md.split("### Open (", 1)[1].split("#### Card", 1)[0]
+        self.assertIn("warning: open-card covers 1.2, a process its picture-check says is "
+                      "shown static", section)
+
+
 if __name__ == "__main__":
     unittest.main()

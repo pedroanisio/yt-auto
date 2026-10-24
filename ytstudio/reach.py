@@ -16,6 +16,14 @@ judgement -- is the current construct the strongest the schema offers for
 this effect, and what would raise it -- is the model's, asked by
 `VfxPlanner.reach` under `REACH_SCHEMA`, fed to the refinement plan, written
 into `vfx.json` and shown to the QA reviewer.
+
+Beside it, the motion audit (AUTO-144): per authored effect, the rows of
+its document that change something during its shots (`motion_slice`), and
+the reviewer's model asked whether the viewer watches the change the effect
+must show (`MOTION_SCHEMA`), its answer checked against those rows
+(`motion_problems`). What must change and does not (`static_processes`) is
+required refinement work, a doctor warning and a section `yt improve`
+re-authors; it fails nothing.
 """
 
 from __future__ import annotations
@@ -31,7 +39,8 @@ from . import render
 
 __all__ = ["FAMILIES", "REACH_SCHEMA", "family_of", "families_text",
            "construct_usage", "usage_of", "manifest", "caveats", "report",
-           "prompt", "summary"]
+           "prompt", "summary", "MOTION_ROLE", "MOTION_SCHEMA", "motion_slice",
+           "motion_prompt", "motion_problems", "static_processes", "needs_motion"]
 
 #: The engine's elements, grouped so a planner can see the whole vocabulary
 #: at a glance. Grouping is editorial convenience; every element the schema
@@ -339,12 +348,18 @@ def prompt(*, idea_block: str, direction_block: str, mission: str,
 
 
 def summary(data: dict | None) -> dict | None:
-    """What a reviewer or a report needs in one glance."""
-    if not data or not data.get("audit"):
+    """What a reviewer or a report needs in one glance: the audit's score and
+    upgrades, and the motion audit's static processes. A record with no
+    audit and no static process (an older one, or nothing authored) is
+    None, as before, so QA's context does not change for it; one with only
+    static processes has score None and no upgrades."""
+    motion = (data or {}).get("motion")
+    motion = motion if isinstance(motion, dict) else {}
+    if not data or not (data.get("audit") or motion.get("static")):
         return None
-    audit, rep = data["audit"], data.get("report") or {}
+    audit, rep = data.get("audit") or {}, data.get("report") or {}
     return {
-        "score": audit.get("reach", {}).get("score"),
+        "score": audit.get("reach", {}).get("score") if audit else None,
         "summary": audit.get("reach", {}).get("summary", ""),
         "upgrades": [{"id": e["id"], "to": e.get("upgrade_to", []), "gain": e.get("gain", 0)}
                      for e in audit.get("effects", []) if e.get("verdict") == "upgrade"],
@@ -352,4 +367,331 @@ def summary(data: dict | None) -> dict | None:
         "coverage": {fam: f"{len(row['used'])}/{row['available']}"
                      for fam, row in rep.get("families", {}).items()},
         "caveats": [c["construct"] for c in rep.get("caveats", [])],
+        "static_processes": [{"id": s.get("id", ""), "what_changes": s.get("what_changes", "")}
+                             for s in motion.get("static") or [] if isinstance(s, dict)],
     }
+
+
+# --------------------------------------------------------------------------- #
+# the motion audit (AUTO-144): does the viewer watch the change?
+# --------------------------------------------------------------------------- #
+#
+# The reach audit asks whether each effect uses the strongest construct; it
+# never asks whether what must change is seen changing, and it is shown
+# construct counts, not which property moves when. This asks that, of the
+# reviewer's model (another family than the planner's), on evidence computed
+# from the XML: per authored effect, the rows of its document that change
+# something during its shots. The answer is checked mechanically against
+# those rows before it is believed (`motion_problems`), so a construct that
+# is merely present, or one entrance fade, is not a change.
+
+#: The families whose elements change something over time. A row is one of
+#: these inside the effect's window; no other construct counts as change.
+CHANGE_FAMILIES = ("motion", "simulation")
+
+#: Properties whose change only shows or hides a target: one such change is
+#: an entrance, not the change a process needs; reveals of two or more
+#: targets at distinct times are a step build. A textAnimator's fade presets
+#: are its property too, as is "opacity" when that is all it offsets.
+FADE_PROPERTIES = frozenset(("opacity", "visible", "visibility", "fade", "fade-in",
+                             "fade-out"))
+
+#: Members of the motion family that hold something in place, or mark time,
+#: without changing anything themselves: never a row. A change authored
+#: inside one (an `animate` under a map `pin`) is a row on it.
+STILL_MOTION = frozenset(("constraint", "transformConstraint", "pin", "beatGrid", "cue"))
+
+#: The constructs whose change is their keys: fewer than two distinct key
+#: times is a constant, not a row.
+KEYED = ("animate", "morph")
+
+#: What a textAnimator offsets on its units (scene-render's textAnimatorType);
+#: its `start`/`end` are the selector's range, never seconds.
+TEXT_OFFSETS = ("x", "y", "zDepth", "scale", "scaleX", "scaleY", "rotation", "rotationX",
+                "rotationY", "skew", "opacity", "fill", "stroke", "strokeWidth", "tracking",
+                "lineSpacing", "blur", "baselineShift", "characterOffset", "variation",
+                "anchorX", "anchorY")
+
+
+def _changes(tag: str) -> bool:
+    """An element of the families whose elements change something over time."""
+    return family_of(tag) in CHANGE_FAMILIES and tag not in STILL_MOTION
+
+
+#: The motion reviewer's role.
+MOTION_ROLE = (
+    "You are the film's motion reviewer. For each authored effect you are given what it "
+    "must convey, its brief, the picture-check's findings on its shots, and the changes "
+    "its scene document makes during those shots, read from the XML (an element, the "
+    "property that changes, and when). You judge one thing: where an effect must show a "
+    "change over time, does the viewer watch that change during its shots. You name the "
+    "changes that show it exactly as they are listed, and you never count a construct "
+    "that is present but does not change. Judge what is shown, never how it looks: the "
+    "treatment decides the look, and a flat treatment that builds the process in steps "
+    "shows the change as well as any other.")
+
+MOTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "effects": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "the effect's id, as listed"},
+                    "unfolds": {"type": "boolean", "description": (
+                        "true when what the effect must convey is a change over time: a "
+                        "sequence of states, a flow, growth, a cascade, a cause acting on "
+                        "something")},
+                    "what_changes": {"type": "string", "description": (
+                        "the change the viewer must watch, in a few words; empty when it "
+                        "does not unfold")},
+                    "shown_changing": {"type": "boolean", "description": (
+                        "true when the listed changes let the viewer watch that change "
+                        "during the effect's shots")},
+                    "changed_by": {"type": "array", "items": {"type": "string"},
+                                   "description": "the targets, exactly as listed under the "
+                                                  "effect, whose changes show it"},
+                    "fix": {"type": "string", "description": (
+                        "what must change, and when, for the viewer to watch it, in this "
+                        "video's treatment; empty when shown_changing is true or it does "
+                        "not unfold")},
+                },
+                "required": ["id", "unfolds", "what_changes", "shown_changing",
+                             "changed_by", "fix"],
+            },
+        },
+    },
+    "required": ["effects"],
+}
+
+
+def _number(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _overlaps(start: float, end: float, windows) -> bool:
+    for a, b in windows:
+        if (end > start and start < b and end > a) or (end <= start and a <= start < b):
+            return True
+    return False
+
+
+def motion_slice(doc_text: str, symbol_id: str, windows=None) -> list[dict]:
+    """What changes in one symbol during `windows` (a list of (start, end) in
+    the symbol's own seconds; None for the whole symbol): one row per element
+    of the motion or simulation families, {target, construct, family,
+    property, start, end}.
+
+    A motion element changes its parent: the target is the parent's
+    "<tag>#<id>" ("<tag>#(unnamed N)" for one with no id, the same N for
+    every change on it), the property its `property` (or `preset`), and an
+    element with `<key time>` children, or `animate` children with keys,
+    runs from its first key to its last. An `animate` or `morph` with fewer
+    than two distinct key times is a constant and no row, and STILL_MOTION
+    elements are never rows. One without keys runs over its presetStart
+    (on its parent's parent timeline, as scene-render defines it) for
+    presetDuration, or its own start/end, else its parent's life; a
+    textAnimator's start/end are its selector's range, so it runs from its
+    text's start for presetDuration (1 s by default). A simulation changes
+    itself: the target is the element, the property "", and it runs over
+    its parent's start..end, or the symbol's span. Every ancestor's `start`
+    (a layer, a group, a sequence) is added to the times under it. An
+    element inside another changing one (a `key`, a `burst`) is part of it,
+    not a row. Pure."""
+    try:
+        root = ET.fromstring(doc_text)
+    except ET.ParseError:
+        return []
+    symbol = next((n for n in root.iter() if _strip(n.tag) == "symbol"
+                   and n.get("id") == symbol_id), None)
+    if symbol is None:
+        return []
+    span = _number(symbol.get("duration")) or max(
+        (float(b) for _, b in windows or ()), default=0.0)
+    rows: list[dict] = []
+    names: dict[ET.Element, str] = {}
+
+    def name_of(node: ET.Element) -> str:
+        # One name per element, so two changes on one unnamed shape are one
+        # target; "(unnamed N)" cannot be a real id's "<tag>#N".
+        if node not in names:
+            names[node] = (f"{_strip(node.tag)}#{node.get('id')}" if node.get("id")
+                           else f"{_strip(node.tag)}#(unnamed {len(names) + 1})")
+        return names[node]
+
+    def walk(node: ET.Element, offset: float, base: float,
+             life: tuple[float, float]) -> None:
+        # offset: where node's own times start; base: its parent's offset.
+        inside = _changes(_strip(node.tag))
+        for child in node:
+            tag = _strip(child.tag)
+            family = family_of(tag)
+            start, end = _number(child.get("start")), _number(child.get("end"))
+            if _changes(tag) and not inside:
+                row = _row(child, tag, family, node if family == "motion" else child,
+                           offset, base, life, name_of)
+                if row is not None:
+                    rows.append(row)
+            own = offset + (start or 0.0)
+            child_life = ((offset + start if start is not None else life[0]),
+                          (offset + end if end is not None else life[1])) \
+                if start is not None or end is not None else life
+            walk(child, own, offset, child_life)
+
+    walk(symbol, 0.0, 0.0, (0.0, span))
+    if windows is not None:
+        rows = [r for r in rows if _overlaps(r["start"], r["end"], windows)]
+    return rows
+
+
+def _row(el: ET.Element, tag: str, family: str, target: ET.Element, offset: float,
+         base: float, life: tuple[float, float], name_of) -> dict | None:
+    """One row of `motion_slice`, or None for a constant: `offset` is where
+    the target's times start, `base` its parent's, `life` its (start, end)."""
+    def keys(node: ET.Element) -> list[float]:
+        return [t for t in (_number(k.get("time")) for k in node
+                            if _strip(k.tag) == "key") if t is not None]
+    times = keys(el) + [t for a in el if _strip(a.tag) == "animate" for t in keys(a)]
+    if family == "simulation":
+        prop, (start, end) = "", life
+    else:
+        if tag in KEYED and len(set(times)) < 2:
+            return None
+        preset = el.get("preset")
+        if tag == "textAnimator":
+            prop = str(preset or ",".join(a for a in TEXT_OFFSETS if el.get(a) is not None))
+        else:
+            prop = str(el.get("property") or preset or "")
+        own_start, own_end = _number(el.get("start")), _number(el.get("end"))
+        if times:
+            start, end = offset + min(times), offset + max(times)
+        elif tag == "textAnimator":
+            # presetStart and presetDuration are textAnimator's alone; a
+            # stagger stretches the run by an amount not read here, so it
+            # runs to its text's end, as does an animator with no preset.
+            ps, pd = _number(el.get("presetStart")), _number(el.get("presetDuration"))
+            start = base + ps if ps is not None else life[0]
+            end = (start + pd if pd is not None
+                   else start + 1.0 if preset and el.get("stagger") is None else life[1])
+        elif own_start is not None or own_end is not None:
+            start = offset + (own_start or 0.0)
+            end = offset + own_end if own_end is not None else life[1]
+        else:
+            start, end = life
+    return {"target": name_of(target), "construct": tag, "family": family,
+            "property": prop, "start": round(start, 3), "end": round(end, 3)}
+
+
+def motion_prompt(effects: list[dict], slices: dict[str, list[dict]],
+                  constraints: list[dict] | None = None, *, idea_block: str = "") -> str:
+    """The motion audit's question: for each authored effect, what it must
+    convey, its brief, the picture-check's standing findings on its shots,
+    and its slice as "target property start-end" rows."""
+    lines = ([idea_block, ""] if idea_block else []) + [
+        "## Each authored effect, and what its document changes during its shots", ""]
+    for e in effects:
+        shots = [str(s) for s in e.get("shots") or []]
+        found = [c for c in constraints or [] if isinstance(c, dict)
+                 and c.get("source") == "picture" and c.get("label") in shots]
+        rows = slices.get(e["id"]) or []
+        lines += [f"### `{e['id']}` -- {e.get('name', '')} ({e.get('type', '')})",
+                  f"Shots: {', '.join(shots) or 'the whole world'}",
+                  f"Must convey: {e.get('conveys', '')}",
+                  f"Brief: {str(e.get('brief', ''))[:1500]}"]
+        if found:
+            lines += ["The picture-check on these shots:"]
+            lines += [f"- {c.get('problem', '')}" for c in found]
+        lines += ["Changes during its shots (target property start-end):"]
+        lines += ([f"- {r['target']} {r['property'] or r['construct']} "
+                   f"{r['start']:g}-{r['end']:g}" for r in rows]
+                  or ["- none: nothing of the motion or simulation families changes in "
+                      "these shots"])
+        lines.append("")
+    lines += [
+        "## The question", "",
+        "For every effect above, say whether what it must convey unfolds over time "
+        "(`unfolds`) and what the viewer must watch change (`what_changes`). Then say "
+        "whether a viewer watches that change during the effect's shots "
+        "(`shown_changing`), from the changes listed under it, and name in `changed_by` "
+        "the targets, exactly as listed, whose changes show it. Only a listed change "
+        "counts: a construct that is present but does not change shows nothing changing, "
+        "and one fade in or out of one target is an entrance, not the change; reveals of "
+        "two or more parts at different times are a step build and count. Where it "
+        "unfolds and is not shown changing, `fix` says what must change and when; "
+        "otherwise `fix` is empty. Judge against the treatment: a flat treatment that "
+        "builds the process in steps, one state per beat, shows the change, and 3D or a "
+        "simulation is never asked for its own sake.",
+    ]
+    return "\n".join(lines)
+
+
+def motion_problems(answer, effect_ids, slices: dict[str, list[dict]]) -> list[str]:
+    """What makes a motion answer unreadable, checked against the rows: an
+    authored effect unanswered or answered twice, an id that is not one, a
+    change named that is not in that effect's rows, `shown_changing` with no
+    change named, or with only one fade (opacity or visibility) on one
+    target, or fades all at one time. Empty when the answer can be believed.
+    Pure; nothing is judged here."""
+    rows = (answer or {}).get("effects") if isinstance(answer, dict) else None
+    rows = [r for r in rows or [] if isinstance(r, dict)]
+    wanted = [str(e) for e in effect_ids]
+    problems: list[str] = []
+    seen: dict[str, int] = {}
+    for r in rows:
+        eid = str(r.get("id", ""))
+        seen[eid] = seen.get(eid, 0) + 1
+    problems += [f"{eid} is not an authored effect" for eid in seen if eid not in wanted]
+    problems += [f"{eid} is answered {n} times" for eid, n in seen.items()
+                 if eid in wanted and n > 1]
+    problems += [f"{eid} is not answered" for eid in wanted if eid not in seen]
+    done: set[str] = set()
+    for r in rows:
+        eid = str(r.get("id", ""))
+        if eid not in wanted or eid in done or r.get("shown_changing") is not True:
+            continue
+        done.add(eid)
+        mine = slices.get(eid) or []
+        named = [str(t) for t in r.get("changed_by") or []]
+        outside = [t for t in named if t not in {m["target"] for m in mine}]
+        if not named:
+            problems.append(f"{eid} is said to show its change but names no change "
+                            "(changed_by is empty)")
+        elif outside:
+            problems.append(f"{eid} names {', '.join(outside)}, which change(s) nothing "
+                            "during its shots")
+        else:
+            used = [m for m in mine if m["target"] in named]
+            if all(m["property"] in FADE_PROPERTIES for m in used):
+                starts = {}
+                for m in used:
+                    starts[m["target"]] = min(starts.get(m["target"], m["start"]), m["start"])
+                if len(starts) < 2 or len(set(starts.values())) < 2:
+                    problems.append(f"{eid} names only a fade ({', '.join(named)}): one "
+                                    "fade is an entrance, not the change")
+    return problems
+
+
+def static_processes(answer) -> list[dict]:
+    """The effects that must show a change and do not: {id, what_changes, fix}
+    for each answer whose `unfolds` is true and `shown_changing` false."""
+    rows = (answer or {}).get("effects") if isinstance(answer, dict) else None
+    return [{"id": str(r.get("id", "")), "what_changes": str(r.get("what_changes", "")),
+             "fix": str(r.get("fix", ""))}
+            for r in rows or [] if isinstance(r, dict)
+            and r.get("unfolds") is True and r.get("shown_changing") is False]
+
+
+def needs_motion(record) -> bool:
+    """A cached reach record the motion audit is asked for again: one made
+    before it (it has `usage`, None when nothing was authored, and no
+    `motion`), or one whose reviewer failed (`motion.failed`, a timeout or
+    a CLI error, which says nothing about the film). An answer that could
+    not be read is an answer, and is kept."""
+    if not isinstance(record, dict) or "usage" not in record:
+        return False
+    motion = record.get("motion")
+    return "motion" not in record or (isinstance(motion, dict) and motion.get("failed") is True)

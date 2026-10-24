@@ -1326,6 +1326,32 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
                            + (f" (its {was:g}/10 judged the earlier inputs)"
                               if isinstance(was, (int, float)) else ""),
                            _cmd("vfx", project, "--sections", str(rec["n"])))
+        # AUTO-144: an effect that must show a change and shows it static
+        # (the motion audit, vfx.json reach.motion) is a warn routed to its
+        # section, by effect id -> its section's heading -> the authored n;
+        # the plan's static-cover warnings and an unread audit are notes.
+        heading_of = {str(e.get("id")): str(group.get("section", ""))
+                      for group in vfx.get("sections") or [] if isinstance(group, dict)
+                      for e in group.get("effects") or [] if isinstance(e, dict)}
+        n_of = {str(r.get("section", "")): r["n"] for r in vfx.get("authored") or []
+                if isinstance(r, dict) and isinstance(r.get("n"), int)}
+        motion = (vfx.get("reach") or {}).get("motion")
+        motion = motion if isinstance(motion, dict) else {}
+        for s in motion.get("static") or []:
+            if not isinstance(s, dict):
+                continue
+            n = n_of.get(heading_of.get(str(s.get("id")), "\0"))
+            report.add("warn", "vfx", f"{s.get('id', '?')} explains "
+                       f"{_clip(str(s.get('what_changes', '')), 120)} with a static picture"
+                       + (f": {_clip(str(s.get('fix', '')), 160)}" if s.get("fix") else ""),
+                       _cmd("vfx", project, "--sections", str(n)) if n is not None
+                       else _cmd("vfx", project))
+        # A film with nothing authored says so in its reach reason already.
+        if motion.get("reason") and motion["reason"] != (vfx.get("reach") or {}).get("reason"):
+            report.add("note", "vfx", f"motion audit: {_clip(str(motion['reason']), 240)}")
+        for group in vfx.get("sections") or []:
+            for w in (group.get("warnings") or [] if isinstance(group, dict) else []):
+                report.add("note", "vfx", f"plan: {_clip(str(w), 240)}")
 
     # -- keyframe ----------------------------------------------------------
     # The look is locked by the operator, not by the stage: a frame awaiting
