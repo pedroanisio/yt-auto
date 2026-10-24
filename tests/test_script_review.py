@@ -1071,8 +1071,30 @@ class UnexplainedTerms(unittest.TestCase):
         self.assertEqual(len(flags), 1, flags)
         self.assertEqual(flags[0]["n"], 2)
 
+    def test_the_flag_keeps_the_readers_spelling_and_the_ledger_its_fold(self):
+        plan, sections, _ = termed(PLASMA)
+        flags = script.term_findings(
+            plan, sections, dict(COLD_TERMS, unexplained_terms=["Plasma", "PLASMA"]))
+        self.assertEqual([f["term"] for f in flags], ["Plasma"])
+        self.assertIn("\"Plasma\"", flags[0]["problem"])
+        self.assertEqual(script._ledger_key(flags[0]), ("rule:unexplained-term", "plasma"))
+
+    def test_the_ledger_says_term_flags_apart_from_question_flags(self):
+        plan, sections, shots = termed(PLASMA)
+        w = writer()
+        said = []
+        w._say = said.append
+        w._ask = lambda name, prompt, schema: {"fixes": []}
+        w.revise_ledger(sections, shots, plan, cold_read=COLD_TERMS,
+                        name="revise-ledger-2", figures=False)
+        self.assertIn("[ledger] 1 term flag(s)", said)
+        self.assertFalse([m for m in said if "question flag" in m], said)
+
     def test_the_ledger_keys_a_term_flag_on_its_term(self):
         self.assertEqual(script._ledger_key({"rule": "rule:unexplained-term", "term": "plasma",
+                                             "section": 2}),
+                         ("rule:unexplained-term", "plasma"))
+        self.assertEqual(script._ledger_key({"rule": "rule:unexplained-term", "term": "Plasma",
                                              "section": 2}),
                          ("rule:unexplained-term", "plasma"))
         self.assertEqual(script._ledger_key({"rule": "rule:open-loop", "question": "Q1",

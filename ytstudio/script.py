@@ -1091,7 +1091,7 @@ def _ledger_key(flag: dict) -> tuple:
     """What a ledger flag is about, kept across renumbering: its rule and
     its question, its term for a term's flag, or its section for a
     section's flag."""
-    return (flag["rule"], flag.get("question") or flag.get("term")
+    return (flag["rule"], flag.get("question") or str(flag.get("term") or "").casefold()
             or flag.get("section", 0))
 
 
@@ -1107,7 +1107,8 @@ def term_findings(plan: dict, sections: list[Section],
     first shot whose line says it (said_in, case folded): that is where a
     definition belongs. A term no line says is not flagged; it stays in
     script.md as the reader said it. Terms that fold to the same words are
-    one flag. Only a lay plan's flag is important: AUDIENCE_BRIEF tells a
+    one flag, whose `term` is the reader's first spelling (the ledger keys
+    it case folded, `_ledger_key`). Only a lay plan's flag is important: AUDIENCE_BRIEF tells a
     lay plan's writer to define every term, and an enthusiast's to leave
     the field's common terms undefined, which a cold reader knows none of;
     an expert's or a plan with no audience (given no brief at all) is
@@ -1137,7 +1138,7 @@ def term_findings(plan: dict, sections: list[Section],
                      f"says \"{term}\", which a first-time reader of the narration "
                      "alone needed and was never told",
                      "say what it is in plain words where it is first said, or use a "
-                     "plainer word") | {"term": folded, "section": index}
+                     "plainer word") | {"term": term, "section": index}
         if not lay:
             flag |= {"tier": "minor", "severity": _SEVERITY["minor"]}
         out.append(flag)
@@ -4042,7 +4043,10 @@ class Screenwriter:
                  and not self._ledger_held(self._ledger_kept, f, sections)
                  and not self._ledger_held(self._ledger_answered, f, sections)] if fix else []
         if asked:
-            self._say(f"[ledger] {len(asked)} question flag(s)")
+            terms = sum(f["rule"] == "rule:unexplained-term" for f in asked)
+            self._say("[ledger] " + ", ".join(
+                f"{k} {kind} flag(s)" for k, kind in ((len(asked) - terms, "question"),
+                                                     (terms, "term")) if k))
         result = ({"applied": [], "kept": [], "closes": {}} if not todo + asked else
                   self.revise(shots, todo + asked, name=name,
                               flagged_by="the ledger of the film's questions and figures"))

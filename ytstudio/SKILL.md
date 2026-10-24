@@ -462,7 +462,7 @@ the plan's ledger, its questions' `opened_in`/`closed_in` and the section's
 that the cold reader's `cold-read-answers` did not list; one no shot answers
 is the open loop alone) and `rule:unexplained-term` (AUTO-138: a term the
 cold reader lists that a line says, on the first line that says it, whole
-words, case folded; important on a lay plan, minor, a warning never sent,
+words, case folded, the flag keeping the reader's spelling; important on a lay plan, minor, a warning never sent,
 on an enthusiast, expert or unset audience; a term no line says stays only
 in script.md). The important flags go to
 the writer with the figures said twice in one `revise-ledger` decision,
