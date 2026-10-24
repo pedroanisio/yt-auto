@@ -4402,8 +4402,9 @@ class VfxPlanner:
 
         The usage and the family coverage are computed; the verdicts are the
         model's. With nothing authored there is nothing to judge, and no call.
-        A cached record made before the motion audit gets only the motion
-        audit, on top of what it holds, and is saved again.
+        A cached record made before the motion audit, or whose motion audit
+        failed, gets only the motion audit, on top of what it holds, and is
+        saved again.
         """
         authored = [e for s in effects for e in s["effects"] if authored_as(scene, e["id"])]
         files = sorted({authored_as(scene, e["id"])["file"] for e in authored})
@@ -4424,7 +4425,10 @@ class VfxPlanner:
                 return {"answer": None, "static": [], "reason": nothing}
             return self._motion(authored, effects, scene, texts, outline)
 
+        ran = []
+
         def work() -> dict:
+            ran.append(True)
             if not authored:
                 return {"usage": None, "report": None, "audit": None,
                         "reason": nothing, "motion": motion_of({})}
@@ -4442,9 +4446,10 @@ class VfxPlanner:
             return {"usage": usage, "report": rep, "audit": audit, "reason": "",
                     "motion": motion_of(texts)}
         record = self._stage("14-reach", work)
-        if reach.needs_motion(record):
-            # A record of nothing authored (usage None) says so again; any
-            # other gets the audit on the documents it was made from.
+        if not ran and reach.needs_motion(record):
+            # A cached record: one of nothing authored (usage None) says so
+            # again; any other gets the audit on the documents it was made
+            # from. One made just now is never asked twice in a run.
             record = dict(record, motion=(
                 {"answer": None, "static": [], "reason": str(record.get("reason") or nothing)}
                 if record.get("usage") is None else motion_of(texts_of())))
@@ -4479,7 +4484,8 @@ class VfxPlanner:
         `reach-motion-again` with the problems named. {answer, static,
         reason}: an answer still unreadable, or a reviewer that failed, is
         recorded with its reason and no static process -- not evidenced,
-        never passed and never failed. Nothing fails the stage."""
+        never passed and never failed; a failed reviewer is also marked
+        `failed`, so the next run asks again. Nothing fails the stage."""
         reviewer_model = getattr(self, "reviewer_model", None)
         if not reviewer_model:
             return {"answer": None, "static": [],
@@ -4513,7 +4519,10 @@ class VfxPlanner:
                     reach.MOTION_SCHEMA)
                 problems = reach.motion_problems(answer, ids, slices)
         except harness.HarnessError as exc:
-            return {"answer": None, "static": [], "reason": f"the motion audit failed: {exc}"}
+            # `failed`: the reviewer said nothing about the film, so the next
+            # run asks again (reach.needs_motion) instead of keeping this.
+            return {"answer": None, "static": [], "reason": f"the motion audit failed: {exc}",
+                    "failed": True}
         finally:
             self._account(reviewer.usage)
         if problems:
@@ -4879,6 +4888,18 @@ def motion_lines(motion) -> list[str]:
     return out
 
 
+def glance_line(glance: dict | None) -> str:
+    """reach.summary's part of the `yt vfx` summary line: the score and the
+    upgrades when the reach audit ran, the static processes when there are
+    any, nothing otherwise."""
+    if not glance:
+        return ""
+    return ((f" · reach {glance['score']}/10, {len(glance['upgrades'])} upgrade(s)"
+             if glance.get("score") is not None else "")
+            + (f" · {len(glance['static_processes'])} static process(es)"
+               if glance.get("static_processes") else ""))
+
+
 def write_vfx(dossier: Dossier, data: dict) -> list[Path]:
     style, totals, plan = data["style"], data["totals"], data["plan"]
     idea = data["idea"]
@@ -4907,18 +4928,18 @@ def write_vfx(dossier: Dossier, data: dict) -> list[Path]:
                f"{authoring.get('revisions')} revision(s); scores: {scores or '—'}*", ""]
     glance = reach.summary(data.get("reach"))
     audit = (data.get("reach") or {}).get("audit")
-    if glance and not audit:
+    why = (data.get("reach") or {}).get("reason")
+    motion = (data.get("reach") or {}).get("motion")
+    motion = motion if isinstance(motion, dict) else {}
+    if not audit and motion and (motion.get("static") or motion.get("reason") != why):
         # The motion audit without the reach audit (AUTO-144): its table, and
-        # the reach record's reason, under the same heading.
-        # A record of nothing authored carries the same reason in both: it is
-        # said once, as before AUTO-144.
+        # the reach record's reason, under the same heading. A record of
+        # nothing authored carries the same reason in both and no static
+        # process: it is said once, below, as before AUTO-144.
         md += ["## Reach", ""]
-        why, motion = data["reach"].get("reason"), data["reach"].get("motion")
-        motion = motion if isinstance(motion, dict) else {}
         if why:
             md += [f"*{why}*", ""]
-        if motion.get("static") or motion.get("reason") != why:
-            md += motion_lines(motion) + [""]
+        md += motion_lines(motion) + [""]
     elif glance:
         md += ["## Reach", "",
                f"**{glance['score']}/10** -- {glance['summary']}", "",
@@ -5292,9 +5313,6 @@ def run(args) -> int:
     print(f"\n{totals['count']} effects · {len(scene['symbols'])} authored · "
           f"{len(scene['by_label'])} shots covered · {totals['hours']:.0f}h to refine"
           + (f" · {len(scene['dropped'])} not authored" if scene["dropped"] else "")
-          + (f" · reach {glance['score']}/10, {len(glance['upgrades'])} upgrade(s)"
-             if glance and glance["score"] is not None else "")
-          + (f" · {len(glance['static_processes'])} static process(es)"
-             if glance and glance["static_processes"] else ""))
+          + glance_line(glance))
     print(f"{planner.usage}", file=sys.stderr)
     return 1 if scene["dropped"] and not scene["symbols"] else 0

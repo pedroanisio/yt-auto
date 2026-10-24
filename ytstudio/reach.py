@@ -349,13 +349,15 @@ def prompt(*, idea_block: str, direction_block: str, mission: str,
 
 def summary(data: dict | None) -> dict | None:
     """What a reviewer or a report needs in one glance: the audit's score and
-    upgrades, and the motion audit's static processes. A record with neither
-    (an older one, or nothing authored before AUTO-144) is None, as before;
-    one with only `motion` has score None and no upgrades."""
-    if not data or not (data.get("audit") or data.get("motion")):
+    upgrades, and the motion audit's static processes. A record with no
+    audit and no static process (an older one, or nothing authored) is
+    None, as before, so QA's context does not change for it; one with only
+    static processes has score None and no upgrades."""
+    motion = (data or {}).get("motion")
+    motion = motion if isinstance(motion, dict) else {}
+    if not data or not (data.get("audit") or motion.get("static")):
         return None
     audit, rep = data.get("audit") or {}, data.get("report") or {}
-    motion = data.get("motion") if isinstance(data.get("motion"), dict) else {}
     return {
         "score": audit.get("reach", {}).get("score") if audit else None,
         "summary": audit.get("reach", {}).get("summary", ""),
@@ -684,6 +686,12 @@ def static_processes(answer) -> list[dict]:
 
 
 def needs_motion(record) -> bool:
-    """A cached reach record made before the motion audit: it has `usage`
-    (None when nothing was authored) and no `motion`."""
-    return isinstance(record, dict) and "usage" in record and "motion" not in record
+    """A cached reach record the motion audit is asked for again: one made
+    before it (it has `usage`, None when nothing was authored, and no
+    `motion`), or one whose reviewer failed (`motion.failed`, a timeout or
+    a CLI error, which says nothing about the film). An answer that could
+    not be read is an answer, and is kept."""
+    if not isinstance(record, dict) or "usage" not in record:
+        return False
+    motion = record.get("motion")
+    return "motion" not in record or (isinstance(motion, dict) and motion.get("failed") is True)
