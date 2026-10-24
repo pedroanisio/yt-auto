@@ -1,6 +1,6 @@
 """Review the rendered film against the publication bar, pass after pass.
 
-docs/production.md is the brief: the rendered frame is the evidence, ten
+docs/production.md is the brief: the rendered frame is the evidence, eleven
 categories scored 0-10 by professional standards, READY TO PUBLISH only at an
 overall of 9.0 with no category under 8.5 and nothing blocking. This stage is
 the harness that runs it:
@@ -353,10 +353,12 @@ BASES = ("heard", "read")
 #: The contact sheet: stills tiled with their timestamps, for the reviewer.
 SHEET_COLUMNS, SHEET_TILE, SHEET_CAPTION = 4, (480, 270), 28
 
-#: The ten categories of docs/production.md §2, in its order.
+#: The eleven categories of docs/production.md §2, in its order.
+#: editorial_identity (AUTO-146) is judged on the frames and the narration,
+#: so it is not one of AUDIO and the listener rules do not reach it.
 CATEGORIES = ("visual_quality", "animation_vfx", "cinematography", "editing_pacing",
               "graphics_overlays", "voiceover", "sound_design", "music_score",
-              "narrative_clarity", "overall_production")
+              "narrative_clarity", "overall_production", "editorial_identity")
 
 ROLE = (
     "You are the quality reviewer of docs/production.md: you judge the rendered "
@@ -394,6 +396,19 @@ ROLE += (
     "narrative rubric aims for; the further a film falls short of them, the lower:\n"
     + narrative.rubric_text("writer", keys=STORY_RUBRIC))
 
+#: What editorial_identity scores (AUTO-146): a polished film with no look of
+#: its own reads as an animated presentation. The 9 and 8 anchors are NO
+#: STANDARD, to be calibrated on real films.
+ROLE += (
+    "\n\neditorial_identity scores whether the film has an atmosphere and a "
+    "personality of its own, tied to this subject; whether its look, motion, sound "
+    "and voice form one personality; whether the treatment's identity, when the "
+    "measurements carry one (`identity`), is delivered on screen; and whether the "
+    "film passes the swap test: could its look and manner be moved onto another "
+    "topic unchanged? A 9 there is a film whose identity could not be moved to "
+    "another topic; an 8 is competent and generic. Judge it against the film's own "
+    "treatment and identity, never a look of your own.")
+
 #: The role when a current `--listen` heard the film (AUTO-126): ROLE with
 #: the listener's record named among the listening reviews. Without one,
 #: ROLE is used unchanged.
@@ -426,7 +441,8 @@ OWNERS = (tuple(stage for stage, _ in workspace.STAGES)
 #: What each owner is responsible for, so a finding is placed in the source that fixes it.
 DUTIES = {
     "research": "the dossier: claims, sources, licensed assets",
-    "styles": "the treatment: palette roles, typography, motion language, the look",
+    "styles": "the treatment: palette roles, typography, motion language, the look; "
+              "the film's identity: atmosphere, personality, motif, signature",
     "script": f"the screenplay: the story ({', '.join(STORY_DUTY)}), shots, narration, "
               "supers, timing plan",
     "props": "the CC0 models, HDRIs and texture maps fetched for the authors",
@@ -514,9 +530,9 @@ SCORECARD_SCHEMA = {
 # --------------------------------------------------------------------------- #
 
 def category_order(seed: int) -> tuple[str, ...]:
-    """The ten categories in the order sample `seed` is asked them. Seed 0
-    is CATEGORIES; seeds 1 to 10 are its rotations by a stride of 3, prime
-    to 10, so each of the first ten starts from a different category and a
+    """The eleven categories in the order sample `seed` is asked them. Seed 0
+    is CATEGORIES; seeds 1 to 11 are its rotations by a stride of 3, prime
+    to 11, so each of the first eleven starts from a different category and a
     reviewer that anchors on the first score it writes anchors on a
     different one in each sample (judging 8)."""
     if not seed:
@@ -2822,7 +2838,8 @@ def vfx_blockers(vfx: dict | None, authored: list | None = None) -> list[str]:
 def compare(prev: dict | None, cur: dict) -> dict:
     """Pass against pass: per-category deltas and what regressed.
 
-    A category not evidenced (None) on one side has no delta. When the two
+    A category not evidenced (None) on one side, or absent from it (a pass
+    scored before editorial_identity existed, AUTO-146), has no delta. When the two
     passes did not score the same categories, their overalls average
     different things: a pass that lost its listening evidence drops the
     audio scores out of its mean and its overall rises with nothing in the
@@ -2837,9 +2854,9 @@ def compare(prev: dict | None, cur: dict) -> dict:
     before_scores, after_scores = prev.get("scores") or {}, cur["scores"]
     deltas = {}
     for key in CATEGORIES:
-        before, after = before_scores.get(key, 0), after_scores.get(key, 0)
+        before, after = before_scores.get(key), after_scores.get(key)
         if before is None or after is None:
-            deltas[key] = None      # not evidenced on one side: nothing to compare
+            deltas[key] = None      # not evidenced or not asked: nothing to compare
             continue
         try:
             deltas[key] = round(float(after) - float(before), 2)
@@ -2851,8 +2868,7 @@ def compare(prev: dict | None, cur: dict) -> dict:
            "regressions": [k for k, d in deltas.items()
                            if d is not None and d <= -REGRESSION]}
     unscored = [k for k in CATEGORIES
-                if (k in before_scores and before_scores[k] is None)
-                != (k in after_scores and after_scores[k] is None)]
+                if (before_scores.get(k) is None) != (after_scores.get(k) is None)]
     if unscored:
         left_out = dict.fromkeys(unscored)          # None: no part of either mean
         out["overall_delta"] = round(_mean(dict(after_scores) | left_out)
@@ -4006,6 +4022,10 @@ def stage_measurements(build: dict, voice: dict | None, *, sound: dict, gate: di
                      ("status", "why", "evaluated", "worst", "floating", "reads_merged")},
         "treatment": (styles.get("styles") or [{}])[0] if isinstance(
             styles.get("styles"), list) else styles.get("treatment"),
+        # The film's identity and its swap test (AUTO-146), for
+        # editorial_identity; only when styles.json has one.
+        **({"identity": styles["identity"]} if isinstance(styles.get("identity"), dict)
+           else {}),
         # How far the authored documents reach into the engine, per `yt vfx`:
         # a weak-motion finding can name the construct that was left unused.
         "reach": reach_audit.summary(reach),
@@ -4040,7 +4060,7 @@ def review_prompt(*, title: str, pass_name: str, sheet_name: str, has_narration:
         "directly under `frames/` (each is one still of the rendered composition "
         "at the timestamp in its name), judge each against the shot it belongs "
         "to and the bands (supers in the top 21%, stage in the middle, captions "
-        "in the bottom 24%), then score the ten categories against the whole "
+        "in the bottom 24%), then score the eleven categories against the whole "
         "runtime and file the scorecard. Motion is evidenced by the burst under "
         f"`frames/burst/` (up to {BURST_MAX_FRAMES} consecutive frames over "
         f"{BURST_SECONDS:g}s around each still, which is the middle one) and "

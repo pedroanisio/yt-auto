@@ -185,17 +185,18 @@ class Samples(unittest.TestCase):
         self.assertEqual(card["spread"]["cinematography"], 1.0)
         scored = [card["scores"][k] for k in qa.CATEGORIES if k not in qa.AUDIO]
         self.assertEqual(card["overall"], round(sum(scored) / len(scored), 2))
-        self.assertEqual(card["overall"], 7.86)
+        # eight scored categories since AUTO-146 added editorial_identity
+        self.assertEqual(card["overall"], 7.88)
         self.assertEqual(card["overall_filed"], 5.7)
         # the overall's spread is that of each sample's mean over the scored
-        # categories (7.79 .. 7.93), not of the filed overalls (5.5 .. 5.9)
-        self.assertAlmostEqual(card["spread"]["overall"], 0.14)
+        # categories (7.81 .. 7.94), not of the filed overalls (5.5 .. 5.9)
+        self.assertAlmostEqual(card["spread"]["overall"], 0.13)
         self.assertNotEqual(card["verdict"], qa.READY)
         self.assertTrue(any("voiceover is not evidenced" in r for r in card["bar"]),
                         card["bar"])
         record = json.loads((self.root / "qa.json").read_text())
         self.assertIsNone(record["scores"]["voiceover"])
-        self.assertEqual(record["overall"], 7.86)
+        self.assertEqual(record["overall"], 7.88)
 
     def test_each_sample_sees_the_categories_in_its_own_order(self):
         self.run_qa()

@@ -1951,9 +1951,13 @@ def story_rejected(root: Path, stage: str, argv: list[str]) -> str:
 
 def _score_cell(summary: dict, key: str):
     """A category's score as the report prints it: a category recorded not
-    evidenced (None in the scorecard) says so rather than "None"."""
+    evidenced (None in the scorecard) says so rather than "None"; a category
+    the pass was never scored on (editorial_identity on a pass from before
+    AUTO-146) is an empty cell."""
     scores = summary.get("scores") or {}
-    return "not evidenced" if key in scores and scores[key] is None else scores.get(key)
+    if key not in scores:
+        return ""
+    return "not evidenced" if scores[key] is None else scores[key]
 
 
 def report_md(record: dict, root: Path) -> str:

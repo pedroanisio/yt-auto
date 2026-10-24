@@ -20,7 +20,7 @@ How it is asked:
     immediately before it; nothing in the request names a pass, a score,
     a finding, which cut came first or which one `yt improve` kept. The
     harness takes no revision notes (feedback=False).
-  - Per category of docs/production.md §2, all ten: the video carries the
+  - Per category of docs/production.md §2, all eleven: the video carries the
     sound, so the audio categories, which no still bears on, are judged
     here too. Each category is A, B, same, or cannot_tell when the video
     does not let the model judge it.
@@ -107,6 +107,10 @@ CRITERIA = {
     "narrative_clarity": "whether the story reads: the hook, the stakes, the questions "
                          "it opens closed, and the payoff on its promise",
     "overall_production": "the film as a finished piece",
+    # Blind (AUTO-146): the comparer is told nothing about the treatment, so
+    # it judges the look's own character, not its delivery of a brief.
+    "editorial_identity": "whether each cut has a look and personality of its own, "
+                          "rather than a generic explainer style",
 }
 
 PROMPT = "\n\n".join([

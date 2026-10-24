@@ -70,9 +70,13 @@ def _listen():
 #: gains `rhythm`.
 #: AUTO-152 added `audio_basis` to the card and to qa.json; the prompt and
 #: the role are as before (the listening rows are briefed without `basis`).
+#: AUTO-146 added the eleventh category, editorial_identity: the prompt says
+#: eleven where it said ten and its scorecard gains the category; the role
+#: gains its paragraph. Those are the only differences from the digest before
+#: it.
 OFF = {
-    "prompt_sha": "42318a6de61bf11da1572d9ac814d38cfa57473ad832110ed337cf11c3d1632f",
-    "role_sha": "689d58b15f4913baff9447748a32cf97acc8df4373fc2c61422df8ed4e03f951",
+    "prompt_sha": "5d9150ece60f0720c72565a7b2708ab9e63fa5b624b5f753fd4578c119d93424",
+    "role_sha": "f9c618c038398a450476d6fbd5dd0a241f41e6a7cf7da926513bbd519104c19b",
     "card_keys": ["audio_basis", "audio_not_evidenced", "bar", "blocking", "capped", "comparison",
                   "contact_sheet", "cut", "engine", "findings", "frames", "lines_unsampled",
                   "listening", "low_confidence", "mechanical", "not_evidenced", "overall",

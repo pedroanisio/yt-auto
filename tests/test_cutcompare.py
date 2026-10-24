@@ -64,6 +64,28 @@ def sha(path) -> str:
 # the engine: a label rides immediately before its file
 # --------------------------------------------------------------------------- #
 
+class Criteria(unittest.TestCase):
+    """AUTO-146: the comparer answers every category QA scores, the
+    eleventh, editorial_identity, in the blind form it works under."""
+
+    def test_the_criteria_are_the_categories_in_order(self):
+        self.assertEqual(list(cutcompare.CRITERIA), list(qa.CATEGORIES))
+        self.assertIn("- editorial_identity: ", cutcompare.PROMPT)
+
+    def test_the_identity_criterion_names_no_treatment(self):
+        said = cutcompare.CRITERIA["editorial_identity"]
+        self.assertIn("look and personality of its own", said)
+        self.assertNotIn("treatment", said)
+        self.assertNotIn("styles", said)
+
+    def test_an_answer_for_all_eleven_validates_clean(self):
+        self.assertEqual(len(verdict()["criteria"]), 11)
+        self.assertEqual(cutcompare.problems(verdict()), [])
+        ten = dict(verdict(), criteria=[c for c in verdict()["criteria"]
+                                        if c["category"] != "editorial_identity"])
+        self.assertEqual(cutcompare.problems(ten), ["no answer for editorial_identity"])
+
+
 class Labels(unittest.TestCase):
     def setUp(self):
         self.node = FakeNode(self)

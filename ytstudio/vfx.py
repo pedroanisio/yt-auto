@@ -95,9 +95,12 @@ VERSION_RE = re.compile(r"^v(\d{2,})$")
 #: A section's symbol is its world; the id says so.
 WORLD_PREFIX = "world-"
 
-#: The ten categories of docs/production.md section 2, in its order. The
+#: The first ten categories of docs/production.md section 2, in its order. The
 #: review of proof frames scores what frames can show; the audio categories
 #: are listed so the reviewer names them as not evidenced rather than guesses.
+#: The eleventh, editorial_identity (AUTO-146), is judged of the whole film by
+#: `yt qa`; one section's proof frames are not asked it, so this review's
+#: prompt and cache are as before.
 CATEGORIES = ("visual_quality", "animation_vfx", "cinematography", "editing_pacing",
               "graphics_overlays", "voiceover", "sound_design", "music_score",
               "narrative_clarity", "overall_production")
