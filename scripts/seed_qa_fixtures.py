@@ -16,16 +16,26 @@ capture-fixture` cut from one of the owner's own films and the owner
 labelled (`label: owner`), copied as it is. `good-b` is the base with every
 other sample. The seeded cases each change one thing and say what must fall:
 
-- slide-drift: every frame a static slide with a slow drift (a Ken Burns
-  move over a slide is motion no frozen check sees), the base's caption
-  band kept;
+- slide-drift: every frame a title-and-bullets slide of the shot's own
+  narration, filling the frame and drifting slowly (a Ken Burns move over
+  a slide is motion no frozen check sees), with the shot's caption box
+  where the base has it;
 - wall-of-text: a paragraph over the stage;
-- band-violation: the super band and the caption band swapped;
-- illegible-type: the bands' type redrawn at 9 px, in low contrast;
+- band-violation: the super drawn in the middle band and the caption in
+  the top one, the picture under them the base's;
+- illegible-type: the overlay boxes' type redrawn at 9 px, in low
+  contrast, the picture around them the base's;
 - placeholder-moving: one shot's frames a grey placeholder card drifting
   over the picture, with build.placeholders left empty;
-- tells-not-shows: three shots' narration rewritten to tell, frames
-  untouched.
+- tells-not-shows: three shots' narration rewritten to describe a process
+  the frames never show, frames untouched.
+
+From the stand-in, band-violation and illegible-type redraw the picture
+without its overlays (`picture`) and draw the overlays where the case
+says, so nothing but the overlay boxes differs from good. A captured film's
+overlays cannot be found in its pixels: from one, band-violation draws the
+super and caption again in the wrong bands over the picture (its own
+overlays stay), and illegible-type washes the two bands whole.
 
 Deterministic: no clock, no unseeded random, PNGs written by PIL with
 fixed settings, JSON as ytstudio.core.write_json writes it. Run twice, the
@@ -40,6 +50,7 @@ import argparse
 import copy
 import json
 import random
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -78,13 +89,17 @@ SECTIONS = [
                    "AWAY FROM THE SUN"),
                   ("3.2", "payoff", "The tail is showing you the wind.", "THE WIND, SHOWN")]),
 ]
-#: tells-not-shows: what three shots say instead, telling the viewer what
-#: the picture never demonstrates.
+#: tells-not-shows: what three shots say instead. Each line points the
+#: viewer at a concrete process ("watch", "see", "now") that the frames,
+#: left as they are, never show, so the fault is between the line and the
+#: picture, not in the line alone.
 TOLD = {
-    "2.1": "Scientists have worked out that this is very complicated, so take their word for it.",
-    "2.2": "There is an invisible force here that is far too hard to show you.",
-    "2.3": "Just remember that it is important and that it explains everything.",
+    "2.1": "Watch single dust grains glint as sunlight knocks them loose from the crust.",
+    "2.2": "See the ions glow blue and spiral along the Sun's magnetic field lines.",
+    "2.3": "Now the field lines snap and reconnect, and a knot of plasma breaks off the tail.",
 }
+#: What each told line claims to show, which no frame of its shot draws.
+TOLD_CLAIMS = {"2.1": "dust grains", "2.2": "magnetic field lines", "2.3": "knot of plasma"}
 SHOT_SECONDS, FPS = 5.0, 30
 
 
@@ -142,10 +157,54 @@ def terms() -> dict[str, str]:
     return {label: term for _, rows in SECTIONS for label, _, _, term in rows}
 
 
+#: The overlays' type: the super's and the caption's.
+SUPER_FONT, CAPTION_FONT = ("SemiBold", 22), ("Medium", 15)
+OVERLAY_FILL, SUPER_INK, CAPTION_INK = (12, 14, 24), (236, 236, 236), (232, 232, 226)
+
+
+def overlay_boxes(heading: str | None, term: str, placement: str = "good") -> dict:
+    """Where a frame's overlays sit, as {"super": box (a section's start
+    only), "caption": box}, each [x0, y0, x1, y1] in the tile. "good" is
+    the house's: the super in the top band, the caption in the bottom one.
+    "violation" is band-violation's: the super in the middle band, the
+    caption in the top one."""
+    out = {}
+    if heading:
+        width = font(*SUPER_FONT).getlength(heading.upper())
+        y0 = 12 if placement == "good" else H // 2 - 17
+        out["super"] = [16, y0, 16 + width + 24, y0 + 34]
+    width = font(*CAPTION_FONT).getlength(term)
+    y0 = BOTTOM + 18 if placement == "good" else 12
+    out["caption"] = [16, y0, 16 + width + 20, y0 + 28]
+    return out
+
+
+def draw_overlays(im: Image.Image, heading: str | None, term: str,
+                  placement: str = "good") -> Image.Image:
+    """The super (at a section's start) and the caption, drawn where
+    `overlay_boxes` puts them."""
+    px = ImageDraw.Draw(im)
+    boxes = overlay_boxes(heading, term, placement)
+    if "super" in boxes:
+        x0, y0, x1, y1 = boxes["super"]
+        px.rectangle([x0, y0, x1, y1], fill=OVERLAY_FILL)
+        px.text((x0 + 12, y0 + 3), heading.upper(), font=font(*SUPER_FONT), fill=SUPER_INK)
+    x0, y0, x1, y1 = boxes["caption"]
+    px.rectangle([x0, y0, x1, y1], fill=OVERLAY_FILL)
+    px.text((x0 + 10, y0 + 5), term, font=font(*CAPTION_FONT), fill=CAPTION_INK)
+    return im
+
+
 def draw_good(t: float, shot: dict, index: int, heading: str | None, term: str) -> Image.Image:
-    """One frame of the stand-in at film time `t`: a graded sky, the Sun's
-    glow at the left, the comet crossing with its tail pointed away from
-    the Sun, a super at a section's start and a lower-third term."""
+    """One frame of the stand-in at film time `t`: the picture, a super at
+    a section's start and a lower-third term."""
+    return draw_overlays(picture(t, shot, index), heading, term)
+
+
+def picture(t: float, shot: dict, index: int) -> Image.Image:
+    """The stand-in's picture at film time `t`, without its overlays: a
+    graded sky, the Sun's glow at the left, the comet crossing with its
+    tail pointed away from the Sun."""
     hue = [(18, 26, 58), (14, 40, 52), (36, 22, 56)][index // 3 % 3]
     im = Image.new("RGB", (W, H))
     px = ImageDraw.Draw(im)
@@ -168,15 +227,6 @@ def draw_good(t: float, shot: dict, index: int, heading: str | None, term: str) 
     px.polygon([(cx, cy - 4), (cx + tail, cy - 10), (cx + tail, cy + 10), (cx, cy + 4)],
                fill=(170, 195, 215))
     px.ellipse([cx - 9, cy - 9, cx + 9, cy + 9], fill=(238, 232, 210))
-    if heading:
-        f = font("SemiBold", 22)
-        width = px.textlength(heading.upper(), font=f)
-        px.rectangle([16, 12, 16 + width + 24, 46], fill=(12, 14, 24))
-        px.text((28, 15), heading.upper(), font=f, fill=(236, 236, 236))
-    f = font("Medium", 15)
-    width = px.textlength(term, font=f)
-    px.rectangle([16, BOTTOM + 18, 16 + width + 20, BOTTOM + 46], fill=(12, 14, 24))
-    px.text((26, BOTTOM + 23), term, font=f, fill=(232, 232, 226))
     return im
 
 
@@ -291,30 +341,51 @@ def scaled(y: int, im: Image.Image) -> int:
     return round(y * im.height / H)
 
 
+def narration_of(script: dict, label: str) -> str:
+    for sec in script.get("sections") or []:
+        for shot in sec.get("shots") or []:
+            if str(shot.get("label")) == str(label):
+                return str(shot.get("narration") or "")
+    return ""
+
+
+def slide_bullets(line: str, most: int = 3, words: int = 5) -> list[str]:
+    """A narrated line as a slide's bullets: its clauses (split at
+    punctuation and at "but", "as" and "so"), each cut into even pieces of
+    at most `words` words, the first `most` of them."""
+    clauses = [c.split() for c in re.split(r"[,:;.?!]+|\s(?:but|as|so)\s", line)]
+    out = []
+    for clause in (c for c in clauses if c):
+        pieces = -(-len(clause) // words)
+        size = -(-len(clause) // pieces)
+        out += [" ".join(clause[k:k + size]) for k in range(0, len(clause), size)]
+    return [b[:1].upper() + b[1:] for b in out[:most]]
+
+
 def slide_drift(base: dict, out: Path) -> None:
     fps = qa._fps(base["build"])
 
     def change(im, row, t, shot):
         w, h = im.size
+        label = str(row["label"])
         drift = round(0.6 * (round(t * fps) - round(float(shot["at"]) * fps)))
         slide = Image.new("RGB", (w + 120, h))
         px = ImageDraw.Draw(slide)
         for y in range(h):
             v = int(34 + 30 * y / (h - 1))
             px.line([(0, y), (w + 120, y)], fill=(v, v + 4, v + 12))
-        heading = heading_of(base["build"], row["label"]) or "Overview"
+        heading = heading_of(base["build"], label) or "Overview"
         px.text((104, scaled(64, im)), heading, font=font("Bold", 24), fill=(232, 232, 232))
-        words = band_text(base["script"], str(row["label"])).title()
-        for k, line in enumerate((f"- {words}", "- Key facts on this slide",
-                                  "- Read the points below")):
-            px.text((116, scaled(104 + 26 * k, im)), line, font=font("Regular", 16),
+        bullets = slide_bullets(narration_of(base["script"], label)) or [
+            band_text(base["script"], label).title()]
+        for k, line in enumerate(bullets):
+            px.text((116, scaled(104 + 26 * k, im)), f"- {line}", font=font("Regular", 16),
                     fill=(206, 210, 216))
         px.rectangle([w - 130, scaled(70, im), w - 10, scaled(180, im)],
                      outline=(170, 176, 186), width=2)
         frame = slide.crop((drift, 0, drift + w, h))
-        top = scaled(BOTTOM, im)
-        frame.paste(im.crop((0, top, w, h)), (0, top))
-        return frame
+        # the shot's caption where the base has it, still: only the slide drifts
+        return draw_overlays(frame, None, band_text(base["script"], label))
     transform(base, out, change)
 
 
@@ -342,21 +413,43 @@ def wall_of_text(base: dict, out: Path) -> None:
     transform(base, out, change)
 
 
+def stand_in_base(base: dict) -> bool:
+    """Whether the base is the drawn stand-in (its picture can be drawn
+    again without overlays) rather than a captured, owner-labelled film."""
+    return (base["expected"] or {}).get("label") != "owner" and \
+        base["build"].get("title") == TITLE
+
+
+def overlays_of(base: dict, label: str) -> tuple[str | None, str]:
+    """The super (a section's start only) and caption text of a shot."""
+    heading = heading_of(base["build"], label) if label in section_starts(base["build"]) \
+        else None
+    return heading, band_text(base["script"], label)
+
+
+def bare(base: dict, t: float, shot: dict) -> Image.Image:
+    """The stand-in's picture at `t` for `shot`, without its overlays."""
+    index = next(n for n, s in enumerate(base["build"]["shots"]) if s is shot)
+    return picture(t, shot, index)
+
+
 def band_violation(base: dict, out: Path) -> None:
+    drawn = stand_in_base(base)
+
     def change(im, row, t, shot):
-        w, h = im.size
-        band = scaled(H - BOTTOM, im)
-        top, bottom = im.crop((0, 0, w, band)), im.crop((0, h - band, w, h))
-        frame = im.copy()
-        frame.paste(bottom, (0, 0))
-        frame.paste(top, (0, h - band))
-        return frame
+        heading, term = overlays_of(base, str(row["label"]))
+        frame = bare(base, t, shot) if drawn else im.copy()
+        return draw_overlays(frame, heading, term, "violation")
     transform(base, out, change)
 
 
 def illegible_type(base: dict, out: Path) -> None:
-    starts = section_starts(base["build"])
+    drawn = stand_in_base(base)
     f = font("Regular", 9)
+
+    def mean_of(im, box):
+        return tuple(int(v) for v in ImageStat.Stat(
+            im.crop(tuple(round(c) for c in box))).mean)
 
     def wash(im, box):
         region = im.crop(box)
@@ -366,16 +459,29 @@ def illegible_type(base: dict, out: Path) -> None:
         return mean
 
     def change(im, row, t, shot):
+        heading, term = overlays_of(base, str(row["label"]))
+        if drawn:
+            # each overlay box filled with the picture's own colour under
+            # it, and its words at 9 px a shade off that: the rest of the
+            # frame is the base's
+            frame = bare(base, t, shot)
+            px = ImageDraw.Draw(frame)
+            for kind, box in overlay_boxes(heading, term).items():
+                ground = mean_of(frame, box)
+                px.rectangle(box, fill=ground)
+                px.text((box[0] + 10, box[1] + 10), heading.upper() if kind == "super" else term,
+                        font=f, fill=tuple(min(c + 16, 255) for c in ground))
+            return frame
         w, h = im.size
         frame = im.copy()
         px = ImageDraw.Draw(frame)
         top = wash(frame, (0, 0, w, scaled(TOP, im)))
         bottom = wash(frame, (0, scaled(BOTTOM, im), w, h))
-        if str(row["label"]) in starts:
-            px.text((28, scaled(24, im)), heading_of(base["build"], row["label"]).upper(),
-                    font=f, fill=tuple(min(c + 16, 255) for c in top))
-        px.text((26, scaled(BOTTOM + 28, im)), band_text(base["script"], str(row["label"])),
-                font=f, fill=tuple(min(c + 16, 255) for c in bottom))
+        if heading:
+            px.text((28, scaled(24, im)), heading.upper(), font=f,
+                    fill=tuple(min(c + 16, 255) for c in top))
+        px.text((26, scaled(BOTTOM + 28, im)), term, font=f,
+                fill=tuple(min(c + 16, 255) for c in bottom))
         return frame
     transform(base, out, change)
 
@@ -427,7 +533,11 @@ def told(base: dict) -> list[str]:
     return labels[k:k + 3]
 
 
-def tells_not_shows(base: dict, out: Path) -> tuple[dict, dict | None, list[str]]:
+def tells_not_shows(base: dict, out: Path) -> tuple[dict, dict | None, list[dict], list[str]]:
+    """The base with three shots' lines rewritten (`TOLD`) in script.json,
+    voice.json and the samples' `lines` (a captured pass carries each
+    line's text, and the old words must not stand beside the new), and
+    every frame the samples name copied as it is."""
     labels = told(base)
     lines = list(TOLD.values())
     rewrite = dict(zip(labels, lines))
@@ -441,11 +551,23 @@ def tells_not_shows(base: dict, out: Path) -> tuple[dict, dict | None, list[str]
         if str(take.get("label")) in rewrite:
             take["text"] = rewrite[str(take["label"])]
             take.pop("words", None)       # the word timings were the old line's
-    for name in (base["dir"] / "frames").rglob("*.png"):
-        dst = out / "frames" / name.relative_to(base["dir"] / "frames")
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(name, dst)
-    return script, voice, labels
+    samples = copy.deepcopy(base["samples"])
+    for row in samples:
+        label = str(row.get("label"))
+        if label not in rewrite or not row.get("lines"):
+            continue
+        old = {qa._line_why(str(line.get("text", ""))) for line in row["lines"]}
+        for line in row["lines"]:
+            line["text"] = rewrite[label]
+        new = qa._line_why(rewrite[label])
+        why = [new if part in old else part for part in str(row.get("why", "")).split("; ")]
+        row["why"] = "; ".join(dict.fromkeys(why))
+    for row in base["samples"]:
+        for name, _ in frames_of(row):
+            dst = out / "frames" / name
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(base["dir"] / "frames" / name, dst)
+    return script, voice, samples, labels
 
 
 def span(shot: dict) -> list[float]:
@@ -454,7 +576,7 @@ def span(shot: dict) -> list[float]:
 
 def seeded(name: str, base: dict, out: Path) -> None:
     case = out / name
-    build, script, voice = base["build"], base["script"], base["voice"]
+    build, script, voice, samples = base["build"], base["script"], base["voice"], base["samples"]
     expected = {"label": "seeded", "judge_only": True, "verdict": "NOT_READY",
                 "under_bar": [], "over_bar": [], "must_find": [], "base": "good"}
     if name == "slide-drift":
@@ -481,12 +603,12 @@ def seeded(name: str, base: dict, out: Path) -> None:
         build = copy.deepcopy(build)
         build["placeholders"] = []
     elif name == "tells-not-shows":
-        script, voice, labels = tells_not_shows(base, case)
+        script, voice, samples, labels = tells_not_shows(base, case)
         shots = [shot_of(build, label) for label in labels]
         expected.update(under_bar=["narrative_clarity"], drop={"narrative_clarity": 1.0},
                         must_find=[{"t_range": [span(shots[0])[0], span(shots[-1])[1]],
                                     "owners": ["script", "vfx"]}])
-    write_case(case, build, script, voice, base["samples"], expected)
+    write_case(case, build, script, voice, samples, expected)
 
 
 SEEDED = ("slide-drift", "wall-of-text", "band-violation", "illegible-type",

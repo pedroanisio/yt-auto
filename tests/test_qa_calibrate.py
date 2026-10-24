@@ -348,7 +348,9 @@ class Seeded(unittest.TestCase):
 
     #: How far a stand-in pixel outside the changed boxes may move: the
     #: frames are stored quantized, and a seeded frame's palette is its own.
-    TOLERANCE = 12
+    #: The committed set needs 4 (band-violation) and 7 (slide-drift's
+    #: caption); a seam or a washed band moves pixels by tens.
+    TOLERANCE = 8
 
     def setUp(self):
         self.seed = seed_module()
