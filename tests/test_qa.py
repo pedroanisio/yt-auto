@@ -1086,7 +1086,10 @@ class EditorialIdentity(unittest.TestCase):
         styles = {"styles": [{"name": "Diagram"}], "identity": ident}
         got = qa.stage_measurements(_build(), None, sound={}, gate=None, geometry={},
                                     styles=styles, reach=None)
-        self.assertEqual(got["identity"], ident)
+        # the five fields only: the styles reviewer's verdict would anchor
+        # the judge's score instead of the frames
+        self.assertEqual(got["identity"], {k: v for k, v in ident.items() if k != "review"})
+        self.assertNotIn("review", got["identity"])
         self.assertEqual(got["treatment"], {"name": "Diagram"})
         plain = qa.stage_measurements(_build(), None, sound={}, gate=None, geometry={},
                                       styles={"styles": [{"name": "Diagram"}]}, reach=None)

@@ -64,7 +64,9 @@ moved onto a film about something else without anyone noticing? The film's
 intended identity is written by `yt styles --rich` (atmosphere,
 personality, motif, signature, and why it belongs to this subject), swap
 tested there by a reviewer of another model family, and carried into the
-keyframe and vfx briefs; QA judges whether the cut delivers it. A pass
+keyframe and vfx briefs; QA judges whether the cut delivers it. QA's
+evidence carries the identity's fields and not the styles reviewer's
+verdict or scores, so the judge scores the frames, not an earlier opinion. A pass
 scored before the category existed is compared with a later one on the
 ten both scored.
 

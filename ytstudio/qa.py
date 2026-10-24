@@ -4022,10 +4022,12 @@ def stage_measurements(build: dict, voice: dict | None, *, sound: dict, gate: di
                      ("status", "why", "evaluated", "worst", "floating", "reads_merged")},
         "treatment": (styles.get("styles") or [{}])[0] if isinstance(
             styles.get("styles"), list) else styles.get("treatment"),
-        # The film's identity and its swap test (AUTO-146), for
-        # editorial_identity; only when styles.json has one.
-        **({"identity": styles["identity"]} if isinstance(styles.get("identity"), dict)
-           else {}),
+        # The film's identity (AUTO-146), for editorial_identity; only when
+        # styles.json has one. Its five fields and not the styles reviewer's
+        # verdict and scores, which would anchor the judge's score on an
+        # upstream opinion instead of on the frames.
+        **({"identity": {k: v for k, v in styles["identity"].items() if k != "review"}}
+           if isinstance(styles.get("identity"), dict) else {}),
         # How far the authored documents reach into the engine, per `yt vfx`:
         # a weak-motion finding can name the construct that was left unused.
         "reach": reach_audit.summary(reach),
