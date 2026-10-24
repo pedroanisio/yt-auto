@@ -119,6 +119,18 @@ STORY_PROPERTIES = {
                           "description": "why misconception is empty, or empty"},
     "audience": {"type": "string", "enum": list(AUDIENCES),
                  "description": "who the film is pitched at. " + _ENUM_DRIFT},
+    # AUTO-158: the narrator stays the house's one proxy across films; its
+    # temperament is this film's, chosen from the subject. Optional, never
+    # in STORY_REQUIRED, so older plans and fixtures validate as they did.
+    "persona": {
+        "type": "object",
+        "properties": {"temperament": {"type": "string"}, "why": {"type": "string"}},
+        "required": ["temperament", "why"],
+        "description": (
+            "the narrator's temperament for this film, in one word or a short phrase, "
+            "and why this subject calls for it; the narration speaks in it. Free text: "
+            "wry, awed, sceptical, urgent and tender are examples, not a list."),
+    },
     # AUTO-136: the opening's curiosity trigger (attention 1), declared so
     # the story review can compare it with the opening it hears.
     "hook": {
@@ -1521,6 +1533,9 @@ STORY_BRIEF = (
     "the research lists it; never invent one. When there is none, leave it "
     "empty and say why in misconception_why.\n"
     "- audience: lay, enthusiast or expert.\n"
+    "- persona: the narrator's temperament for THIS film (one word or a short "
+    "phrase) and why the subject calls for it. When the house format names a "
+    "temperament, use that one and say so in why.\n"
     "- hook: trigger, the curiosity trigger the first three spoken sentences pull: "
     "question (a question posed), paradox (two things that cannot both be true), "
     "unexpected_observation (something seen that should not be so), "
@@ -1615,9 +1630,21 @@ CONNECTIVE_BRIEF = {
 }
 
 
+def persona_of(plan: dict) -> tuple[str, str]:
+    """The plan's persona as (temperament, why), whitespace folded; ("", "")
+    when the plan names none or names it as something other than an object."""
+    persona = plan.get("persona") if isinstance(plan, dict) else None
+    if not isinstance(persona, dict):
+        return "", ""
+    return _said(persona.get("temperament")), _said(persona.get("why"))
+
+
 def story_lines(plan: dict) -> list[str]:
     """The film's story, as every section's writer is handed it: the train,
-    the stakes, the belief it breaks and who it is pitched at."""
+    the stakes, the belief it breaks, who it is pitched at and, when the plan
+    names one, the narrator's temperament for this film (AUTO-158). With no
+    temperament the lines are what they were before it, so a plan without
+    one asks every write-NN exactly what it did."""
     rows = [(label, " ".join(str(plan.get(key) or "").split()))
             for key, label in (("train", "The film's train"),
                                ("stakes", "What is at stake"),
@@ -1625,6 +1652,13 @@ def story_lines(plan: dict) -> list[str]:
                                ("misconception", "The belief the film breaks"))]
     out = ["\n".join(f"{label}: {text}" for label, text in rows if text)]
     out.append(AUDIENCE_BRIEF.get(str(plan.get("audience") or ""), ""))
+    temperament, why = persona_of(plan)
+    if temperament:
+        # The SYSTEM prompt is left alone: it is in every script decision's
+        # cache key. The temperament colours the house's proxy narrator.
+        out.append(f"The narrator's temperament for this film: {temperament}"
+                   + (f" ({why})" if why else "") + ". Every line speaks in it; it "
+                   "colours the proxy narrator, never replaces it.")
     return [p for p in out if p]
 
 
@@ -1949,7 +1983,8 @@ def plan_prechecks(plan: dict, seconds: int, title: str = "") -> list[str]:
     experiment with no framing, a question with no answer, a reveal before
     its constraint) and `house:` for the house's priors (a long film with no
     re-hook, section 2 with none, a stretch longer than REHOOK_EVERY_SECONDS
-    without one, a prediction no reveal scores, a train with no question).
+    without one, a prediction no reveal scores, a train with no question, a
+    persona with no temperament or no reason).
     They go to the reviewer to confirm, never decide.
 
     The plan fields are crew-facing English (STORY_BRIEF), so the English
@@ -2038,6 +2073,12 @@ def plan_prechecks(plan: dict, seconds: int, title: str = "") -> list[str]:
     if train and "?" not in train and not _has(train, _ASKS):
         out.append("house: the train asks no question (no question mark, no why, how or "
                    "whether): a nudge, since punctuation alone satisfies it (judging 13)")
+    # AUTO-158: only a persona the plan gives and leaves empty. One it never
+    # gives is no line, so older plans and the calibration fixtures read as
+    # they did; the field is optional.
+    if "persona" in plan and not all(persona_of(plan)):
+        out.append("house: the persona names no temperament or no reason: the "
+                   "narrator's temperament is chosen from the subject and said why")
     return out
 
 
@@ -5739,6 +5780,9 @@ def write_md(path: str, idea: Idea, data: dict, sections: list[Section]) -> None
                        ("audience", "Audience")):
         if data.get(key):
             md += [f"**{label}.** {data[key]}", ""]
+    temperament, why = persona_of(data)
+    if temperament:
+        md += [f"**Narrator.** {temperament}" + (f": {why}" if why else ""), ""]
     reveal = data.get("reveal") if isinstance(data.get("reveal"), dict) else {}
     if reveal.get("section"):
         md += [f"**Reveal.** section {reveal['section']}, after the constraint in "

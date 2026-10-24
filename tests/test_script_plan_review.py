@@ -534,6 +534,42 @@ class OpeningAndTension(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- #
+# the narrator's temperament, as the plan names it (AUTO-158)
+# --------------------------------------------------------------------------- #
+
+class Persona(unittest.TestCase):
+    """A persona that names no temperament or no reason is a house prior for
+    the reviewer to weigh; a plan with none has no line, so the pre-checks
+    of older plans and the calibration fixtures do not move."""
+
+    LINE = ("house: the persona names no temperament or no reason: the narrator's "
+            "temperament is chosen from the subject and said why")
+
+    def persona_lines(self, plan):
+        return [c for c in checks(plan, 60) if "persona" in c]
+
+    def test_an_empty_persona_is_a_house_pre_check(self):
+        for persona in ({"temperament": "", "why": "a story of loss"},
+                        {"temperament": "tender", "why": "  \n "},
+                        {"temperament": " "}):
+            with self.subTest(persona=persona):
+                plan = dict(copy.deepcopy(PLAN), persona=persona)
+                self.assertEqual(self.persona_lines(plan), [self.LINE])
+
+    def test_a_plan_with_no_persona_or_a_full_one_has_no_line(self):
+        self.assertEqual(self.persona_lines(PLAN), [])
+        full = dict(copy.deepcopy(PLAN), persona={"temperament": "tender",
+                                                  "why": "a story of loss"})
+        self.assertEqual(checks(full), checks(PLAN))
+
+    def test_the_line_reaches_the_plan_reviewer(self):
+        plan = dict(copy.deepcopy(PLAN), persona={"temperament": "", "why": ""})
+        prompt = Prompt.review_prompt(self, plan)
+        self.assertIn("- " + self.LINE, prompt)
+        self.assertIn('"persona"', prompt)
+
+
+# --------------------------------------------------------------------------- #
 # the devices, measured from the plan (AUTO-135)
 # --------------------------------------------------------------------------- #
 
