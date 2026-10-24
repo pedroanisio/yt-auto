@@ -7044,9 +7044,16 @@ def run(args) -> int:
     dossier = read_json(project.source("dossier", args.dossier))
     # The fact-check is on whenever there is research to hold the lines to
     # (AUTO-133), off with --no-verify; --revise fact-checks its changed
-    # lines whenever there is a dossier, as it always did.
+    # lines whenever there is a dossier, as it always did, so --no-verify is
+    # refused there rather than read as turning that off. With no dossier
+    # nothing is checked, so an explicit --verify needs no reviewer either.
     verify = bool(dossier) if args.verify is None else bool(args.verify)
-    reads_facts = bool(dossier) if args.revise else verify
+    if args.revise and dossier and args.verify is False:
+        print("error: --revise always fact-checks the changed lines against the dossier; "
+              "--no-verify does not turn that off: drop it, and pass --reviewer-model "
+              "<other family> if --model is the reviewer's family", file=sys.stderr)
+        return 2
+    reads_facts = bool(dossier) and (bool(args.revise) or verify)
     # A model never grades its own work: refused before anything is paid,
     # and the fact-check is a reading of the author's work too. `pool` and
     # `sdk:<id>` (AUTO-125) are resolved to one reviewer from another maker
@@ -7109,7 +7116,7 @@ def run(args) -> int:
         press=press_items(dossier.get("assets") or []) if dossier else None,
         reviewer_model=args.reviewer_model if args.review else None, reviewer=pooled,
         # The fact-check is read by --reviewer-model, never the author (AUTO-133).
-        fact_reviewer_model=args.reviewer_model if verify else None,
+        fact_reviewer_model=args.reviewer_model if reads_facts else None,
         review_budget_usd=args.review_budget_usd, rounds=args.rounds,
         fresh=getattr(args, "fresh", False),
         review_log=review_log_path(args, project) if args.review else None,

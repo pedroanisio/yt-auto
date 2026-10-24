@@ -432,6 +432,10 @@ class FactCheckByDefault(unittest.TestCase):
         with mock.patch.object(script.Screenwriter, "run", run):
             self.run_stage()
         self.assertIsNone(seen["fact"])
+        # nor with an explicit --verify: there is nothing to check against
+        with mock.patch.object(script.Screenwriter, "run", run):
+            self.run_stage("--verify")
+        self.assertIsNone(seen["fact"])
         self.dossier()
         with mock.patch.object(script.Screenwriter, "run", run):
             self.run_stage()
@@ -502,6 +506,26 @@ class FactCheckByDefault(unittest.TestCase):
         self.assertEqual(self.asked, [])
         self.assertIn("does not grade its own work", said)
         self.assertNotIn("on by default", said)
+
+    def test_an_explicit_verify_with_no_dossier_is_not_refused(self):
+        # nothing is fact-checked, so no reviewer is needed for it
+        code, said = self.run_stage("--model", "opus", "--verify")
+        self.assertEqual(code, 0, said)
+        self.assertIn("warning: --verify needs research", said)
+        self.assertNotIn("grade its own work", said)
+
+    def test_a_revise_refuses_no_verify_with_a_dossier(self):
+        # --revise always fact-checks its changed lines against the dossier;
+        # --no-verify would read as turning that off, so it is refused, and
+        # before the family refusal, which would offer only --reviewer-model.
+        self.dossier()
+        (self.film / "script.json").write_text(json.dumps({"sections": []}))
+        for model in ("sonnet", "opus"):
+            code, said = self.run_stage("--model", model, "--revise", "1.1", "--no-verify")
+            self.assertEqual(code, 2, said)
+            self.assertEqual(self.asked, [])
+            self.assertIn("--revise always fact-checks the changed lines", said)
+            self.assertIn("--no-verify", said)
 
     def test_a_revise_with_a_dossier_is_refused_for_the_authors_family(self):
         self.dossier()
