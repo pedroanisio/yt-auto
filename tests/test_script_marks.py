@@ -196,5 +196,28 @@ class Revise(unittest.TestCase):
         self.assertEqual(shot.emphasis, ["cat", "fine"])
 
 
+class TheRecordKeepsWhatThePolishDropped(unittest.TestCase):
+    """The stage's record, not only the writer: script.json carries
+    polish.applied with the marks a polished line lost."""
+
+    def test_script_json_carries_polish_applied(self):
+        from tests import test_script_review as review
+        w = review.writer()
+        shots = {"shots": [
+            {"visual": "v1.1", "narration": "The cat sat in the box.", "seconds": 5,
+             "asset": "make", "style": "s", "function": "context", "shows": "s1.1",
+             "emphasis": ["cat"], "pauses": ["box"]},
+            {"visual": "v1.2", "narration": "line 1.2", "seconds": 5, "asset": "make",
+             "style": "s", "function": "payoff", "shows": "s1.2"}]}
+        review.faked(w, {"write-01": shots, "polish": {"edits": [
+            {"n": 1, "narration": "The cat sat in the crate.", "why": "plainer"}]}})
+        data = w.run(do_polish=True)
+        self.assertEqual(data["polish"]["applied"], [
+            {"n": 1, "label": "1.1", "marks_dropped": [{"kind": "pause", "word": "box"}]}])
+        first = data["sections"][0]["shots"][0]
+        self.assertEqual((first["narration"], first["emphasis"], first["pauses"]),
+                         ("The cat sat in the crate.", ["cat"], []))
+
+
 if __name__ == "__main__":
     unittest.main()

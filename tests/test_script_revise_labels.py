@@ -337,6 +337,28 @@ class ReviseLabels(unittest.TestCase):
         self.assertEqual(shot["narration"], LINES[1][1][0][1])
         self.assertIn("yt voice --redo 1.3 ", self.said)     # the take of 2.1 still holds
 
+    def test_a_mark_the_rewrite_dropped_leaves_script_json_too(self):
+        # AUTO-139: a mark on a word the new line no longer says goes with
+        # it in the record, not only in memory; a changed shot that had no
+        # marks gains no mark keys.
+        data = screenplay()
+        shots = shots_of(data)
+        shots["1.3"] |= {"emphasis": ["paint"], "pauses": ["thirty"], "pronounce": []}
+        for key in ("emphasis", "pauses", "pronounce"):
+            shots["2.1"].pop(key, None)
+        write_json(self.film / "script.json", data)
+        self.fixes = {3: FIXED, 4: "The paint hid the rust from the inspectors."}
+        self.assertEqual(self.run_stage("--revise", "1.3,2.1"), 0, self.said)
+        new = shots_of(self.record())
+        self.assertEqual(new["1.3"]["narration"], FIXED)
+        self.assertEqual(new["1.3"]["emphasis"], ["paint"])
+        self.assertEqual(new["1.3"]["pauses"], [])
+        self.assertEqual(new["2.1"]["narration"], self.fixes[4])
+        for key in ("emphasis", "pauses", "pronounce"):
+            self.assertNotIn(key, new["2.1"], key)
+        applied = {r["label"]: r for r in self.record()["revised"][-1]["applied"]}
+        self.assertEqual(applied["1.3"]["marks_dropped"], [{"kind": "pause", "word": "thirty"}])
+
     def test_a_changed_shots_picture_flags_stop_binding(self):
         # The picture-check's standing flags (AUTO-98) speak of the text the
         # check read; once that shot's line or supers change they are stale,
