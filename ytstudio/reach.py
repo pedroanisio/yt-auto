@@ -40,7 +40,9 @@ from . import render
 __all__ = ["FAMILIES", "REACH_SCHEMA", "family_of", "families_text",
            "construct_usage", "usage_of", "manifest", "caveats", "report",
            "prompt", "summary", "MOTION_ROLE", "MOTION_SCHEMA", "motion_slice",
-           "motion_prompt", "motion_problems", "static_processes", "needs_motion"]
+           "motion_prompt", "motion_problems", "static_processes", "needs_motion",
+           "BOOLEAN_CONSTRUCTS", "DIMENSION_RULES", "dimensions", "realised_dimensions",
+           "declared_dimensions", "dimension_gap"]
 
 #: The engine's elements, grouped so a planner can see the whole vocabulary
 #: at a glance. Grouping is editorial convenience; every element the schema
@@ -100,6 +102,12 @@ REFERENCE_ATTRS = frozenset((
 _ENUMISH = re.compile(r"^[A-Za-z][\w-]{0,31}$")
 _NUMERIC = re.compile(r"^[-+]?\d")
 
+#: Boolean attributes that switch a construct on: recorded as
+#: `<el>/@<attr>=true` when the value is "true" (AUTO-154). Every other
+#: true/false value is still not counted. usage_of names them under
+#: `flags`, so a usage without `flags` is known to predate the record.
+BOOLEAN_CONSTRUCTS = ("threeD",)
+
 
 def family_of(element: str) -> str:
     return _FAMILY_OF.get(element, "other")
@@ -138,6 +146,11 @@ def _count(node: ET.Element, elements: dict, attributes: dict) -> None:
                 and not _NUMERIC.match(value) and value not in ("true", "false")):
             vkey = f"{key}={value}"
             attributes[vkey] = attributes.get(vkey, 0) + 1
+        elif _strip(attr) in BOOLEAN_CONSTRUCTS and value == "true":
+            # A boolean that switches a construct on (threeD: this 2D node in
+            # camera space, 2.5D) is one, when it is on; off, it is nothing.
+            vkey = f"{key}=true"
+            attributes[vkey] = attributes.get(vkey, 0) + 1
 
 
 def construct_usage(doc_text: str) -> dict:
@@ -166,8 +179,10 @@ def construct_usage(doc_text: str) -> dict:
 
 
 def usage_of(files: dict[str, str]) -> dict:
-    """`construct_usage` over several documents, merged, keyed by file."""
-    merged: dict = {"files": {}, "elements": {}, "attributes": {}, "symbols": {}}
+    """`construct_usage` over several documents, merged, keyed by file;
+    `flags` names the BOOLEAN_CONSTRUCTS recorded as `=true` keys."""
+    merged: dict = {"files": {}, "elements": {}, "attributes": {}, "symbols": {},
+                    "flags": list(BOOLEAN_CONSTRUCTS)}
     for name, text in files.items():
         one = construct_usage(text)
         merged["files"][name] = one
@@ -177,6 +192,220 @@ def usage_of(files: dict[str, str]) -> dict:
         for sid, per in one["symbols"].items():
             merged["symbols"][sid] = dict(per, file=name)
     return merged
+
+
+# --------------------------------------------------------------------------- #
+# dimension (AUTO-154): which of 2D, 2.5D and 3D a world is authored in
+# --------------------------------------------------------------------------- #
+#
+# The film is meant to mix 2D, 2.5D and 3D where each works best, and each
+# shot says which treatment it belongs to (script.json `style`, mapped by
+# styles.dimension_of). The reach audit excuses a deliberately flat
+# treatment, so a film whose shots say "3d animation" and whose worlds are
+# layers and shapes can still score well. This measures the dimension from
+# the constructs each world's symbol uses, with no model: being flat is
+# allowed; a world flatter than its own shots declare is a gap, a warning.
+
+#: How a symbol's usage decides its dimensions; a symbol can have several.
+#: Keys are element-qualified, so `map/@projection=orthographic` (a globe)
+#: is not a camera, and `layer/@z` (an integer stacking order, not depth)
+#: counts for nothing. Simulation, post, geo and audio elements give no
+#: dimension on their own. textAnimator/@zDepth is left out: its 3D
+#: placement is open in scene-render, and today it is a perspective scale.
+DIMENSION_RULES = {
+    "3d": "any '3d stage' element, and either no `camera` or more `camera` elements "
+          "than `camera/@projection=orthographic` keys: a camera that is not "
+          "orthographic is perspective, scene-render's default, and a viewport3D "
+          "with no camera renders through a default perspective one",
+    "2.5d": "`camera/@projection=orthographic`, or `<el>/@threeD=true` where <el> is "
+            "not a '3d stage' element (a 2D node placed in camera space at zDepth)",
+    "2d": "any '2d stage' element",
+}
+
+#: The order dimensions are listed in, flattest first.
+DIMENSION_ORDER = ("2d", "2.5d", "3d")
+
+_ORTHO = "camera/@projection=orthographic"
+
+
+def _symbol_dimensions(per: dict, flagged: bool) -> tuple[set, dict]:
+    """One symbol's dimensions under DIMENSION_RULES, and the keys that
+    decided each ({dimension: {(key, note): count}}). `flagged` is False
+    for a usage made before `<el>/@threeD=true` was recorded: the attribute's
+    presence then stands in for its value, and says so."""
+    elements, attributes = per.get("elements") or {}, per.get("attributes") or {}
+    dims: set = set()
+    why: dict = {d: {} for d in DIMENSION_ORDER}
+    stage3d = {el: n for el, n in elements.items() if family_of(el) == "3d stage"}
+    cameras, ortho = elements.get("camera", 0), attributes.get(_ORTHO, 0)
+    if stage3d and (cameras == 0 or cameras > ortho):
+        dims.add("3d")
+        why["3d"] = {(el, ""): n for el, n in stage3d.items()}
+    if ortho:
+        dims.add("2.5d")
+        why["2.5d"][(_ORTHO, "")] = ortho
+    for key, n in attributes.items():
+        el, _, rest = key.partition("/@")
+        if family_of(el) == "3d stage":
+            continue
+        if flagged and rest in {f"{b}=true" for b in BOOLEAN_CONSTRUCTS}:
+            dims.add("2.5d")
+            why["2.5d"][(key, "")] = n
+        elif not flagged and rest in BOOLEAN_CONSTRUCTS:
+            dims.add("2.5d")
+            why["2.5d"][(key, "value not recorded")] = n
+    flat = {el: n for el, n in elements.items() if family_of(el) == "2d stage"}
+    if flat:
+        dims.add("2d")
+        why["2d"] = {(el, ""): n for el, n in flat.items()}
+    return dims, why
+
+
+def _authored_symbol(scene: dict, effect_id: str) -> str | None:
+    """The symbol an effect was authored in, as vfx.authored_as finds it: its
+    world when it is a phase, its own symbol the old way; None if neither."""
+    symbols = (scene or {}).get("symbols") or {}
+    sid = ((scene or {}).get("phases") or {}).get(effect_id, effect_id)
+    return sid if symbols.get(sid) else None
+
+
+def dimensions(usage: dict, effects: list[dict], scene: dict) -> dict:
+    """{section heading: {"dims": [...], "evidence": [...]}} over the effects
+    `scene` holds as authored, grouped by effect["section"]: the union of the
+    dimensions of the symbols they live in, each world counted once however
+    many phases it holds, and the deciding keys with their counts summed
+    over those worlds ("viewport3D x2", "group/@threeD=true x3"), deepest
+    first and at most six per dimension. Pure."""
+    usage = usage if isinstance(usage, dict) else {}
+    symbols = usage.get("symbols") or {}
+    flagged = "flags" in usage
+    worlds: dict[str, list[str]] = {}
+    for e in effects or []:
+        if not isinstance(e, dict):
+            continue
+        sid = _authored_symbol(scene, str(e.get("id", "")))
+        if sid is None:
+            continue
+        held = worlds.setdefault(str(e.get("section", "")), [])
+        if sid not in held:
+            held.append(sid)
+    out: dict = {}
+    for heading, sids in worlds.items():
+        dims: set = set()
+        counts: dict = {d: {} for d in DIMENSION_ORDER}
+        for sid in sids:
+            got, why = _symbol_dimensions(symbols.get(sid) or {}, flagged)
+            dims |= got
+            for d in got:
+                for keyed, n in why[d].items():
+                    counts[d][keyed] = counts[d].get(keyed, 0) + n
+        evidence = [f"{key} x{n}" + (f" ({note})" if note else "")
+                    for d in reversed(DIMENSION_ORDER)
+                    for (key, note), n in sorted(counts[d].items(),
+                                                 key=lambda kv: (-kv[1], kv[0]))[:6]]
+        out[heading] = {"dims": [d for d in DIMENSION_ORDER if d in dims],
+                        "evidence": evidence}
+    return out
+
+
+def realised_dimensions(vfx_doc: dict | None) -> dict | None:
+    """vfx.json's dimensions per section: `reach.dimensions` when the record
+    has them, else computed from the stored reach usage, so a vfx.json from
+    before AUTO-154 is measured without running `yt vfx` again. None when
+    the record has no usage (nothing authored, or no reach record)."""
+    doc = vfx_doc if isinstance(vfx_doc, dict) else {}
+    record = doc.get("reach") if isinstance(doc.get("reach"), dict) else {}
+    stored = record.get("dimensions")
+    if isinstance(stored, dict):
+        return stored
+    usage = record.get("usage")
+    if not isinstance(usage, dict) or not usage.get("symbols"):
+        return None
+    effects = [dict(e, section=e.get("section") or group.get("section", ""))
+               for group in doc.get("sections") or [] if isinstance(group, dict)
+               for e in group.get("effects") or [] if isinstance(e, dict)]
+    return dimensions(usage, effects, doc.get("scene") or {})
+
+
+def declared_dimensions(script: dict | None) -> list[tuple[int, str, list[dict]]]:
+    """What script.json's shots declare: per section (n, heading, rows), n
+    1-based, each row {label, style, dim} with dim styles.dimension_of the
+    shot's `style` (`unknown` for an empty or unmapped one)."""
+    from .styles import dimension_of
+    script = script if isinstance(script, dict) else {}
+    out = []
+    for n, section in enumerate(script.get("sections") or [], 1):
+        if not isinstance(section, dict):
+            continue
+        rows = []
+        for shot in section.get("shots") or []:
+            if isinstance(shot, dict):
+                style = str(shot.get("style") or "").strip()
+                rows.append({"label": str(shot.get("label", "")), "style": style,
+                             "dim": dimension_of(style)})
+        out.append((n, str(section.get("heading", "")), rows))
+    return out
+
+
+def _realises(dimension: str, dims) -> bool:
+    """A 3d shot needs 3d; a 2.5d shot is served by 2.5d or 3d."""
+    return dimension in dims or (dimension == "2.5d" and "3d" in dims)
+
+
+def dimension_gap(styles: dict | None, script: dict | None, vfx_doc: dict | None) -> dict:
+    """Where the authored film is flatter than its own shots declare.
+
+    {"measured", "reason", "sections", "film", "unmapped_shots", "shots"}:
+    a section row {n, section, declared, realised, shots, styles, evidence}
+    where a shot declares 3d (styles.dimension_of its `style`) and the
+    section's world realises no 3d, or declares 2.5d and it realises neither
+    2.5d nor 3d; n is the script section's 1-based index, which is the
+    authoring record's n. A film row {style, dimension} when styles.json's
+    primary treatment is 3d or 2.5d and no section realises it. footage,
+    any and unknown are never judged; a section with nothing authored, or
+    whose world gives no dimension (a simulation alone), is never a gap,
+    since authoring failures have findings of their own. `shots` counts the
+    script's shots and `unmapped_shots` those naming a treatment the library
+    does not hold. With no reach usage it is not measured and holds no row.
+    Pure; nothing here judges or fails the film."""
+    from .core import _key
+    from .styles import dimension_of
+    styles = styles if isinstance(styles, dict) else {}
+    declared = declared_dimensions(script)
+    rows_all = [r for _, _, rows in declared for r in rows]
+    total = len(rows_all)
+    unmapped = sum(1 for r in rows_all if r["style"] and r["dim"] == "unknown")
+    realised = realised_dimensions(vfx_doc)
+    out = {"measured": realised is not None,
+           "reason": "" if realised is not None else "not measured",
+           "sections": [], "film": [], "unmapped_shots": unmapped, "shots": total}
+    if realised is None:
+        return out
+    by_key = {_key(h): row for h, row in realised.items() if isinstance(row, dict)}
+    for n, heading, rows in declared:
+        got = by_key.get(_key(heading)) or {}
+        dims = set(got.get("dims") or [])
+        if not dims:
+            continue
+        flat = [r for r in rows if r["dim"] in ("2.5d", "3d") and not _realises(r["dim"], dims)]
+        if not flat:
+            continue
+        said = [d for d in DIMENSION_ORDER if any(r["dim"] == d for r in flat)]
+        out["sections"].append({
+            "n": n, "section": heading, "declared": " and ".join(reversed(said)),
+            "realised": [d for d in DIMENSION_ORDER if d in dims],
+            "shots": [r["label"] for r in flat],
+            "styles": list(dict.fromkeys(r["style"] for r in flat)),
+            "evidence": list(got.get("evidence") or [])})
+    ranked = styles.get("styles")
+    primary = ranked[0] if isinstance(ranked, list) and ranked else {}
+    name = str(primary.get("name", "")) if isinstance(primary, dict) else ""
+    wanted = dimension_of(name) if name else "unknown"
+    if wanted in ("2.5d", "3d") and not any(
+            _realises(wanted, set(row.get("dims") or []))
+            for row in realised.values() if isinstance(row, dict)):
+        out["film"].append({"style": name, "dimension": wanted})
+    return out
 
 
 # --------------------------------------------------------------------------- #

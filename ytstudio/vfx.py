@@ -4725,7 +4725,7 @@ class VfxPlanner:
             ran.append(True)
             if not authored:
                 return {"usage": None, "report": None, "audit": None,
-                        "reason": nothing, "motion": motion_of({})}
+                        "dimensions": None, "reason": nothing, "motion": motion_of({})}
             texts = texts_of()
             usage = reach.usage_of(texts)
             # A phase is judged by the constructs of the world it lives in.
@@ -4737,7 +4737,15 @@ class VfxPlanner:
                 idea_block=self._idea_block(), direction_block=self._direction_block(),
                 mission=MISSION, effects=authored, usage=usage, rep=rep,
                 element_names=names), reach.REACH_SCHEMA)
-            return {"usage": usage, "report": rep, "audit": audit, "reason": "",
+            # Which of 2D, 2.5D and 3D each section's world uses (AUTO-154):
+            # measured from the usage, never asked; doctor sets it against
+            # what the shots declare.
+            return {"usage": usage, "report": rep, "audit": audit,
+                    "dimensions": reach.dimensions(usage, [
+                        dict(e, section=e.get("section") or s.get("section", ""))
+                        for s in effects for e in s["effects"]
+                        if authored_as(scene, e["id"])], scene),
+                    "reason": "",
                     "motion": motion_of(texts)}
         record = self._stage("14-reach", work)
         if not ran and reach.needs_motion(record):
@@ -5198,6 +5206,51 @@ def glance_line(glance: dict | None) -> str:
                if glance.get("static_processes") else ""))
 
 
+def dimension_lines(data: dict, root: Path) -> list[str]:
+    """vfx.md's "## Dimensions" (AUTO-154): per section, what its shots
+    declare (script.json `style` beside it, through styles.dimension_of),
+    which of 2D, 2.5D and 3D its world realises, and the keys that decided
+    it; a section flatter than its shots declare is marked as a gap, as
+    `yt doctor` warns of it. Nothing without a reach usage to measure."""
+    realised = reach.realised_dimensions(data)
+    if not realised:
+        return []
+    script = read_json(Path(root) / "script.json", warn=False)
+    styles = read_json(Path(root) / "styles.json", warn=False)
+    script = script if isinstance(script, dict) else None
+    gap = reach.dimension_gap(styles or {}, script or {}, data) if script else None
+    gaps = {_key(r["section"]): r for r in (gap or {}).get("sections") or []}
+    declared = {_key(h): sorted({r["dim"] for r in rows if r["dim"] != "unknown"},
+                                key=_dimension_rank)
+                for _, h, rows in reach.declared_dimensions(script)}
+    out = ["## Dimensions", "",
+           "*Which of 2D, 2.5D and 3D each section's world is authored in, measured from "
+           "its XML; declared is what its shots' treatments are (script.json `style`). "
+           "Flat is allowed: a gap is a world flatter than its own shots declare.*", "",
+           "| section | declared | realised | evidence |", "|---|---|---|---|"]
+    for heading, row in realised.items():
+        if not isinstance(row, dict):
+            continue
+        said = declared.get(_key(heading))
+        found = gaps.get(_key(heading))
+        out.append(f"| {heading} | {', '.join(said) if said else '—'} | "
+                   f"{', '.join(row.get('dims') or []) or 'none measured'}"
+                   + (f" · **gap**: shots {', '.join(found['shots'])} are {found['declared']}"
+                      if found else "")
+                   + f" | {', '.join(row.get('evidence') or []) or '—'} |")
+    for film in (gap or {}).get("film") or []:
+        out += ["", f"*The primary treatment {film['style']} is {film['dimension']} and no "
+                    "section realises it.*"]
+    return out + [""]
+
+
+def _dimension_rank(dim: str) -> int:
+    """Where a dimension sorts in vfx.md: flattest first, filmed and the
+    rest after."""
+    order = ("2d", "2.5d", "3d", "footage", "any")
+    return order.index(dim) if dim in order else len(order)
+
+
 def write_vfx(dossier: Dossier, data: dict) -> list[Path]:
     style, totals, plan = data["style"], data["totals"], data["plan"]
     idea = data["idea"]
@@ -5263,6 +5316,7 @@ def write_vfx(dossier: Dossier, data: dict) -> list[Path]:
         md.append("")
     elif (data.get("reach") or {}).get("reason"):
         md += ["## Reach", "", f"*{data['reach']['reason']}*", ""]
+    md += dimension_lines(data, dossier.dir)
     md += ["## The look", "", style.get("look", ""), ""]
     md += ["### Tokens", "", "| token | hex |", "|---|---|"]
     md += [f"| `var(--{k})` | `{v}` |" for k, v in data.get("tokens", {}).items()]
