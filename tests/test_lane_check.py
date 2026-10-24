@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from ytstudio import doctor, lane  # noqa: E402
+from ytstudio import doctor, lane, workspace  # noqa: E402
 from ytstudio.core import write_json  # noqa: E402
 
 
@@ -111,6 +111,27 @@ class LaneCheckTest(unittest.TestCase):
     def test_reviewed_sections_with_a_continuity_warning_are_done(self):
         self.vfx([{"n": 1, "findings": ["warning: soft"], "review": {"score": 8}}],
                  continuity={"one_film": False, "score": 4, "breaks": []})
+        ok, why = self.check("vfx")
+        self.assertTrue(ok, why)
+
+    def test_vfx_stage_is_not_failed_by_continuity_or_under_bar(self):
+        # AUTO-153: a blocking break (from a reviewer of another family, so QA
+        # blocks on it) and a section under its bar are doctor warns; the lane
+        # is never stuck on a model's judgement.
+        self.vfx([{"n": 1, "section": "Open", "findings": [], "review": {"score": 5},
+                   "score": 5, "bar": 7.0, "stopped": "budget"},
+                  {"n": 2, "section": "Later", "findings": [], "review": {"score": 8},
+                   "score": 8, "bar": 7.0}],
+                 continuity={"one_film": False, "score": 3, "summary": "s", "monotony": [],
+                             "reviewer": {"model": "opus", "author": "sonnet",
+                                          "engine": "claude"},
+                             "breaks": [{"sections": ["Open", "Later"],
+                                         "owner_section": "Later", "problem": "doubles",
+                                         "fix": "f", "severity": "blocking"}]})
+        report = doctor.check_project(workspace.Project(self.root))
+        warns = [f.message for f in report.findings if f.area == "vfx" and f.level == "warn"]
+        self.assertTrue(any("under its bar" in m for m in warns), warns)
+        self.assertTrue(any(m.startswith("continuity: section 2") for m in warns), warns)
         ok, why = self.check("vfx")
         self.assertTrue(ok, why)
 

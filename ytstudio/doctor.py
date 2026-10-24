@@ -678,6 +678,14 @@ def scene_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
+#: Why a vfx section ended where it did, by its record's `stopped` (set in
+#: VfxPlanner's revision loop), in the words of doctor's under-bar warn.
+STOPPED_WHY = {"budget": "budget spent", "same": "revision did not change it",
+               "worse": "revision scored worse", "finish": "finish asked",
+               "infra": "host lost the round", "unreviewed": "round not reviewed",
+               "host": "host lost twice"}
+
+
 def _cmd(stage: str, project: workspace.Project, *extra: str) -> str:
     return " ".join(["yt", stage, "--project", str(project.root), *extra])
 
@@ -1315,15 +1323,50 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
             level = "warn" if "not buildable" in plan["verdict"].lower() else "note"
             report.add(level, "vfx", f"plan: {_clip(plan['verdict'])}")
         # Sections are reviewed alone; this is the review of them together.
+        # Each serious break is one warn under the section that should change
+        # (AUTO-153), routed by its `--sections N` so `yt improve` re-authors
+        # that section alone. A blocking break from a reviewer of another
+        # family also keeps QA off READY (qa.vfx_blockers); here every level
+        # stays a warn or a note, so the lane never waits on a model's verdict.
+        from . import vfx as vfx_stage
         cont = vfx.get("continuity") or {}
+        cont = cont if isinstance(cont, dict) else {}
+        authored = [r for r in vfx.get("authored") or [] if isinstance(r, dict)]
         breaks = [b for b in cont.get("breaks") or [] if isinstance(b, dict)]
         serious = [b for b in breaks if b.get("severity") in ("blocking", "major")]
-        if cont.get("one_film") is False or serious:
+        if cont.get("skipped") or cont.get("error"):
+            report.add("note", "vfx", "continuity was not judged: "
+                       f"{_clip(str(cont.get('skipped') or cont.get('error')), 240)}")
+        by_owner: dict = {}
+        for b in serious:
+            owner = str(b.get("owner_section") or "?")
+            n = vfx_stage.owner_section_n(owner, authored)
+            by_owner.setdefault(n if n is not None else owner, []).append(b)
+        who = cont.get("reviewer")
+        model = str(who.get("model") or "") if isinstance(who, dict) else ""
+        apart = vfx_stage.judged_apart(cont)
+        for key, rows in by_owner.items():
+            if isinstance(key, int):
+                heading = next((str(r.get("section") or "") for r in authored
+                                if r.get("n") == key), "")
+                where, fix = (f"section {key} ({heading})",
+                              _cmd("vfx", project, "--sections", str(key)))
+            else:
+                where, fix = key, _cmd("vfx", project)
+            blocking = any(b.get("severity") == "blocking" for b in rows)
+            problems = "; ".join(str(b.get("problem", "")) for b in rows)
+            report.add("warn", "vfx", f"continuity: {where}: {_clip(problems, 240)} "
+                       f"[{'blocking' if blocking else 'major'}; reviewer "
+                       f"{model or 'not recorded'}]"
+                       + (" (not blocking QA: no reviewer of another family recorded)"
+                          if blocking and not apart else ""), fix)
+        if cont.get("one_film") is False and not serious:
             shown = "; ".join(f"{b.get('owner_section', '?')}: {b.get('problem', '')}"
-                              for b in (serious or breaks)[:3])
+                              for b in breaks[:3])
             report.add("warn", "vfx", f"the sections do not read as one film "
-                       f"({cont.get('score', '?')}/10): {_clip(shown, 240)}",
-                       "re-author the section(s) named; vfx.json `continuity` has each fix")
+                       f"({cont.get('score', '?')}/10)" + (f": {_clip(shown, 240)}"
+                                                          if shown else ""),
+                       _cmd("vfx", project))
         # AUTO-143: the opposite fault, a film that never leaves one set. A
         # reviewer's warning, never a bar: staying is an editorial choice.
         for run in [m for m in cont.get("monotony") or [] if isinstance(m, dict)][:3]:
@@ -1338,9 +1381,24 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
         # inputs (`inherited`); nothing re-reviews it but authoring it again.
         # The approved look (`look`) was never scored: it lost no review, and
         # re-authoring it is the operator's call, so it is a note.
+        # A section ended under its bar (AUTO-153): `yt vfx` keeps the best
+        # reviewed round when revisions, budget or host run out, and never
+        # stops the film on it, so this is a warn naming why it stopped.
+        bar_default = (vfx.get("authoring") or {}).get("author_bar")
         for rec in vfx.get("authored") or []:
             if not isinstance(rec, dict) or rec.get("n") is None:
                 continue
+            score = rec.get("score")
+            bar = next((b for b in (rec.get("bar"), bar_default, 7.0)
+                        if isinstance(b, (int, float)) and not isinstance(b, bool)))
+            if (isinstance(score, (int, float)) and not isinstance(score, bool)
+                    and score < bar and not rec.get("look") and not rec.get("inherited")
+                    and rec.get("reviewed") is not False):
+                stopped = rec.get("stopped")
+                why = STOPPED_WHY.get(str(stopped), str(stopped)) if stopped else "revisions used"
+                report.add("warn", "vfx", f"section {rec['n']} ended at {score:g}/10, under "
+                           f"its bar {bar:g} ({why})",
+                           _cmd("vfx", project, "--sections", str(rec["n"])))
             if not (rec.get("reviewed") is False or rec.get("inherited")):
                 continue
             was = (rec.get("inherited") or {}).get("score")

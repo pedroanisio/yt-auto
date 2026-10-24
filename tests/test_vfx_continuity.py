@@ -167,6 +167,83 @@ class Continuity(ContinuityCase):
         self.assertIn("usage", out)
 
 
+class ReviewerRecord(ContinuityCase):
+    """AUTO-153: the continuity verdict says who gave it, so QA can tell a
+    reviewer of another family (whose blocking break blocks) from the
+    author's own model or an unrecorded one (whose never does)."""
+
+    def test_continuity_is_reviewed_by_the_reviewer_model(self):
+        authored = self.author()
+        world.FakeEngine.reviews = [dict(BREAK)]
+        made = []
+        real = harness.Harness
+
+        def record(*args, **kwargs):
+            made.append(kwargs)
+            return real(*args, **kwargs)
+        with patch.object(vfx.harness, "Harness", record):
+            self.planner.continuity(authored)
+        self.assertEqual([m["model"] for m in made], [self.planner.reviewer_model])
+        self.assertNotEqual(made[0]["model"], self.planner.model)
+
+    def test_continuity_records_reviewer_author_and_engine(self):
+        expect = {"model": self.planner.reviewer_model, "author": "sonnet",
+                  "engine": harness.ENGINE_NAME}
+        authored = self.author()
+        world.FakeEngine.reviews = [dict(BREAK)]
+        self.assertEqual(self.planner.continuity(authored)["reviewer"], expect)
+        # an answer without monotony fails its form: the error form says who too
+        self.planner.fresh = True
+        world.FakeEngine.reviews = [{k: v for k, v in BREAK.items() if k != "monotony"}]
+        failed = self.planner.continuity(authored)
+        self.assertIn("error", failed)
+        self.assertEqual(failed["reviewer"], expect)
+        skipped = self.planner.continuity(authored[:1])
+        self.assertIn("skipped", skipped)
+        self.assertEqual(skipped["reviewer"], expect)
+
+    def test_authored_record_keeps_its_bar(self):
+        self.planner.author_bar = 6.5
+        first = self.author()
+        self.assertEqual([r["bar"] for r in first], [6.5, 6.5])
+        # carried into a --sections run, a record keeps the bar it was reviewed against
+        idea = Idea(title="T", genre="g", description="d")
+        bundle = {"idea": idea, "outline": {}, "claims": [], "assets": [], "premise": ""}
+        self.planner = vfx.VfxPlanner(
+            bundle, Dossier(self.root, idea, at=self.root), self.ws, model="sonnet",
+            sections=self.sections, revisions=0, author_bar=9.0, verbose=False,
+            sections_only={2})
+        again = {r["n"]: r for r in self.author()}
+        self.assertEqual(again[1]["carried_from"], "v01")
+        self.assertEqual(again[1]["bar"], 6.5)
+        self.assertEqual(again[2]["bar"], 9.0)
+
+
+class OwnerSection(unittest.TestCase):
+    """The continuity review names a section by its heading (the frames it
+    judged are labelled so); the join to its number is shared by QA and
+    doctor."""
+
+    AUTHORED = [{"n": 1, "section": "Open"}, {"n": 2, "section": "The Pressure  Builds"},
+                {"n": 3, "section": "Twice"}, {"n": 4, "section": "twice"}]
+
+    def test_owner_section_joins_by_heading_exact_then_folded(self):
+        self.assertEqual(vfx.owner_section_n("Open", self.AUTHORED), 1)
+        self.assertEqual(vfx.owner_section_n(" the pressure builds\n", self.AUTHORED), 2)
+        # an exact match wins over a folded one that is ambiguous
+        self.assertEqual(vfx.owner_section_n("Twice", self.AUTHORED), 3)
+        self.assertEqual(vfx.owner_section_n("twice", self.AUTHORED), 4)
+
+    def test_owner_section_with_no_match_gives_none(self):
+        self.assertIsNone(vfx.owner_section_n("Elsewhere", self.AUTHORED))
+        self.assertIsNone(vfx.owner_section_n("TWICE", self.AUTHORED))     # ambiguous
+        self.assertIsNone(vfx.owner_section_n("Open", [{"n": 1, "section": "Open"},
+                                                       {"n": 5, "section": "Open"}]))
+        self.assertIsNone(vfx.owner_section_n("", self.AUTHORED))
+        self.assertIsNone(vfx.owner_section_n("Open", []))
+        self.assertIsNone(vfx.owner_section_n("Open", [{"section": "Open"}, "x"]))
+
+
 class Monotony(ContinuityCase):
     """AUTO-143: the continuity review also names a film that stays in one
     place, sees one frame per world, and is the reviewer's model, never the
@@ -270,20 +347,120 @@ class DoctorReadsContinuity(unittest.TestCase):
             write_json(root / "vfx.json", {"totals": {}, "plan": {}, "continuity": BREAK})
             report = doctor.check_project(workspace.Project(root))
             warns = [f for f in report.findings
-                     if f.area == "vfx" and f.level == "warn" and "one film" in f.message]
+                     if f.area == "vfx" and f.level == "warn" and "continuity" in f.message]
             self.assertEqual(len(warns), 1)
             self.assertIn("Later", warns[0].message)
             self.assertIn("twice the size", warns[0].message)
 
-    def report(self, continuity):
+    def report(self, continuity, authored=None):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "a-film"
             root.mkdir()
             write_json(root / "idea.json", {"title": "A film", "genre": "g",
                                             "description": "d"})
             write_json(root / "vfx.json", {"totals": {}, "plan": {},
-                                           "continuity": continuity})
+                                           "continuity": continuity,
+                                           **({"authored": authored} if authored else {})})
+            self.root = str(root)
             return doctor.check_project(workspace.Project(root))
+
+    # -- AUTO-153: one row per serious break's section, routed to it ------------
+
+    AUTHORED = [{"n": 1, "section": "Open", "score": 8, "bar": 7, "review": {}},
+                {"n": 2, "section": "Later", "score": 8, "bar": 7, "review": {}}]
+    REVIEWER = {"model": "opus", "author": "sonnet", "engine": "claude"}
+
+    def breaks(self, *rows, reviewer=REVIEWER, one_film=False):
+        out = {"one_film": one_film, "score": 4, "summary": "two films", "monotony": [],
+               "breaks": [{"sections": ["Open", "Later"], "owner_section": owner,
+                           "problem": problem, "fix": "fix it", "severity": severity}
+                          for owner, problem, severity in rows]}
+        return dict(out, reviewer=reviewer) if reviewer is not None else out
+
+    def continuity_rows(self, report):
+        return [f for f in report.findings if f.area == "vfx"
+                and (f.message.startswith("continuity") or "one film" in f.message)]
+
+    def test_each_serious_break_is_one_warn_with_its_sections_fix(self):
+        report = self.report(self.breaks(("Later", "the hero doubles", "blocking"),
+                                         ("Open", "the grade turns green", "major"),
+                                         ("Open", "a tick mark moves", "minor")),
+                             self.AUTHORED)
+        rows = self.continuity_rows(report)
+        self.assertEqual([(r.level, r.message, r.fix) for r in rows], [
+            ("warn", "continuity: section 2 (Later): the hero doubles [blocking; reviewer opus]",
+             f"yt vfx --project {self.root} --sections 2"),
+            ("warn", "continuity: section 1 (Open): the grade turns green [major; reviewer opus]",
+             f"yt vfx --project {self.root} --sections 1")])
+
+    def test_two_breaks_owned_by_one_section_are_one_row(self):
+        report = self.report(self.breaks(("Later", "the hero doubles", "major"),
+                                         ("  later ", "the light flips", "blocking")),
+                             self.AUTHORED)
+        rows = self.continuity_rows(report)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].message, "continuity: section 2 (Later): the hero doubles; "
+                         "the light flips [blocking; reviewer opus]")
+        self.assertTrue(rows[0].fix.endswith("--sections 2"))
+
+    def test_unmatched_owner_gives_a_plain_vfx_fix(self):
+        report = self.report(self.breaks(("Elsewhere", "the hero doubles", "major")),
+                             self.AUTHORED)
+        rows = self.continuity_rows(report)
+        self.assertEqual([(r.message, r.fix) for r in rows], [
+            ("continuity: Elsewhere: the hero doubles [major; reviewer opus]",
+             f"yt vfx --project {self.root}")])
+
+    def test_one_film_false_with_no_serious_break_is_one_plain_warn(self):
+        report = self.report(self.breaks(("Later", "a tick mark moves", "minor")),
+                             self.AUTHORED)
+        rows = self.continuity_rows(report)
+        self.assertEqual(len(rows), 1)
+        self.assertIn("do not read as one film (4/10)", rows[0].message)
+        self.assertIn("a tick mark moves", rows[0].message)
+        self.assertEqual(rows[0].fix, f"yt vfx --project {self.root}")
+
+    def test_same_family_blocking_break_says_it_does_not_block_qa(self):
+        note = " (not blocking QA: no reviewer of another family recorded)"
+        for reviewer in ({"model": "opus[1m]", "author": "opus", "engine": "claude"}, None):
+            with self.subTest(reviewer=reviewer):
+                report = self.report(self.breaks(("Later", "the hero doubles", "blocking"),
+                                                 reviewer=reviewer), self.AUTHORED)
+                rows = self.continuity_rows(report)
+                self.assertEqual(len(rows), 1)
+                self.assertTrue(rows[0].message.endswith("]" + note), rows[0].message)
+        # a reviewer of another family: QA blocks, so the row says nothing of it
+        report = self.report(self.breaks(("Later", "the hero doubles", "blocking")),
+                             self.AUTHORED)
+        self.assertNotIn("not blocking QA", self.continuity_rows(report)[0].message)
+        # a major break never blocks QA, so it never says it does not
+        report = self.report(self.breaks(("Later", "the hero doubles", "major"),
+                                         reviewer=None), self.AUTHORED)
+        row = self.continuity_rows(report)[0]
+        self.assertNotIn("not blocking QA", row.message)
+        self.assertIn("reviewer not recorded", row.message)
+
+    def test_skipped_and_error_continuity_are_a_note(self):
+        for key, text in (("skipped", "fewer than two sections have proof frames"),
+                          ("error", "the reviewer timed out")):
+            with self.subTest(key=key):
+                report = self.report({key: text, "frames": [], "breaks": []}, self.AUTHORED)
+                rows = [f for f in report.findings if f.area == "vfx"
+                        and "continuity" in f.message]
+                self.assertEqual([(r.level, r.message) for r in rows],
+                                 [("note", f"continuity was not judged: {text}")])
+
+    def test_no_continuity_row_is_a_fail(self):
+        cases = [self.breaks(("Later", "x", "blocking")),
+                 self.breaks(("Later", "x", "blocking"), reviewer=None),
+                 self.breaks(("Elsewhere", "x", "major")),
+                 self.breaks(("Later", "x", "minor")),
+                 {"error": "boom", "breaks": []}, {"skipped": "one", "breaks": []}]
+        for continuity in cases:
+            with self.subTest(continuity=continuity):
+                report = self.report(continuity, self.AUTHORED)
+                self.assertFalse([f for f in report.findings
+                                  if f.area == "vfx" and f.level == "fail"])
 
     def test_a_film_that_stays_in_one_setting_is_one_warning_naming_the_sections(self):
         one = {"one_film": True, "score": 8, "breaks": [], "summary": "one film",
