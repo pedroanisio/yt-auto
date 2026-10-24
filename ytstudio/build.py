@@ -1055,6 +1055,34 @@ def anchor_time(cue: dict, placed: list[Placed], voice: dict | None) -> tuple[fl
     return at, status
 
 
+#: Printed by `yt build` for a cue sheet spotted before anchors existed.
+NO_ANCHORS = ("cue sheet has no anchors: cues will not follow a redone voice "
+              "(re-spot with yt sound --fresh)")
+#: The sheet rules a re-anchored placement can newly break.
+REANCHOR_RULES = ("rule:overlap", "rule:clock")
+
+
+def reanchored_rules(timed: list[tuple[dict, float]], runtime: float) -> list[str]:
+    """Warnings for what re-anchoring broke: sound.rule_findings run on the
+    cues at the times the mix placed them, against the built runtime, less
+    what the same rules already said of the sheet's own times (the sound
+    stage reported those). Only REANCHOR_RULES: the rest do not depend on
+    where a cue sits."""
+    from . import sound
+    sheet, moved = [], []
+    for raw, at in timed:
+        cue = sound.Cue.from_raw(raw)
+        sheet.append(cue)
+        copy = sound.Cue.from_raw(raw)
+        copy.at = at
+        moved.append(copy)
+    before = {(f["cue"], f["rule"]) for f in sound.rule_findings(sheet, runtime)}
+    return [f"warning: cue {f['cue']} after re-anchoring to its word: {f['problem']}; "
+            f"{f['fix']}"
+            for f in sound.rule_findings(moved, runtime)
+            if f["rule"] in REANCHOR_RULES and (f["cue"], f["rule"]) not in before]
+
+
 # --------------------------------------------------------------------------- #
 # the document
 # --------------------------------------------------------------------------- #
@@ -1444,6 +1472,15 @@ class SceneBuilder:
             routed.append([NARRATION_BUS, track, 0.0, "narration", p.seconds, p.label])
             report["narration"] += 1
 
+        # A cue spotted on a spoken word (sound.anchor_cues) is placed where
+        # that word is now said, so a redone take carries its cues with it;
+        # a sheet spotted before anchors places on its own seconds.
+        anchored = any(isinstance(c.get("anchor"), dict) and c.get("anchor")
+                       for c in self.cues)
+        if self.cues and not anchored:
+            self._say(NO_ANCHORS)
+        anchors: list[dict] = []
+        timed: list[tuple[dict, float]] = []
         designed = 0
         for n, cue in enumerate(self.cues, 1):
             kind = str(cue.get("kind") or "").lower()
@@ -1456,6 +1493,18 @@ class SceneBuilder:
             except (TypeError, ValueError):
                 findings.append(f"warning: cue {cue_id} has no usable time; left out")
                 continue
+            anchor = cue.get("anchor")
+            if isinstance(anchor, dict) and anchor:
+                sheet_at = at
+                at, status, why = resolve_anchor(cue, placed, self.voice)
+                anchors.append({"cue": cue_id, "sheet_at": round(sheet_at, 3),
+                                "placed_at": at, "anchor": anchor, "status": status})
+                if status == "lost":
+                    findings.append(
+                        f"warning: cue {cue_id}'s anchor (shot {anchor.get('shot')}, "
+                        f"word {anchor.get('word')} {anchor.get('text', '')!r}) was lost: "
+                        f"{why}; it is placed at its sheet time, {sheet_at:g}s")
+            timed.append((cue, at))
             if kind == "silence":
                 if seconds > 0 and at < duration:
                     windows.append((round(at, 3), round(min(duration, at + seconds), 3)))
@@ -1542,6 +1591,10 @@ class SceneBuilder:
                                 f"words only ({said[:60]!r}); it is mixed at 0 dB "
                                 "trim")
             routed.append([bus, track, (level or 0.0) + trim, kind, window, cue_id])
+
+        if anchored:
+            report["anchors"] = anchors
+            findings.extend(reanchored_rules(timed, duration))
 
         # Transients first: the limiter runs after normalisation, so a hit
         # far above the bed is limited after the lift and the programme loses
@@ -2203,6 +2256,9 @@ class SceneBuilder:
             "audio_missing": sound["missing"],
             "audio_staging": sound["staging"],
             "silence_windows": sound["silence"],
+            # Where each anchored cue was placed and whether its word moved;
+            # only for a sheet with anchors, so an older one reads as before.
+            **({"cue_anchors": sound["anchors"]} if "anchors" in sound else {}),
             "cues": cues,
             "markers": {"sections": len(self.sections), "beats": len(placed)},
             # The timings here are the measured ones, so this reading check
@@ -2410,6 +2466,14 @@ def print_build(manifest: dict) -> None:
         print(f"  proof frames: {len(proof['worlds'])} world(s) {proof['status']}"
               + (f", mismatched: {', '.join(proof['mismatched'])}"
                  if proof.get("mismatched") else ""))
+    if manifest.get("cue_anchors"):
+        rows = manifest["cue_anchors"]
+
+        def named(status: str) -> str:
+            ids = [r["cue"] for r in rows if r["status"] == status]
+            return f"{len(ids)} {status}" + (f" ({', '.join(ids[:12])})" if ids else "")
+        print(f"  cue anchors: {named('moved')}, {named('lost')}, "
+              f"{sum(1 for r in rows if r['status'] == 'kept')} kept")
     if manifest.get("audio_missing"):
         rows = manifest["audio_missing"]
         print(f"\n  {len(rows)} cue(s) with no file to place:")

@@ -6,6 +6,8 @@ so an attribute the schema does not have fails the test rather than the
 engine.
 """
 
+import contextlib
+import io
 import math
 import struct
 import tempfile
@@ -414,3 +416,171 @@ class MeasuredCrest(unittest.TestCase):
 
     def test_headroom_takes_the_crest_it_is_given(self):
         self.assertEqual(build.transient_headroom(-14.0, -1.0, crest=9.0), 4.0)
+
+
+# --------------------------------------------------------------------------- #
+# cue anchors (AUTO-140): a cue follows the spoken word it was spotted on
+# --------------------------------------------------------------------------- #
+
+def _w(*pairs):
+    return [{"text": t, "start": s, "end": round(s + 0.3, 3)} for t, s in pairs]
+
+
+def _take(label, at, seconds, text, words, file=None):
+    return {"label": label, "at": at, "seconds": seconds, "text": text,
+            "file": file or f"{label.replace('.', '-')}.wav", "words": words}
+
+
+def _voice_v1():
+    return {"lang": "en", "takes": [
+        _take("1.1", 0, 4, "Hello there", _w(("Hello", 0.0), ("there", 0.5))),
+        _take("1.2", 4, 3, "and it turns", _w(("and", 0.0), ("it", 0.4), ("turns", 0.9))),
+        _take("2.1", 7, 3, "the end of the line",
+              _w(("the", 0.0), ("end", 0.4), ("of", 0.8), ("the", 1.1), ("line", 1.5)))]}
+
+
+class Anchors(_Project):
+    def setUp(self):
+        super().setUp()
+        self.vfx = {"scene": {"by_label": {
+            label: {"file": "vfx/open.scene.xml", "symbol": "fx-all"}
+            for label in ("1.1", "1.2", "2.1")}}}
+        _wav(self.root / "sound" / "hit.wav", 1)
+        _wav(self.root / "sound" / "bed.wav", 14)
+        for name in ("1-1", "1-2", "2-1"):
+            _wav(self.root / "voice" / f"{name}.wav", 1)
+
+    def sheet(self, *cues, voice=None, sections=None):
+        """The cues as a fresh `yt sound` writes them: anchored on voice v1."""
+        from ytstudio import sound
+        voice = voice or _voice_v1()
+        cues = [dict(c) for c in cues]
+        sound.anchor_cues(cues, build.timeline(sections or _sections(), voice), voice)
+        return {"runtime": 10, "cues": cues}
+
+    def hit(self, cue_id, at, seconds=1, **kw):
+        return {"cue_id": cue_id, "kind": "sfx", "at": at, "seconds": seconds,
+                "level": "-20 dBFS", "description": cue_id, "file": "sound/hit.wav", **kw}
+
+    def build_with(self, voice, sound, sections=None, verbose=False):
+        builder = build.SceneBuilder(_idea(), sections or _sections(), self.root,
+                                     vfx=self.vfx, voice=voice, sound=sound,
+                                     verbose=verbose)
+        return builder.build()
+
+    def rows(self, manifest):
+        return {r["cue"]: r for r in manifest["cue_anchors"]}
+
+    def start(self, data, cue_id):
+        return _checked(data).find(f"audioMix/audioTrack[@id='cue-{cue_id}']").get("start")
+
+    def test_a_cue_follows_its_word_when_an_earlier_take_is_redone_longer(self):
+        sheet = self.sheet(self.hit("S1", 5))
+        self.assertEqual(sheet["cues"][0]["anchor"]["text"], "turns")
+        self.assertEqual(sheet["cues"][0]["anchor"]["word"], 2)
+        voice = _voice_v1()
+        # 1.1 re-recorded 2.4 s longer: 1.2 and everything after start later
+        voice["takes"][0].update(seconds=6.4, words=_w(("Hello", 0.0), ("there", 2.9)))
+        voice["takes"][1]["at"] = 6.4
+        voice["takes"][2]["at"] = 9.4
+        data, manifest = self.build_with(voice, sheet)
+        row = self.rows(manifest)["S1"]
+        self.assertEqual((row["sheet_at"], row["placed_at"], row["status"]),
+                         (5.0, 7.4, "moved"))
+        self.assertEqual(row["anchor"], sheet["cues"][0]["anchor"])
+        self.assertEqual(self.start(data, "S1"), "7.4")
+
+    def test_an_unchanged_voice_keeps_every_cue_where_the_sheet_put_it(self):
+        sheet = self.sheet(self.hit("S1", 5))
+        data, manifest = self.build_with(_voice_v1(), sheet)
+        self.assertEqual(self.rows(manifest)["S1"]["status"], "kept")
+        self.assertEqual(self.start(data, "S1"), "5")
+
+    def test_a_different_take_with_identical_timing_is_moved_not_kept(self):
+        sheet = self.sheet(self.hit("S1", 5))
+        voice = _voice_v1()
+        voice["takes"][1]["sha256"] = "f" * 64
+        _, manifest = self.build_with(voice, sheet)
+        row = self.rows(manifest)["S1"]
+        self.assertEqual((row["placed_at"], row["status"]), (5.0, "moved"))
+
+    def test_the_anchor_word_at_another_index_is_found_by_its_text(self):
+        sheet = self.sheet(self.hit("S1", 5))
+        voice = _voice_v1()
+        voice["takes"][1].update(text="so and it turns", words=_w(
+            ("so", 0.0), ("and", 0.3), ("it", 0.6), ("Turns,", 1.1)))
+        data, manifest = self.build_with(voice, sheet)
+        row = self.rows(manifest)["S1"]
+        self.assertEqual((row["placed_at"], row["status"]), (5.2, "moved"))
+        self.assertEqual(self.start(data, "S1"), "5.2")
+
+    def test_a_repeated_word_is_lost_as_ambiguous_never_guessed(self):
+        sheet = self.sheet(self.hit("X1", 7))
+        self.assertEqual((sheet["cues"][0]["anchor"]["word"],
+                          sheet["cues"][0]["anchor"]["text"]), (0, "the"))
+        voice = _voice_v1()
+        voice["takes"][2].update(text="so the end of the line", words=_w(
+            ("so", 0.0), ("the", 0.3), ("end", 0.6), ("of", 0.9), ("the", 1.2),
+            ("line", 1.6)))
+        data, manifest = self.build_with(voice, sheet)
+        row = self.rows(manifest)["X1"]
+        self.assertEqual((row["placed_at"], row["status"]), (7.0, "lost"))
+        self.assertEqual(self.start(data, "X1"), "7")
+        warned = [f for f in manifest["findings"] if "X1" in f and "anchor" in f]
+        self.assertTrue(warned and warned[0].startswith("warning:"), manifest["findings"])
+        self.assertIn("ambiguous", warned[0])
+        self.assertIn("7s", warned[0])
+
+    def test_a_removed_shot_is_lost_and_the_cue_keeps_its_sheet_time(self):
+        sheet = self.sheet(self.hit("S1", 5))
+        sections = _sections()
+        sections[0].shots = sections[0].shots[:1]
+        voice = _voice_v1()
+        del voice["takes"][1]
+        _, manifest = self.build_with(voice, sheet, sections=sections)
+        row = self.rows(manifest)["S1"]
+        self.assertEqual((row["placed_at"], row["status"]), (5.0, "lost"))
+        self.assertTrue(any(f.startswith("warning:") and "S1" in f and "1.2" in f
+                            for f in manifest["findings"]), manifest["findings"])
+
+    def test_an_overlap_made_by_re_anchoring_is_a_build_warning(self):
+        # S1 on 1.2's "turns", S2 on 2.1's first "the": apart on the sheet
+        sheet = self.sheet(self.hit("S1", 5), self.hit("S2", 7),
+                           {"cue_id": "A1", "kind": "ambience", "at": 0, "seconds": 10,
+                            "level": "-50 dBFS", "description": "room", "fade_out": 1,
+                            "file": "sound/bed.wav"})
+        voice = _voice_v1()
+        voice["takes"][1].update(at=6.4, seconds=0.6)   # 1.2 redone, later
+        _, manifest = self.build_with(voice, sheet)
+        rows = self.rows(manifest)
+        self.assertEqual((rows["S1"]["placed_at"], rows["S2"]["placed_at"]), (7.4, 7.0))
+        overlap = [f for f in manifest["findings"] if "rule:overlap" in f]
+        self.assertEqual(len(overlap), 1, manifest["findings"])
+        self.assertTrue(overlap[0].startswith("warning:"))
+        self.assertIn("S1", overlap[0])
+        self.assertFalse(any("rule:no-bed" in f for f in manifest["findings"]))
+
+    def test_a_sheet_without_anchors_places_as_before_and_says_so_once(self):
+        plain = {"runtime": 10, "cues": [self.hit("S1", 5)]}
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            data, manifest = self.build_with(_voice_v1(), plain, verbose=True)
+        self.assertNotIn("cue_anchors", manifest)
+        self.assertEqual(self.start(data, "S1"), "5")
+        line = ("cue sheet has no anchors: cues will not follow a redone voice "
+                "(re-spot with yt sound --fresh)")
+        self.assertEqual(err.getvalue().count(line), 1)
+        # the same cues anchored and kept build the same document
+        anchored, _ = self.build_with(_voice_v1(), self.sheet(self.hit("S1", 5)))
+        self.assertEqual(data, anchored)
+
+    def test_the_summary_names_the_moved_and_the_lost(self):
+        sheet = self.sheet(self.hit("S1", 5), self.hit("X1", 7))
+        voice = _voice_v1()
+        voice["takes"][1]["at"] = 4.5
+        voice["takes"][2].update(words=_w(("so", 0.0), ("the", 0.3), ("the", 1.2)))
+        _, manifest = self.build_with(voice, sheet)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            build.print_build(manifest)
+        self.assertIn("cue anchors: 1 moved (S1), 1 lost (X1)", out.getvalue())
