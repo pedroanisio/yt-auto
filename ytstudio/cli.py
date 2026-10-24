@@ -439,8 +439,16 @@ def _run_pipeline(args) -> int:
     idea, project = workspace.resolve(args)
     if getattr(args, "paper", None):
         # Planted before the first stage, so a later `yt run` finds it.
-        idea.paper = str(args.paper).strip()
+        idea.paper = research.paper_to_keep(args.paper)
         project.save_idea(idea)
+    elif idea.paper:
+        # Planted by an earlier run: research reads it either way, so it is
+        # handed on as the flag and the estimate prices its read and digest.
+        if why := research.paper_refusal():
+            print(f"error: {why}", file=sys.stderr)
+            return 2
+    if idea.paper:
+        args.paper = idea.paper
     parser = build_parser()
     base = ["--project", str(project.root), "--model", args.model]
     if args.effort:

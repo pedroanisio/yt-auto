@@ -19,6 +19,7 @@ import copy
 import hashlib
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -660,6 +661,31 @@ class Command(unittest.TestCase):
         self.assertEqual(seen["paper"], ARXIV)
         self.assertEqual(seen["idea.json"]["paper"], ARXIV)
 
+    def test_a_relative_local_paper_is_kept_by_its_absolute_path(self):
+        # idea.json is local and may hold the path; kept as typed, a later
+        # run from another folder would not find the file.
+        seen = {}
+
+        class Stop(research.Researcher):
+            def run(self):
+                seen["idea.json"] = json.loads((self.dossier.dir / "idea.json").read_text())
+                raise ClaudeError("stopped by the test")
+        folder = Path(self._tmp.name) / "papers"
+        folder.mkdir()
+        (folder / "paper.pdf").write_bytes(b"%PDF")
+        elsewhere = Path(self._tmp.name) / "elsewhere"
+        elsewhere.mkdir()
+        here = os.getcwd()
+        self.addCleanup(os.chdir, here)
+        os.chdir(folder)
+        with mock.patch.object(research, "Researcher", Stop):
+            self.yt("research", "--project", str(self.root), "--title", "Attention",
+                    "--paper", "paper.pdf", "--quiet")
+        kept = seen["idea.json"]["paper"]
+        self.assertEqual(Path(kept), (folder / "paper.pdf").resolve())
+        os.chdir(elsewhere)
+        self.assertTrue(research._local_paper(kept).resolve().is_file())
+
     def test_under_codex_research_refuses_the_paper_before_any_work(self):
         built = []
         with mock.patch.object(harness, "ENGINE_NAME", "codex"), \
@@ -688,6 +714,37 @@ class RunPlants(_RunCase):
         self.run_yt("--paper", ARXIV, "--skip", "keyframe,vfx,sound,build,render")
         self.assertEqual(seen.get("paper"), ARXIV)
         self.assertEqual(self.seen["research"].paper, ARXIV)
+
+    def test_a_paper_already_in_idea_json_reaches_research_and_the_estimate(self):
+        (self.root / "idea.json").write_text(json.dumps(
+            {"title": "Attention", "genre": "explainer", "description": "d",
+             "paper": ARXIV}))
+        self.run_yt("--dry-run")
+        row = next(line for line in self.out.splitlines() if line.strip().startswith("research"))
+        self.assertIn("--paper", row)
+        self.run_yt("--skip", "keyframe,vfx,sound,build,render")
+        self.assertEqual(self.seen["research"].paper, ARXIV)
+
+    def test_under_codex_a_paper_already_in_idea_json_runs_nothing(self):
+        (self.root / "idea.json").write_text(json.dumps(
+            {"title": "Attention", "genre": "explainer", "description": "d",
+             "paper": ARXIV}))
+        with mock.patch.object(harness, "ENGINE_NAME", "codex"):
+            code = self.run_yt()
+        self.assertEqual(code, 2)
+        self.assertEqual(self.order, [])
+        self.assertIn("--paper needs the claude engine", self.err)
+
+    def test_yt_run_keeps_a_relative_local_paper_by_its_absolute_path(self):
+        folder = Path(self.tmp.name) / "papers"
+        folder.mkdir()
+        (folder / "paper.pdf").write_bytes(b"%PDF")
+        here = os.getcwd()
+        self.addCleanup(os.chdir, here)
+        os.chdir(folder)
+        self.run_yt("--paper", "paper.pdf", "--skip", "keyframe,vfx,sound,build,render")
+        kept = json.loads((self.root / "idea.json").read_text())["paper"]
+        self.assertEqual(Path(kept), (folder / "paper.pdf").resolve())
 
     def test_under_codex_yt_run_paper_runs_nothing(self):
         with mock.patch.object(harness, "ENGINE_NAME", "codex"):

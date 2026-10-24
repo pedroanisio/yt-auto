@@ -36,14 +36,15 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, wait
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from pathlib import Path
 from urllib.parse import urlparse
 
 from claude_engine import ClaudeEngine, ClaudeError, EngineConfig, Usage
 from . import assets as yt_assets
 from . import flags, harness, spend, workspace
-from .core import Idea, _merge_usage, slugify, write_json
+from .core import (PAPER_ARXIV, PAPER_DOI, PAPER_HTTP, Idea, _merge_usage,
+                   paper_is_local, slugify, write_json)
 
 RESEARCHER_SYSTEM = (
     "You are a documentary researcher for a science and engineering YouTube "
@@ -223,19 +224,24 @@ def claim_key(text: object) -> str:
     return " ".join(str(text).lower().split())[:120]
 
 
-_DOI = re.compile(r"^(?:doi:\s*)?(10\.\d{4,9}/\S+)$", re.I)
-_ARXIV_ID = re.compile(
-    r"^(?:arxiv:\s*)?((?:\d{4}\.\d{4,5}|[a-z-]+(?:\.[a-z]{2})?/\d{7})(?:v\d+)?)$", re.I)
-_HTTP = re.compile(r"^https?://", re.I)
+_DOI, _ARXIV_ID, _HTTP = PAPER_DOI, PAPER_ARXIV, PAPER_HTTP
 
 
 def _local_paper(ref: str) -> Path | None:
     """The local file a paper reference names, or None for a URL, a DOI or
     an arXiv id."""
     ref = str(ref or "").strip()
-    if not ref or _HTTP.match(ref) or _DOI.match(ref) or _ARXIV_ID.match(ref):
-        return None
-    return Path(ref).expanduser()
+    return Path(ref).expanduser() if paper_is_local(ref) else None
+
+
+def paper_to_keep(ref: object) -> str:
+    """The reference as idea.json keeps it: as given, except a local file,
+    kept by its absolute path so a later run from another folder still
+    finds it. idea.json is local; the dossier names the file by its
+    basename only (paper_label)."""
+    ref = str(ref or "").strip()
+    local = _local_paper(ref)
+    return str(local.resolve()) if local is not None else ref
 
 
 def paper_url(ref: str) -> str:
@@ -2002,7 +2008,7 @@ def run(args) -> int:
         return 2
     if asked:
         # Kept on the idea, so a later stage, or `yt run`, finds it there.
-        idea.paper = asked
+        idea.paper = paper_to_keep(asked)
         project.save_idea(idea)
     dossier = Dossier(project.root, idea, at=project.root)
     verbose = not args.quiet
