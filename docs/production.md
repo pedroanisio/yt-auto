@@ -57,8 +57,8 @@ runtime:
 | 10 | Overall production | does it read as a documentary, or as a slideshow |
 
 Narrative clarity and editing / pacing are read against the narrative
-rubric's rows for the hook, the stakes, open loops, reveal setup and the
-ending, rendered into the reviewer's role from `ytstudio/narrative.py`
+rubric's rows for the hook, the stakes, open loops, reveal setup, tension
+and the ending, rendered into the reviewer's role from `ytstudio/narrative.py`
 (`qa.STORY_RUBRIC`), with the narration beside the frames in each pass
 (`narration.txt`, the voiced takes once there are any) and the
 screenplay's story as the writer's declaration. The explanation should need
@@ -112,7 +112,7 @@ All paths are relative to the project directory, `work/<slug>/`.
 
 | File | What production takes from it |
 |---|---|
-| `script.json` | The spine. Per shot: `visual`, `on_screen_text` (the words a viewer reads, one string each), `on_screen` (the animator's direction for them, not measured), `narration`, `style`, `source`, `seconds`, `label`, `section`, `function` (hook, context, setup, reveal, rehook, payoff, handoff) and `shows` (what the picture must demonstrate of the line). Per section: the questions it `opens` and `closes`, its `connective`, `rehook`, `escalation` and `anchor_visual`. For the film: `promise`, `payoff`, `train`, `stakes`, `viewer_stake`, `misconception`, `audience`, `reveal`, `questions` and `ending`. |
+| `script.json` | The spine. Per shot: `visual`, `on_screen_text` (the words a viewer reads, one string each), `on_screen` (the animator's direction for them, not measured), `narration`, `style`, `source`, `seconds`, `label`, `section`, `function` (hook, context, setup, reveal, rehook, payoff, handoff) and `shows` (what the picture must demonstrate of the line). Per section: the questions it `opens` and `closes`, its `connective`, `rehook`, `escalation` and `anchor_visual`. For the film: `promise`, `payoff`, `train`, `stakes`, `viewer_stake`, `misconception`, `audience`, `hook` (the opening's `trigger` and `gap`), `reveal`, `questions` and `ending`. |
 | `styles.json` | The design system: the primary treatment's `palette` and its semantic roles, `typography`, `motion`, planned `shots`, `combination`, and what was ruled out. |
 | `vfx.json` | The build plan. Per effect: `type`, `technique` (the drawing steps), `tools`, `seconds`, `difficulty`, `template` for shared rigs. Under `authoring`: the active `version` (`vfx/vNN/`), every version kept, the review rounds and scores per section, and the shot -> {file, symbol} map the build reads -- one world symbol per section, its shots as phases. Under `reach`: which constructs each symbol uses against everything the engine offers (`usage`, `report` by family, the manifest's caveats) and the model's audit -- per effect `strongest` or `upgrade` with the stronger construct named, and a 0-10 reach score. QA reads it, so "weak motion" can name the construct left unused. |
 | `props.json` | The CC0 props `yt props` fetched from Poly Haven under `props/<kind>/<id>/`: per item `kind`, `file`, `files`, `licence`, `credit`, `source_url`. The vfx brief lists them so the author places real models, HDRIs and textures. |
