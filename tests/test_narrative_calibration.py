@@ -954,6 +954,21 @@ class Docs(unittest.TestCase):
                       "a human `label`", flat)
         self.assertIn("gate on with N labelled verdicts (20 needed)", flat)
 
+    def test_the_manuals_last_two_faults_are_the_cold_read_cases(self):
+        # "The last two faults have no rubric criterion": the list must end
+        # with the two story-false cases, so a later case goes before them
+        skill = " ".join((ROOT / "ytstudio" / "SKILL.md").read_text(encoding="utf-8").split())
+        start = skill.index("one case per seeded fault (") + len("one case per seeded fault (")
+        faults = skill[start:skill.index("), each `expected.json`", start)].split(", ")
+        self.assertIn("The last two faults have no rubric criterion", skill)
+        self.assertEqual(faults[-2:], ["a script whose premise a cold reader could not "
+                                       "restate", "terms a lay audience is never given"])
+        self.assertIn("an analogy that maps a comet's tail onto its path", faults)
+        seeded = {n: load(p / "expected.json") for n, p in cases().items() if n != "good"}
+        self.assertEqual(len(faults), len(seeded))
+        self.assertEqual(sorted(n for n, e in seeded.items() if e.get("story") is False),
+                         ["jargon", "no-premise"])
+
     def test_the_corpus_readme_notes_the_condition_and_the_cost(self):
         readme = (ROOT / "docs" / "narrative" / "README.md").read_text(encoding="utf-8")
         item = readme[readme.index("3. **The narrative rubric.**"):
