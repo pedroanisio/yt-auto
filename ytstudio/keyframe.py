@@ -498,6 +498,11 @@ def direction_block(direction: dict | None) -> str:
         parts.append(line)
     if direction.get("combination"):
         parts.append(f"How they combine: {direction['combination']}")
+    # The film's identity (AUTO-146), when styles.json has one; without it the
+    # block is what it was, so no decision digest moves.
+    from .styles import identity_line
+    if line := identity_line(direction):
+        parts.append(line)
     return "\n".join(parts)
 
 

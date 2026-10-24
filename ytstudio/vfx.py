@@ -3429,6 +3429,12 @@ class VfxPlanner:
             parts.append(line)
         if self.direction.get("combination"):
             parts.append(f"How they combine: {self.direction['combination']}")
+        # The film's identity (AUTO-146), when styles.json has one; without it
+        # the block is what it was, so no decision digest moves. Imported here:
+        # styles reaches vfx through assess.
+        from .styles import identity_line
+        if line := identity_line(self.direction):
+            parts.append(line)
         return "\n".join(parts)
 
     @staticmethod

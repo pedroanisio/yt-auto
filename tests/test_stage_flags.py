@@ -21,12 +21,13 @@ SKILL = ROOT / "ytstudio" / "SKILL.md"
 #: concept -> (canonical flag, old spelling -> stage that used it, stages that take it)
 CONCEPTS = {
     "rounds": ("--rounds", {"--revisions": "vfx"}, ("keyframe", "vfx", "probe", "script")),
-    "reviewer": ("--reviewer-model", {}, ("keyframe", "vfx", "probe", "run", "script")),
+    "reviewer": ("--reviewer-model", {}, ("keyframe", "vfx", "probe", "run", "script",
+                                          "styles")),
     "review budget": ("--review-budget-usd", {}, ("keyframe", "vfx", "probe", "run", "script")),
     "bar": ("--bar", {"--author-bar": "vfx"}, ("keyframe", "vfx", "probe")),
     "budget": ("--budget-usd", {"--budget": "research"},
                ("keyframe", "vfx", "probe", "research", "assess", "improve", "run")),
-    "fresh": ("--fresh", {}, ("research", "keyframe", "vfx", "props", "script")),
+    "fresh": ("--fresh", {}, ("research", "keyframe", "vfx", "props", "script", "styles")),
     "jobs": ("--jobs", {}, ("ideas", "research", "styles", "script", "keyframe", "vfx",
                             "probe", "sound")),
     # the shots sent back to the screenplay for one revision (AUTO-95)
