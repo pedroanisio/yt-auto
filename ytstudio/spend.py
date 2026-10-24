@@ -300,11 +300,12 @@ def story_review_usd(root: Path | None, argv: Iterable[str] = ()) -> float:
     script, plus the cold read, its answers and its match, once on the
     first draft and, with a second round, once on the draft that stands,
     and the viewer quiz (AUTO-115): its items and its before once, its
-    after beside each cold read; priced at the reviewer's model (`--reviewer-model`, default opus). The
-    script's words are the project's own narration when script.json has
-    it, else what `--minutes` at `--wpm` would say (script.words_for, at
-    the script stage's own defaults). The writer's revisions are left to
-    the base: `revise-story-N`, `redraft-NN` and the question ledger's
+    after beside each cold read; priced at the reviewer's model
+    (`--reviewer-model`, default opus). The script's words are the
+    project's own narration when script.json has it, else what `--minutes`
+    at `--wpm` would say (script.words_for, at the script stage's own
+    defaults). The writer's revisions are left to the base:
+    `revise-story-N`, `redraft-NN` and the question ledger's
     `revise-ledger-2` (AUTO-96) are the author's decisions, a few hundred
     words each against the reviewer's whole-script readings priced here."""
     # script imports this module, so its constants are read here, when the
