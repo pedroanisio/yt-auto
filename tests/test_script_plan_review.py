@@ -568,6 +568,14 @@ class Persona(unittest.TestCase):
         self.assertIn("- " + self.LINE, prompt)
         self.assertIn('"persona"', prompt)
 
+    def test_the_story_review_reads_the_persona_through_the_plan(self):
+        # no rubric or role change: the story reviewer sees it in the plan
+        plan = dict(copy.deepcopy(PLAN), persona={"temperament": "tender",
+                                                  "why": "a story of loss"})
+        w = writer()
+        self.assertIn('"temperament": "tender"', w._story_prompt([], plan))
+        self.assertNotIn("persona", w._story_prompt([], PLAN))
+
 
 # --------------------------------------------------------------------------- #
 # the devices, measured from the plan (AUTO-135)
