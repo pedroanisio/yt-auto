@@ -23,6 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from ytstudio import harness, voice  # noqa: E402
+from ytstudio.script import persona_of  # noqa: E402
 from ytstudio.core import Idea  # noqa: E402
 
 from tests import test_wordless  # noqa: E402
@@ -55,6 +56,21 @@ class FilmBrief(unittest.TestCase):
                 brief = voice.film_brief(IDEA, {}, script)
                 self.assertEqual(brief, TODAY)
                 self.assertEqual(list(brief), ["title", "premise", "genre", "treatment"])
+
+    def test_casting_and_the_section_writer_agree_on_the_temperament(self):
+        # The writer reads the persona through script.persona_of; casting
+        # must read it the same way, or one could hear a temperament the
+        # other was never told about.
+        for persona in ({"temperament": "wry", "why": "a comic history"},
+                        {"temperament": " wry\n", "why": "  "}, {"temperament": "  "},
+                        {"temperament": 0, "why": "w"}, {"temperament": ["a"]},
+                        "wry", None):
+            with self.subTest(persona=persona):
+                temperament, why = persona_of({"persona": persona})
+                brief = voice.film_brief(IDEA, {}, {"persona": persona})
+                expected = ((f"{temperament} ({why})" if why else temperament)
+                            if temperament else None)
+                self.assertEqual(brief.get("persona"), expected)
 
     def test_the_treatment_is_the_first_style_as_before(self):
         styles = {"styles": [{"name": "ink"}, {"name": "clay"}]}

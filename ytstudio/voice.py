@@ -51,7 +51,8 @@ from pathlib import Path
 from . import design, house, spend, workspace
 from .harness import Harness, HarnessError, brief
 from .core import Idea, read_json, timecode, write_json
-from .script import Section, has_marks, load_script, mark_at, mark_tokens, shot_marks
+from .script import (Section, has_marks, load_script, mark_at, mark_tokens,
+                     persona_of, shot_marks)
 from .script import sentences as split_sentences
 
 #: Caption rule the delivery gate enforces: 17 characters per second.
@@ -582,12 +583,11 @@ def film_brief(idea, styles: dict, script: dict) -> dict:
     out = {"title": idea.title, "premise": idea.description, "genre": idea.genre,
            "treatment": (styles.get("styles") or [{}])[0].get("name", "")
            if isinstance(styles.get("styles"), list) else ""}
-    persona = (script or {}).get("persona")
-    if isinstance(persona, dict):
-        temperament = " ".join(str(persona.get("temperament") or "").split())
-        why = " ".join(str(persona.get("why") or "").split())
-        if temperament:
-            out["persona"] = f"{temperament} ({why})" if why else temperament
+    # Read through persona_of, as the section writer's story_lines is, so
+    # casting and the writer agree on whether the plan named a temperament.
+    temperament, why = persona_of(script or {})
+    if temperament:
+        out["persona"] = f"{temperament} ({why})" if why else temperament
     return out
 
 
