@@ -19,6 +19,7 @@ from PIL import Image
 from ytstudio import cli, doctor, harness, keyframe, vfx, workspace
 from ytstudio.core import Idea
 from ytstudio.research import Dossier
+from tests.test_keyframe import STYLES
 from tests.test_vfx_world import EFFECTS, SECTION, STYLE, WORLD_DOC, FakeEngine, varied_png
 
 TWO = {"heading": "Two", "seconds": 15, "beats": ["b"], "shots": [
@@ -52,6 +53,9 @@ class Case(unittest.TestCase):
         FakeEngine.doc, FakeEngine.docs = WORLD_DOC, []
         FakeEngine.time_out_on = FakeEngine.crash_on = 0
         self.idea = Idea(title="T", genre="g", description="d")
+        # a palette of the film's own: a look authored on design.py's house
+        # fallback cannot be approved (AUTO-155)
+        (self.root / "styles.json").write_text(json.dumps(STYLES))
 
     def tearDown(self):
         harness.ENGINE = self._engine
@@ -303,6 +307,7 @@ class Record(Case):
             record = look.run()
         self.assertEqual((record["source"], record["section"], record["version"]),
                          ("section", 1, "v01"))
+        self.assertEqual(record["palette_source"], "styles.json")      # AUTO-155
         self.assertEqual(record["approval"]["state"], "pending")
         self.assertEqual(record["frame"], "keyframe/keyframe.png")
         self.assertTrue((self.root / record["frame"]).is_file())
@@ -554,6 +559,21 @@ class RunStops(Case):
         self.assertEqual(keyframe.approval_state(self.root)["state"], "failed")
         self.assertTrue(keyframe.look_needs_redo(self.root))
         self.assertNotIn("--approve", (keyframe.write_sheet(self.root, record)).read_text())
+
+    def test_a_section_look_on_the_fallback_palette_is_refused_not_redone(self):
+        # AUTO-155: the look is sound, the palette is not the film's; the
+        # fix is styles, so `yt run` must not author the look again
+        lead = self.author(self.planner(lead=1))[0]
+        record = self.look_record(lead, "pending")
+        record["palette_source"] = "fallback"
+        (self.root / "keyframe.json").write_text(json.dumps(record))
+        self.assertFalse(keyframe.look_needs_redo(self.root))
+        with self.assertRaises(keyframe.KeyframeError) as ctx:
+            keyframe.approve(self.root)
+        self.assertIn("yt styles --rich", str(ctx.exception))
+        sheet = keyframe.write_sheet(self.root, record).read_text()
+        self.assertNotIn("--approve", sheet)
+        self.assertIn("fallback palette", sheet)
 
 if __name__ == "__main__":
     unittest.main()

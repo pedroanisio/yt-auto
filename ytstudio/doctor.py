@@ -1336,7 +1336,13 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
         score = look.get("score")
         shown = f"{score:g}/10" if isinstance(score, (int, float)) else "unscored"
         report.metrics["keyframe"] = {"state": look["state"], "score": score, "at": look["at"]}
-        if look["state"] == "pending":
+        palette = (keyframe.palette_refusal(keyframe.load_record(project.root))
+                   if look["state"] == "pending" else "")
+        if palette:
+            # approval would be refused: the fix is the palette, not --approve
+            report.add("note", "keyframe", f"the keyframe ({shown}) cannot be approved: "
+                       f"{palette}", _cmd("styles", project, "--rich"))
+        elif look["state"] == "pending":
             report.add("note", "keyframe", f"the keyframe ({shown}) awaits approval: "
                        f"look at {look['frame'] or 'keyframe/keyframe.png'}, then "
                        f"{_cmd('keyframe', project, '--approve')}",
