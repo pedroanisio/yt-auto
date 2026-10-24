@@ -1019,7 +1019,11 @@ holds that world as written.
 
 Authoring is versioned. Each run lands in the next `vfx/vNN/`, `vfx.json`
 names the active version, and `--fresh` replans and opens a new version;
-nothing authored before is overwritten.
+nothing authored before is overwritten. A section `--sections` or
+`--relook` carries forward keeps its review only while its inputs are the
+ones reviewed (`inputs_sha256`: its shots and their timings, its effects,
+the tokens, the approved look); otherwise it is carried unreviewed, its old
+score kept under `inherited`, and `yt doctor` names `yt vfx --sections N`.
 
 After authoring it audits **reach**: which constructs each symbol uses, set
 against every element the engine has (by family: 3D stage, simulation,
@@ -1394,6 +1398,11 @@ and the narration's drift, goes to the model, which sorts every item into
 blocking or acceptable, names the stage that owns each fix and the `yt`
 command that runs it, and `gate.json` keeps the verdict. A blocking item fails
 the gate even when the tool passed; the tool's own failure is never overruled.
+`gate.json` also keeps the sha256 of the video and the scene it judged
+(`video_sha256`, `scene_sha256`), and `yt doctor` compares those with the
+files on disk instead of their times: a touched file leaves the gate
+current, a replaced one makes it stale. A gate.json without them is judged
+by time, as before.
 
 The gate needs the engine and ffprobe, and this workstation has neither by
 policy, so like a render it runs on a host: `--host USER@HOST`, or by

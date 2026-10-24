@@ -644,12 +644,18 @@ def _mtime(path: Path) -> float:
 
 
 def scene_digest(path: Path) -> str:
-    """The sha256 of a scene document's bytes; empty when it cannot be read.
-    `yt qa` records the same digest for the scene it judged (qa.scene_digest)."""
+    """The sha256 of a file's bytes; empty when it cannot be read. `yt qa`
+    records the same digest for the scene it judged (qa.scene_digest), and
+    `yt gate` for the video and the scene it judged. Read in blocks, since a
+    video is large; a byte hash, nothing is decoded."""
+    digest = hashlib.sha256()
     try:
-        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        with open(path, "rb") as handle:
+            for block in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(block)
     except OSError:
         return ""
+    return digest.hexdigest()
 
 
 def _cmd(stage: str, project: workspace.Project, *extra: str) -> str:
@@ -833,7 +839,16 @@ def delivery_evidence(project: workspace.Project, build: dict | None
     elif gate.get("mode") == "frames":
         missing.append(("the last gate checked decoded frames only; delivery needs "
                         "the technical gate", _cmd("gate", project)))
-    elif _mtime(gate_file) < judged_after:
+    elif gate.get("video_sha256") and rendered_at \
+            and gate["video_sha256"] != scene_digest(video):
+        missing.append(("the gate judged a different video.mp4 than the one now rendered",
+                        _cmd("gate", project)))
+    elif gate.get("scene_sha256") and scene_at and gate["scene_sha256"] != scene_digest(scene):
+        missing.append(("the gate judged a different scene.xml than the one now built",
+                        _cmd("gate", project)))
+    elif _mtime(gate_file) < max(0.0 if gate.get("video_sha256") else rendered_at,
+                                 0.0 if gate.get("scene_sha256") else scene_at):
+        # a file whose digest the gate recorded is judged by it, not by its time
         missing.append(("the gate predates the render it should judge", _cmd("gate", project)))
     elif gate.get("exit") != 0 or (gate.get("triage") or {}).get("verdict") != "deliverable":
         blocking = len((gate.get("triage") or {}).get("blocking") or [])
@@ -1251,6 +1266,29 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
             report.add("warn", "vfx", f"the sections do not read as one film "
                        f"({cont.get('score', '?')}/10): {_clip(shown, 240)}",
                        "re-author the section(s) named; vfx.json `continuity` has each fix")
+        # A section carried after its inputs changed holds a review of other
+        # inputs (`inherited`); nothing re-reviews it but authoring it again.
+        # The approved look (`look`) was never scored: it lost no review, and
+        # re-authoring it is the operator's call, so it is a note.
+        for rec in vfx.get("authored") or []:
+            if not isinstance(rec, dict) or rec.get("n") is None:
+                continue
+            if not (rec.get("reviewed") is False or rec.get("inherited")):
+                continue
+            was = (rec.get("inherited") or {}).get("score")
+            if rec.get("look") and was is None:
+                report.add("note", "vfx", f"section {rec['n']} is the approved look, carried "
+                           "as approved; its inputs (shots, timings, effects, tokens) changed "
+                           "since it was made, or it predates their record (`inputs_sha256`)",
+                           "if it no longer fits the script, make the look again "
+                           "(`yt keyframe --fresh`) or re-author it in the film "
+                           f"(`{_cmd('vfx', project, '--sections', str(rec['n']))}`)")
+            else:
+                report.add("warn", "vfx", f"section {rec['n']} was carried forward after its "
+                           "inputs changed and has no review of them"
+                           + (f" (its {was:g}/10 judged the earlier inputs)"
+                              if isinstance(was, (int, float)) else ""),
+                           _cmd("vfx", project, "--sections", str(rec["n"])))
 
     # -- keyframe ----------------------------------------------------------
     # The look is locked by the operator, not by the stage: a frame awaiting

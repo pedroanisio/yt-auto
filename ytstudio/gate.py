@@ -636,6 +636,13 @@ def run(args) -> int:
         return 1
 
     render = read_json(found["encode report"], warn=False) or {}
+    # The bytes judged, hashed before the gate runs so a file replaced during
+    # it (a `yt render` landing) is not recorded as judged; doctor tells a
+    # touched file from a replaced one by them. The local files, the same
+    # ones plan_remote ships to a host.
+    from .doctor import scene_digest
+    judged = {"video_sha256": scene_digest(Path(found["video"])),
+              "scene_sha256": scene_digest(Path(found["scene"]))}
     if host:
         plan = plan_remote(found, args.captions, project.root, host, tag=render_stage.job_tag(),
                            frames=args.frames, loudness_target=args.loudness_target,
@@ -729,7 +736,7 @@ def run(args) -> int:
         "mode": "frames" if args.frames else "technical", "host": host or "",
         "command": cmd, "stopped_by": stop, "tool_output": output[-4000:],
         "triage": triage, "geometry": geo, "exit": code, "engine": supervisor.report(),
-        "usage": spend.from_report(supervisor.report())})
+        "usage": spend.from_report(supervisor.report()), **judged})
     print(f"wrote {gate_out}", file=sys.stderr)
     if code == 0 and not args.frames:
         print("a perceptual review is still required: this gate is technical; "
