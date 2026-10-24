@@ -1681,6 +1681,19 @@ class Channel(unittest.TestCase):
         self.assertIs(asked["plan-review"]["schema"], narrative.PLAN_REVIEW_SCHEMA)
         self.assertEqual(_sha(w.reviewer.system), BEFORE_AUTO_137["system"])
 
+    def test_each_earlier_films_form_reaches_the_plan_and_its_review(self):
+        # AUTO-157: the earlier films' forms are listed, and the writer is told
+        # a form may recur, since a form is chosen for its subject.
+        w = writer(earlier=[dict(EARLIER[0], form="investigation")])
+        calls = channel_faked(w, [verdict("accept")])
+        w.run(review=True)
+        asked = {c["name"]: c["prompt"] for c in calls}
+        self.assertIn("; form: investigation; sections:", asked["plan-review"])
+        self.assertIn("; form: investigation; sections:", asked["plan"])
+        self.assertIn("A form may recur when this subject calls for it.", asked["plan"])
+        self.assertIn("; form: not recorded; sections:",
+                      script.channel_block(EARLIER, reviewer=True))
+
     def test_with_earlier_films_the_plan_and_its_review_are_told_of_them(self):
         w = writer(earlier=EARLIER)
         calls = channel_faked(w, [verdict("accept")])
