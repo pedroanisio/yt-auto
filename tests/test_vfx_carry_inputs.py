@@ -17,16 +17,19 @@ current inputs; no model is asked. The model is never called here:
 
 from __future__ import annotations
 
+import contextlib
 import copy
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from tests import test_look_section as look
 from tests import test_vfx_world as world
 from tests.test_vfx_world import EFFECTS, SECTION, STYLE, WORLD_DOC, FakeEngine, varied_png
-from ytstudio import harness, vfx
-from ytstudio.core import Idea
+from ytstudio import doctor, harness, vfx, workspace
+from ytstudio.core import Idea, write_json
 from ytstudio.research import Dossier
 
 GROUP = {"section": "Open", "seconds": 15, "effects": EFFECTS, "cuts": []}
@@ -87,6 +90,14 @@ class Digest(unittest.TestCase):
                         self.digest(tokens={"ink": "#000000"}),
                         self.digest(look="abc123")):
             self.assertNotEqual(changed, base)
+
+    def test_moving_the_whole_section_on_the_film_clock_changes_nothing(self):
+        # an earlier section re-voiced longer moves every later shot; the
+        # section's own words, pictures and timings are what its review judged
+        later = copy.deepcopy(SECTION)
+        for shot in later["shots"]:
+            shot["at"] = float(shot["at"]) + 12.5
+        self.assertEqual(self.digest(later), self.digest())
 
     def test_an_integer_and_a_float_second_are_the_same_input(self):
         floats = copy.deepcopy(SECTION)
@@ -175,7 +186,9 @@ class Carry(unittest.TestCase):
                               revisions=0, author_bar=7.0, verbose=False,
                               sections_only=sections_only, **kw)
 
-    def author(self, sections=(SECTION,), groups=(GROUP,), tokens=TOKENS):
+    @contextlib.contextmanager
+    def stubbed(self):
+        """No render host: validation passes, every still is a varied picture."""
         real = world.author_program
 
         def program(cwd, name, doc):
@@ -187,8 +200,21 @@ class Carry(unittest.TestCase):
                              lambda xml, at, **kw: (varied_png(), "rendered locally")), \
                 patch.object(vfx, "encode_findings", lambda *a, **k: []), \
                 patch.object(world, "author_program", program):
+            yield
+
+    def author(self, sections=(SECTION,), groups=(GROUP,), tokens=TOKENS):
+        with self.stubbed():
             return self.planner.author({"sections": list(sections)}, list(groups), STYLE,
                                        dict(tokens))
+
+    def run_vfx(self, sections=(SECTION,), groups=(GROUP,)) -> dict:
+        """VfxPlanner.run with the plan's stages answered: vfx.json's data."""
+        stubs = {"outline": {"sections": list(sections)}, "style": STYLE,
+                 "effects": list(groups), "continuity": {}, "scene_map": {}, "reach": {},
+                 "plan": {}}
+        with self.stubbed(), patch.multiple(self.planner, **{
+                k: (lambda *a, v=v, **kw: v) for k, v in stubs.items()}):
+            return self.planner.run()
 
     def first(self, score: float = 8) -> dict:
         FakeEngine.reviews = [{"frames": [], "score": score, "summary": "first"}]
@@ -306,6 +332,82 @@ class Carry(unittest.TestCase):
         self.assertEqual(out["inputs_sha256"],
                          vfx.section_inputs_digest(renarrated(SECTION), GROUP, TOKENS, ""))
 
+    def test_an_unreviewed_previous_version_is_kept_over_a_broken_attempt(self):
+        # v02 carried section 1 unreviewed; its digest now matches, but its
+        # score is None: a broken attempt must not replace a sound section
+        self.first(score=8)
+        self.planner = self.make({2})
+        self.author(sections=(renarrated(SECTION),))
+        self.planner = self.make({1})
+        with patch.object(self.planner, "_author_one", side_effect=RuntimeError("boom")):
+            out = self.author(sections=(renarrated(SECTION),))[0]
+        self.assertEqual(out["kept_from"], "v02")
+        self.assertFalse(vfx.has_errors(out))
+        self.assertIs(out["reviewed"], False)
+        self.assertEqual(out["inherited"]["score"], 8)
+
+    def test_a_sound_attempt_replaces_an_unreviewed_previous_version(self):
+        self.first(score=8)
+        self.planner = self.make({2})
+        self.author(sections=(renarrated(SECTION),))
+        self.planner = self.make({1})
+        FakeEngine.reviews = [{"frames": [], "score": 5, "summary": "sound"}]
+        out = self.author(sections=(renarrated(SECTION),))[0]
+        self.assertEqual((out["version"], out["score"]), ("v03", 5))
+        self.assertNotIn("kept_from", out)
+
+    def test_inherited_names_the_version_that_made_the_review(self):
+        # reviewed in v01, carried whole into v02, then carried after a change
+        self.first(score=8)
+        self.planner = self.make({2})
+        self.author()
+        self.planner = self.make({2})
+        carried = self.author(sections=(renarrated(SECTION),))[0]
+        self.assertEqual(carried["version"], "v03")
+        self.assertEqual(carried["inherited"]["from_version"], "v01")
+
+    # -- --recover ------------------------------------------------------------
+
+    def test_recover_keeps_a_section_carried_without_its_review(self):
+        # `--sections` killed after the carry: its record in this version is
+        # an inherited carry, sound and whole, not a section never reviewed
+        self.first(score=8)
+        self.planner = self.make({2})
+        self.author(sections=(renarrated(SECTION),))
+        self.planner = self.make(set(), recover=True)
+        out = self.planner.recovered({"sections": [renarrated(SECTION)]}, [GROUP])[0]
+        self.assertEqual(out["version"], "v02")
+        self.assertFalse(vfx.has_errors(out), out["findings"])
+        self.assertIsNone(out["score"])
+        self.assertIs(out["reviewed"], False)
+        self.assertEqual(out["inherited"]["score"], 8)
+        self.assertTrue((self.root / out["file"]).is_file())
+
+    # -- vfx.json and doctor --------------------------------------------------
+
+    def test_vfx_json_and_doctor_name_the_section_carried_without_its_review(self):
+        """The card's acceptance end to end: `yt vfx --sections 3` after section
+        2's narration changed, through run() and write_vfx to `yt doctor`."""
+        FakeEngine.reviews = [{"frames": [], "score": 8, "summary": "ok"}] * 2
+        groups = (GROUP, GROUP_TWO)
+        vfx.write_vfx(self.planner.dossier, self.run_vfx((SECTION, second(SECTION)), groups))
+        self.planner = self.make({3})
+        vfx.write_vfx(self.planner.dossier, self.run_vfx(
+            (SECTION, renarrated(second(SECTION), "2.2")), groups))
+        data = json.loads((self.planner.dossier.dir / "vfx.json").read_text(encoding="utf-8"))
+        one, two = data["authored"]
+        self.assertEqual(one["score"], 8)
+        self.assertNotIn("inherited", one)
+        self.assertIs(two["reviewed"], False)
+        self.assertEqual(two["inherited"]["score"], 8)
+        self.assertIsNone(data["authoring"]["scores"][two["file"]])
+        self.assertEqual(data["authoring"]["scores"][one["file"]], 8)
+        write_json(self.root / "idea.json", {"title": "T", "genre": "g", "description": "d"})
+        report = doctor.check_project(workspace.Project(self.planner.dossier.dir))
+        fixes = [f.fix for f in report.findings if f.area == "vfx" and f.level == "warn"]
+        self.assertTrue(any(f.endswith("--sections 2") for f in fixes), fixes)
+        self.assertFalse(any(f.endswith("--sections 1") for f in fixes), fixes)
+
     def test_keep_previous_applies_the_same_rule(self):
         first = self.first(score=8)
         ws = vfx.Workspace(self.root)
@@ -318,6 +420,95 @@ class Carry(unittest.TestCase):
         self.assertIsNone(changed["score"])
         self.assertEqual(changed["inherited"]["score"], 8)
         self.assertEqual(changed["kept_from"], "v01")
+
+
+TOKENS_RUN = vfx.tokens_from(STYLE)
+
+
+class LookCarry(look.Case):
+    """The approved look's section is made in the look pass, against no look:
+    its digest names none, so carrying it into the film (the first animation,
+    `--relook`) keeps its standing while its own inputs are unchanged."""
+
+    def film(self, planner, docs=(), outline=look.OUTLINE) -> dict[int, dict]:
+        FakeEngine.docs = list(docs)
+        stubs = {"outline": outline, "style": STYLE, "effects": look.GROUPS,
+                 "continuity": {}, "scene_map": {}, "reach": {}, "plan": {}}
+        with patch.object(vfx.render, "engine_validate", lambda data, **kw: []), \
+                patch.object(vfx.render, "engine_render_still",
+                             lambda xml, at, **kw: (varied_png(), "rendered")), \
+                patch.object(vfx, "encode_findings", lambda *a, **k: []), \
+                patch.multiple(planner, **{k: (lambda *a, v=v, **kw: v)
+                                           for k, v in stubs.items()}):
+            data = planner.run()
+        return {r["n"]: r for r in data["authored"]}
+
+    def lead_approved(self, outline=look.OUTLINE) -> dict:
+        planner = self.planner(lead=1)
+        with patch.object(vfx.render, "engine_validate", lambda data, **kw: []), \
+                patch.object(vfx.render, "engine_render_still",
+                             lambda xml, at, **kw: (varied_png(), "rendered")), \
+                patch.object(vfx, "encode_findings", lambda *a, **k: []):
+            lead = planner.author(outline, look.GROUPS, STYLE, dict(TOKENS_RUN))[0]
+        self.look_record(lead, "approved")
+        FakeEngine.stream_calls = []
+        return lead
+
+    def doctor_vfx(self, authored: dict[int, dict]):
+        write_json(self.root / "idea.json", {"title": "T", "genre": "g", "description": "d"})
+        write_json(self.root / "vfx.json", {"totals": {}, "plan": {},
+                                            "authored": list(authored.values())})
+        return [f for f in doctor.check_project(workspace.Project(self.root)).findings
+                if f.area == "vfx" and ("review" in f.message or "inputs" in f.message)]
+
+    def test_the_approved_look_carried_into_the_film_keeps_its_standing(self):
+        lead = self.lead_approved()
+        made = self.film(self.planner(revisions=0, jobs=1), [look.TWO_DOC])
+        self.assertEqual(made[1]["carried_from"], lead["version"])
+        self.assertTrue(made[1].get("look"))
+        self.assertNotIn("inherited", made[1])
+        self.assertNotIn("reviewed", made[1])
+        relooked = self.film(self.planner(revisions=0, jobs=1, relook=True), [look.TWO_DOC])
+        self.assertEqual(relooked[1]["carried_from"], lead["version"])
+        self.assertNotIn("inherited", relooked[1])
+        self.assertNotIn("reviewed", relooked[1])
+        self.assertEqual(self.doctor_vfx(relooked), [])
+
+    def test_a_look_whose_narration_changed_is_carried_unreviewed_and_doctor_says_so(self):
+        self.lead_approved()
+        changed = {"sections": [renarrated(SECTION), look.TWO]}
+        made = self.film(self.planner(revisions=0, jobs=1), [look.TWO_DOC], outline=changed)
+        self.assertIs(made[1]["reviewed"], False)
+        self.assertIsNone(made[1]["inherited"]["score"])
+        said = self.doctor_vfx(made)
+        self.assertEqual(len(said), 1)
+        # the look was approved, never scored: not a review lost, and not a
+        # call to re-author the operator's look as if it were one
+        self.assertEqual(said[0].level, "note")
+        self.assertIn("approved look", said[0].message)
+        self.assertFalse(said[0].fix.endswith("--sections 1"))
+
+    def test_a_recovered_section_names_the_inputs_it_was_authored_against(self):
+        self.lead_approved()
+        digest = vfx.approved_look(self.root)["digest"]
+        self.assertTrue(digest)
+        made = self.film(self.planner(revisions=0, jobs=1), [look.TWO_DOC])
+        self.assertEqual(made[2]["inputs_sha256"],
+                         vfx.section_inputs_digest(look.TWO, look.GROUPS[1], TOKENS_RUN, digest))
+        # a run from before section records: the rounds and cached reviews decide
+        (self.root / "vfx" / "v02" / "rounds" / "02-two" / "record.json").unlink()
+        FakeEngine.stream_calls = []
+        rebuilt = self.film(self.planner(recover=True))
+        self.assertEqual(FakeEngine.stream_calls, [])
+        self.assertIsNotNone(rebuilt[2]["score"])
+        self.assertEqual(rebuilt[2]["inputs_sha256"], made[2]["inputs_sha256"])
+        # the carried look comes back as it stands: approved, never scored
+        self.assertFalse(vfx.has_errors(rebuilt[1]), rebuilt[1]["findings"])
+        # and a later --sections carries both with their standing
+        later = self.film(self.planner(revisions=0, jobs=1, sections_only={3}))
+        self.assertEqual(later[2]["score"], rebuilt[2]["score"])
+        self.assertNotIn("inherited", later[2])
+        self.assertNotIn("inherited", later[1])
 
 
 class Manual(unittest.TestCase):

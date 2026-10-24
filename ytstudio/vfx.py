@@ -1559,13 +1559,25 @@ def section_inputs_digest(section: dict, group: dict, tokens: dict, look_digest:
     already carries), its effects group (effects and cuts), the style tokens
     and the approved look's digest, as canonical JSON. A carried record whose
     `inputs_sha256` differs was never reviewed against these inputs. JSON
-    only: no frame is read, and a whole second equals its float."""
+    only: no frame is read, and a whole second equals its float.
+
+    `at` counts from the section's first shot, as its world does
+    (`world_symbols`): an earlier section re-voiced to another length moves
+    every later shot on the film clock, and that changes nothing a later
+    section was authored or reviewed against."""
     def number(value):
         plain = isinstance(value, (int, float)) and not isinstance(value, bool)
         return float(value) if plain else value
-    shots = [{k: number(s[k]) if k in ("at", "seconds") else s[k]
-              for k in INPUT_SHOT_FIELDS if k in s}
-             for s in section.get("shots") or [] if isinstance(s, dict)]
+    rows = [s for s in section.get("shots") or [] if isinstance(s, dict)]
+    origin = number(rows[0].get("at", 0)) if rows else 0.0
+    origin = origin if isinstance(origin, float) else 0.0
+
+    def field(shot: dict, k: str):
+        value = number(shot[k])
+        if k == "at" and isinstance(value, float):
+            return round(value - origin, 6)
+        return value
+    shots = [{k: field(s, k) for k in INPUT_SHOT_FIELDS if k in s} for s in rows]
     body = {"heading": section.get("heading", ""), "shots": shots,
             "effects": (group or {}).get("effects") or [],
             "cuts": (group or {}).get("cuts") or [],
@@ -1588,7 +1600,8 @@ def inherit_review(record: dict, inputs_sha256: str) -> dict:
     n = record.get("n")
     earlier = record.get("inherited") or {
         "score": record.get("score"), "review": record.get("review"),
-        "best_round": record.get("best_round"), "from_version": record.get("version"),
+        "best_round": record.get("best_round"),
+        "from_version": record.get("reviewed_in") or record.get("version"),
         "inputs_sha256": record.get("inputs_sha256")}
     warning = (f"warning: carried: section {n}'s inputs changed since its review; "
                "it was not reviewed against them")
@@ -1969,9 +1982,12 @@ class Workspace:
             shutil.copytree(src / self.ROUNDS_DIR / stem, self.dir / self.ROUNDS_DIR / stem,
                             dirs_exist_ok=True)
         program = self.dir / f"{stem}.py"
+        # a review carried whole still names the version that made it
+        made = {} if record.get("inherited") or record.get("score") is None else {
+            "reviewed_in": record.get("reviewed_in") or record.get("version")}
         return dict(record, file=f"{self.rel}/{name}", version=self.version,
                     program=f"{self.rel}/{program.name}" if program.is_file() else "",
-                    carried_from=record.get("version"),
+                    carried_from=record.get("version"), **made,
                     carried_cost_usd=record.get("cost_usd", 0.0), cost_usd=0.0)
 
     def keep_previous(self, before: dict, attempt: dict, n: int,
@@ -3706,8 +3722,9 @@ class VfxPlanner:
                     keep = broken and not has_errors(before)
                 elif before.get("look"):
                     keep = broken           # the look has no score; a sound attempt wins
-                elif stale:
-                    # reviewed against other inputs: its score is no contest
+                elif stale or before.get("reviewed") is False:
+                    # reviewed against other inputs, now or when an earlier
+                    # run carried it: its score is no contest
                     keep = broken and not has_errors(before)
                 else:
                     keep = keeps_previous(before, record)
@@ -4068,7 +4085,12 @@ class VfxPlanner:
             self._say(f"    [{n}] {name}: its record, round {saved.get('best_round')} "
                       f"({saved.get('score')}/10)")
             findings = list(saved.get("findings") or [])
-            if saved.get("score") is None:
+            # A carry without its review (`inherited`) and the approved look
+            # (judged by the gate and the operator, never scored) were copied
+            # whole: no score is theirs to lose, and they stand as they are.
+            scoreless = saved.get("inherited") or saved.get("reviewed") is False \
+                or saved.get("look")
+            if saved.get("score") is None and not scoreless:
                 findings.insert(0, unreviewed)
             return dict(saved, findings=findings)
         rounds = [r for r in saved.get("rounds") or [] if isinstance(r, dict)]
@@ -4142,7 +4164,12 @@ class VfxPlanner:
         outline = self.outline()
         style = self.style()
         tokens = tokens_from(style)
-        self._tokens = dict(tokens)         # a recovered record's inputs_sha256 names them
+        # A record rebuilt by --recover or --take-attempt names the inputs it
+        # was authored against: these tokens and, outside the look pass, the
+        # approved look, as author() would set them.
+        self._tokens = dict(tokens)
+        if self.lead is None:
+            self._look_digest = str((approved_look(self.ws.root) or {}).get("digest") or "")
         effects = self.effects(outline, style)
         if self.take_attempt:
             authored = self._stage("12-author", lambda: self.taken(outline, effects))
