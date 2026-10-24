@@ -1567,9 +1567,20 @@ def said_in(quote, line) -> bool:
     """Whether `quote` is words `line` says (AUTO-112). Whitespace and curly
     or straight quote marks are read alike on both sides, and nothing else:
     a reviewer's quote is never trimmed or matched loosely on its behalf,
-    since a flag on words the script does not say is a broken answer."""
-    words = _plain(quote)
-    return bool(words) and words in _plain(line)
+    since a flag on words the script does not say is a broken answer. The
+    quote starts and ends on whole words: "a" or "riv" found inside
+    "abandon" or "river" names no clause the writer can find."""
+    words, said = _plain(quote), _plain(line)
+    if not words:
+        return False
+    at = said.find(words)
+    while at >= 0:
+        end = at + len(words)
+        if not (words[0].isalnum() and at and said[at - 1].isalnum()) and \
+                not (words[-1].isalnum() and end < len(said) and said[end].isalnum()):
+            return True
+        at = said.find(words, at + 1)
+    return False
 
 
 def merge_flags(samples: list[dict]) -> list[dict]:
@@ -1592,7 +1603,10 @@ def merge_flags(samples: list[dict]) -> list[dict]:
                                    quotes=[quote] if quote else [])
                 continue
             have["samples"] += 1
-            quotes = have["quotes"] + ([quote] if quote and quote not in have["quotes"]
+            # the same words spelled with other spaces or quote marks are
+            # one quote, as said_in reads them; the first spelling is kept
+            seen = {_plain(q) for q in have["quotes"]}
+            quotes = have["quotes"] + ([quote] if quote and _plain(quote) not in seen
                                        else [])
             have["quotes"] = quotes
             if rank.get(f.get("severity"), 9) < rank.get(have.get("severity"), 9):
@@ -2609,8 +2623,11 @@ class Screenwriter:
         flag shot n's line, a section flag one of that section's lines, a
         whole-script flag nothing or any line; `conflicts_with` names a
         shot whose line says its quote. A place with no narration (a silent
-        shot, or a plan read before any line is drafted) has no words to
-        quote or to hold a quote to, so its quote is not checked."""
+        shot, a section of silent shots, or a plan read before any line is
+        drafted) says no words, so its only quote is an empty one: any other
+        is made up. A `conflicts_with` of shot 0 with no words is no
+        contradiction (some engines fill an optional object with its zero
+        value), as story_flag_line reads it."""
         found = []
         quote = str(f.get("quote") or "")
         if n:
@@ -2620,17 +2637,22 @@ class Screenwriter:
             lines = [shots.get(m) or "" for m in sections.get(section) or []]
         else:
             where, lines = "the whole script", list(shots.values())
-        lines = [line for line in lines if line.strip()]
+        lines = [line for line in lines if spoken(line)]
         if not lines:
-            pass        # no words there to quote, or to hold a quote to
+            if quote.strip():
+                found.append(f"a flag on {where} quotes \"{quote}\", but {where} has no "
+                             "narration: leave quote empty")
         elif not quote.strip():
             if n or section:
                 found.append(f"a flag on {where} quotes none of its words: quote the words "
                              "the flag is about exactly as the narration says them")
         elif not any(said_in(quote, line) for line in lines):
             found.append(f"a flag on {where} quotes \"{quote}\", which {where} does not "
-                         "say: quote its words exactly, never a paraphrase")
+                         "say: quote its whole words exactly, never a paraphrase")
         other = f.get("conflicts_with")
+        if isinstance(other, dict) and not other.get("n") and \
+                not str(other.get("quote") or "").strip():
+            other = None
         if other is None:
             return found
         try:

@@ -422,10 +422,11 @@ REVIEW_SCHEMA = {
                     # does not guess the clause and two samples' flags can be
                     # told apart. Checked against the script, never trusted.
                     "quote": {"type": "string", "description": (
-                        "the words the flag is about, copied exactly from the narration, "
-                        "never paraphrased: from shot n's line, or for a section flag "
-                        "(shot 0) from one of that section's lines; empty for the whole "
-                        "script (shot 0, section 0)")},
+                        "the whole words the flag is about, the full clause, copied "
+                        "exactly from the narration, never paraphrased: from shot n's "
+                        "line, or for a section flag (shot 0) from one of that section's "
+                        "lines; empty for the whole script (shot 0, section 0) and for a "
+                        "silent shot or section, which says no words")},
                     "conflicts_with": {
                         "type": "object",
                         "description": ("only when this line contradicts another: the "

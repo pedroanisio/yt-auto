@@ -969,6 +969,46 @@ class Quotes(unittest.TestCase):
         # a silent shot has no words to quote
         self.assertEqual(self.problems(flag(quote=""), shots={1: ""}, sections={1: [1]}), [])
 
+    def test_a_place_with_no_narration_takes_only_an_empty_quote(self):
+        # a silent shot, a section of silent shots, or a plan read before any
+        # line is drafted says no words, so any quote there is made up
+        silent = {1: "", 2: "line 1.2", 3: script.SILENT, 4: "  "}
+        for f, where in ((flag(n=1, quote="totally invented"), "shot 1"),
+                         (flag(n=3, quote=script.SILENT), "shot 3"),
+                         (flag(n=0, section=2, quote="line 1.2"), "section 2")):
+            with self.subTest(where=where):
+                found = self.problems(f, shots=silent, sections={1: [1, 2], 2: [3, 4]})
+                self.assertEqual(len(found), 1, found)
+                self.assertIn(where, found[0])
+                self.assertIn("no narration", found[0])
+                self.assertIn("leave quote empty", found[0])
+        found = self.problems(flag(n=0, section=2, quote="made up"), shots={}, sections={})
+        self.assertEqual(len(found), 1, found)
+        # through the stage: a writer whose first shot is silent
+        w = writer()
+        silent_first = shots_for(1, ("context", "payoff"))
+        silent_first["shots"][0]["narration"] = ""
+        calls = faked(w, {"write-01": silent_first,
+                          "review-r1-s1": sample("consider", flags=[
+                              flag(n=1, quote="the river was never empty")]),
+                          "review-r1-s1-again": sample("recommend")})
+        record = w.run(review=True, fix=False)["review"]
+        self.assertIn("review-r1-s1-again", names(calls))
+        again = next(c for c in calls if c["name"] == "review-r1-s1-again")["prompt"]
+        said = again.split("Your previous answer", 1)[1]
+        self.assertIn("shot 1", said)
+        self.assertIn("no narration", said)
+        self.assertNotIn("the river was never empty",
+                         [f.get("quote") for f in record["flags"]])
+
+    def test_a_quote_is_whole_words_never_a_cut_word(self):
+        self.assertTrue(script.said_in("line 1.1", "line 1.1"))
+        self.assertTrue(script.said_in("the river", "And the river rose."))
+        self.assertTrue(script.said_in("rose.", "And the river rose."))
+        for quote in ("ine 1.1", "a", "the riv", "nd the"):
+            with self.subTest(quote=quote):
+                self.assertFalse(script.said_in(quote, "And the river rose. abandon"))
+
     def test_a_section_flags_quote_comes_from_that_sections_lines(self):
         self.assertEqual(self.problems(flag(n=0, section=2, quote="line 2.2")), [])
         found = self.problems(flag(n=0, section=2, quote="line 1.1"))
@@ -1017,6 +1057,15 @@ class Quotes(unittest.TestCase):
         w.run(review=True, fix=False)
         self.assertIn("review-r1-s3-again", names(calls))
 
+    def test_conflicts_with_of_shot_0_and_no_words_means_none(self):
+        # some engines fill an optional object with its zero value; a shot 0
+        # with no words is no contradiction, as story_flag_line reads it
+        empty = flag(n=3, quote="line 2.1", conflicts_with={"n": 0, "quote": ""})
+        self.assertEqual(self.problems(empty), [])
+        self.assertNotIn("contradicts", script.story_flag_line(empty))
+        found = self.problems(dict(empty, conflicts_with={"n": 0, "quote": "line 1.1"}))
+        self.assertEqual(len(found), 1, found)
+
     def test_merge_keeps_the_most_severe_quote_and_lists_every_distinct_one(self):
         minor = flag(severity="minor", quote="line")
         severe = flag(severity="blocker", quote="line 1.1",
@@ -1029,6 +1078,31 @@ class Quotes(unittest.TestCase):
         self.assertEqual(merged[0]["conflicts_with"], {"n": 3, "quote": "line 2.1"})
         self.assertEqual(merged[0]["quotes"], ["line", "line 1.1"])
         self.assertEqual(merged[0]["samples"], 3)
+
+    def test_merge_reads_quotes_alike_as_the_check_does(self):
+        merged = script.merge_flags([{"flags": [flag(quote="it’s  late")]},
+                                     {"flags": [flag(quote="it's late")]}])
+        self.assertEqual(merged[0]["quotes"], ["it’s  late"])
+
+    def test_the_redraft_and_the_unresolved_warning_carry_the_quote(self):
+        w = writer()
+        section_flag = flag(n=0, section=2, criterion="open_loops", quote="line 2.1",
+                            problem="section 2 opens Q2 and drops it")
+        answers = consider_then(("recommend", "better"), flags=[section_flag])
+        calls = faked(w, answers)
+        w.run(review=True)
+        prompt = next(c for c in calls if c["name"] == "redraft-02")["prompt"]
+        self.assertIn('section 2 "line 2.1"', prompt)
+        # a whole-script flag that quotes a line keeps it where it is unresolved
+        w = writer()
+        whole = flag(n=0, section=0, criterion="train", quote="line 2.2",
+                     problem="the train is never heard")
+        faked(w, {f"review-r1-s{k}": sample("consider", flags=[whole]) for k in (1, 2, 3)})
+        record = w.run(review=True, fix=False)["review"]
+        self.assertIn('the whole script "line 2.2"',
+                      script.story_flag_line(record["unresolved"][0]))
+        warning = [f for f in w.story_findings(record) if "the train is never heard" in f]
+        self.assertTrue(warning and '"line 2.2"' in warning[0], warning)
 
     def test_the_flag_line_shows_the_quote_and_the_line_it_contradicts(self):
         line = script.story_flag_line(flag(n=3, quote="line 2.1", criterion="honesty",
