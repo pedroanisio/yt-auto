@@ -382,6 +382,7 @@ Everything for one video lives in one directory:
 work/
 ├── ideas.json                      every idea from the last `yt ideas`
 ├── ideas.store.json                every unique idea ever generated
+├── channel.json                    each film's opening, closing, sections, treatment, palette
 └── how-euv-light-is-made/          one video
     ├── idea.json
     ├── dossier.json  README.md  claims.csv  sources.csv  assets.csv  notes.md
@@ -416,6 +417,19 @@ work/
 other than `./work`, `--index N` picks the Nth idea, and `-` reads one idea as
 JSON on stdin. Each stage writes its own files into the project *and* prints to
 stdout, so `--json` / `--md` / `--csv` are only for sending a copy elsewhere.
+
+`work/channel.json` is the channel record: every time `yt script` or `yt
+styles` writes, the film's row is refreshed with its opening (the plan's
+`hook.trigger`), its closing (`ending.device`), its section shape, its primary
+treatment, the palette roles its own swatches fill and the type families it
+names. A film counts once its `qa.json` says READY TO PUBLISH; drafts and
+remakes are recorded but never compared. The next film's plan and its review
+are shown how the last twelve counted films opened, unfolded and closed, and
+`yt styles` warns when its primary row reuses one's treatment or palette. A
+standalone project has no channel and none of this happens; a channel's first
+film is asked exactly what it always was. Typography is recorded, never
+compared: eleven shipped families make a shared one the catalogue's, not the
+film's.
 
 ## Standalone, or in the pipeline
 
@@ -500,8 +514,11 @@ goes into every manifest, so an artifact says which standards produced it.
 Under all of them sits the shipped default, `ytstudio/house/default.md`: the
 craft corpus in `docs/narrative/` distilled by hand into `## all`, `## script`,
 `## styles`, `## vfx`, `## sound`, `## voice` and `## format` (the narrator,
-opening, ending, hand-off and series the channel repeats, which the script
-stage reads before its own section). The narrator is one proxy across films;
+opening, ending, hand-off and series, which the script stage reads before its
+own section). Each film's format is chosen for its subject: an opening or an
+ending device recurs across films only when the channel's own `## format` names
+one, and the channel record below measures where a film repeats an earlier one
+anyway. The narrator is one proxy across films;
 its temperament is a device of its own (AUTO-158): the same every film when
 the channel's `## format` sets one, otherwise each film's own, chosen from its
 subject and named in the plan's `persona`. Each section opens with a comment
@@ -635,6 +652,14 @@ By default the choice is one call. `--deliberate` buys more rigour:
 | `critique` | attack every pick afterwards, revise the scores, name what was wrongly left out |
 | `full` | `sweep` + `critique` |
 
+Once the pick is final, after any critique's reorder, the primary row is
+measured against the channel's counted earlier films (`work/channel.json`):
+the same treatment name, or a background and an accent each within 12 ΔE of
+one film's, is printed as a `warning: channel:` line and saved under
+`styles.json` `channel`. It is a measurement, not a judgement: no prompt sees
+the earlier films, since the critique is the author's own family, and the pick
+and its order are what they would be without it.
+
 ### `yt script`
 
 Writes the screenplay one call per section — a 15-minute script written in a
@@ -691,6 +716,16 @@ sends the plan back once with the problems (`plan-2`, read again as
 is written, and no `script.json` is left for `yt run` to take as done: the
 reading, the stage's engine report and its spend go to `plan_review.json`
 instead, removed by the next run that gets past the plan.
+With counted earlier films in the channel record the plan's writer and its
+reviewer are shown how they opened, unfolded and closed (newest first, each
+by its slug), the pre-checks gain `channel:` lines (an opening or closing
+device, or an exact section shape, an earlier film had), and the attack gains
+a fifth objection: could a returning viewer predict this film from one of
+them? A noticeable repeat is listed under `repeats` with a section 0 problem
+naming the film, and is a ground to revise, never to reject; a `channel:`
+line the reviewer sets aside goes under `dismissed` with why. Without
+`--review` the measured lines are kept as `note: channel:` findings. With no
+counted earlier film the prompts, the schema and the role are what they were.
 `--report-only` records a revise and drafts on; a reject still stops. No score
 is set as a bar here, as keyframe and vfx set one: the verdict is the bar. The review is capped by
 `--review-budget-usd` (2), adds about $0.50 (the picture-check below about

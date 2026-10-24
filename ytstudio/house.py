@@ -21,8 +21,9 @@ Sections are Markdown headings, matched by stage name, and each stage is given
     ## vfx          the animation plan
     ## sound        effects, score and mix
     ## voice        the read
-    ## format       the channel's recurring narrator, opening, ending,
-                    hand-off and series, which the screenplay follows
+    ## format       the narrator, opening, ending, hand-off and series,
+                    which the screenplay follows; what recurs across films
+                    is what the channel's own house file names
     ## keyframe     the locked lead section; with none, `## vfx` applies
 
 Anything before the first heading counts as `## all`, and an HTML comment is
