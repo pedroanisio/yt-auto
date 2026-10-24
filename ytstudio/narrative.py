@@ -4,7 +4,7 @@ No rubric existed: the script stage wrote against house prose and nothing
 graded the story before voice was paid for. This module is that rubric, in
 the shape docs/narrative/judging-narrative.md sets for a model judge:
 
-- nine criteria (`RUBRIC`), each a question with four labelled levels of
+- ten criteria (`RUBRIC`), each a question with four labelled levels of
   one line, a worked example, the strength of its lead rule from the
   corpus README's table and the corpus rules it is drawn from. Never a
   number: an unbounded or 1-100 score calibrates badly, four labels are read
@@ -22,7 +22,7 @@ doctor, improve and the operator read verdict strings, and "pass" there
 means the opposite.
 
 Four criteria decide a film: train, stakes, open loops and ending; hook,
-reveal setup, tension, honesty and voice are the other five a reader can
+reveal setup, tension, honesty, voice and devices are the other six a reader can
 judge and a lint cannot. What a lint can measure (hook timing, sentence length, concrete
 before abstract by position) belongs to the deterministic checks, not here.
 
@@ -43,13 +43,15 @@ here decides a verdict: it is schema and prompt text, `check_review` and
 `check_plan_review` only name what the caller asks the model again about
 (invariant 3), and `median` only reads the samples' own labels.
 
-A known gap: a criterion's strength is the README's word for its lead rule,
-and today none comes out `house`: seven lead with a practitioner rule, the
-hook with structure 10 (platform), although the hook's window is the
-house's choice, and voice with attention 25 (peer-reviewed). So the role's sentence that a Poor on a house-strength
-criterion yields consider governs nothing yet; it stays because the
-calibration set (judging 10, AUTO-97) may show a criterion should be graded
-as a house prior.
+A criterion's strength is the README's word for its lead rule. `devices`
+(AUTO-135) is the first row whose lead rule is house strength (attention 2,
+the guess asked before a reveal and scored by it, which the corpus marks as
+the best available proxy, not a tested device), so the role's sentence that
+a Poor on a house-strength criterion yields consider now governs a row: a
+device that teaches something false is a consider, never on its own a
+reject. The other rows lead with a practitioner rule, with structure 10
+(platform) for the hook, although the hook's window is the house's choice,
+or with attention 25 (peer-reviewed) for voice.
 """
 
 from __future__ import annotations
@@ -227,7 +229,9 @@ RUBRIC: tuple[Criterion, ...] = (
         "Poor: section 1 says the solar wind pushes the tail; section 2 then explains "
         "that sunlight alone is too weak. Excellent: the weakness comes first.",
         "practitioner",
-        ("structure 22", "structure 20", "attention 2")),
+        # attention 2, the guess before the reveal, is graded by `devices`
+        # (AUTO-135): no level here mentioned a guess, so nothing graded it
+        ("structure 22", "structure 20")),
     # AUTO-136: rising stakes had no row; escalation reached a reviewer only
     # as the writer's own `escalation` field. Not one of the four criteria
     # that decide a film, so a Poor here is a consider.
@@ -312,6 +316,37 @@ RUBRIC: tuple[Criterion, ...] = (
         "thought: the answer is blowing past you right now.\"",
         "peer-reviewed",
         ("attention 25", "attention 18", "direction 24", "attention 21")),
+    # AUTO-135: the ways in a human explainer uses for a mechanism the viewer
+    # cannot picture (an analogy, a visual metaphor, a guess before the
+    # reveal, a thought experiment), graded on whether each maps correctly.
+    # A film that shows its mechanism directly needs none, so a missing
+    # device is never a fault here; an unframed imagining or an invented
+    # precedent stays honesty's (attention 20), so no fault is graded twice.
+    # House strength: a Poor is a consider (HOUSE_POOR), and devices is not
+    # one of the four criteria that decide a film.
+    Criterion(
+        "devices",
+        "Where a mechanism is hard to picture, does the film give the viewer a way in, "
+        "by showing it directly or through an analogy or visual metaphor whose parts "
+        "and relations map onto the mechanism's, with where it breaks said aloud? Is a "
+        "guess asked before the main reveal scored by that reveal? Does any device teach "
+        "something false? (An unframed imagining or an unsourced precedent is honesty's, "
+        "not this row's.)",
+        {"Excellent": "Every hard mechanism is either shown directly or given a device "
+                      "that maps correctly and says where it breaks; any guess asked is "
+                      "scored by the reveal.",
+         "Good": "Devices are correct; one is left half-done: an analogy's limit unsaid, "
+                 "or a guess asked and never scored.",
+         "Fair": "A device is decoration that maps nothing, or a mechanism the viewer "
+                 "cannot picture is left with neither a picture nor a device.",
+         "Poor": "A device maps a part or relation onto the wrong thing, so the viewer "
+                 "learns something false."},
+        "Poor: \"the tail streams behind like smoke behind a train\", drawn trailing the "
+        "comet's path. Excellent: \"which way do you think the tail points as it "
+        "leaves?\", then \"a windsock points where the wind goes, not where the pole "
+        "moves; unlike a windsock, this one has two tails\".",
+        "house",
+        ("attention 2", "direction 24")),
 )
 
 #: The criteria's keys, in rubric order.
@@ -421,8 +456,9 @@ def reviewer_role(*, window: str = OPENING_WINDOW, seed: int = 0, plan: bool = F
             "only a topic, the sections are a list that survives any order, or the "
             "payoff is empty. Only the train, the order, a section that moves nothing "
             "and the payoff are grounds to revise or reject. A weak stakes line, an "
-            "open loop or a thin reveal setup is a problem to name with its fix, never "
-            "on its own a reason to send the plan back.",
+            "open loop, a thin reveal setup or a device that maps onto the wrong thing "
+            "is a problem to name with its fix, never on its own a reason to send the "
+            "plan back.",
             "Your fields say the same as your verdict: an accept has a train that holds, "
             "an order that does not survive reordering, a concrete payoff and no section "
             "that moves nothing; a revise or a reject names at least one problem.",

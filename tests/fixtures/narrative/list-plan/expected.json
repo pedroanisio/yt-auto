@@ -18,7 +18,8 @@
       "tension": "Poor",
       "ending": "Poor",
       "honesty": "Excellent",
-      "voice": "Good"
+      "voice": "Good",
+      "devices": "Good"
     },
     "verdict": "reject",
     "flags": [

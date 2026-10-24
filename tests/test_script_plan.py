@@ -89,6 +89,46 @@ PLAN = {
 }
 
 
+#: AUTO-135's devices, as a plan section declares them.
+ANALOGY = {"kind": "analogy",
+           "device": "paint on a bolt is a plaster cast on a broken arm",
+           "maps": "the cast -> the paint; the break under it -> the crack in the bolt",
+           "breaks_at": "a cast is taken off to look; paint never is",
+           "framing": "", "scored_in": 0}
+PREDICTION = {"kind": "prediction", "device": "ask which part failed first",
+              "maps": "", "breaks_at": "",
+              "framing": "the span itself, not one bolt", "scored_in": 3}
+
+
+#: section_story_lines for PLAN's three sections as develop wrote them
+#: before AUTO-135, one string a section.
+BEFORE_AUTO_135 = [
+    "It opens the film.\nThe picture this section stands on: the span in the river",
+    "It joins the section before with BUT: it turns against what that section "
+    "established.\nRe-open Q1 (What brought the bridge down?) partway through, so the "
+    "viewer stays for its answer.\nWhat gets harder or costlier here: the twin opens "
+    "soon\nThe picture this section stands on: a paint layer under a microscope\nThis "
+    "section shows why the reveal in section 3 is hard; do not give the reveal away.",
+    "It joins the section before with THEREFORE: it follows from what that section "
+    "established, as its consequence.\nThe picture this section stands on: the sheared "
+    "bolt\nThis section holds the film's main reveal; section 2 showed why it is hard."
+    "\nThis is the last section. Its last narrated line pays the promise, in the film's "
+    "language: \"One bolt, painted over, held up four lanes.\". It mirrors the opening: "
+    "Back to the empty river from the first shot.. It hands off to one next film: The "
+    "bolt that saved the Golden Gate.",
+]
+
+NARRATIVE = Path(__file__).resolve().parent / "fixtures" / "narrative"
+
+
+def with_devices(**by_section):
+    """PLAN with each section number's devices, e.g. with_devices(**{"2": [..]})."""
+    plan = copy.deepcopy(PLAN)
+    for n, devices in by_section.items():
+        plan["sections"][int(n) - 1]["devices"] = copy.deepcopy(devices)
+    return plan
+
+
 def shots_for(n_section, functions=("hook", "payoff")):
     return {"shots": [{"visual": f"v{n_section}.{i}", "narration": f"line {n_section}.{i}",
                        "seconds": 5, "asset": "make", "style": "s",
@@ -176,6 +216,37 @@ class Schema(unittest.TestCase):
         brief = " ".join(script.STORY_BRIEF.split())
         self.assertIn("empty only for section 1", brief)
         self.assertIn("the final payoff section", brief)
+
+    def test_a_section_may_declare_devices_and_none_is_valid(self):
+        # AUTO-135: an analogy, a visual metaphor, a prediction or a thought
+        # experiment, each with what it maps and where it breaks; optional,
+        # so --outline and an older plan still validate
+        self.assertEqual(script.DEVICE_KINDS,
+                         ("analogy", "visual_metaphor", "prediction", "thought_experiment"))
+        for schema in (script.PLAN_SCHEMA, script.PLAN_FIELDS_SCHEMA):
+            section = schema["properties"]["sections"]["items"]
+            devices = section["properties"]["devices"]
+            self.assertNotIn("devices", section["required"])
+            item = devices["items"]
+            self.assertEqual(item["properties"]["kind"]["enum"], list(script.DEVICE_KINDS))
+            # the drift wording is shared, as _ENUM_DRIFT is for a role
+            self.assertTrue(item["properties"]["kind"]["description"].endswith(
+                " " + script._DEVICE_DRIFT))
+            for name in ("kind", "device", "maps", "breaks_at", "framing", "scored_in"):
+                self.assertIn(name, item["properties"])
+            self.assertEqual(item["properties"]["scored_in"]["type"], "integer")
+            self.assertIn("->", item["properties"]["maps"]["description"])
+        self.assertNotIn("devices", script.SECTION_STORY_REQUIRED)
+        from ytstudio.harness import enum_violations, missing_fields
+        plan = copy.deepcopy(PLAN)
+        for section in plan["sections"]:
+            section.pop("devices", None)
+        self.assertEqual(missing_fields(plan, script.PLAN_SCHEMA), [])
+        plan["sections"][1]["devices"] = []
+        self.assertEqual(missing_fields(plan, script.PLAN_SCHEMA), [])
+        plan["sections"][1]["devices"] = [ANALOGY]
+        self.assertEqual(missing_fields(plan, script.PLAN_SCHEMA)
+                         + enum_violations(plan, script.PLAN_SCHEMA), [])
 
     def test_the_plan_view_passes_the_hook_on(self):
         self.assertEqual(script.plan_view(PLAN)["hook"], PLAN["hook"])
@@ -294,6 +365,28 @@ class ThroughTheHarness(unittest.TestCase):
                             for f in w.findings), w.findings)
         self.assertTrue(all(f.startswith("note:") for f in w.findings))
 
+    def test_a_plan_with_no_device_is_not_asked_again(self):
+        FakeEngine.answer = copy.deepcopy(PLAN)
+        w = self.writer()
+        w.plan()
+        self.assertEqual(len(FakeEngine.json_calls), 1)
+        self.assertEqual(w.findings, [])
+
+    def test_a_device_kind_off_the_list_is_asked_again_recorded_and_ignored(self):
+        answer = with_devices(**{"2": [dict(ANALOGY, kind="simile"), ANALOGY]})
+        FakeEngine.answer = answer
+        w = self.writer()
+        plan = w.plan()
+        self.assertEqual(len(FakeEngine.json_calls), 2)
+        self.assertIn("kind", FakeEngine.json_calls[1]["prompt"])
+        self.assertIn("note: section 2: device kind 'simile' not in the schema; the "
+                      "device is ignored", w.findings)
+        self.assertEqual(len(w.findings), 1, w.findings)
+        lines = "\n".join(script.section_story_lines(plan["sections"][1], plan,
+                                                      index=2, total=3))
+        self.assertEqual(lines.count(ANALOGY["device"]), 1)
+        self.assertNotIn("simile", lines)
+
     def test_an_audience_off_the_list_is_asked_again_then_recorded(self):
         answer = copy.deepcopy(PLAN)
         answer["audience"] = "kids"
@@ -386,6 +479,16 @@ class PlanPrompt(unittest.TestCase):
         self.assertIn("whatever language", text)
         self.assertNotIn("tail_seconds", text)
 
+    def test_the_plan_asks_for_each_device_kind_and_none_where_none_is_needed(self):
+        brief = " ".join(script.STORY_BRIEF.split())
+        for kind_ in script.DEVICE_KINDS:
+            self.assertIn(kind_, brief)
+        for words in ("maps", "breaks_at", "scored_in", "framing", "imagined",
+                      "at most one prediction",
+                      "a mechanism shown directly needs no device; no device is better "
+                      "than one that maps nothing"):
+            self.assertIn(words, brief)
+
 
 class SectionPrompt(unittest.TestCase):
     def prompts(self, audience="lay"):
@@ -437,6 +540,89 @@ class SectionPrompt(unittest.TestCase):
         for key in ("payoff_line", "callback", "next_film"):
             self.assertIn(ending[key], prompts["write-03"])
             self.assertNotIn(ending[key], prompts["write-01"])
+
+    def device_prompts(self, plan):
+        w = writer()
+        calls = faked(w, plan=plan)
+        w.run()
+        return {c["name"]: c["prompt"] for c in calls if c["kind"] == "function"}
+
+    def test_an_analogy_reaches_its_own_sections_writer_only(self):
+        prompts = self.device_prompts(with_devices(**{"2": [ANALOGY]}))
+        second = prompts["write-02"]
+        self.assertIn(f"Use this analogy: {ANALOGY['device']}.", second)
+        self.assertIn(f"It maps {ANALOGY['maps']}", second)
+        self.assertIn(f"say where it breaks: {ANALOGY['breaks_at']}", second)
+        for name in ("write-01", "write-03"):
+            self.assertNotIn(ANALOGY["device"], prompts[name])
+            self.assertNotIn("analogy", prompts[name])
+
+    def test_a_prediction_is_asked_in_its_section_and_scored_in_the_reveal(self):
+        prompts = self.device_prompts(with_devices(**{"2": [PREDICTION]}))
+        guess = PREDICTION["framing"]
+        self.assertIn(f"Ask the viewer to guess {guess}", prompts["write-02"])
+        self.assertIn("section 3's reveal scores it", prompts["write-02"])
+        self.assertIn(f"Section 2 asked the viewer to guess {guess}; say whether that "
+                      "guess was right when this section's reveal lands.",
+                      prompts["write-03"])
+        self.assertNotIn("guess", prompts["write-01"])
+        self.assertNotIn("say whether that guess was right", prompts["write-02"])
+
+    def test_a_guess_asked_and_scored_in_the_reveal_is_told_to_be_scored(self):
+        # asked in the reveal section and scored by it: the one writer both
+        # asks and must say whether the guess was right
+        lines = "\n".join(script.section_story_lines(
+            dict(PLAN["sections"][2], devices=[PREDICTION]), PLAN, index=3, total=3))
+        self.assertIn("this section's reveal scores it; say whether that guess was right "
+                      "when the reveal lands.", lines)
+
+    def test_a_scored_in_past_the_last_section_names_no_section(self):
+        # section 9 of a 3-section plan: no writer would be told to score it
+        plan = with_devices(**{"2": [dict(PREDICTION, scored_in=9)]})
+        prompts = self.device_prompts(plan)
+        self.assertIn("; the reveal scores it.", prompts["write-02"])
+        self.assertNotIn("section 9", prompts["write-02"])
+
+    def test_an_integral_float_scored_in_is_read_as_its_section(self):
+        # the harness's type check passes 3.0 as an integer, so the stage does
+        plan = with_devices(**{"2": [dict(PREDICTION, scored_in=3.0)]})
+        lines = "\n".join(script.section_story_lines(plan["sections"][2], plan, index=3,
+                                                     total=3))
+        self.assertIn(f"Section 2 asked the viewer to guess {PREDICTION['framing']}; say "
+                      "whether that guess was right when this section's reveal lands.", lines)
+        self.assertEqual(script._scored_in({"scored_in": 3.0}), 3)
+        self.assertEqual(script._scored_in({"scored_in": 2.5}), 0)
+        self.assertEqual(script._scored_in({"scored_in": True}), 0)
+
+    def test_a_thought_experiment_and_a_visual_metaphor_are_briefed(self):
+        imagined = {"kind": "thought_experiment", "device": "a bridge with no paint at all",
+                    "maps": "", "breaks_at": "", "framing": "imagine the same bridge bare",
+                    "scored_in": 0}
+        picture = dict(ANALOGY, kind="visual_metaphor", device="the paint drawn as a veil")
+        lines = "\n".join(script.section_story_lines(
+            with_devices(**{"1": [imagined, picture]})["sections"][0], PLAN,
+            index=1, total=3))
+        self.assertIn("thought experiment", lines)
+        self.assertIn("imagine the same bridge bare", lines)
+        self.assertIn("visual metaphor", lines)
+        self.assertIn("the paint drawn as a veil", lines)
+
+    def test_a_plan_without_devices_briefs_exactly_as_before(self):
+        # BEFORE_AUTO_135 is what develop told PLAN's writers before devices
+        # existed, so a constant device line would fail here
+        plan = copy.deepcopy(PLAN)
+        for n, spec in enumerate(plan["sections"], 1):
+            for devices in ({}, {"devices": []}):
+                with self.subTest(section=n, devices=devices):
+                    self.assertEqual(script.section_story_lines(
+                        dict(spec, **devices), plan, index=n, total=3),
+                        [BEFORE_AUTO_135[n - 1]])
+        good = script.read_json(str(NARRATIVE / "good" / "plan.json"))
+        for n, spec in enumerate(good["sections"], 1):
+            text = "\n".join(script.section_story_lines(spec, good, index=n,
+                                                        total=len(good["sections"])))
+            for word in ("guess", "analogy", "metaphor", "thought experiment"):
+                self.assertNotIn(word, text, (n, word))
 
     def test_the_writer_is_asked_for_each_shots_function_and_what_it_shows(self):
         prompt = self.prompts()["write-01"]
@@ -571,6 +757,41 @@ class Kept(unittest.TestCase):
                 rows = list(csv.DictReader(fh))
         self.assertEqual(rows[0]["function"], "hook")
         self.assertEqual(rows[1]["shows"], "shows 1.2")
+
+
+class Devices(unittest.TestCase):
+    """AUTO-135: a section's devices are kept, and an older one reads as none."""
+
+    def test_from_spec_round_trips_devices_and_an_older_section_has_none(self):
+        spec = dict(PLAN["sections"][1], devices=[ANALOGY, PREDICTION])
+        section = script.Section.from_spec(spec)
+        self.assertEqual(section.devices, [ANALOGY, PREDICTION])
+        again = script.Section.from_spec(json.loads(json.dumps(
+            {**{k: v for k, v in vars(section).items() if k != "shots"}, "shots": []})))
+        self.assertEqual(again.devices, [ANALOGY, PREDICTION])
+        self.assertEqual(script.Section.from_spec(PLAN["sections"][1]).devices, [])
+        self.assertEqual(script.Section.from_spec(dict(PLAN["sections"][1],
+                                                       devices=None)).devices, [])
+
+    def test_script_json_and_markdown_carry_a_sections_devices(self):
+        w = writer()
+        faked(w, plan=with_devices(**{"2": [ANALOGY]}), functions=("hook", "payoff"))
+        data = w.run()
+        sections = script.sections_of(json.loads(json.dumps(data)))
+        self.assertEqual(sections[1].devices, [ANALOGY])
+        self.assertEqual(sections[0].devices, [])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "script.md"
+            script.write_md(str(path), idea(), data, sections)
+            md = path.read_text(encoding="utf-8")
+        line = next(l for l in md.splitlines() if "stands on: a paint layer" in l)
+        self.assertIn(f"analogy: {ANALOGY['device']}", line)
+
+    def test_every_older_fixture_reads_with_no_devices(self):
+        for path in sorted(FIXTURES.glob("*.json")):
+            sections, _ = script.load_script(str(path))
+            with self.subTest(fixture=path.name):
+                self.assertTrue(all(sec.devices == [] for sec in sections))
 
 
 class OlderScripts(unittest.TestCase):
@@ -851,7 +1072,12 @@ class PaperPrompts(unittest.TestCase):
     def test_a_plan_without_a_paper_never_mentions_framing(self):
         calls = every_plan_ask(writer(), writer(outline=OUTLINE_2))
         for call in calls:
-            self.assertNotIn("framing", call["prompt"], call["name"])
+            # AUTO-135's devices have a `framing` of their own (how a thought
+            # experiment is marked as imagined, the guess a prediction asks
+            # for), so the word is in STORY_BRIEF; the paper's framing is not
+            self.assertNotIn(script.PAPER_BRIEF, call["prompt"], call["name"])
+            self.assertNotIn("framing: for each of problem", call["prompt"], call["name"])
+            self.assertNotIn("framing.", call["prompt"], call["name"])
             self.assertNotIn("mechanism_section", call["prompt"], call["name"])
             self.assertNotIn("framing", call["schema"]["properties"], call["name"])
 
@@ -912,32 +1138,34 @@ def plan_prompts() -> dict[str, str]:
 #: AUTO-131: a film without a paper is asked exactly what it was. A later
 #: card that changes the plan's prompts on purpose takes new values here:
 #: AUTO-136 did (the hook's trigger and gap, each section's rehook and
-#: escalation).
+#: escalation), and AUTO-135 did (each section's optional devices, and the
+#: devices row of the rubric in the plan review). PLAN_REVIEW_SCHEMA is
+#: unchanged by both.
 PLAN_PROMPTS = {
     "plan":
-        "5ab291725b3e4492aba7f8c8b921f33c720322975d9c7bdffc741312369822e8",
+        "7fe0effd9bef27c010a1a9543b8b76495fb23ee558884eebcb7506a9e09d7931",
     "plan-2":
-        "6a883933c10e4e643db29d32c0dba30b85153b278cbdb3157b3a7d0ba421ea45",
+        "af4392a2f9cf1dbf1448d017d8cdb4e05cb5ee13dc1698242ed7c00d5d6d170b",
     "plan-2:schema":
-        "2975678ab940e77680c63d2e44d3bef7afd45e2ce5ebc27ca9d56b65fc41f229",
+        "c6df8c868bddc8a5cb17543ff5efb3554585ca67d1bf45150d9f5153afe05e47",
     "plan-fields":
-        "fab7f56015645fbae9b4d92fc9c970ce7dcc4fe9594f1c44ec780e963f158b29",
+        "3111207f99a24a36d50067c7b20b48c7620c75456040cf61f372e119bbc222dc",
     "plan-fields-2":
-        "c142fba0da549a5520ad987ad17d09047835bbff41f995d1db4a4c43d923c426",
+        "b594839c5703db5eb68b8d6c852a86ad8df661d2e276d56e4accdeb763f2de6b",
     "plan-fields-2:schema":
-        "7de89790335c88362fa7fdf73b8c764d70b96eb5a8d279f6ef76ffd51dc3cf7e",
+        "2e192b0310d7e210e841fe6a39026874c2a282f6e70ab1ecd0668702741418fd",
     "plan-fields-retry":
-        "a7be55d88f6d92886c0053e4caf1950f68c3f33d21ff55ed0d1cff05bb0ca2e4",
+        "ab7279639b5d2d806ccd093ec4850200560b02aed46bf55b5feaa012ad5c22a4",
     "plan-fields-retry:schema":
-        "7de89790335c88362fa7fdf73b8c764d70b96eb5a8d279f6ef76ffd51dc3cf7e",
+        "2e192b0310d7e210e841fe6a39026874c2a282f6e70ab1ecd0668702741418fd",
     "plan-fields:schema":
-        "7de89790335c88362fa7fdf73b8c764d70b96eb5a8d279f6ef76ffd51dc3cf7e",
+        "2e192b0310d7e210e841fe6a39026874c2a282f6e70ab1ecd0668702741418fd",
     "plan-review":
-        "e5db955ba2f38d890f187fba2fdbf8644f4c56c33d6abde05b59447b8f5e645d",
+        "2f315dd21c627871fd696bf28367b8ed9c9494782552ed24b4d0edbb9e89c610",
     "plan-review:schema":
         "54df6d553271e47a5d258ee979450bc3def63951c4b93833663c964c5a284c5f",
     "plan:schema":
-        "2975678ab940e77680c63d2e44d3bef7afd45e2ce5ebc27ca9d56b65fc41f229",
+        "c6df8c868bddc8a5cb17543ff5efb3554585ca67d1bf45150d9f5153afe05e47",
 }
 
 

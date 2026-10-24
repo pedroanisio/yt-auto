@@ -1211,6 +1211,10 @@ class StoryFindings(ImproveCase):
         rule = (improve.ROUTE_SCHEMA["properties"]["briefs"]["items"]["properties"]["rules"]
                 ["items"]["properties"]["rule"])
         self.assertIn("voice", rule["enum"])
+        # AUTO-135: the devices row, with its Aim for line, reaches the router
+        devices = narrative.criterion("devices")
+        self.assertIn(f". devices: {devices.question} Aim for: {devices.levels['Excellent']}",
+                      prompt)
 
     def test_a_finding_the_plan_contradicts_is_annotated_and_still_routed(self):
         self.plan_script()

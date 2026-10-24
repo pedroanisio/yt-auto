@@ -88,6 +88,11 @@ FUNCTIONS = ("hook", "context", "setup", "reveal", "rehook", "payoff", "handoff"
 _ENUM_DRIFT = ("A value outside this list is asked again once, then recorded as a "
                "note and treated as having no role.")
 
+#: The same treatment for a device's kind (AUTO-135), where "no role" does
+#: not fit: an off-list kind is read as no device (known_devices).
+_DEVICE_DRIFT = ("A value outside this list is asked again once, then recorded as a "
+                 "note and the device is ignored.")
+
 #: An empty string passes the schema (only presence is checked); the plan's
 #: deterministic pre-checks catch it, so the description says so.
 _NOT_EMPTY = "Never empty: an empty value fails the plan's pre-check."
@@ -175,6 +180,41 @@ STORY_PROPERTIES = {
 STORY_REQUIRED = ["promise", "payoff", "train", "stakes", "viewer_stake", "audience",
                   "reveal", "questions", "ending", "hook"]
 
+#: The ways in a section may use for a mechanism the viewer cannot picture
+#: (AUTO-135): an analogy, a visual metaphor, a guess asked before the
+#: reveal (attention 2) and a thought experiment framed as imagined. Graded
+#: by narrative's `devices` row on whether each maps correctly, never
+#: counted: a mechanism shown directly needs none.
+DEVICE_KINDS = ("analogy", "visual_metaphor", "prediction", "thought_experiment")
+
+#: One device a section declares. Every field is present; the ones a kind
+#: does not use are empty (scored_in 0), so the plan's pre-checks can say
+#: which a kind left out.
+DEVICE = {
+    "type": "object",
+    "properties": {
+        "kind": {"type": "string", "enum": list(DEVICE_KINDS), "description": (
+            "analogy, visual_metaphor, prediction or thought_experiment. " + _DEVICE_DRIFT)},
+        "device": {"type": "string", "description": "what is said or shown"},
+        "maps": {"type": "string", "description": (
+            "for an analogy or a visual_metaphor, each familiar part and the part of the "
+            "mechanism it stands for: \"familiar part -> mechanism part; ...\"; empty "
+            "for the other kinds")},
+        "breaks_at": {"type": "string", "description": (
+            "for an analogy or a visual_metaphor, where the mapping stops being true, to "
+            "be said aloud; empty for the other kinds")},
+        "framing": {"type": "string", "description": (
+            "for a thought_experiment, how it is marked as imagined (\"imagine...\", "
+            "\"suppose...\"); for a prediction, the guess the viewer is asked to make; "
+            "empty for the other kinds")},
+        "scored_in": {"type": "integer", "description": (
+            "for a prediction, the number of the section whose reveal says whether the "
+            "guess was right: this section or a later one, never before the main reveal; "
+            "0 for the other kinds")},
+    },
+    "required": ["kind", "device", "maps", "breaks_at", "framing", "scored_in"],
+}
+
 #: What each section carries for the story, beside its beats.
 SECTION_STORY = {
     "opens": {"type": "array", "items": {"type": "string"},
@@ -194,10 +234,17 @@ SECTION_STORY = {
         "rather than raises")},
     "anchor_visual": {"type": "string",
                       "description": "the one picture this section stands on"},
+    # AUTO-135: optional, and an empty list is valid, so --outline's plan
+    # fields and every older plan still validate
+    "devices": {"type": "array", "items": DEVICE, "description": (
+        "the analogy, visual_metaphor, prediction or thought_experiment this section "
+        "uses for a mechanism the viewer cannot picture; empty when the mechanism is "
+        "shown directly, which needs none")},
 }
 #: rehook and escalation are required keys (AUTO-136); their value may be
 #: empty where the description allows, and the plan's pre-checks say where
-#: it may not.
+#: it may not. `devices` is not required (AUTO-135): a missing device is
+#: never a fault.
 SECTION_STORY_REQUIRED = ["opens", "closes", "connective", "rehook", "escalation",
                           "anchor_visual"]
 
@@ -648,6 +695,10 @@ class Section:
     rehook: str = ""
     escalation: str = ""
     anchor_visual: str = ""
+    # The plan's devices (AUTO-135), kept as written, an off-list kind
+    # included (_record_drift notes it, the readers skip it); [] in a
+    # screenplay written before them.
+    devices: list[dict] = field(default_factory=list)
 
     @classmethod
     def from_spec(cls, raw: dict, shots: list[Shot] | None = None,
@@ -664,7 +715,9 @@ class Section:
                    connective=str(raw.get("connective") or "").strip(),
                    rehook=str(raw.get("rehook") or "").strip(),
                    escalation=str(raw.get("escalation") or "").strip(),
-                   anchor_visual=str(raw.get("anchor_visual") or "").strip())
+                   anchor_visual=str(raw.get("anchor_visual") or "").strip(),
+                   devices=[dict(d) for d in raw.get("devices") or []
+                            if isinstance(d, dict)])
 
     @property
     def words(self) -> int:
@@ -1495,6 +1548,14 @@ STORY_BRIEF = (
     "harder, costlier or more at risk than in the section before, empty only for "
     "section 1 and the final payoff section, which resolves rather than raises; "
     "and anchor_visual, the one picture it stands on.\n"
+    "- devices, optional per section: use an analogy or a visual_metaphor only for a "
+    "mechanism the viewer cannot picture, and give its maps (familiar part -> "
+    "mechanism part; ...) and breaks_at, where the mapping stops being true, to be "
+    "said aloud; at most one prediction at or before the main reveal, its framing the "
+    "guess the viewer is asked to make, scored by the reveal (scored_in, the reveal's "
+    "section); a thought_experiment only when it is framed as imagined (framing: "
+    "\"imagine...\", \"suppose...\"); a mechanism shown directly needs no device; no "
+    "device is better than one that maps nothing.\n"
     "Every plan field is crew-facing: write them in English, like the shot "
     "descriptions, whatever language the film is in, so the later stages can "
     "read them.")
@@ -1574,12 +1635,83 @@ def _question(plan: dict, qid: str) -> str:
     return qid
 
 
+def _said(value) -> str:
+    return " ".join(str(value or "").split())
+
+
+def known_devices(spec) -> list[dict]:
+    """A section's devices whose kind is one of DEVICE_KINDS: an off-list
+    kind is recorded as a note (_record_drift) and read as no device."""
+    devices = spec.get("devices") if isinstance(spec, dict) else None
+    return [d for d in devices or [] if isinstance(d, dict) and d.get("kind") in DEVICE_KINDS]
+
+
+def _scored_in(device: dict) -> int:
+    """A prediction's scored_in as a section number, 0 when it names none.
+    An integral float such as 3.0 passes the harness's integer check
+    (harness._JSON_TYPES), so it is read as 3, not as no section."""
+    at = device.get("scored_in")
+    if isinstance(at, bool):
+        return 0
+    if isinstance(at, float) and at.is_integer():
+        return int(at)
+    return at if isinstance(at, int) else 0
+
+
+def device_lines(spec: dict, plan: dict, *, index: int) -> list[str]:
+    """What a section's writer is told of the devices (AUTO-135): each one
+    the section declares, with its mapping and where it breaks, and each
+    guess an earlier section asked that this section's reveal scores, as
+    QuestionLedger.brief_for tells the closing section of a question."""
+    out = []
+    total = len(plan.get("sections") or [])
+    for d in known_devices(spec):
+        kind, said = d["kind"], _said(d.get("device"))
+        if kind in ("analogy", "visual_metaphor"):
+            line = f"Use this {kind.replace('_', ' ')}: {said}."
+            if _said(d.get("maps")):
+                line += f" It maps {_said(d['maps'])}"
+                line += (f"; say where it breaks: {_said(d['breaks_at'])}."
+                         if _said(d.get("breaks_at")) else ".")
+            elif _said(d.get("breaks_at")):
+                line += f" Say where it breaks: {_said(d['breaks_at'])}."
+            out.append(line)
+        elif kind == "thought_experiment":
+            framing = _said(d.get("framing"))
+            out.append(f"Use this thought experiment: {said}"
+                       + (f", framed as imagined: {framing}." if framing else
+                          ". Say that it is imagined (\"imagine...\", \"suppose...\")."))
+        else:
+            guess = _said(d.get("framing")) or said
+            at = _scored_in(d)
+            if not 0 < at <= total:   # a section the plan does not have: a pre-check's
+                at = 0
+            line = f"Ask the viewer to guess {guess}"
+            line += ("; this section's reveal scores it; say whether that guess was right "
+                     "when the reveal lands." if at == index else
+                     f"; section {at}'s reveal scores it." if at else
+                     "; the reveal scores it.")
+            if said and said != guess:
+                line += f" How to ask: {said}."
+            out.append(line)
+    for n, other in enumerate(plan.get("sections") or [], 1):
+        if n >= index:          # its own guesses are above; a later one is a pre-check's
+            continue
+        for d in known_devices(other):
+            if d["kind"] == "prediction" and _scored_in(d) == index:
+                guess = _said(d.get("framing")) or _said(d.get("device"))
+                out.append(f"Section {n} asked the viewer to guess {guess}; say whether "
+                           "that guess was right when this section's reveal lands.")
+    return out
+
+
 def section_story_lines(spec: dict, plan: dict, *, index: int, total: int) -> list[str]:
     """One section's part of the story: how it joins the one before, what it
-    re-opens, what escalates, the picture it stands on, its place around the
-    reveal and, for the last section, the ending the plan locked. The
-    questions it opens and answers, with the sections that answer and opened
-    them, are the ledger's (`QuestionLedger.brief_for`, AUTO-96)."""
+    re-opens, what escalates, the picture it stands on, the devices it uses
+    and the guesses it scores (AUTO-135), its place around the reveal and,
+    for the last section, the ending the plan locked. The questions it opens
+    and answers, with the sections that answer and opened them, are the
+    ledger's (`QuestionLedger.brief_for`, AUTO-96)."""
     bits = []
     if CONNECTIVE_BRIEF.get(str(spec.get("connective") or "")):
         bits.append(CONNECTIVE_BRIEF[str(spec["connective"])])
@@ -1590,6 +1722,7 @@ def section_story_lines(spec: dict, plan: dict, *, index: int, total: int) -> li
         bits.append(f"What gets harder or costlier here: {spec['escalation']}")
     if str(spec.get("anchor_visual") or "").strip():
         bits.append(f"The picture this section stands on: {spec['anchor_visual']}")
+    bits += device_lines(spec, plan, index=index)
     reveal = plan.get("reveal") if isinstance(plan.get("reveal"), dict) else {}
     if reveal.get("section") == index:
         bits.append("This section holds the film's main reveal"
@@ -1630,8 +1763,10 @@ def section_story_lines(spec: dict, plan: dict, *, index: int, total: int) -> li
 PLAN_REVIEW_FILE = "plan_review.json"
 
 #: The rubric rows a plan can be judged on before a line is written. The
-#: hook and honesty are read in the narration, so they wait for it.
-PLAN_CRITERIA = ("train", "stakes", "open_loops", "reveal_setup", "ending")
+#: hook and honesty are read in the narration, so they wait for it. A
+#: plan's declared devices can be read for their mapping (AUTO-135); a wrong
+#: one comes back as a problem, never alone a reason to send the plan back.
+PLAN_CRITERIA = ("train", "stakes", "open_loops", "reveal_setup", "ending", "devices")
 
 #: A film longer than this is held to at least one planned re-hook. The
 #: number is judging 5's "films over seven minutes", from one leaked
@@ -1754,6 +1889,44 @@ def _rehook_gap(sections: list[dict]) -> tuple[int, int, int | None]:
     return best
 
 
+def _device_checks(plan: dict, sections: list[dict]) -> list[str]:
+    """A declared device that cannot work as declared (AUTO-135): an analogy
+    or visual metaphor with no mapping or no breaking point, a thought
+    experiment not framed as imagined (attention 20), and a prediction no
+    reveal scores (attention 2, a house rule). A section with no device has
+    no line: a missing device is never a finding. An off-list kind is held
+    to nothing, since it is read as no device."""
+    reveal = plan.get("reveal") if isinstance(plan.get("reveal"), dict) else {}
+    at = reveal.get("section") if _section_no(reveal.get("section")) else 0
+    out = []
+    for n, spec in enumerate(sections, 1):
+        for d in known_devices(spec):
+            kind = d["kind"]
+            if kind in ("analogy", "visual_metaphor"):
+                missing = [k for k in ("maps", "breaks_at") if not _said(d.get(k))]
+                if missing:
+                    out.append(f"rule: section {n}'s {kind} has no {' and no '.join(missing)}: "
+                               "it says which familiar part stands for which part of the "
+                               "mechanism, and where the likeness stops being true, aloud")
+            elif kind == "thought_experiment":
+                if not _said(d.get("framing")):
+                    out.append(f"rule: section {n}'s thought_experiment has no framing: an "
+                               "imagined case is said to be imagined (\"imagine...\", "
+                               "\"suppose...\") (attention 20)")
+            else:
+                scored = _scored_in(d)
+                why = ("names no section that scores it" if scored <= 0 else
+                       f"names section {scored}, which the plan does not have"
+                       if scored > len(sections) else
+                       f"is scored in section {scored}, before it is asked" if scored < n else
+                       f"is scored in section {scored}, before the reveal in section {at}"
+                       if at and scored < at else "")
+                if why:
+                    out.append(f"house: section {n}'s prediction {why}: the guess is scored "
+                               "by the main reveal (attention 2)")
+    return out
+
+
 def plan_view(plan: dict) -> dict:
     """The plan as the reviewer and a second plan read it: the story fields
     and each numbered section with its beats and story fields."""
@@ -1771,11 +1944,13 @@ def plan_prechecks(plan: dict, seconds: int, title: str = "") -> list[str]:
     `rule:` for a corpus rule the fields break (an empty story field or
     hook gap, an empty payoff line or one that names nothing the plan names,
     an AND join, a middle section with no escalation or the same one as
-    another, a rehook of a question not in the ledger or already closed, a
-    question with no answer, a reveal before its constraint) and `house:`
-    for the house's priors (a long film with no re-hook, section 2 with
-    none, a stretch longer than REHOOK_EVERY_SECONDS without one, a train
-    with no question). They go to the reviewer to confirm, never decide.
+    another, a rehook of a question not in the ledger or already closed, an
+    analogy or visual metaphor with no maps or no breaks_at, a thought
+    experiment with no framing, a question with no answer, a reveal before
+    its constraint) and `house:` for the house's priors (a long film with no
+    re-hook, section 2 with none, a stretch longer than REHOOK_EVERY_SECONDS
+    without one, a prediction no reveal scores, a train with no question).
+    They go to the reviewer to confirm, never decide.
 
     The plan fields are crew-facing English (STORY_BRIEF), so the English
     stop words read them. "Names nothing the plan names" is the measurable
@@ -1811,6 +1986,7 @@ def plan_prechecks(plan: dict, seconds: int, title: str = "") -> list[str]:
                        "list (structure 1, 3)")
     out += _escalation_lines(sections)
     out += _rehook_lines(plan, sections)
+    out += _device_checks(plan, sections)
     for q in plan.get("questions") or []:
         if not isinstance(q, dict):
             continue
@@ -2846,6 +3022,12 @@ class Screenwriter:
             if connective is not None and connective not in CONNECTIVES:
                 self.findings.append(f"note: section {n}: connective {connective!r} "
                                      "not in the schema; no connective is asked for")
+            devices = section.get("devices")
+            for device in devices if isinstance(devices, list) else []:
+                kind = device.get("kind") if isinstance(device, dict) else None
+                if kind not in DEVICE_KINDS:
+                    self.findings.append(f"note: section {n}: device kind {kind!r} not in "
+                                         "the schema; the device is ignored")
 
     # -- stage one and a half: the plan is read before it is paid for ------
 
@@ -5573,7 +5755,9 @@ def write_md(path: str, idea: Idea, data: dict, sections: list[Section]) -> None
                  (f"answers {', '.join(section.closes)}" if section.closes else ""),
                  (f"re-opens {section.rehook}" if section.rehook else ""),
                  (f"escalates: {section.escalation}" if section.escalation else ""),
-                 (f"stands on: {section.anchor_visual}" if section.anchor_visual else "")]
+                 (f"stands on: {section.anchor_visual}" if section.anchor_visual else ""),
+                 *(f"{d['kind'].replace('_', ' ')}: {_said(d.get('device'))}"
+                   for d in known_devices({"devices": section.devices}))]
         if any(story):
             md += [" · ".join(s for s in story if s), ""]
         for shot in section.shots:

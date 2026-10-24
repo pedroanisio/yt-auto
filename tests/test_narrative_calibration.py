@@ -49,7 +49,8 @@ from tests import test_script_review as review_tests  # noqa: E402
 SEEDED = {"list-plan": "train", "topic-train": "train", "empty-payoff": "ending",
           "and-chain": "train", "reveal-first": "reveal_setup",
           "recap-ending": "ending", "hook-enumerates": "hook",
-          "flat-tension": "tension", "no-trigger": "hook", "lecture-voice": "voice"}
+          "flat-tension": "tension", "no-trigger": "hook", "lecture-voice": "voice",
+          "bad-metaphor": "devices"}
 
 #: The seeded faults only the cold read catches (judging 14): the story
 #: review is read on them and not judged.
@@ -443,6 +444,51 @@ class LectureVoice(unittest.TestCase):
         self.assertEqual(said["verdict"], "consider")
 
 
+class BadMetaphor(unittest.TestCase):
+    """AUTO-135: an analogy that maps the comet's tail onto its path."""
+
+    def test_the_case_loads_with_a_script_and_its_criterion(self):
+        path = cases()["bad-metaphor"]
+        for part in ("plan.json", "script.json", "expected.json"):
+            self.assertTrue((path / part).is_file(), part)
+        expected = load(path / "expected.json")
+        self.assertEqual(expected["criterion"], "devices")
+        self.assertIn("devices", narrative.KEYS)
+        self.assertEqual(expected["verdict"], "consider")
+        self.assertEqual(expected["plan_review"]["verdict"], "accept")
+
+    def test_judge_case_fails_a_reviewer_that_misses_the_wrong_mapping(self):
+        expected = load(FIXTURES / "bad-metaphor" / "expected.json")
+        own = dict(got_for("bad-metaphor"), plan_review="accept")
+        self.assertEqual(narrative.judge_case(expected, own), [])
+        grades = dict(own["grades"], devices="Good")
+        failed = narrative.judge_case(expected, dict(own, grades=grades))
+        self.assertTrue(any("devices graded Good" in line for line in failed), failed)
+        failed = narrative.judge_case(expected, dict(own, verdict="recommend"))
+        self.assertTrue(any("recommend" in line for line in failed), failed)
+        failed = narrative.judge_case(expected, dict(own, flags=[
+            f for f in own["flags"] if f["criterion"] != "devices"]))
+        self.assertTrue(any("no flag on devices" in line for line in failed), failed)
+        # the plan review names the mapping as a problem and accepts: a
+        # wrong mapping is never alone a reason to send the plan back
+        failed = narrative.judge_case(expected, dict(own, plan_review="revise"))
+        self.assertTrue(any("plan review" in line for line in failed), failed)
+
+    def test_the_good_case_grades_devices_excellent_with_no_device(self):
+        said = load(FIXTURES / "good" / "expected.json")["review"]
+        self.assertEqual(said["grades"]["devices"], "Excellent")
+        self.assertEqual(said["verdict"], "recommend")
+        plan = load(FIXTURES / "good" / "plan.json")
+        self.assertFalse([s for s in plan["sections"] if s.get("devices")])
+
+    def test_every_canned_review_validates_and_grades_devices(self):
+        for name, path in cases().items():
+            said = load(path / "expected.json")["review"]
+            with self.subTest(case=name):
+                self.assertEqual(problems(said, narrative.REVIEW_SCHEMA), [])
+                self.assertIn("devices", said["grades"])
+
+
 class LengthAudit(unittest.TestCase):
     def test_the_good_pair_at_the_ceiling_carries_voice_excellent(self):
         good = load(FIXTURES / "good" / "expected.json")["review"]
@@ -479,8 +525,9 @@ class LengthAudit(unittest.TestCase):
     def test_a_pair_at_the_ceiling_is_counted_and_an_audit_all_at_it_sees_nothing(self):
         top = rated("recommend", **{k: "Excellent" for k in narrative.KEYS})
         self.assertTrue(narrative.at_ceiling(top, top))
-        # AUTO-138: the ceiling is every row Excellent, voice too
-        self.assertEqual(len(top["grades"]), 9)
+        # AUTO-138: the ceiling is every row Excellent, voice too (and
+        # AUTO-135's devices)
+        self.assertEqual(len(top["grades"]), 10)
         self.assertFalse(narrative.at_ceiling(top, dict(top, grades=dict(top["grades"],
                                                                          voice="Good"))))
         self.assertFalse(narrative.at_ceiling(top, rated("recommend")))
@@ -969,6 +1016,21 @@ class Docs(unittest.TestCase):
                       "audit passes, and work/review-log.jsonl holds at least 20 rows with "
                       "a human `label`", flat)
         self.assertIn("gate on with N labelled verdicts (20 needed)", flat)
+
+    def test_the_manuals_last_two_faults_are_the_cold_read_cases(self):
+        # "The last two faults have no rubric criterion": the list must end
+        # with the two story-false cases, so a later case goes before them
+        skill = " ".join((ROOT / "ytstudio" / "SKILL.md").read_text(encoding="utf-8").split())
+        start = skill.index("one case per seeded fault (") + len("one case per seeded fault (")
+        faults = skill[start:skill.index("), each `expected.json`", start)].split(", ")
+        self.assertIn("The last two faults have no rubric criterion", skill)
+        self.assertEqual(faults[-2:], ["a script whose premise a cold reader could not "
+                                       "restate", "terms a lay audience is never given"])
+        self.assertIn("an analogy that maps a comet's tail onto its path", faults)
+        seeded = {n: load(p / "expected.json") for n, p in cases().items() if n != "good"}
+        self.assertEqual(len(faults), len(seeded))
+        self.assertEqual(sorted(n for n, e in seeded.items() if e.get("story") is False),
+                         ["jargon", "no-premise"])
 
     def test_the_corpus_readme_notes_the_condition_and_the_cost(self):
         readme = (ROOT / "docs" / "narrative" / "README.md").read_text(encoding="utf-8")

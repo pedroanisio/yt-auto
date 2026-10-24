@@ -32,8 +32,9 @@ from claude_engine import ClaudeError  # noqa: E402
 from ytstudio import cli, harness, narrative, script  # noqa: E402
 
 from tests.test_harness_decisions import FakeEngine, blank  # noqa: E402
-from tests.test_script_plan import (FRAMED, PAPER_CLAIMS, PAPER_DIGEST, PAPER_URL,  # noqa: E402
-                                    PLAN, framing, idea, shots_for)
+from tests.test_script_plan import (ANALOGY, FRAMED, PAPER_CLAIMS, PAPER_DIGEST,  # noqa: E402
+                                    PAPER_URL, PLAN, PREDICTION, framing, idea, shots_for,
+                                    with_devices)
 
 
 def kind(schema):
@@ -289,7 +290,7 @@ class Prompt(unittest.TestCase):
         prompt = self.review_prompt(PLAN)
         self.assertIn(PLAN["train"], prompt)
         self.assertIn(PLAN["ending"]["payoff_line"], prompt)
-        for key in ("train", "stakes", "open_loops", "reveal_setup", "ending"):
+        for key in ("train", "stakes", "open_loops", "reveal_setup", "ending", "devices"):
             self.assertIn(f". {key} [", prompt, key)
         for key in ("hook", "honesty"):
             self.assertNotIn(f". {key} [", prompt, key)
@@ -530,6 +531,110 @@ class OpeningAndTension(unittest.TestCase):
                 else:
                     self.assertEqual(new, [], path.name)
         self.assertEqual(good, [])
+
+
+# --------------------------------------------------------------------------- #
+# the devices, measured from the plan (AUTO-135)
+# --------------------------------------------------------------------------- #
+
+class Devices(unittest.TestCase):
+    """A device that cannot be checked as declared is a line for the reviewer
+    to confirm; a plan with no device has none, since a missing device is
+    never a finding."""
+
+    def device_lines(self, plan):
+        return [c for c in checks(plan, 60) if "device" in c or "analogy" in c
+                or "metaphor" in c or "prediction" in c or "thought_experiment" in c]
+
+    def test_a_plan_with_no_device_or_a_complete_one_has_no_line(self):
+        self.assertEqual(self.device_lines(PLAN), [])
+        self.assertEqual(checks(with_devices(**{"2": [ANALOGY], "1": [PREDICTION]}), 60), [])
+        good = script.read_json(NARRATIVE / "good" / "plan.json")
+        self.assertEqual(script.plan_prechecks(good, 130), [])
+        # the seeded wrong mapping is declared in full: only a reader sees it
+        bad = script.read_json(NARRATIVE / "bad-metaphor" / "plan.json")
+        self.assertEqual(script.plan_prechecks(bad, 130), [])
+
+    def test_an_analogy_or_metaphor_without_maps_or_breaks_at_is_a_rule_line(self):
+        for kind_ in ("analogy", "visual_metaphor"):
+            for missing in ("maps", "breaks_at"):
+                plan = with_devices(**{"2": [dict(ANALOGY, kind=kind_, **{missing: " "})]})
+                with self.subTest(kind=kind_, missing=missing):
+                    found = self.device_lines(plan)
+                    self.assertEqual(len(found), 1, found)
+                    self.assertTrue(found[0].startswith(f"rule: section 2's {kind_} has no "
+                                                        f"{missing}"), found[0])
+        plan = with_devices(**{"2": [dict(ANALOGY, maps="", breaks_at="")]})
+        found = self.device_lines(plan)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("no maps and no breaks_at", found[0])
+
+    def test_a_thought_experiment_with_no_framing_is_a_rule_line(self):
+        imagined = {"kind": "thought_experiment", "device": "a bridge with no paint",
+                    "maps": "", "breaks_at": "", "framing": "", "scored_in": 0}
+        found = self.device_lines(with_devices(**{"3": [imagined]}))
+        self.assertEqual(found, ["rule: section 3's thought_experiment has no framing: an "
+                                 "imagined case is said to be imagined (\"imagine...\", "
+                                 "\"suppose...\") (attention 20)"])
+        imagined["framing"] = "suppose the paint were glass"
+        self.assertEqual(self.device_lines(with_devices(**{"3": [imagined]})), [])
+
+    def test_a_prediction_not_scored_by_the_reveal_is_a_house_line(self):
+        # PLAN's reveal is section 3
+        for scored_in, why in ((0, "names no section that scores it"),
+                               (1, "is scored in section 1, before it is asked"),
+                               (2, "is scored in section 2, before the reveal in section 3"),
+                               (9, "names section 9, which the plan does not have"),
+                               (2.0, "is scored in section 2, before the reveal in section 3")):
+            plan = with_devices(**{"2": [dict(PREDICTION, scored_in=scored_in)]})
+            with self.subTest(scored_in=scored_in):
+                found = self.device_lines(plan)
+                self.assertEqual(len(found), 1, found)
+                self.assertTrue(found[0].startswith(f"house: section 2's prediction {why}"),
+                                found[0])
+                self.assertIn("(attention 2)", found[0])
+        plan = with_devices(**{"1": [dict(PREDICTION, scored_in=3)]})
+        self.assertEqual(self.device_lines(plan), [])
+        # an integral float is an integer to the harness, so it is one here
+        plan = with_devices(**{"2": [dict(PREDICTION, scored_in=3.0)]})
+        self.assertEqual(self.device_lines(plan), [])
+        # a plan without a reveal holds the prediction only to its own section
+        plan = with_devices(**{"2": [dict(PREDICTION, scored_in=2)]})
+        plan["reveal"] = {"section": 0, "constraint_section": 0}
+        self.assertEqual(self.device_lines(plan), [])
+
+    def test_an_off_list_kind_is_not_checked(self):
+        # it is recorded as a note and ignored, so it is held to nothing
+        plan = with_devices(**{"2": [dict(ANALOGY, kind="simile", maps="", breaks_at="")]})
+        self.assertEqual(self.device_lines(plan), [])
+
+    def test_the_lines_reach_the_plan_reviewer_with_the_devices(self):
+        plan = with_devices(**{"2": [dict(ANALOGY, breaks_at="")]})
+        w = script.Screenwriter(idea(), verbose=False, jobs=1, minutes=1, research="",
+                                reviewer_model="opus")
+        calls = faked(w, [verdict("accept")], plan=plan)
+        w.run(review=True)
+        prompt = next(c["prompt"] for c in calls if c["name"] == "plan-review")
+        self.assertIn("- rule: section 2's analogy has no breaks_at", prompt)
+        self.assertIn(ANALOGY["maps"], prompt)
+        self.assertIn(". devices [house]", prompt)
+        devices = narrative.criterion("devices")
+        self.assertIn(" ".join(devices.question.split()), " ".join(prompt.split()))
+        self.assertEqual(script.plan_view(plan)["sections"][1]["devices"],
+                         plan["sections"][1]["devices"])
+        self.assertNotIn("devices", script.plan_view(PLAN)["sections"][1])
+
+    def test_a_wrong_mapping_is_a_problem_and_the_accept_stands(self):
+        said = verdict("accept", [(2, "devices: the analogy maps the paint onto the "
+                                      "steel's strength, so it teaches the paint holds",
+                                   "map the paint onto what it hides")])
+        self.assertEqual(narrative.check_plan_review(said), [])
+        w = writer()
+        calls = faked(w, [said], plan=with_devices(**{"2": [ANALOGY]}))
+        data = w.run(review=True)
+        self.assertNotIn("plan-review-again", names(calls))
+        self.assertNotIn("plan-2", names(calls))
+        self.assertEqual(data["plan_review"]["verdict"], "accept")
 
 
 # --------------------------------------------------------------------------- #

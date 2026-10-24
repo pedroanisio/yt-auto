@@ -248,7 +248,7 @@ class Humour(unittest.TestCase):
         self.assertNotIn("humour and tone as retention devices;", gap)
         self.assertIn("attention 21", gap)
         item = text[text.index("3. **The narrative rubric.**"):text.index("4. **The evidence loop.**")]
-        self.assertIn("nine criteria", item)
+        self.assertIn("ten criteria", item)
         self.assertIn("`rule:unexplained-term`", item)
 
 

@@ -515,6 +515,30 @@ class TensionRow(unittest.TestCase):
         self.assertIn("this line restates the risk", prompt)
 
 
+class DevicesRow(unittest.TestCase):
+    """AUTO-135: the three samples grade devices, and the story reviewer
+    reads the plan's devices; script.md's table shows the row."""
+
+    def test_the_samples_grade_devices_and_the_table_shows_it(self):
+        from tests.test_script_plan import ANALOGY, with_devices
+        w = writer()
+        poor = flag(n=3, section=2, criterion="devices",
+                    problem="the analogy maps the paint onto the steel's strength",
+                    fix="map the paint onto what it hides")
+        said = sample("consider", {"devices": "Poor"}, flags=[poor])
+        calls = faked(w, {"plan": with_devices(**{"2": [ANALOGY]}),
+                          **{f"review-r1-s{k}": said for k in (1, 2, 3)}})
+        data = w.run(review=True, fix=False)
+        story = next(c for c in calls if c["name"] == "review-r1-s1")
+        self.assertIn("devices", story["schema"]["properties"]["grades"]["required"])
+        self.assertIn(ANALOGY["maps"], story["prompt"])
+        record = data["review"]
+        self.assertEqual(record["grades"]["devices"], "Poor")
+        # a Poor devices alone is the samples' consider, never turned into a reject
+        self.assertEqual(record["verdict"], "consider")
+        self.assertIn("| devices | Poor |", script.story_review_lines(record))
+
+
 # --------------------------------------------------------------------------- #
 # failed samples, through the harness
 # --------------------------------------------------------------------------- #

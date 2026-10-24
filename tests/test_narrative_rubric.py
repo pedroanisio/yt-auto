@@ -1,7 +1,7 @@
 """AUTO-91: the narrative rubric, one tuple read by the writer and the reviewer.
 
-`ytstudio/narrative.py` holds the nine criteria a story is judged on (train,
-hook, stakes, open loops, reveal setup, tension, ending, honesty, voice), each with four
+`ytstudio/narrative.py` holds the ten criteria a story is judged on (train,
+hook, stakes, open loops, reveal setup, tension, ending, honesty, voice, devices), each with four
 labelled levels, a worked example, the strength of its lead rule from
 docs/narrative/README.md and the corpus rules it is drawn from; the review's
 schema in the shape of script coverage (judging 12); the plan review's schema;
@@ -66,10 +66,11 @@ def every_text() -> list[str]:
 class Rubric(unittest.TestCase):
     def test_nine_criteria_with_the_named_keys(self):
         # AUTO-136: tension, rising stakes across sections, after reveal_setup;
-        # AUTO-138: voice, the narrator's register, last
+        # AUTO-138 added voice, the narrator's register, and AUTO-135 devices,
+        # after AUTO-136's rows, last
         self.assertEqual([c.key for c in narrative.RUBRIC],
                          ["train", "hook", "stakes", "open_loops", "reveal_setup",
-                          "tension", "ending", "honesty", "voice"])
+                          "tension", "ending", "honesty", "voice", "devices"])
         self.assertEqual(narrative.KEYS, tuple(c.key for c in narrative.RUBRIC))
 
     def test_every_criterion_has_four_labelled_one_line_levels_and_an_example(self):
@@ -417,6 +418,87 @@ class Tension(unittest.TestCase):
         self.assertNotIn("tension", narrative.reviewer_role(plan=True))
 
 
+class Devices(unittest.TestCase):
+    """AUTO-135: the analogies, visual metaphors, guesses and thought
+    experiments a film uses to get the viewer into a mechanism, graded on
+    whether each maps correctly; never a quota."""
+
+    def test_devices_leads_with_attention_2_a_house_rule(self):
+        devices = narrative.criterion("devices")
+        self.assertEqual(devices.rules[0], "attention 2")
+        self.assertEqual(devices.rules, ("attention 2", "direction 24"))
+        self.assertEqual(strengths()["attention 2"], "house")
+        self.assertEqual(devices.strength, "house")
+
+    def test_one_row_grades_the_guess_and_the_anchor_visual_is_not_cited(self):
+        self.assertNotIn("attention 2", narrative.criterion("reveal_setup").rules)
+        self.assertEqual(narrative.criterion("reveal_setup").rules,
+                         ("structure 22", "structure 20"))
+        self.assertNotIn("direction 4", narrative.criterion("devices").rules)
+        graders = [c.key for c in narrative.RUBRIC if "attention 2" in c.rules]
+        self.assertEqual(graders, ["devices"])
+
+    def test_the_reviewer_role_tags_devices_house(self):
+        role = narrative.reviewer_role()
+        self.assertRegex(role, r"\. devices \[house\]")
+        # HOUSE_POOR finally governs a row: the role still says it
+        self.assertIn(narrative.HOUSE_POOR, role)
+
+    def test_the_review_schema_requires_the_grade_and_flags_may_name_it(self):
+        props = narrative.REVIEW_SCHEMA["properties"]
+        self.assertIn("devices", props["grades"]["required"])
+        self.assertEqual(props["grades"]["properties"]["devices"]["enum"],
+                         list(narrative.LEVELS))
+        self.assertIn("devices", props["flags"]["items"]["properties"]["criterion"]["enum"])
+        seeded = narrative.review_schema(delta=True, seed=3)
+        self.assertIn("devices", seeded["properties"]["grades"]["required"])
+
+    def test_the_plan_review_reads_the_row(self):
+        text = narrative.rubric_text("reviewer", keys=script.PLAN_CRITERIA)
+        self.assertIn(". devices [house]", text)
+        self.assertIn("devices", script.PLAN_CRITERIA)
+        # the plan review still gives no grade, and its schema is unchanged
+        self.assertNotIn("grades", narrative.PLAN_REVIEW_SCHEMA["properties"])
+
+    def test_the_question_names_mapping_breaking_point_guess_and_shown_directly(self):
+        devices = narrative.criterion("devices")
+        q = devices.question
+        for words in ("map", "where it breaks", "guess", "before the main reveal",
+                      "scored by that reveal", "showing it directly", "something false"):
+            self.assertIn(words, q)
+        # a fault honesty already grades is not graded twice
+        self.assertIn("unframed imagining", q)
+        self.assertIn("is honesty's, not this row's", q)
+        self.assertIn("shown directly", devices.levels["Excellent"])
+        self.assertIn("decoration that maps nothing", devices.levels["Fair"])
+        self.assertIn("something false", devices.levels["Poor"])
+        self.assertIn("windsock", devices.example)
+        self.assertIn("smoke behind a train", devices.example)
+
+    def test_no_level_asks_for_a_count_of_devices(self):
+        # A missing device is never a fault: a mechanism shown directly
+        # reaches Excellent with none.
+        for level, line in narrative.criterion("devices").levels.items():
+            with self.subTest(level=level):
+                self.assertIsNone(re.search(r"\b(at least|every section|one per)\b", line),
+                                  line)
+
+    def test_a_poor_devices_alone_is_a_consider_never_a_recommend(self):
+        grades = {k: "Good" for k in narrative.KEYS}
+        grades.update(devices="Poor", honesty="Excellent")
+        said = review("consider", grades, [flag("devices", section=3, n=7, quote="q")])
+        said["first_minute"].update(trigger="question", gap="g")
+        self.assertEqual(problems(said, narrative.REVIEW_SCHEMA), [])
+        self.assertEqual(narrative.check_review(said), [])
+        found = narrative.check_review(dict(said, verdict="recommend"))
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("devices", found[0])
+        # devices is not one of the four criteria that decide a film
+        role = " ".join(narrative.reviewer_role().split())
+        deciding = role[role.index("one of the four"):role.index("is Poor")]
+        self.assertNotIn("devices", deciding)
+
+
 class Trigger(unittest.TestCase):
     """AUTO-136: the opening's curiosity trigger (attention 1)."""
 
@@ -480,8 +562,9 @@ HUMOUR_ALLOWED = ("any humour lands on the point being made",
 class Voice(unittest.TestCase):
     """AUTO-138: the narrator's register, graded before voice is paid for."""
 
-    def test_voice_is_last_and_leads_with_attention_25_at_its_readme_strength(self):
-        self.assertEqual(narrative.KEYS[-1], "voice")
+    def test_voice_follows_honesty_and_leads_with_attention_25_at_its_readme_strength(self):
+        # AUTO-135's devices row comes after it
+        self.assertEqual(list(narrative.KEYS[-3:]), ["honesty", "voice", "devices"])
         voice = narrative.criterion("voice")
         self.assertEqual(voice.rules, ("attention 25", "attention 18", "direction 24",
                                        "attention 21"))
@@ -602,7 +685,8 @@ def at(doc: dict, dotted: str):
 SEEDED = {"list-plan": "train", "topic-train": "train", "empty-payoff": "ending",
           "and-chain": "train", "reveal-first": "reveal_setup",
           "recap-ending": "ending", "hook-enumerates": "hook",
-          "flat-tension": "tension", "no-trigger": "hook", "lecture-voice": "voice"}
+          "flat-tension": "tension", "no-trigger": "hook", "lecture-voice": "voice",
+          "bad-metaphor": "devices"}
 
 #: The faults only the cold read catches: a premise a first-time viewer
 #: could not restate, and terms a lay audience is never given. judging 14
@@ -763,6 +847,57 @@ class Fixtures(unittest.TestCase):
         self.assertTrue(said["list-plan"]["sections_advancing_none"])
         self.assertFalse(said["topic-train"]["train_ok"])
         self.assertFalse(said["empty-payoff"]["payoff_concrete"])
+
+    def test_every_review_grades_devices(self):
+        # AUTO-135: the good case shows its mechanism directly, with no
+        # device, and still grades it Excellent: devices are never a quota
+        for name, path in cases().items():
+            with self.subTest(case=name):
+                self.assertIn(load(path / "expected.json")["review"]["grades"]["devices"],
+                              narrative.LEVELS)
+        good = load(FIXTURES / "good" / "expected.json")["review"]
+        self.assertEqual(good["grades"]["devices"], "Excellent")
+        self.assertEqual(good["verdict"], "recommend")
+        self.assertNotIn("devices", json.dumps(load(FIXTURES / "good" / "plan.json")))
+
+    def test_the_bad_metaphor_case_is_good_with_one_wrong_mapping(self):
+        good = {n: load(FIXTURES / "good" / n) for n in ("plan.json", "script.json")}
+        bad = {n: load(FIXTURES / "bad-metaphor" / n) for n in ("plan.json", "script.json")}
+        plan = bad["plan.json"]
+        devices = plan["sections"][2].pop("devices")
+        self.assertEqual(plan, good["plan.json"])
+        self.assertEqual([d["kind"] for d in devices], ["analogy"])
+        self.assertIn("path", devices[0]["maps"])
+        self.assertTrue(devices[0]["breaks_at"].strip())
+        # the narration speaks the analogy the plan declares, in the reveal
+        screenplay = bad["script.json"]["sections"]
+        self.assertEqual(screenplay[:2], good["script.json"]["sections"][:2])
+        self.assertEqual(screenplay[3], good["script.json"]["sections"][3])
+        reveal = screenplay[2]["shots"][0]["narration"]
+        self.assertIn("like smoke behind a train", reveal)
+        # the fault is added to the reveal, never in place of it: the good
+        # film's statement of the wind stays, word for word, so only devices
+        # can fairly grade low
+        good_reveal = good["script.json"]["sections"][2]["shots"][0]["narration"]
+        self.assertTrue(reveal.startswith(good_reveal), reveal)
+        self.assertEqual(sum(s["seconds"] for s in screenplay[2]["shots"]),
+                         sum(s["seconds"] for s in good["script.json"]["sections"][2]["shots"]))
+        self.assertEqual([s["n"] for s in screenplay[2]["shots"]], [7, 8])
+        self.assertIn("flew through that stream", screenplay[2]["shots"][1]["narration"])
+        expected = load(FIXTURES / "bad-metaphor" / "expected.json")
+        self.assertEqual((expected["criterion"], expected["verdict"]), ("devices", "consider"))
+        grades = expected["review"]["grades"]
+        self.assertEqual(grades["devices"], "Poor")
+        self.assertEqual(grades["honesty"], "Excellent")
+        self.assertFalse([k for k, v in grades.items()
+                          if k != "devices" and v not in ("Excellent", "Good")], grades)
+        # the plan review names the wrong mapping and still accepts
+        plan_review = expected["plan_review"]
+        self.assertEqual(plan_review["verdict"], "accept")
+        self.assertEqual(problems(plan_review, narrative.PLAN_REVIEW_SCHEMA), [])
+        self.assertEqual(narrative.check_plan_review(plan_review), [])
+        self.assertTrue([p for p in plan_review["problems"]
+                         if p["section"] == 3 and "analogy" in p["problem"]], plan_review)
 
     def test_every_review_grades_tension_and_names_the_trigger_it_heard(self):
         # AUTO-136: a plan-only case has no narration to hear
