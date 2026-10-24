@@ -6849,6 +6849,18 @@ def run_revise(args, idea: Idea, project) -> int:
         claim_table=claim_table(dossier) if statused else None, verbose=not args.quiet)
     if statused:
         cap(shots, writer.claims)
+    elif has_status(sections):
+        # No dossier to cap the lines again (AUTO-132): the ceiling
+        # script.json stored is kept for reading them, since a ceiling only
+        # ever lowers a status, so script.md never prints a line stronger
+        # than its own record allows. The record's ceilings are not touched.
+        stored = {raw.get("label"): raw.get("ceiling", "")
+                  for sec in data["sections"] for raw in sec["shots"]}
+        for s in shots:
+            if stored.get(s.label) in LADDER:
+                s.ceiling = stored[s.label]
+        print("note: no dossier: each line's status is read at the ceiling "
+              "script.json stored, not capped again", file=sys.stderr)
 
     # Every shot goes in, to read the named lines in; only the flagged
     # numbers are answered, and only they can change.

@@ -504,6 +504,35 @@ class ReviseStatus(unittest.TestCase):
         self.assertTrue(any("shot 3" in m and "proven" in m for m in failed), failed)
 
 
+class ReviseStatusNoDossier(unittest.TestCase):
+    """`yt script --revise` on a screenplay with statuses whose dossier is
+    gone: nothing can cap it again, so the ceiling script.json stored is
+    kept for reading it (it only ever lowers a line), and the run says so."""
+
+    fake, run_stage, record = ReviseLabels.fake, ReviseLabels.run_stage, ReviseLabels.record
+
+    def setUp(self):
+        ReviseLabels.setUp(self)
+        data = status_screenplay()
+        data["check"] = {}
+        third = data["sections"][0]["shots"][2]
+        third.update(claim="c4", status="established", ceiling="hypothesis")
+        data["cited_claims"] = {"c1": STATUS_DOSSIER["claims"][0] | {"standing":
+                                                                     "established"},
+                                "c4": {"standing": "limitation", "confidence": "high",
+                                       "caveat": "", "source_kind": "primary"}}
+        write_json(self.film / "script.json", data)
+
+    def test_the_status_line_is_never_stronger_than_the_stored_ceiling(self):
+        self.assertEqual(self.run_stage("--revise", "1.3"), 0, self.said)
+        md = (self.film / "script.md").read_text()
+        self.assertIn("**STATUS** — hypothesis (c4, limitation), capped from established",
+                      md)
+        self.assertNotIn("**STATUS** — established (c4", md)
+        self.assertEqual(shots_of(self.record())["1.3"]["ceiling"], "hypothesis")
+        self.assertIn("no dossier", self.said)
+
+
 class ReviseOlderScreenplay(unittest.TestCase):
     fake, run_stage, record = ReviseLabels.fake, ReviseLabels.run_stage, ReviseLabels.record
     setUp = ReviseLabels.setUp
