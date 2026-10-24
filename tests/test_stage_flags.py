@@ -20,15 +20,17 @@ SKILL = ROOT / "ytstudio" / "SKILL.md"
 
 #: concept -> (canonical flag, old spelling -> stage that used it, stages that take it)
 CONCEPTS = {
-    "rounds": ("--rounds", {"--revisions": "vfx"}, ("keyframe", "vfx", "probe", "script")),
+    "rounds": ("--rounds", {"--revisions": "vfx"}, ("keyframe", "vfx", "probe", "script",
+                                                    "package")),
     "reviewer": ("--reviewer-model", {}, ("keyframe", "vfx", "probe", "run", "script", "build",
-                                          "styles")),
+                                          "styles", "package")),
     "review budget": ("--review-budget-usd", {}, ("keyframe", "vfx", "probe", "run", "script",
                                                   "build")),
     "bar": ("--bar", {"--author-bar": "vfx"}, ("keyframe", "vfx", "probe")),
     "budget": ("--budget-usd", {"--budget": "research"},
                ("keyframe", "vfx", "probe", "research", "assess", "improve", "run")),
-    "fresh": ("--fresh", {}, ("research", "keyframe", "vfx", "props", "script", "styles")),
+    "fresh": ("--fresh", {}, ("research", "keyframe", "vfx", "props", "script", "styles",
+                              "package")),
     "jobs": ("--jobs", {}, ("ideas", "research", "styles", "script", "keyframe", "vfx",
                             "probe", "sound")),
     # the shots sent back to the screenplay for one revision (AUTO-95)
@@ -37,7 +39,7 @@ CONCEPTS = {
 #: Stages that author with or ask a model; render and the local fetchers do not.
 MODEL_STAGES = ("ideas", "research", "styles", "script", "keyframe", "voice", "vfx", "sound",
                 "build", "retime", "pilot", "gate", "review", "qa", "improve", "assess",
-                "props", "probe")
+                "props", "probe", "package")
 
 
 def stages() -> dict:

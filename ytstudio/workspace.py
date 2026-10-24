@@ -60,6 +60,8 @@ ARTIFACTS = {
     "review": "review.json",
     "qa": "qa.json",
     "retention": "retention.json",
+    # the upload set `yt package` writes (AUTO-147); not a stage `yt run` walks
+    "package": "package/package.json",
 }
 
 #: Stage name -> the artifact that proves it ran, in pipeline order.
