@@ -1346,12 +1346,13 @@ class ViewerQuiz(unittest.TestCase):
         self.assertNotIn("quiz_failed", record["cold_read"])
 
     def test_an_item_left_unanswered_or_answered_off_the_letters_is_missed(self):
-        after = {"answers": [{"id": "K1", "choice": "b"}, {"id": "K2", "choice": "E"},
+        after = {"answers": [{"id": " k1 ", "choice": "b"}, {"id": "K2", "choice": "E"},
                              {"id": "K4", "choice": "unsure"}, {"id": "K9", "choice": "C"}]}
         w = writer()
         faked(w, quizzed(after=after))
         quiz = w.run(review=True)["review"]["cold_read"]["quiz"]
-        # a lower-case letter is the letter; nothing else counts
+        # a lower-case letter is the letter, and an id read as its item's
+        # whatever its case or spaces; nothing else counts
         self.assertEqual(quiz["after"], 1)
         self.assertEqual([(m["id"], m["chose"]) for m in quiz["missed_after"]],
                          [("K2", "E"), ("K3", ""), ("K4", "unsure")])
@@ -1386,7 +1387,8 @@ class ViewerQuiz(unittest.TestCase):
         w = writer()
         calls = faked(w, quizzed({"quiz-again": dup}, quiz=dup))
         record = w.run(review=True)["review"]
-        self.assertIn("quiz_failed", record["cold_read"])
+        self.assertEqual(len(record["cold_read"]["quiz_failed"]), 1)
+        self.assertTrue(record["cold_read"]["quiz_failed"][0].startswith("quiz:"))
         self.assertNotIn("quiz", record["cold_read"])
         self.assertFalse({"quiz-before", "quiz-after"} & set(names(calls)))
         self.assertEqual(record["verdict"], "recommend")
@@ -1395,16 +1397,55 @@ class ViewerQuiz(unittest.TestCase):
         w = writer()
         calls = faked(w, quizzed({"quiz": failing}))
         record = w.run(review=True)["review"]
-        self.assertIn("timed out", record["cold_read"]["quiz_failed"])
+        self.assertEqual(len(record["cold_read"]["quiz_failed"]), 1)
+        self.assertIn("timed out", record["cold_read"]["quiz_failed"][0])
         self.assertNotIn("quiz-again", names(calls))
 
     def test_a_failed_quiz_before_still_scores_the_after(self):
         w = writer()
         faked(w, quizzed({"quiz-before": failing}))
         cold = w.run(review=True)["review"]["cold_read"]
-        self.assertIn("quiz-before", cold["quiz_failed"])
+        self.assertEqual([f.split(":")[0] for f in cold["quiz_failed"]], ["quiz-before"])
         self.assertEqual((cold["quiz"]["before"], cold["quiz"]["after"], cold["quiz"]["gain"]),
                          (None, 3, None))
+
+    def test_both_quiz_calls_failing_are_both_recorded_and_the_before_kept_by_a_revision(self):
+        w = writer()
+        faked(w, quizzed({"quiz-before": failing, "quiz-after": failing}))
+        cold = w.run(review=True)["review"]["cold_read"]
+        self.assertEqual([f.split(":")[0] for f in cold["quiz_failed"]],
+                         ["quiz-before", "quiz-after"])
+        # a revision that stands: the before failed for good, the first
+        # after is replaced by the second, which is scored
+        w = writer()
+        answers = consider_then(("recommend", "better"))
+        answers["revise-story-1"] = {"fixes": [{"n": 1, "action": "fix",
+                                                "narration": "The river is empty now.",
+                                                "why": "opens on the picture"}]}
+        right = {"answers": [{"id": i["id"], "choice": i["answer"]} for i in QUIZ["items"]]}
+        faked(w, quizzed(dict(answers, **{"quiz-before": failing, "quiz-after": failing,
+                                          "quiz-after-r2": right})))
+        cold = w.run(review=True)["review"]["cold_read"]
+        self.assertEqual([f.split(":")[0] for f in cold["quiz_failed"]], ["quiz-before"])
+        self.assertIn("timed out", cold["quiz_failed"][0])
+        self.assertEqual((cold["quiz"]["before"], cold["quiz"]["after"], cold["quiz"]["gain"],
+                          cold["quiz"]["round"]), (None, 4, None, 2))
+
+    def test_a_question_closed_in_no_readable_section_is_left_out_of_the_quiz(self):
+        # a hand-edited or older plan: a bad `closed_in` leaves that question
+        # out of the author's prompt, and the review and the quiz stand
+        plan = copy.deepcopy(PLAN)
+        for n, closed in enumerate(("s3", "2.1", None, [2], True), 1):
+            plan["questions"].append({"id": f"QX{n}", "text": f"ODD-QUESTION-{n}?",
+                                      "opened_in": 1, "closed_in": closed})
+        w = writer()
+        calls = faked(w, quizzed({"plan": plan}))
+        record = w.run(review=True)["review"]
+        prompt = next(c for c in calls if c["name"] == "quiz")["prompt"]
+        self.assertIn("What brought the bridge down?", prompt)
+        self.assertNotIn("ODD-QUESTION", prompt)
+        self.assertEqual(record["cold_read"]["quiz"]["after"], 3)
+        self.assertNotIn("quiz_failed", record["cold_read"])
 
     def test_a_revision_that_stands_is_quizzed_again_on_the_same_items(self):
         w = writer()
@@ -1498,8 +1539,12 @@ class ViewerQuizReader(EngineCase):
         for c in taken:
             for text in private:
                 self.assertNotIn(text, c["prompt"] + c["system"], text)
-        # the author has its own role, and is never the cold reader
+        # the author has its own role, and is never the cold reader; it is
+        # shown the research and no house or notes
         self.assertIn(script.QUIZ_ROLE, author[0]["system"])
+        self.assertIn("RESEARCH-ONLY-TEXT", author[0]["prompt"])
+        for text in ("HOUSE-ONLY-TEXT", "FEEDBACK-ONLY-TEXT"):
+            self.assertNotIn(text, author[0]["system"] + author[0]["prompt"], text)
         self.assertNotEqual(author[0]["system"], cold["system"])
         quiz = data["review"]["cold_read"]["quiz"]
         self.assertEqual((quiz["before"], quiz["after"], quiz["gain"]), (1, 3, 2))
@@ -1543,7 +1588,8 @@ class ViewerQuizCommand(unittest.TestCase):
             failed = self.outcome("--review", answers=quizzed(dict(base, **{
                 "quiz-after": failing})))
             self.assertIsNone(fine["quiz_failed"])
-            self.assertIn("quiz-after", failed["quiz_failed"])
+            self.assertEqual([f.split(":")[0] for f in failed["quiz_failed"]],
+                             ["quiz-after"])
             self.assertIsNone(failed["quiz"]["after"])
             for key in ("code", "verdict", "flags", "unresolved", "findings", "narration"):
                 self.assertEqual(fine[key], failed[key], key)

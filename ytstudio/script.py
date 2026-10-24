@@ -1672,14 +1672,17 @@ def _quiz_sheet(items: list[dict]) -> str:
 def quiz_score(items: list[dict], answers) -> tuple[int, list[dict]]:
     """How many items the reader chose the keyed letter on, unweighted, and
     the items it missed with what it chose (empty when it gave no answer).
-    Only the letters are compared: nothing here reads the narration."""
+    An answer's id is read as its item's whatever its case or spaces, as
+    its letter is. Only the letters are compared: nothing here reads the
+    narration."""
     chosen: dict[str, str] = {}
     for a in (answers.get("answers") if isinstance(answers, dict) else None) or []:
         if isinstance(a, dict):
-            chosen.setdefault(str(a.get("id")), str(a.get("choice") or "").strip())
+            chosen.setdefault(str(a.get("id") or "").strip().upper(),
+                              str(a.get("choice") or "").strip())
     right, missed = 0, []
     for item in items:
-        chose = chosen.get(str(item["id"]), "")
+        chose = chosen.get(str(item["id"]).strip().upper(), "")
         if chose.upper() == item["answer"]:
             right += 1
         else:
@@ -1795,8 +1798,9 @@ def quiz_lines(cold) -> list[str]:
             out.append(f"- missed {m.get('id')} \"{m.get('question')}\": chose "
                        f"{m.get('chose') or 'nothing'}, keyed {m.get('key')}"
                        + (f" (from {m['from']})" if m.get("from") else ""))
-    if cold.get("quiz_failed"):
-        out.append(f"Viewer quiz failed: {cold['quiz_failed']}")
+    failed = cold.get("quiz_failed")
+    for reason in [failed] if isinstance(failed, str) else failed or []:
+        out.append(f"Viewer quiz failed: {reason}")
     return out + [""] if out else []
 
 
@@ -3013,7 +3017,7 @@ class Screenwriter:
     def viewer_quiz(self, shots: list[Shot], plan: dict, round_no: int = 1,
                     prior: dict | None = None) -> dict:
         """The viewer quiz (AUTO-115), for the cold read's record: `quiz`,
-        and `quiz_failed` when a call failed.
+        and `quiz_failed`, one line per failed call, when any failed.
 
         On the first draft its author (`quiz`) is shown the train, the
         misconception, the plan's questions the film answers (one left open
@@ -3026,21 +3030,23 @@ class Screenwriter:
         the quiz of the draft a revision replaced: its items and its before
         score stand, since neither reads the narration, and only
         `quiz-after-r<round>` is asked. A failed call is recorded and the
-        review stands: the quiz is a measure, never a verdict or a flag."""
+        review stands: the quiz is a measure, never a verdict or a flag. A
+        failed author or before is carried with what it left behind; the
+        first after's failure is not, since the new after replaces it."""
         prior = prior if isinstance(prior, dict) else {}
-        out: dict = {}
+        failed: list[str] = []
         if prior.get("quiz"):
             quiz = {k: prior["quiz"][k] for k in ("items", "before")}
-            if str(prior.get("quiz_failed") or "").startswith("quiz-before"):
-                out["quiz_failed"] = prior["quiz_failed"]
+            failed += [f for f in prior.get("quiz_failed") or []
+                       if f.startswith("quiz-before")]
         elif prior.get("quiz_failed"):
-            return {"quiz_failed": prior["quiz_failed"]}
+            return {"quiz_failed": list(prior["quiz_failed"])}
         else:
             try:
                 items = self._quiz_items(plan)
             except ClaudeError as exc:
                 self._say(f"[review] quiz failed ({exc})")
-                return {"quiz_failed": f"quiz: {exc}"}
+                return {"quiz_failed": [f"quiz: {exc}"]}
             quiz = {"items": items, "before": None}
             try:
                 quiz["before"] = quiz_score(items, self._ask(
@@ -3048,7 +3054,7 @@ class Screenwriter:
                     QUIZ_ANSWERS_SCHEMA))[0]
             except ClaudeError as exc:
                 self._say(f"[review] quiz-before failed ({exc})")
-                out["quiz_failed"] = f"quiz-before: {exc}"
+                failed.append(f"quiz-before: {exc}")
         tag = "" if round_no == 1 else f"-r{round_no}"
         quiz.update(after=None, gain=None, missed_after=[], round=round_no)
         try:
@@ -3060,18 +3066,20 @@ class Screenwriter:
             quiz["after"], quiz["missed_after"] = quiz_score(quiz["items"], got)
         except ClaudeError as exc:
             self._say(f"[review] quiz-after{tag} failed ({exc})")
-            out["quiz_failed"] = f"quiz-after{tag}: {exc}"
+            failed.append(f"quiz-after{tag}: {exc}")
         if quiz["before"] is not None and quiz["after"] is not None:
             quiz["gain"] = quiz["after"] - quiz["before"]
-        out["quiz"] = quiz
-        return out
+        return {"quiz": quiz, **({"quiz_failed": failed} if failed else {})}
 
     def _quiz_items(self, plan: dict) -> list[dict]:
         """The quiz's items from its author, asked once more as
         `quiz-again` with what was wrong; a ClaudeError when the second set
         is still unusable."""
+        # a `closed_in` that is not a section number (a hand-edited or older
+        # plan) leaves its question out rather than failing the review
         asked = [q for q in plan.get("questions") or []
-                 if isinstance(q, dict) and int(q.get("closed_in") or 0) > 0]
+                 if isinstance(q, dict) and type(q.get("closed_in")) is int
+                 and q["closed_in"] > 0]
         parts = [f"The question the film is built on (its train):\n"
                  f"{str(plan.get('train') or '').strip()}"]
         if str(plan.get("misconception") or "").strip():
