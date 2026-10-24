@@ -1043,10 +1043,19 @@ every section that finished and `--recover` reads them back. `yt vfx
 rounds (as it reads `SIGUSR1`) to end every section on its best reviewed round
 and run the film-wide stages.
 
+A gate error that a later round of the same section fixed is a candidate
+engine lesson (AUTO-111): the section's reviewer distils it (the SDK elements,
+one sentence, the finding it answers), it is checked for unknown elements and
+for any colour or style token, and a general one is appended to
+`work/lessons-log.jsonl`. A score gain is never a lesson. `yt vfx --lessons`
+lists the rows and `yt vfx --promote-lesson N` appends one to
+`ytstudio/kit/engine_facts.json` with its own `verified_on`, which every
+later kit's `ENGINE.md` prints; nothing else writes that file.
+
 `--per-section` · `--jobs` · `--budget-usd` per section · `--stage-budget-usd` ·
 `--reviewer-model` · `--review-budget-usd` · `--budget-hours` · `--width` ·
 `--height` · `--rounds` · `--bar` · `--inspo` · `--fresh` · `--finish-now` ·
-`--recover`
+`--recover` · `--lessons` · `--promote-lesson`
 
 ### `yt sound`
 
