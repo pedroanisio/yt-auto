@@ -1,0 +1,333 @@
+"""A vfx section carried forward keeps its review only while its inputs are
+the ones that review judged (AUTO-114).
+
+`yt vfx --sections N` carries every section not named, and `--relook` the
+approved look's, by copying the old record. The copy used to keep `score`,
+`review` and `best_round` whatever had changed since: a section whose
+narration was rewritten kept a review of a screenplay that no longer
+exists, and the competition compared that old score with a new attempt
+judged against the new one. Each section record now carries
+`inputs_sha256`, a digest of the JSON the author was handed (the section's
+shots with their measured timings, its effects group, the style tokens and
+the approved look's digest). A carried record whose digest differs moves
+its review under `inherited` and says it was not reviewed against the
+current inputs; no model is asked. The model is never called here:
+`harness.ENGINE` is the fake of tests/test_vfx_world.py.
+"""
+
+from __future__ import annotations
+
+import copy
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from tests import test_vfx_world as world
+from tests.test_vfx_world import EFFECTS, SECTION, STYLE, WORLD_DOC, FakeEngine, varied_png
+from ytstudio import harness, vfx
+from ytstudio.core import Idea
+from ytstudio.research import Dossier
+
+GROUP = {"section": "Open", "seconds": 15, "effects": EFFECTS, "cuts": []}
+TOKENS = {"ink": "#FFFFFF"}
+
+
+def renarrated(section: dict, label: str = "1.2", words: str = "a new line") -> dict:
+    out = copy.deepcopy(section)
+    for shot in out["shots"]:
+        if shot["label"] == label:
+            shot["narration"] = words
+    return out
+
+
+def second(section: dict) -> dict:
+    """The fixture section as a second section, "Two", with shots 2.x."""
+    out = copy.deepcopy(section)
+    out["heading"] = "Two"
+    for shot in out["shots"]:
+        shot["label"] = "2" + shot["label"][1:]
+    return out
+
+
+EFFECTS_TWO = [dict(e, id=e["id"].replace("open", "two"), section="Two",
+                    shots=["2" + s[1:] for s in e["shots"]]) for e in EFFECTS]
+GROUP_TWO = {"section": "Two", "seconds": 15, "effects": EFFECTS_TWO, "cuts": []}
+
+
+class Digest(unittest.TestCase):
+    def digest(self, section=SECTION, group=GROUP, tokens=TOKENS, look="") -> str:
+        return vfx.section_inputs_digest(section, group, tokens, look)
+
+    def test_it_is_a_sha256_stable_across_key_order(self):
+        base = self.digest()
+        self.assertRegex(base, r"^[0-9a-f]{64}$")
+        shuffled = {k: SECTION[k] for k in reversed(list(SECTION))}
+        shuffled["shots"] = [{k: s[k] for k in reversed(list(s))} for s in SECTION["shots"]]
+        group = {k: GROUP[k] for k in reversed(list(GROUP))}
+        tokens = {"b": "#000000", "a": "#FFFFFF"}
+        self.assertEqual(self.digest(shuffled, group), base)
+        self.assertEqual(self.digest(tokens=tokens),
+                         self.digest(tokens={"a": "#FFFFFF", "b": "#000000"}))
+        self.assertEqual(self.digest(), base)
+
+    def test_it_changes_with_what_the_author_was_handed(self):
+        base = self.digest()
+        retimed = copy.deepcopy(SECTION)
+        retimed["shots"][1]["seconds"] = 4.5
+        moved = copy.deepcopy(SECTION)
+        moved["shots"][2]["at"] = 7.25
+        redrawn = copy.deepcopy(SECTION)
+        redrawn["shots"][0]["visual"] = "a different picture"
+        replanned = dict(GROUP, effects=EFFECTS[:2])
+        cut = dict(GROUP, cuts=[{"before": "1.3"}])
+        for changed in (self.digest(renarrated(SECTION)), self.digest(retimed),
+                        self.digest(moved), self.digest(redrawn),
+                        self.digest(group=replanned), self.digest(group=cut),
+                        self.digest(tokens={"ink": "#000000"}),
+                        self.digest(look="abc123")):
+            self.assertNotEqual(changed, base)
+
+    def test_an_integer_and_a_float_second_are_the_same_input(self):
+        floats = copy.deepcopy(SECTION)
+        for shot in floats["shots"]:
+            shot["at"], shot["seconds"] = float(shot["at"]), float(shot["seconds"])
+        self.assertEqual(self.digest(floats), self.digest())
+
+
+def reviewed_record(**over) -> dict:
+    record = {"n": 2, "section": "Two", "file": "vfx/v01/02-two.scene.xml", "version": "v01",
+              "score": 8, "review": {"score": 8, "summary": "good"}, "best_round": 1,
+              "findings": [], "inputs_sha256": "a" * 64}
+    record.update(over)
+    return record
+
+
+class Inherit(unittest.TestCase):
+    """vfx.inherit_review: the rule every carry follows."""
+
+    def test_a_matching_digest_keeps_the_review(self):
+        record = reviewed_record()
+        self.assertEqual(vfx.inherit_review(record, "a" * 64), record)
+
+    def test_a_changed_digest_moves_the_review_under_inherited(self):
+        out = vfx.inherit_review(reviewed_record(), "b" * 64)
+        self.assertIsNone(out["score"])
+        self.assertIsNone(out["review"])
+        self.assertIsNone(out["best_round"])
+        self.assertIs(out["reviewed"], False)
+        self.assertEqual(out["inputs_sha256"], "b" * 64)
+        self.assertEqual(out["inherited"], {"score": 8, "review": {"score": 8, "summary": "good"},
+                                            "best_round": 1, "from_version": "v01",
+                                            "inputs_sha256": "a" * 64})
+        self.assertIn("warning: carried: section 2's inputs changed since its review; "
+                      "it was not reviewed against them", out["findings"])
+        self.assertFalse(vfx.has_errors(out))          # it stays in the film
+
+    def test_a_record_without_a_digest_counts_as_changed(self):
+        record = reviewed_record()
+        del record["inputs_sha256"]
+        out = vfx.inherit_review(record, "b" * 64)
+        self.assertIs(out["reviewed"], False)
+        self.assertIsNone(out["inherited"]["inputs_sha256"])
+        self.assertEqual(out["inherited"]["score"], 8)
+
+    def test_carried_again_it_keeps_the_first_inherited_review_and_one_warning(self):
+        once = vfx.inherit_review(reviewed_record(), "b" * 64)
+        again = vfx.inherit_review(dict(once, version="v02"), "c" * 64)
+        self.assertEqual(again["inherited"]["score"], 8)
+        self.assertEqual(again["inherited"]["from_version"], "v01")
+        self.assertEqual(sum(1 for f in again["findings"] if f.startswith("warning: carried")), 1)
+        # carried with the inputs it was marked against, it stays unreviewed
+        self.assertEqual(vfx.inherit_review(once, "b" * 64), once)
+
+    def test_an_inherited_score_has_no_say(self):
+        out = vfx.inherit_review(reviewed_record(), "b" * 64)
+        self.assertFalse(vfx.passes_gate(out))
+        self.assertFalse(vfx.keeps_previous(out, {"score": 5, "findings": []}))
+        self.assertIsNone(vfx.best_round([dict(out, round=1)]))
+
+
+class Carry(unittest.TestCase):
+    """The carry path and the competition of VfxPlanner.author."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self._engine = harness.ENGINE
+        harness.ENGINE = FakeEngine
+        FakeEngine.stream_calls, FakeEngine.json_calls, FakeEngine.reviews = [], [], []
+        FakeEngine.doc = WORLD_DOC
+        FakeEngine.time_out_on = 0
+        FakeEngine.docs, FakeEngine.crash_on = [], 0
+        FakeEngine.stale_frame = False
+        self.planner = self.make(set())
+
+    def tearDown(self):
+        harness.ENGINE = self._engine
+        self._tmp.cleanup()
+
+    def make(self, sections_only: set[int], **kw) -> vfx.VfxPlanner:
+        idea = Idea(title="T", genre="g", description="d")
+        bundle = {"idea": idea, "outline": {}, "claims": [], "assets": [], "premise": ""}
+        return vfx.VfxPlanner(bundle, Dossier(self.root, idea, at=self.root),
+                              vfx.Workspace(self.root), model="sonnet", sections=[SECTION],
+                              revisions=0, author_bar=7.0, verbose=False,
+                              sections_only=sections_only, **kw)
+
+    def author(self, sections=(SECTION,), groups=(GROUP,), tokens=TOKENS):
+        real = world.author_program
+
+        def program(cwd, name, doc):
+            # each section's world is named after its heading
+            real(cwd, name, doc.replace("world-open", "world-" + name[3:-10]))
+
+        with patch.object(vfx.render, "engine_validate", lambda data, **kw: []), \
+                patch.object(vfx.render, "engine_render_still",
+                             lambda xml, at, **kw: (varied_png(), "rendered locally")), \
+                patch.object(vfx, "encode_findings", lambda *a, **k: []), \
+                patch.object(world, "author_program", program):
+            return self.planner.author({"sections": list(sections)}, list(groups), STYLE,
+                                       dict(tokens))
+
+    def first(self, score: float = 8) -> dict:
+        FakeEngine.reviews = [{"frames": [], "score": score, "summary": "first"}]
+        return self.author()[0]
+
+    # -- every record says what it judged ------------------------------------
+
+    def test_an_authored_record_carries_its_inputs_digest(self):
+        record = self.first()
+        self.assertEqual(record["inputs_sha256"],
+                         vfx.section_inputs_digest(SECTION, GROUP, TOKENS, ""))
+        saved = vfx.Workspace(self.root, version="v01").read_record(Path(record["file"]).name)
+        self.assertEqual(saved["inputs_sha256"], record["inputs_sha256"])
+
+    def test_a_failed_authoring_carries_it_too(self):
+        with patch.object(self.planner, "_author_one", side_effect=RuntimeError("boom")):
+            record = self.author()[0]
+        self.assertEqual(record["inputs_sha256"],
+                         vfx.section_inputs_digest(SECTION, GROUP, TOKENS, ""))
+
+    # -- the carry ------------------------------------------------------------
+
+    def test_a_carried_section_with_the_same_inputs_keeps_its_review(self):
+        first = self.first()
+        self.planner = self.make({2})
+        carried = self.author()[0]
+        self.assertEqual(carried["carried_from"], "v01")
+        self.assertEqual(carried["score"], 8)
+        self.assertEqual(carried["review"], first["review"])
+        self.assertNotIn("inherited", carried)
+        self.assertNotIn("reviewed", carried)
+
+    def test_a_carried_section_whose_narration_changed_is_unreviewed(self):
+        first = self.first()
+        FakeEngine.stream_calls = []
+        self.planner = self.make({2})
+        carried = self.author(sections=(renarrated(SECTION),))[0]
+        self.assertFalse(FakeEngine.stream_calls)                    # no model was asked
+        self.assertEqual(carried["version"], "v02")
+        self.assertEqual(carried["carried_from"], "v01")
+        self.assertTrue((self.root / carried["file"]).is_file())     # the files come along
+        self.assertIsNone(carried["score"])
+        self.assertIsNone(carried["review"])
+        self.assertIsNone(carried["best_round"])
+        self.assertIs(carried["reviewed"], False)
+        self.assertEqual(carried["inherited"]["score"], 8)
+        self.assertEqual(carried["inherited"]["review"], first["review"])
+        self.assertEqual(carried["inherited"]["from_version"], "v01")
+        self.assertEqual(carried["inherited"]["inputs_sha256"], first["inputs_sha256"])
+        self.assertEqual(carried["inputs_sha256"],
+                         vfx.section_inputs_digest(renarrated(SECTION), GROUP, TOKENS, ""))
+        self.assertIn("warning: carried: section 1's inputs changed since its review; "
+                      "it was not reviewed against them", carried["findings"])
+        # the section's record on disk says the same
+        saved = vfx.Workspace(self.root, version="v02").read_record(Path(carried["file"]).name)
+        self.assertIs(saved["reviewed"], False)
+
+    def test_new_tokens_unreview_a_carried_section(self):
+        self.first()
+        self.planner = self.make({2})
+        carried = self.author(tokens={"ink": "#000000"})[0]
+        self.assertIs(carried["reviewed"], False)
+
+    def test_a_carried_record_without_a_digest_counts_as_changed(self):
+        first = self.first()
+        stripped = dict(first)
+        del stripped["inputs_sha256"]
+        self.planner.dossier.save("12-author", [stripped])
+        self.planner = self.make({2})
+        carried = self.author()[0]
+        self.assertIs(carried["reviewed"], False)
+        self.assertEqual(carried["inherited"]["score"], 8)
+
+    def test_only_the_changed_section_loses_its_review(self):
+        """The card's acceptance: the script changed section 2's narration and
+        the operator asks for section 3; section 1 keeps its review."""
+        FakeEngine.reviews = [{"frames": [], "score": 8, "summary": "ok"}] * 2
+        self.author(sections=(SECTION, second(SECTION)), groups=(GROUP, GROUP_TWO))
+        self.planner = self.make({3})
+        out = {r["n"]: r for r in self.author(
+            sections=(SECTION, renarrated(second(SECTION), "2.2")), groups=(GROUP, GROUP_TWO))}
+        self.assertEqual(out[1]["score"], 8)
+        self.assertNotIn("inherited", out[1])
+        self.assertIs(out[2]["reviewed"], False)
+        self.assertEqual(out[2]["inherited"]["score"], 8)
+
+    # -- the competition ------------------------------------------------------
+
+    def test_a_stale_previous_version_does_not_beat_a_sound_attempt_on_score(self):
+        self.first(score=8)
+        self.planner = self.make({1})
+        FakeEngine.reviews = [{"frames": [], "score": 5, "summary": "worse"}]
+        out = self.author(sections=(renarrated(SECTION),))[0]
+        self.assertEqual(out["version"], "v02")
+        self.assertEqual(out["score"], 5)
+        self.assertNotIn("kept_from", out)
+
+    def test_a_previous_version_with_the_same_inputs_still_competes_on_score(self):
+        self.first(score=8)
+        self.planner = self.make({1})
+        FakeEngine.reviews = [{"frames": [], "score": 5, "summary": "worse"}]
+        out = self.author()[0]
+        self.assertEqual(out["kept_from"], "v01")
+        self.assertEqual(out["score"], 8)
+
+    def test_a_stale_previous_version_kept_over_a_broken_attempt_is_unreviewed(self):
+        self.first(score=8)
+        self.planner = self.make({1})
+        with patch.object(self.planner, "_author_one", side_effect=RuntimeError("boom")):
+            out = self.author(sections=(renarrated(SECTION),))[0]
+        self.assertEqual(out["kept_from"], "v01")
+        self.assertIsNone(out["score"])
+        self.assertIs(out["reviewed"], False)
+        self.assertEqual(out["inherited"]["score"], 8)
+        self.assertEqual(out["inputs_sha256"],
+                         vfx.section_inputs_digest(renarrated(SECTION), GROUP, TOKENS, ""))
+
+    def test_keep_previous_applies_the_same_rule(self):
+        first = self.first(score=8)
+        ws = vfx.Workspace(self.root)
+        ws.new_version()
+        attempt = dict(first, file=f"{ws.rel}/{Path(first['file']).name}", version=ws.version,
+                       score=None, findings=["error: boom"])
+        same = ws.keep_previous(first, attempt, 1, inputs_sha256=first["inputs_sha256"])
+        self.assertEqual(same["score"], 8)
+        changed = ws.keep_previous(first, attempt, 1, inputs_sha256="b" * 64)
+        self.assertIsNone(changed["score"])
+        self.assertEqual(changed["inherited"]["score"], 8)
+        self.assertEqual(changed["kept_from"], "v01")
+
+
+class Manual(unittest.TestCase):
+    def test_the_skill_says_a_carried_section_can_lose_its_review(self):
+        text = " ".join((Path(__file__).resolve().parent.parent / "ytstudio" / "SKILL.md")
+                        .read_text(encoding="utf-8").split())
+        for needle in ("inputs_sha256", "inherited", "`reviewed: false`",
+                       "video_sha256", "scene_sha256"):
+            self.assertIn(needle, text)
+
+
+if __name__ == "__main__":
+    unittest.main()
