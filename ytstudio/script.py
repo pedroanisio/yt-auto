@@ -425,7 +425,10 @@ LEDGER_REVISE_SCHEMA = {
 #: A section whose pictures do not carry its beat (direction 4), a bare
 #: large number (attention 15, peer-reviewed) and a claim no picture shows
 #: bind the picture; an unsignposted list (attention 22, d = 0.38, a small
-#: effect) is revised but binds nothing downstream.
+#: effect) is revised but binds nothing downstream. A static process
+#: (AUTO-144: `shows` asks for a change over time, `visual` is one fixed
+#: state; direction 7, direction 9) binds the picture too, and vfx re-checks
+#: it on the authored documents.
 PICTURE_FLAGS = {
     "picture:section": ("important", "change what the section's shots show so its beat "
                                      "can be read from the pictures alone"),
@@ -435,7 +438,16 @@ PICTURE_FLAGS = {
                                            "claims, or cut the claim from the line"),
     "picture:unsignposted-list": ("minor", "announce the count, or label each part on "
                                            "screen as it is named"),
+    "picture:static-process": ("important", "show the change: a simulation, a step "
+                                            "animation or a build the viewer watches, one "
+                                            "state per beat"),
 }
+
+#: The picture-check's kinds a writer's `keep` does not answer: the line can
+#: carry a comparison or a claim, but it cannot make a still picture show a
+#: change over time, so a kept one stands, with the writer's reason, and
+#: binds the picture as before.
+PICTURE_UNKEPT = ("picture:static-process",)
 
 CHECK_SCHEMA = {
     "type": "object",
@@ -3455,7 +3467,7 @@ class Screenwriter:
             "its number: the claim its pictures alone carry, written first, then whether "
             "that is its beat, what is missing and the shot numbers where the thread is "
             "lost. Under reports list only the shots with a bare number, an unshown "
-            "claim or an unsignposted list, by their number."])
+            "claim, an unsignposted list or a static process, by their number."])
         wanted = [row["section"] for row in listing]
 
         def unread(review: dict) -> list[int]:
@@ -3514,13 +3526,19 @@ class Screenwriter:
                   else {"applied": [], "kept": [], "failed": False})
         why = {k["n"]: k["why"] for k in result["kept"]}
         changed = {r["n"] for r in result["applied"]}
-        kept = [{**f, "kept": why[f["n"]]} for f in flags if f["n"] in why]
-        standing = [f for f in flags if f["n"] not in why and f["n"] not in changed]
+        # A kind a keep does not answer (PICTURE_UNKEPT) stands with the reason.
+        kept = [{**f, "kept": why[f["n"]]} for f in flags
+                if f["n"] in why and f["kind"] not in PICTURE_UNKEPT]
+        standing = [{**f, "kept": why[f["n"]]} if f["n"] in why else f for f in flags
+                    if f["n"] not in changed
+                    and (f["n"] not in why or f["kind"] in PICTURE_UNKEPT)]
         for f in kept:
             self.findings.append(f"note: {f['problem']}; kept by the writer: {f['kept']}")
         for f in standing:
             said = ("; not revised (--report-only)" if not fix
                     else "; revise-picture failed" if result["failed"]
+                    else f"; kept by the writer ({f['kept']}), but a line cannot make a "
+                         "still picture show the change" if f.get("kept")
                     else "; still standing after the revision")
             self.findings.append(f"warning: {f['problem']}{said}")
         self._say(f"[picture] {len(flags)} flag(s), {len(changed)} shot(s) revised, "
@@ -4441,8 +4459,8 @@ def picture_flags(review: dict, sections: list[Section]) -> list[dict]:
     their `kind` and `section`: a section whose pictures do not carry its
     beat (`carries_beat` false) is a flag on each shot the reading says the
     thread is lost at, or on the section's first shot when it names none of
-    its own; each shot report's bare number, unshown claim and unsignposted
-    list is a flag on that shot. Severity and fix are PICTURE_FLAGS'. What
+    its own; each shot report's bare number, unshown claim, unsignposted
+    list and static process is a flag on that shot. Severity and fix are PICTURE_FLAGS'. What
     the model said is kept in the problem, verbatim; nothing is judged
     here (invariant 3), and a row naming no shot of the film is dropped."""
     review = review if isinstance(review, dict) else {}
@@ -4477,7 +4495,8 @@ def picture_flags(review: dict, sections: list[Section]) -> list[dict]:
         i, shot = by_n[_number(rep.get("n"))]
         for key, kind in (("bare_number", "picture:bare-number"),
                           ("unshown_claim", "picture:unshown-claim"),
-                          ("unsignposted_list", "picture:unsignposted-list")):
+                          ("unsignposted_list", "picture:unsignposted-list"),
+                          ("static_process", "picture:static-process")):
             text = " ".join(str(rep.get(key) or "").split())
             if text:
                 flag(kind, i, shot, text)
