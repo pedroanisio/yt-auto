@@ -1102,8 +1102,8 @@ def crosscheck_targets(claims: list[dict], outline: dict | None, gaps: dict | No
         if str(c.get("number") or "").strip():
             return 2
         return None
-    ranked = sorted(((t, n, c) for n, c in enumerate(rows) if (t := tier(c)) is not None),
-                    key=lambda row: row[:2])
+    tiers = [(tier(c), n, c) for n, c in enumerate(rows)]
+    ranked = sorted((row for row in tiers if row[0] is not None), key=lambda row: row[:2])
     return [c for _, _, c in ranked][:max(0, int(limit or 0))]
 
 
