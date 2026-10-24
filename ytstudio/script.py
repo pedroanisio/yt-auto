@@ -7471,8 +7471,13 @@ def run_revise(args, idea: Idea, project, *, reviewer=None) -> int:
         earlier=channel.for_project(workspace.work_dir(args), project),
         # The changed lines' fact-check is read by --reviewer-model (AUTO-133);
         # the revise itself is the author's. `reviewer` is the one `pool`
-        # resolved to, already checked against --model by run().
+        # resolved to, already checked against --model by run(). On a
+        # screenplay with statuses the same reviewer reads the changed lines'
+        # status again (verify-status-labels, AUTO-132): a status blocker is
+        # a fact-check blocker, and the gate tells the operator to clear it
+        # with this command, so this command must be able to read it away.
         reviewer=reviewer, fact_reviewer_model=args.reviewer_model if dossier else None,
+        reviewer_model=args.reviewer_model if statused else None,
         verbose=not args.quiet)
     if statused:
         cap(shots, writer.claims)
@@ -7590,9 +7595,9 @@ def run_revise(args, idea: Idea, project, *, reviewer=None) -> int:
         # are the new check's: they spoke of text that is gone.
         renewed = {s.n for s in moved}
         check = dict(data.get("check") or {})
-        # A status the revise's own check did not read again (no reviewer of
-        # another family is brought here) is still the last reading's: its
-        # flags on a changed line keep binding (AUTO-132).
+        # A status the revise's own check did not read again (its reading
+        # failed) is still the last reading's: its flags on a changed line
+        # keep binding (AUTO-132).
         restatus = again.get("status") if isinstance(again.get("status"), dict) else {}
         reread = bool(restatus) and "not_evidenced" not in restatus
         check["flags"] = ([f for f in check.get("flags") or []
@@ -7610,9 +7615,9 @@ def run_revise(args, idea: Idea, project, *, reviewer=None) -> int:
             # who read the changed lines (AUTO-133)
             check["model"] = again["model"]
         if restatus:
-            # No reviewer is brought here, so the changed lines' status is
-            # recorded as not evidenced, never as passed (AUTO-132), beside
-            # the reading the stage made, which stands.
+            # A reading that failed is recorded as not evidenced, never as
+            # passed (AUTO-132), beside the reading the stage made, which
+            # stands.
             last = check.get("status") if isinstance(check.get("status"), dict) else {}
             check["status"] = (restatus if reread or not last
                                else {**last, "recheck_labels": restatus})

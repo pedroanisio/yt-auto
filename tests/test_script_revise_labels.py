@@ -21,7 +21,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from ytstudio import cli, script  # noqa: E402
+from ytstudio import cli, script, vfx  # noqa: E402
 from ytstudio.core import write_json  # noqa: E402
 
 TITLE = "Why the bridge fell"
@@ -522,20 +522,51 @@ def status_screenplay() -> dict:
 
 class ReviseStatus(unittest.TestCase):
     """`yt script --revise` on a screenplay with statuses: the ceiling is the
-    dossier's on load, and a status blocker on a changed line is never
-    dropped by a revise that brought no reviewer to read it again."""
+    dossier's on load, the changed lines' status is read again by
+    --reviewer-model (AUTO-133), so the command the fact-check gate prints
+    can clear a status blocker, and a status blocker on a changed line is
+    never dropped by a revise whose status reading did not read it again."""
 
-    fake, run_stage, record = ReviseLabels.fake, ReviseLabels.run_stage, ReviseLabels.record
+    run_stage, record = ReviseLabels.run_stage, ReviseLabels.record
+
+    def fake(self, writer, name, prompt, schema):
+        if name.startswith("verify-status"):
+            # who reads the status: the reviewer, never the author
+            self.status_reader.append(writer.reviewer_model)
+            if self.status_down:
+                self.calls.append((name, prompt, schema))
+                raise script.ClaudeError("the reviewer is down")
+        return ReviseLabels.fake(self, writer, name, prompt, schema)
 
     def setUp(self):
         ReviseLabels.setUp(self)
         write_json(self.film / "script.json", status_screenplay())
         write_json(self.film / "dossier.json", STATUS_DOSSIER)
         self.before = (self.film / "script.json").read_bytes()
+        self.status_reader: list = []
+        self.status_down = False
+
+    def test_the_revise_clears_a_status_blocker_its_reviewer_reads_away(self):
+        # the gate's own command (`--revise 1.3`) clears the row once the
+        # changed line's status is read again and nothing is flagged
+        self.assertEqual(self.run_stage("--revise", "1.3"), 0, self.said)
+        self.assertEqual([c[0] for c in self.calls],
+                         ["revise-labels", "verify-labels", "verify-status-labels"])
+        self.assertEqual(self.status_reader, [vfx.REVIEWER_MODEL])
+        self.assertTrue((self.film / "narration.txt").exists())
+        check = self.record()["check"]
+        self.assertEqual(script.fact_blockers(check, [
+            s for sec in self.record()["sections"] for s in sec["shots"]]), [])
+        self.assertNotIn("fact-check blocker", self.said)
+
+    def test_the_status_reader_is_the_reviewer_model_it_is_given(self):
+        self.run_stage("--revise", "1.3", "--reviewer-model", "haiku")
+        self.assertEqual(self.status_reader, ["haiku"])
 
     def test_the_revise_reads_the_claim_ids_and_the_capped_status(self):
-        # the status blocker on 1.3 still stands, so the stage exits 1
-        # (AUTO-133); the record is written all the same
+        # the status reading fails, so the blocker on 1.3 still stands and
+        # the stage exits 1 (AUTO-133); the record is written all the same
+        self.status_down = True
         self.assertEqual(self.run_stage("--revise", "1.3"), 1, self.said)
         prompt = self.calls[0][1]
         self.assertEqual(self.calls[0][0], "revise-labels")
@@ -547,25 +578,34 @@ class ReviseStatus(unittest.TestCase):
         self.assertTrue(any("rule:unframed-status: shot 1.3" in f
                             for f in record["findings"]), record["findings"])
 
-    def test_a_status_blocker_on_a_changed_line_still_binds(self):
+    def test_a_status_blocker_the_revise_could_not_read_again_still_binds(self):
         # it binds the gate too (AUTO-133): narration.txt waits for it
+        self.status_down = True
         self.assertEqual(self.run_stage("--revise", "1.3"), 1, self.said)
         self.assertFalse((self.film / "narration.txt").exists())
         self.assertIn("error: fact-check blocker at 1.3: presented as proven", self.said)
-        self.assertEqual([c[0] for c in self.calls], ["revise-labels", "verify-labels"])
+        self.assertEqual([c[0] for c in self.calls],
+                         ["revise-labels", "verify-labels", "verify-status-labels"])
         check = self.record()["check"]
         self.assertIn(BLOCKER, [{k: f[k] for k in BLOCKER} for f in check["flags"]])
         self.assertIn(3, [f["n"] for f in check["unresolved"]])
         # the reading the reviewer made stands; the revise's is beside it
         self.assertEqual(check["status"]["verdict"], "shot 3 overclaims")
         self.assertEqual(check["status"]["model"], "gpt-5")
-        self.assertEqual(check["status"]["recheck_labels"]["not_evidenced"],
-                         script.STATUS_UNREAD)
-        self.assertIn("not_evidenced: verify-status-labels "
-                      f"({script.STATUS_UNREAD})", self.record()["findings"])
+        unread = check["status"]["recheck_labels"]["not_evidenced"]
+        self.assertIn("the reviewer is down", unread)
+        self.assertIn(f"not_evidenced: verify-status-labels ({unread})",
+                      self.record()["findings"])
+
+    def test_a_status_blocker_the_reviewer_flags_again_still_binds(self):
+        self.checks = [[], [dict(BLOCKER)]]
+        self.assertEqual(self.run_stage("--revise", "1.3"), 1, self.said)
+        self.assertIn("error: fact-check blocker at 1.3: presented as proven", self.said)
+        self.assertEqual(self.status_reader, [vfx.REVIEWER_MODEL])
 
     def test_the_doctor_still_fails_the_blocker(self):
         from ytstudio import doctor, workspace
+        self.status_down = True
         self.assertEqual(self.run_stage("--revise", "1.3"), 1, self.said)
         report = doctor.check_project(workspace.Project(self.film))
         failed = [f.message for f in report.findings
