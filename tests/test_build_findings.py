@@ -253,6 +253,18 @@ class DesignFallback(_Project):
         self.assertNotIn("fallback", manifest["design"])
         self.assertEqual(manifest["design"]["source"], "styles.json")
 
+    def test_the_warning_is_printed_once_however_many_findings(self):
+        import contextlib
+        import io
+        _, manifest = self.build(_edit(), audio=False, styles=None)
+        manifest["findings"] = [f"warning: other {n}" for n in range(20)] + manifest["findings"]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            build.print_build(manifest)
+        head, sdk = out.getvalue().split("the SDK raised", 1)
+        self.assertIn("warning: design:", head)          # above the cut at 12
+        self.assertNotIn("warning: design:", sdk)
+
     def test_design_fallback_is_pure(self):
         for styles, why in ((None, "no styles.json"),
                             ({"styles": []}, "styles.json lists no treatment"),
