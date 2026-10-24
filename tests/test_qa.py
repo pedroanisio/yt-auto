@@ -807,6 +807,11 @@ class StoryStage(unittest.TestCase):
         self.assertEqual(card["accuracy"], {"fact_check": [
             {"n": 2, "label": "1.2", "problem": "the wind speed is not in the research",
              "fix": "drop the number", "kept": False}]})
+        # never briefed under "Blocking, already proven": the scorecard prompt
+        # stays what it was, so its cached pass is not asked again, and the
+        # reviewer has no cue to file it a second time as a qa finding
+        self.assertNotIn("the wind speed is not in the research", self.seen["prompt"])
+        self.assertNotIn("fact-check: blocker", self.seen["prompt"])
 
     # AUTO-156: qa.json says whether the judge is the one the QA fixtures
     # passed, and a line under the verdict says so; nothing reads it to gate.

@@ -2760,11 +2760,11 @@ def mechanical_blockers(build: dict, *, gate: dict | None, voice: dict | None = 
     """What the manifests already prove blocks publication, before anyone
     looks: build.json's placeholders, errors and editorial blockers, the
     fallback palette, a failed gate, a fact-check blocker standing in
-    script.json (`fact_rows`, read only when `script` is given, AUTO-133),
+    script.json (`fact_lines`, read only when `script` is given, AUTO-133),
     and a scratch narration in voice.json (`scratch_blockers`, read only
-    when `voice` is given). qa.run asks scratch_blockers on its own and
-    adds it after the brief, so the reviewer's "Blocking, already proven"
-    stays what it was."""
+    when `voice` is given). qa.run asks fact_lines and scratch_blockers on
+    its own and adds them after the brief, so the reviewer's "Blocking,
+    already proven" stays what it was."""
     out = []
     for label in build.get("placeholders", []):
         out.append(f"placeholder card at shot {label} (disqualifying)")
@@ -2786,10 +2786,16 @@ def mechanical_blockers(build: dict, *, gate: dict | None, voice: dict | None = 
             out.append(f"gate: {row.get('what', '')}")
         if not (gate.get("triage") or {}).get("blocking"):
             out.append(f"gate failed (exit {gate.get('exit')})")
-    out += [f"fact-check: blocker at {row['label']}: {row['problem']}"
-            for row in fact_rows(script)]
+    out += fact_lines(script)
     out += scratch_blockers(voice, where)
     return out
+
+
+def fact_lines(script: dict | None) -> list[str]:
+    """One blocking line per fact-check blocker standing in script.json
+    (`fact_rows`, AUTO-133)."""
+    return [f"fact-check: blocker at {row['label']}: {row['problem']}"
+            for row in fact_rows(script)]
 
 
 def fact_rows(script: dict | None) -> list[dict]:
@@ -4972,10 +4978,13 @@ def run(args) -> int:
     where = "" if project.standalone else f"--project {project.root}"
     # A scratch narration (AUTO-152) blocks the verdict but is not briefed:
     # briefed under "Blocking, already proven" it would change the scorecard
-    # prompt of every stub or espeak film and ask its cached pass again.
-    blockers = (mechanical_blockers(build, gate=gate, script=script)
+    # prompt of every stub or espeak film and ask its cached pass again. A
+    # standing fact-check blocker (AUTO-133) is not briefed either, for the
+    # same reason, and so the reviewer is not cued to file it again as its
+    # own finding beside the fact-check row improve routes.
+    blockers = (mechanical_blockers(build, gate=gate)
                 + vfx_blockers(vfx_doc) + problems)
-    scratch = scratch_blockers(voice, where)
+    unbriefed = scratch_blockers(voice, where) + fact_lines(script)
     previous = chosen
     for earlier in [] if named else reversed(_passes(home)):
         if earlier != pass_dir:
@@ -5163,7 +5172,7 @@ def run(args) -> int:
     # No score, the bar or the overall reads it.
     card["audio_basis"] = audio_basis(listening, silent=silent(build))
     card["not_evidenced"] += basis_lines(card["audio_basis"], where)
-    all_blocking = blockers + scratch
+    all_blocking = blockers + unbriefed
     all_blocking += [str(b) for b in card.get("blocking", []) if str(b) not in all_blocking]
     all_blocking += [f"{f.get('problem')} at {f.get('timestamp')}s"
                      for f in card.get("findings", []) if f.get("severity") == "blocking"]
