@@ -132,7 +132,10 @@ words alone) to a decision of their own after the scoring,
 `<pass>-recheck`: stands, gone or cannot_tell in this pass's stills, with
 why. The answers are filed under `recheck` (scorecard, qa.json's tally and
 a findings.md section) and nothing that scores reads them. Off, nothing is
-asked and nothing is filed.
+asked and nothing is filed. The blindness is the prompt's, not the file
+system's: the reviewer still runs in `qa/<pass>` able to read files, so it
+could open a sibling pass's scorecard.json or findings.md. Nothing in its
+prompt names or points to one, but no tool rule forbids it either.
 
 Two scores inside the samples' spread cannot say whether a revision helped,
 so each pass is also judged against the previous kept cut side by side
