@@ -1520,7 +1520,10 @@ def plan_prechecks(plan: dict, seconds: int, title: str = "") -> list[str]:
         out.append(f"house: a film over seven minutes with no rehook in any section "
                    f"({timecode(seconds)}): plan one where the opening hands over and at "
                    "the later drop points (structure 23, judging 5)")
-    if len(sections) > 1 and not str(sections[1].get("rehook") or "").strip():
+    # The seven-minute line already asks for a rehook where the opening hands
+    # over, so section 2's line would be a second line for one fault.
+    if (len(sections) > 1 and not long_unhooked
+            and not str(sections[1].get("rehook") or "").strip()):
         out.append("house: section 2 has no rehook, at the boundary where the opening "
                    "hands over (structure 23)")
     gap, start, end = _rehook_gap(sections)
@@ -1946,7 +1949,10 @@ def heard_trigger(samples: list[dict]) -> str:
     guess."""
     if len(samples) < 2:
         return "not_evidenced"
-    labels = [(s.get("first_minute") or {}).get("trigger") for s in samples]
+    # a drifted answer may keep first_minute as a string or a list: it
+    # names no trigger
+    labels = [s["first_minute"].get("trigger") if isinstance(s.get("first_minute"), dict)
+              else None for s in samples]
     counts: dict[str, int] = {}
     for label in labels:
         if label in narrative.HEARD_TRIGGERS:
@@ -3466,8 +3472,13 @@ class Screenwriter:
                 "fix": "make the train's question and obstacle heard in the narration",
                 "by": "cold-read-match"})
         if current["verdict"] in ("consider", "reject"):
+            # An opening heard to pull no trigger is the hook's whole-script
+            # fault: the samples' own whole-script hook flags, worded their
+            # own way, name the same opening, so one warning stands for it.
+            heard_none = record["trigger"]["heard"] == "none"
             plan_flags += [f for f in current["flags"] if f.get("severity") in REVISABLE
-                           and not int(f.get("n", 0) or 0) and not int(f.get("section", 0) or 0)]
+                           and not int(f.get("n", 0) or 0) and not int(f.get("section", 0) or 0)
+                           and not (heard_none and f.get("criterion") == "hook")]
         seen = set()
         for f in plan_flags:
             key = (f.get("criterion"), str(f.get("problem")))
