@@ -687,9 +687,14 @@ decisions cached before this change are asked once more, by the new reader.
 A blocker still standing after the revisions leaves `narration.txt`
 unwritten and exits 1, naming the shot and the `yt script --revise <label>
 --why "..."` that clears it (a whole-script one, `script-wide`, names `yt
-script --verify --notes "..."`); `--report-only` records it and goes on.
-`yt doctor`, `yt qa` and `yt improve` read the same list
-(`script.fact_blockers`).
+script --verify --notes "..."`, as does one on a shot the screenplay no
+longer has); `--report-only` records it and goes on. `--revise` always
+fact-checks its changed lines when there is a dossier, and on a screenplay
+with statuses `--reviewer-model` reads their status again too, so it can
+clear a status blocker; `--no-verify` does not turn that off and is refused
+there with exit 2. `yt doctor`, `yt qa` and `yt improve` read the same list
+(`script.fact_blockers`); QA blocks on it without briefing it to the
+reviewer, so the scorecard prompt stays what it was.
 Each sourced shot also names the dossier claim it rests on (`c1`, `c2` ..)
 and how settled the line is (`established`, `hypothesis`, `speculation`,
 `what-if` or `none`); the code caps it at what the claim allows (a
