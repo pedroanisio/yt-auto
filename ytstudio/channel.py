@@ -10,7 +10,9 @@ hook trigger, AUTO-136), its closing device (the plan's `ending.device`),
 its section shape, its primary treatment, the palette roles its own
 swatches fill, and the shipped type families its typography names. Only a
 film whose qa.json says READY counts: drafts, test runs and a film being
-remade are recorded with `counted: false` and never compared against.
+remade are recorded with `counted: false` and never compared against. A
+counted row keeps `counted_at`, when it first counted, and the earlier
+films are ordered by it, so rewriting an old film's files reorders nothing.
 
 This module decides nothing. `repeats` returns measured lines, prefixed
 `channel:`; the plan review's reviewer of another family is the one that
@@ -25,6 +27,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import sys
 import time
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -208,18 +211,52 @@ def _recordable(root: Path) -> bool:
     return any((root / name).is_file() for name in SOURCES)
 
 
+def _carried(fresh: dict, saved: dict | None) -> dict:
+    """`fresh` with its `counted_at`: when the film first counted, carried
+    from its saved row while it keeps counting, else this row's `at`. The
+    earlier films are ordered by it, not by `at`, because `at` moves with
+    any rewrite of the film's files (a re-run `yt qa` on an old film), and
+    a reorder of the channel block changes the plan prompt's digest, so
+    every film in progress would be planned again for a file touch."""
+    if fresh.get("counted") is True:
+        kept = (saved.get("counted_at") if isinstance(saved, dict)
+                and saved.get("counted") is True else None)
+        fresh["counted_at"] = str(kept or fresh.get("at") or "")
+    return fresh
+
+
 def _rows(work: Path) -> dict[str, dict]:
     """The record's rows by slug, each film still on disk read afresh: a
     film that became READY since its last record counts, and a project
-    never recorded is filled in. A row whose project is gone is kept."""
+    never recorded is filled in. A row whose project is gone is kept, and
+    so is the last good row of a film whose files cannot be read now: one
+    broken project never stops another film's script or styles stage."""
     work = Path(work)
     saved = (_read(work / RECORD_FILE) or {}).get("films") or []
     rows = {str(r.get("slug")): r for r in saved if isinstance(r, dict) and r.get("slug")}
     if work.is_dir():
-        for root in work.iterdir():
+        for root in sorted(work.iterdir()):
             if root.is_dir() and not root.name.startswith(".") and _recordable(root):
-                rows[root.name] = fingerprint(root)
+                _refresh(rows, root)
     return rows
+
+
+def _refresh(rows: dict[str, dict], root: Path) -> None:
+    """Read one film's row afresh into `rows`; a film whose artifacts do
+    not parse as their stages write them keeps its last row, or none, with
+    a warning naming it."""
+    try:
+        fresh = fingerprint(root)
+    except Exception as exc:  # noqa: BLE001 (any malformed artifact)
+        print(f"warning: channel: {root.name} cannot be read ({type(exc).__name__}: "
+              f"{exc}); " + ("its last record is kept" if root.name in rows
+                            else "it is left out of the record"), file=sys.stderr)
+        return
+    rows[root.name] = _carried(fresh, rows.get(root.name))
+
+
+def _newest(row: dict) -> tuple[str, str]:
+    return str(row.get("counted_at") or row.get("at") or ""), str(row.get("slug"))
 
 
 def record(work, project) -> Path | None:
@@ -230,18 +267,19 @@ def record(work, project) -> Path | None:
         return None
     rows = _rows(Path(work))
     root = _root(project)
-    if _recordable(root):
-        rows[root.name] = fingerprint(root)
+    if _recordable(root) and root.parent.resolve() != Path(work).resolve():
+        _refresh(rows, root)
     films = sorted(rows.values(), key=lambda r: (str(r.get("at") or ""), r["slug"]),
                    reverse=True)
     return write_json(Path(work) / RECORD_FILE, {"films": films})
 
 
 def earlier(work, slug: str, limit: int = EARLIER_LIMIT) -> list[dict]:
-    """The counted rows of the other films, newest first, at most `limit`."""
+    """The counted rows of the other films, the latest to count first, at
+    most `limit`."""
     rows = [r for r in _rows(Path(work)).values()
             if r.get("counted") is True and r.get("slug") != slug]
-    rows.sort(key=lambda r: (str(r.get("at") or ""), r["slug"]), reverse=True)
+    rows.sort(key=_newest, reverse=True)
     return rows[:max(0, limit)]
 
 

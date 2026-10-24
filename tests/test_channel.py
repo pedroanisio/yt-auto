@@ -13,6 +13,8 @@ No model is called; the projects are written here.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import sys
@@ -205,6 +207,52 @@ class Record(Work):
         got = [r["slug"] for r in channel.earlier(self.work, "f13")]
         self.assertEqual(got, [f"f{n:02d}" for n in range(12, 0, -1)])
         self.assertEqual(len(channel.earlier(self.work, "x", limit=3)), 3)
+
+    def test_a_malformed_sibling_neither_breaks_the_record_nor_hides_the_others(self):
+        self.film("done", script=SCRIPT, verdict=qa.READY)
+        broken = self.film("broken", script=SCRIPT, verdict=qa.READY)
+        film = self.film("new", script=SCRIPT)
+        channel.record(self.work, film)
+        kept = next(r for r in self.rows() if r["slug"] == "broken")
+        (broken.root / "styles.json").write_text(json.dumps({"styles": ["x"]}))
+        said = io.StringIO()
+        with contextlib.redirect_stderr(said):
+            got = [r["slug"] for r in channel.earlier(self.work, "new")]
+            channel.record(self.work, film)
+        self.assertEqual(sorted(got), ["broken", "done"])
+        # its last good row is kept, and the reader is told which film
+        self.assertEqual(next(r for r in self.rows() if r["slug"] == "broken"), kept)
+        self.assertIn("broken", said.getvalue())
+        unrecorded = self.film("loose", styles={"styles": ["x"]})
+        with contextlib.redirect_stderr(io.StringIO()):
+            channel.record(self.work, film)
+        self.assertNotIn(unrecorded.root.name, [r["slug"] for r in self.rows()])
+
+    def test_touching_an_earlier_films_files_does_not_reorder_the_channel(self):
+        # The order is when a film first counted, not when its files last
+        # changed: a re-run `yt qa` on an old film is no channel change, so
+        # the plan prompt (which the harness digests) stays the same.
+        from ytstudio import script
+        for slug in ("first", "second", "third"):
+            channel.record(self.work, self.film(slug, script=SCRIPT, verdict=qa.READY))
+        film = self.film("new", script=SCRIPT)
+        before = channel.earlier(self.work, "new")
+        block = script.channel_block(before)
+        self.assertEqual([r["slug"] for r in before], ["third", "second", "first"])
+        later = self.clock + 10_000
+        for name in ("qa.json", "script.json"):
+            os.utime(self.work / "first" / name, (later, later))
+        self.assertEqual(script.channel_block(channel.earlier(self.work, "new")), block)
+        channel.record(self.work, film)
+        self.assertEqual(script.channel_block(channel.earlier(self.work, "new")), block)
+        # a film that stops counting and counts again is counted anew
+        (self.work / "first" / "qa.json").write_text(json.dumps({"verdict": qa.NOT_READY}))
+        channel.record(self.work, film)
+        (self.work / "first" / "qa.json").write_text(json.dumps({"verdict": qa.READY}))
+        os.utime(self.work / "first" / "qa.json", (later, later))
+        channel.record(self.work, film)
+        self.assertEqual([r["slug"] for r in channel.earlier(self.work, "new")],
+                         ["first", "third", "second"])
 
 
 # --------------------------------------------------------------------------- #
