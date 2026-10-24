@@ -3414,6 +3414,10 @@ EXPECTED_VERDICTS = {"READY": READY, "NOT_READY": NOT_READY}
 #: further case: 8 cases of QA_SAMPLES readings at spend.QA_SAMPLE_USD, with
 #: the merges and room to spare. TO VERIFY: one live run's cost.
 CALIBRATE_QA_BUDGET_USD = 20.0
+#: The fixture set the repo ships: a report counts as calibration only for
+#: the set it ran (`fixture_set_digest`), so one easy case, or a set that
+#: has since gained a case, is not this one.
+QA_FIXTURES = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "qa"
 
 
 def case_key(name: str) -> str:
@@ -3445,12 +3449,26 @@ def load_case(path) -> dict:
                        ("script.json", script), ("samples.json", samples)):
         if not data:
             raise ValueError(f"{path / name}: unreadable or empty")
+    named = set()
     for row in samples:
         for name in [row.get("frame", ""), *((row.get("burst") or {}).get("files") or [])]:
             if not (path / "frames" / name).is_file():
                 raise ValueError(f"{path / 'frames' / name}: named in samples.json, missing")
+            named.add(Path(name).as_posix())
+    # The judge reads every PNG under frames/: one no sample names (a
+    # stand-in's still a capture left behind) would be judged as the film.
+    for png in sorted((path / "frames").rglob("*.png")):
+        if png.relative_to(path / "frames").as_posix() not in named:
+            raise ValueError(f"{png}: under frames/ but named by no sample in samples.json")
     return {"name": path.name, "dir": path, "build": build, "script": script,
             "voice": voice, "samples": samples, "expected": expected}
+
+
+def _agreed(finding) -> bool:
+    """A finding two readings filed. combine_samples keeps one reading's
+    findings among the kept ones when its merge fails (samples=[k]); the
+    calibration counts only what two agreed on."""
+    return isinstance(finding, dict) and len(finding.get("samples") or []) >= 2
 
 
 def judge_verdict(card: dict) -> tuple[str, list[str]]:
@@ -3476,7 +3494,7 @@ def judge_verdict(card: dict) -> tuple[str, list[str]]:
             reasons.append(f"{key} {value:.1f} is under {CATEGORY_BAR}")
     blocking = [str(b) for b in card.get("blocking") or []] + [
         f"{f.get('problem')} at {f.get('timestamp')}s" for f in card.get("findings") or []
-        if isinstance(f, dict) and f.get("severity") == "blocking"]
+        if _agreed(f) and f.get("severity") == "blocking"]
     if blocking:
         reasons.append(f"{len(blocking)} blocking item(s)")
     return (READY if not reasons else NOT_READY), reasons
@@ -3492,8 +3510,14 @@ def judge_case(expected: dict, card: dict, base_card: dict | None = None) -> lis
     low-confidence one does not count) whose timestamp is inside its
     t_range and, when owners are named, whose owner is one of them, and each
     `drop` category's median is at least that far under the base case's
-    (`base_card`, scored in the same run)."""
+    (`base_card`, scored in the same run). A card whose findings merge
+    failed fails too: its findings and blocking claims are every reading's,
+    unmerged, so what two readings agree on cannot be told."""
     failures = []
+    merge = ((card.get("scoring") or {}).get("merge") or {})
+    if merge.get("failed"):
+        failures.append(f"merge: the readings' findings could not be merged "
+                        f"({merge['failed']}); nothing two readings agree on can be told")
     want = EXPECTED_VERDICTS.get(str(expected.get("verdict")), expected.get("verdict"))
     got, _ = judge_verdict(card)
     if got != want:
@@ -3511,7 +3535,7 @@ def judge_case(expected: dict, card: dict, base_card: dict | None = None) -> lis
             failures.append(f"over_bar: {key} scored "
                             f"{'nothing' if value is None else f'{value:g}'}, under "
                             f"{CATEGORY_BAR}")
-    kept = [f for f in card.get("findings") or [] if isinstance(f, dict)]
+    kept = [f for f in card.get("findings") or [] if _agreed(f)]
     for need in expected.get("must_find") or []:
         a, b = (float(x) for x in need["t_range"])
         owners = list(need.get("owners") or [])
@@ -3569,17 +3593,44 @@ def judge_digest(model: str, house_digest) -> str:
                    review_prompt(**PROBE), model, block or "")
 
 
-def judge_calibration(work, model: str, house_digest) -> dict:
+def fixture_set_digest(directory) -> str:
+    """What a fixture set is, as one digest: every case's name and the bytes
+    of every file in it (expected.json, the manifests, samples.json, the
+    frames). A report records the set it ran; a set with a case more or
+    less, a relabelled case or a recaptured film is another set."""
+    directory = Path(directory)
+    if not directory.is_dir():
+        return ""
+    rows = []
+    for case in sorted(p for p in directory.iterdir()
+                       if p.is_dir() and (p / "expected.json").is_file()):
+        for file in sorted(f for f in case.rglob("*") if f.is_file()):
+            rows.append([file.relative_to(directory).as_posix(),
+                         hashlib.sha256(file.read_bytes()).hexdigest()])
+    return _digest(rows)
+
+
+def judge_calibration(work, model: str, house_digest, *, listened: bool = False,
+                      watched: bool = False, fixtures_dir=None) -> dict:
     """qa.json's `judge_calibration`: whether this pass's judge is the one
-    the QA fixtures last passed. `fixtures` is true only when
+    the QA fixtures last passed. `fixtures` is true only when the pass
+    asked the unheard, unwatched judge calibrate runs (ROLE, no listener's
+    or watcher's brief: a `--listen` pass is ROLE_LISTENED with audio
+    scored, a `--watch` pass another schema), and
     <work>/calibration-qa/report.json exists, passed, was made at this
-    pass's model and carries this judge's digest. `labelled` is how many
-    owner-labelled films back it: none yet. Informational: nothing reads it
-    to gate READY, doctor or improve."""
+    pass's model, carries this judge's digest and ran the shipped fixture
+    set (`fixtures_dir`, default QA_FIXTURES, by `fixture_set_digest`).
+    `labelled` is how many owner-labelled films back it: none yet.
+    Informational: nothing reads it to gate READY, doctor or improve."""
     path = Path(work) / CALIBRATION_QA / CALIBRATION_REPORT
     want = judge_digest(model, house_digest)
+    shipped = Path(fixtures_dir) if fixtures_dir is not None else QA_FIXTURES
     report = read_json(path, warn=False)
-    if not isinstance(report, dict):
+    asked = [word for word, on in (("listened", listened), ("watched", watched)) if on]
+    if asked:
+        why = (f"a {' and '.join(asked)} pass: the QA fixtures calibrate the unheard, "
+               "unwatched judge only")
+    elif not isinstance(report, dict):
         why = (f"no {path}; run python -m ytstudio.qa calibrate tests/fixtures/qa "
                f"--model {model} --work {work}")
     elif not report.get("passed"):
@@ -3590,6 +3641,10 @@ def judge_calibration(work, model: str, house_digest) -> dict:
     elif report.get("digest") != want:
         why = ("the judge has changed since the fixtures were calibrated (its role, "
                "categories, schema, prompt or house rules); run calibrate again")
+    elif not report.get("fixture_set") or report.get("fixture_set") != fixture_set_digest(
+            shipped):
+        why = (f"the calibration ran another fixture set than {shipped} (a case added, "
+               "dropped, relabelled or recaptured since); run calibrate on it again")
     else:
         why = ""
     return {"fixtures": not why, "labelled": 0, "model": model, "digest": want,
@@ -3631,6 +3686,10 @@ def calibrate(directory, *, work, model: str = "sonnet", budget_usd: float | Non
     the judge separates drawings, not films. The report is written to
     <work>/calibration-qa/report.json."""
     directory, work = Path(directory), Path(work)
+    # The judge's cwd is under <work>/calibration-qa/, beside report.json,
+    # which maps each case folder to its labels: the last report goes before
+    # any case is scored, so a judge reading past its cwd finds no answers.
+    (work / CALIBRATION_QA / CALIBRATION_REPORT).unlink(missing_ok=True)
     rules = house.load(work)
     block, digest = rules.for_stage("qa"), rules.digest("qa")
     names = sorted(p.name for p in directory.iterdir()
@@ -3710,7 +3769,8 @@ def calibrate(directory, *, work, model: str = "sonnet", budget_usd: float | Non
                         "capture-fixture`) and labelled, so passing them says the judge "
                         "separates drawings, not films")
     report = {"directory": str(directory), "model": model,
-              "digest": judge_digest(model, digest), "house": digest, "cases": rows,
+              "digest": judge_digest(model, digest), "house": digest,
+              "fixture_set": fixture_set_digest(directory), "cases": rows,
               "false_positive": dict(sorted(false_positive.items())),
               "false_negative": dict(sorted(false_negative.items())),
               "failures": failures,
@@ -3809,8 +3869,9 @@ def capture_fixture(pass_dir, case_dir) -> dict:
     """A fixture case from one real `yt qa` pass of one of the owner's own
     films: the project's build.json, script.json and voice.json (when it
     has one), the pass's samples cut down (`fixture_samples`) and the frames
-    they name downscaled (`fixture_png`). expected.json is not written: the
-    owner labels the case. A frame the pass lacks is a ValueError."""
+    they name downscaled (`fixture_png`). Whatever else the case directory
+    held is removed first, but for expected.json, which is never written:
+    the owner labels the case. A frame the pass lacks is a ValueError."""
     pass_dir, case = Path(pass_dir), Path(case_dir)
     project = pass_dir.parent.parent
     samples = read_json(pass_dir / "samples.json", warn=False, shape=list)
@@ -3822,6 +3883,13 @@ def capture_fixture(pass_dir, case_dir) -> dict:
     build = read_json(project / "build.json", warn=False) or {}
     kept = fixture_samples(samples, build)
     case.mkdir(parents=True, exist_ok=True)
+    # A case captured into one in use (the drawn stand-in in
+    # tests/fixtures/qa/good) keeps nothing of it but expected.json, the
+    # label the owner edits: a stale still would be judged as this film's.
+    if (case / "frames").exists():
+        shutil.rmtree(case / "frames")
+    for name in (*FIXTURE_INPUTS, "samples.json"):
+        (case / name).unlink(missing_ok=True)
     for name in FIXTURE_INPUTS:
         if (project / name).is_file():
             shutil.copyfile(project / name, case / name)
@@ -4301,7 +4369,8 @@ def run(args) -> int:
         findings_md(pass_dir.name, card, samples, diff, reasons=reasons), encoding="utf-8")
     # AUTO-156: whether this judge is the one the QA fixtures last passed.
     # Recorded and printed; nothing reads it to gate READY, doctor or improve.
-    calibration = judge_calibration(workspace.work_dir(args), args.model, digest)
+    calibration = judge_calibration(workspace.work_dir(args), args.model, digest,
+                                    listened=listened, watched=asked_watched)
     write_json(home / "qa.json", {
         "idea": {"title": idea.title}, "pass": pass_dir.name, "verdict": verdict,
         "overall": card.get("overall"), "scores": card.get("scores"),
