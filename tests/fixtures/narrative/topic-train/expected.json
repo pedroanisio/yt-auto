@@ -26,7 +26,8 @@
         "criterion": "train",
         "problem": "The train names a topic, not a pursuit with an obstacle.",
         "severity": "blocker",
-        "fix": "Restate it as who pursues what against which obstacle, ending on the question the film answers."
+        "fix": "Restate it as who pursues what against which obstacle, ending on the question the film answers.",
+        "quote": ""
       }
     ],
     "first_minute": {

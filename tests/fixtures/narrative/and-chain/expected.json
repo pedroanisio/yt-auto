@@ -27,7 +27,8 @@
         "criterion": "train",
         "problem": "Section 2 joins section 1 with AND: sunlight pushes the dust and the gas streams out as well, so nothing is shown to stand in the way.",
         "severity": "important",
-        "fix": "Make section 2 the obstacle: sunlight is far too weak for the gas tail, joined to section 1 with BUT, and section 3 follows from it with THEREFORE."
+        "fix": "Make section 2 the obstacle: sunlight is far too weak for the gas tail, joined to section 1 with BUT, and section 3 follows from it with THEREFORE.",
+        "quote": ""
       },
       {
         "n": 0,
@@ -35,7 +36,8 @@
         "criterion": "reveal_setup",
         "problem": "The stream from the Sun arrives with nothing shown to be hard before it.",
         "severity": "important",
-        "fix": "Let section 2 show the push of sunlight falling short before section 3 names the stream."
+        "fix": "Let section 2 show the push of sunlight falling short before section 3 names the stream.",
+        "quote": ""
       }
     ],
     "first_minute": {

@@ -364,7 +364,9 @@ def reviewer_role(*, window: str = OPENING_WINDOW, seed: int = 0, plan: bool = F
         "blocker. consider: worth voicing once concrete problems are fixed; every "
         "problem is a flag naming the section, the shot number (0 for the whole "
         "script) and the criterion it fails, with a fix the writer can apply without "
-        "asking you anything. reject: it fails in most areas, or one of the four "
+        "asking you anything. A flag quotes the words it is about exactly as the "
+        "narration says them and never paraphrases, and a contradiction quotes the "
+        "other line too. reject: it fails in most areas, or one of the four "
         "criteria that decide a film (train, stakes, open_loops, ending) is Poor; "
         f"but {HOUSE_POOR}, because a house rule is a prior to tune, not a gate. "
         "Longer is not better: never grade a draft up for its length.",
@@ -416,8 +418,29 @@ REVIEW_SCHEMA = {
                     "severity": {"type": "string", "enum": list(SEVERITIES)},
                     "fix": {"type": "string", "description": (
                         "what the writer changes, in the script's own terms")},
+                    # AUTO-112: which words the flag is about, so the writer
+                    # does not guess the clause and two samples' flags can be
+                    # told apart. Checked against the script, never trusted.
+                    "quote": {"type": "string", "description": (
+                        "the words the flag is about, copied exactly from the narration, "
+                        "never paraphrased: from shot n's line, or for a section flag "
+                        "(shot 0) from one of that section's lines; empty for the whole "
+                        "script (shot 0, section 0)")},
+                    "conflicts_with": {
+                        "type": "object",
+                        "description": ("only when this line contradicts another: the "
+                                        "other line, its words copied exactly"),
+                        "properties": {
+                            "n": {"type": "integer",
+                                  "description": "the shot number of the other line"},
+                            "quote": {"type": "string", "description": (
+                                "the other line's words, copied exactly")},
+                        },
+                        "required": ["n", "quote"],
+                    },
                 },
-                "required": ["n", "section", "criterion", "problem", "severity", "fix"],
+                "required": ["n", "section", "criterion", "problem", "severity", "fix",
+                             "quote"],
             },
         },
         # structure 39: the first minute is read twice.

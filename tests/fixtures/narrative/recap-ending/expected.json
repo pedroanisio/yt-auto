@@ -27,7 +27,8 @@
         "criterion": "ending",
         "problem": "The film ends on a recap and a sign-off.",
         "severity": "important",
-        "fix": "End on the payoff line: it is not flying backwards, it is showing you the wind."
+        "fix": "End on the payoff line: it is not flying backwards, it is showing you the wind.",
+        "quote": "to recap"
       }
     ],
     "first_minute": {
