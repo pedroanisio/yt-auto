@@ -131,6 +131,8 @@ class Rules(unittest.TestCase):
         flags = found([card(seconds=4)])
         self.assertEqual([f["rule"] for f in flags], ["source:headline"])
         self.assertIn("never shorten the headline", flags[0]["fix"])
+        self.assertNotIn(flags[0]["severity"], script.REVISABLE)
+        self.assertNotIn("more narration", flags[0]["fix"])
         # and without the press list, today's legibility flag says shorten it
         self.assertIn("rule:legibility", [f["rule"] for f in found([card(seconds=4)],
                                                                     press=None)])
@@ -202,6 +204,18 @@ class Stage(unittest.TestCase):
         self.assertEqual(standing, [])
         # the restored 12 words never went back as a wall of text
         self.assertFalse(any("rule:wall-of-text" in c[1] for c in calls))
+
+    def test_a_hold_too_short_is_never_sent_to_revise_and_is_reported(self):
+        # revise changes the words, never shot.seconds, so no answer could
+        # clear it: padding the line would only add narration
+        w, calls = self.make([card(seconds=4)])
+        data = w.run()
+        self.assertEqual([c[0] for c in calls], [])
+        lines = [f for f in data["findings"] if "source:headline" in f]
+        self.assertEqual(len(lines), 1, data["findings"])
+        self.assertIn("is on screen 4 s", lines[0])
+        self.assertIn("yt retime", lines[0])
+        self.assertNotIn("still standing", lines[0])
 
     def test_a_revise_that_keeps_it_leaves_a_standing_warning(self):
         paraphrase = card(supers=("Genoa operator skipped checks", SOURCE))

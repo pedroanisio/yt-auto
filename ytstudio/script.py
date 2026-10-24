@@ -5367,9 +5367,10 @@ def headline_findings(sections: list[Section], press: list[dict] | None,
     asset cites a press item: the headline must be one on-screen string,
     verbatim (the problem quotes it, so a revise restores it from the flag
     alone); some string must name the outlet; and the shot must hold the
-    headline and its source line for READING_CPS. Its fix is more time,
-    never a shorter headline. A shot with no length is timed from its
-    narration at `wpm`."""
+    headline and its source line for READING_CPS. That last flag is minor,
+    never sent to revise (which cannot change a shot's seconds): its fix is
+    more time, a split shot or a longer hold at retime, never a shorter
+    headline. A shot with no length is timed from its narration at `wpm`."""
     out: list[dict] = []
     for section in sections:
         for shot in section.shots:
@@ -5380,9 +5381,9 @@ def headline_findings(sections: list[Section], press: list[dict] | None,
             strings = screen_strings(shot)
             where = f"shot {shot.label}: " if shot.label else ""
 
-            def flag(problem: str, fix: str) -> None:
-                out.append({"n": shot.n, "rule": "source:headline", "tier": "important",
-                            "severity": "important",
+            def flag(problem: str, fix: str, tier: str = "important") -> None:
+                out.append({"n": shot.n, "rule": "source:headline", "tier": tier,
+                            "severity": tier,
                             "problem": f"source:headline: {where}{problem}", "fix": fix})
             if _as_quoted(headline) not in {_as_quoted(t) for t in strings}:
                 flag(f"the card citing {item['id']} does not show its headline verbatim: "
@@ -5400,11 +5401,16 @@ def headline_findings(sections: list[Section], press: list[dict] | None,
                 seconds = len(spoken(shot.narration).split()) * 60 / wpm
             needs = len(f"{headline} {attribution}") / READING_CPS
             if seconds < needs:
+                # Minor, so revise_rules never sends it: a revise changes the
+                # words, never shot.seconds, and padding the line to buy time
+                # adds narration the shot does not need. The operator splits
+                # the shot or holds the card longer when the cut is timed.
                 flag(f"the card citing {item['id']} is on screen {seconds:g} s; its headline "
                      f"and source line need {needs:.1f} s at {READING_CPS:.0f} characters "
-                     "a second",
-                     "give the shot more narration, or split it so the card holds longer; "
-                     "never shorten the headline")
+                     "a second; split the shot, or hold the card longer when the cut is "
+                     "timed (yt retime)",
+                     "split the shot, or hold the card longer at `yt retime`; never "
+                     "shorten the headline", tier="minor")
     return out
 
 

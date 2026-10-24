@@ -384,7 +384,9 @@ strings out of rule:wall-of-text, rule:legibility and rule:unspoken-number
 measures them instead as `source:headline` (important, a screen rule):
 the headline not verbatim (the problem quotes it, so `revise-rules`
 restores it), no string naming the outlet, or a hold shorter than headline
-and source line at `READING_CPS` (more time, never a shorter headline).
+and source line at `READING_CPS` (minor and never sent to revise, which
+cannot change a shot's seconds: split the shot or hold the card longer at
+`yt retime`, never a shorter headline).
 `revise_rules`, the final re-read and the `--revise` re-check all read
 them; an id the press list does not hold is cleared from `asset` with a
 `warning: source:headline:` finding. Without a dossier (no press list)
