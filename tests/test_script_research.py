@@ -267,14 +267,22 @@ class PressBlock(unittest.TestCase):
                 "misconceptions": [{"belief": "b", "source": "s"}],
                 "identifiable_case": {"who": "w", "source": "s"}}
         text = self.block(data)
-        old = text.replace("Licensed footage and imagery found by the research:",
-                           "Footage and imagery already found and licensed:")
-        self.assertNotEqual(text, old)
         self.assertNotIn("Press coverage", text)
         self.assertNotIn("P1", text)
-        self.assertEqual(old, self.block(data, ids=True).replace(
-            "Licensed footage and imagery found by the research:",
-            "Footage and imagery already found and licensed:"))
+        # develop's research_block for this dossier before AUTO-149, verbatim:
+        # with the old footage heading swapped in, nothing else differs
+        self.assertEqual(
+            text.replace("Licensed footage and imagery found by the research:",
+                         "Footage and imagery already found and licensed:"),
+            "Every claim you may put on camera, with the source to cite for it and its "
+            "id:\n- c1: one fact --  (source: s, https://h.example/fact; primary, high "
+            "confidence)\n\nFootage and imagery already found and licensed:\n"
+            "- [image] photo 1 (CC0, commercial ok) -- for the deck\n"
+            "- [image] photo 2 (CC0, commercial ok) -- for the deck\n\n"
+            "Misconceptions to correct out loud, with where people are documented "
+            "believing them:\n- M1: b (source: s)\n\n"
+            "An identifiable case the film can follow: w (source: s)")
+        self.assertIn("Licensed footage and imagery found by the research:", text)
 
     def test_without_ids_the_block_is_todays_whatever_the_dossier_holds(self):
         # a screenplay written before the ids is revised against the block it
