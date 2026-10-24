@@ -2459,12 +2459,16 @@ _HOUSE_FORM = re.compile(r"^[ \t]*-[ \t]*Form:[ \t]*([A-Za-z_]+)", re.M | re.I)
 
 
 def house_form(house_text: str) -> str:
-    """The form the channel's house fixes: the first word after a "- Form:"
-    line, when it is one of FORMS and not `other`; "" otherwise, which is
-    the shipped default's case ("- Form: a form recurs only when ...")."""
-    found = _HOUSE_FORM.search(str(house_text or ""))
-    word = found.group(1).lower() if found else ""
-    return word if word in FORMS and word != "other" else ""
+    """The form the channel's house fixes: the first "- Form:" line whose
+    first word is one of FORMS and not `other`; "" when none is, which is
+    the shipped default's case ("- Form: a form recurs only when ..."). A
+    channel `## format` may keep that default line and add its own below
+    it, so every line is read, not only the first."""
+    for found in _HOUSE_FORM.finditer(str(house_text or "")):
+        word = found.group(1).lower()
+        if word in FORMS and word != "other":
+            return word
+    return ""
 
 
 def _form_checks(plan: dict, title: str, house: str) -> list[str]:
@@ -2724,7 +2728,7 @@ def review_field_lines(review) -> list[str]:
     # AUTO-157: the form, a ground to revise only
     if review.get("form_fits") is False:
         out.append("the whole plan: the form does not follow from the subject: "
-                   + _said(review.get("form_problem")))
+                   + (_said(review.get("form_problem")) or "no problem named"))
     # AUTO-137: each repeat of an earlier channel film the reviewer listed
     for r in review.get("repeats") or []:
         if isinstance(r, dict):
@@ -6791,7 +6795,9 @@ def print_script(idea: Idea, data: dict, sections: list[Section]) -> None:
     review = data.get("plan_review") if isinstance(data.get("plan_review"), dict) else {}
     if review.get("verdict"):
         print(wrap(f"plan review: {review['verdict']}"
-                   + (" (planned once more)" if review.get("retried") else ""), "  "))
+                   + (" (planned once more)" if review.get("retried") else "")
+                   + "".join(f" (advisory: {a})" for a in review.get("advisory") or []),
+                   "  "))
     story = data.get("review") if isinstance(data.get("review"), dict) else {}
     if story.get("verdict"):
         grades = ", ".join(f"{k} {v}" for k, v in (story.get("grades") or {}).items())

@@ -936,6 +936,10 @@ class Form(unittest.TestCase):
         md = "\n".join(script.plan_review_lines(record))
         self.assertIn("- advisory: form", md)
         self.assertIsNone(getattr(w, "plan_review_stop", None))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            script.print_script(w.idea, data, [])
+        self.assertIn("(advisory: form)", out.getvalue())
 
     def test_a_second_revise_on_form_and_order_still_stops(self):
         both = dict(form_only(), reorder_survives=True)
@@ -984,6 +988,35 @@ class Form(unittest.TestCase):
         self.assertTrue(w.plan_review_stop["unsettled"])
         self.assertNotIn("advisory", w.plan_review_stop)
 
+    def test_a_form_that_does_not_fit_with_no_problem_named_says_so(self):
+        lines = script.review_field_lines(dict(verdict("revise"), form_fits=False,
+                                               form_problem="  "))
+        self.assertEqual(lines, ["the whole plan: the form does not follow from the "
+                                 "subject: no problem named"])
+
+    def test_the_house_form_is_the_first_fixing_line(self):
+        # a channel `## format` that keeps the shipped default line and adds
+        # its own below it still fixes the form
+        from ytstudio import house
+        default = house.load().for_stage("script")
+        line = next(x for x in default.splitlines() if x.lstrip().startswith("- Form:"))
+        self.assertEqual(script.house_form(line + "\n- Form: countdown\n"), "countdown")
+        self.assertEqual(script.house_form("- Form: other\n- Form: journey"), "journey")
+
+    def test_the_terminal_summary_names_the_advisory(self):
+        data = {"target_seconds": 60, "plan_review": {"verdict": "revise", "retried": True,
+                                                      "advisory": ["form"]}}
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            script.print_script(idea(), data, [])
+        self.assertIn("plan review: revise (planned once more) (advisory: form)",
+                      out.getvalue())
+        data["plan_review"].pop("advisory")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            script.print_script(idea(), data, [])
+        self.assertNotIn("advisory", out.getvalue())
+
     def test_a_reject_on_the_form_alone_is_asked_again(self):
         w = writer()
         calls = faked(w, [form_only("reject"), form_only(), verdict("accept")])
@@ -1028,6 +1061,14 @@ class Form(unittest.TestCase):
         self.assertIn(narrative.FORM_GROUND.strip(", "), " ".join(review[0]["system"].split()))
         authored = {c["model"] for c in ByModel.seen if c["kind"] == "plan"}
         self.assertEqual(authored, {"sonnet"})
+        # the author's own family is still refused under this role, before
+        # anything is asked (the command's own path:
+        # Command.test_the_authors_own_family_is_refused_before_any_decision)
+        from ytstudio import flags
+        self.assertIn("does not grade its own work", flags.own_reviewer("sonnet", "sonnet"))
+        self.assertIn("does not grade its own work", flags.own_reviewer("opus",
+                                                                        "claude-opus-5-5"))
+        self.assertEqual(flags.own_reviewer("sonnet", "opus"), "")
 
 
 # --------------------------------------------------------------------------- #
