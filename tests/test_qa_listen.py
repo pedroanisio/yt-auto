@@ -891,6 +891,14 @@ class Records(Listen):
 #: text (the caption text); 1.3 is silent.
 LINES = {"1.1": "This comet is leaving the Sun.", "1.2": "And its tail is in front.",
          "1.4": "It is 1.5% brighter than Kepler's guess."}
+#: A shot past build.json's 300-character cut of its narration (build.py
+#: writes `narration` clipped there): about 25 s of speech, cut mid-word.
+LONG = ("And its tail is in front, because the wind from the Sun pushes the dust and the "
+        "gas away from it whichever way the comet is going, so that on the way out the "
+        "tail leads the head across the sky like a lantern held out ahead of a walker in "
+        "the dark, and an astronomer who did not know this would read the picture "
+        "backwards, as a comet falling in toward the Sun instead of one leaving it for "
+        "the cold for another seventy-six years.")
 
 
 def _voiced_build(**extra):
@@ -1023,6 +1031,98 @@ class Transcript(unittest.TestCase):
         self.assertEqual(listen.TRANSCRIPT_OUTPUT_TOKENS, 8000)
         self.assertEqual(listen.INTELLIGIBILITY_WER, 0.15)
         self.assertEqual(listen.TRANSCRIPT_TIME_SLACK_S, 1.0)
+
+    # -- the fix round: what a narrator says for what is written ------------
+
+    def test_a_hyphen_and_a_space_compare_the_same(self):
+        compare = _listen().compare_words
+        self.assertEqual(compare("Twenty-one moons", "twenty one moons")["wer"], 0.0)
+        self.assertEqual(compare("21 moons", "twenty one moons")["wer"], 0.0)
+        self.assertEqual(compare("21 moons", "Twenty-one moons.")["wer"], 0.0)
+        self.assertEqual(compare("A well-known comet", "a well known comet")["wer"], 0.0)
+        # a different word is still one error, on either reading
+        self.assertEqual(compare("21 moons", "twenty two moons")["wer"], round(1 / 3, 4))
+
+    def test_dollars_are_said_after_the_number(self):
+        norm, compare = _listen().normalise_words, _listen().compare_words
+        self.assertEqual(norm("$5"), ["five", "dollars"])
+        self.assertEqual(norm("$1"), ["one", "dollar"])
+        self.assertEqual(norm("$1,200"), ["one", "thousand", "two", "hundred", "dollars"])
+        self.assertEqual(compare("It cost $1.5 million.",
+                                 "it cost one point five million dollars")["wer"], 0.0)
+        self.assertEqual(compare("$40 a ton", "forty dollars a ton")["wer"], 0.0)
+
+    def test_a_decade_is_said_as_a_plural(self):
+        norm, compare = _listen().normalise_words, _listen().compare_words
+        self.assertEqual(norm("the 80s"), ["the", "eighties"])
+        self.assertEqual(compare("In the 1990s", "in the nineteen nineties")["wer"], 0.0)
+
+    def test_a_year_compares_on_either_reading(self):
+        compare = _listen().compare_words
+        for written, said in (("In 1859, Darwin wrote.", "in eighteen fifty-nine darwin wrote"),
+                              ("In 1859, Darwin wrote.", "In one thousand eight hundred "
+                                                         "fifty-nine, Darwin wrote."),
+                              ("In 1859, Darwin wrote.", "In 1859 Darwin wrote"),
+                              ("By 2026 it was gone.", "by twenty twenty-six it was gone"),
+                              ("By 2026 it was gone.", "by two thousand twenty-six it was gone"),
+                              ("In 2005 it came.", "in two thousand five it came"),
+                              ("In 2005 it came.", "in twenty oh five it came"),
+                              ("In 1905 it came.", "in nineteen oh five it came"),
+                              ("In 1900 it came.", "in nineteen hundred it came"),
+                              ("From 1859 to 1882.", "from eighteen fifty nine to "
+                                                     "eighteen eighty two")):
+            with self.subTest(said=said):
+                self.assertEqual(compare(written, said)["wer"], 0.0)
+        # a wrong year is still wrong, and a count with a comma is no year
+        self.assertGreater(compare("In 1859 it came.", "in eighteen sixty it came")["wer"], 0)
+        self.assertGreater(compare("1,859 moons", "eighteen fifty-nine moons")["wer"], 0)
+        self.assertGreater(compare("1859.5 metres", "eighteen fifty-nine point five metres")
+                           ["wer"], 0)
+
+    def test_voiced_shots_hold_to_the_whole_take_not_the_manifest_cut(self):
+        listen = _listen()
+        full = LONG
+        build = _voiced_build()
+        build["shots"][1]["narration"] = " ".join(full.split())[:300]   # as build.py writes
+        takes = [{"label": "1.2", "text": full}]
+        shots = listen.voiced_shots(build, None, {"takes": takes})
+        self.assertEqual(next(s for s in shots if s["label"] == "1.2")["narration"],
+                         " ".join(full.split()))
+        # with no take, the screenplay's shot says it whole
+        script = {"sections": [{"shots": [{"label": "1.2", "narration": full}]}]}
+        shots = listen.voiced_shots(build, script)
+        self.assertEqual(next(s for s in shots if s["label"] == "1.2")["narration"],
+                         " ".join(full.split()))
+        # a take that does not begin with what was placed is another read:
+        # the placed text stands
+        shots = listen.voiced_shots(build, None, {"takes": [{"label": "1.2",
+                                                             "text": "Another line."}]})
+        self.assertEqual(next(s for s in shots if s["label"] == "1.2")["narration"],
+                         build["shots"][1]["narration"])
+        # a short shot is as placed, take or no take
+        shots = listen.voiced_shots(build, None, {"takes": takes})
+        self.assertEqual(next(s for s in shots if s["label"] == "1.1")["narration"],
+                         LINES["1.1"])
+
+    def test_estimate_for_leaves_the_transcript_out_of_a_wordless_film(self):
+        listen = _listen()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "build.json").write_text(json.dumps(_voiced_build()))
+            (root / "voice.json").write_text(json.dumps(listening._voice()))
+            narrated = listen.estimate_for(root)
+            (root / "voice.json").write_text(json.dumps(
+                {"engine": "none", "wordless": True, "takes": []}))
+            wordless = listen.estimate_for(root)
+            (root / "voice.json").unlink()
+            (root / "build.json").write_text(json.dumps(motion._build(audio_tracks=3)))
+            unvoiced = listen.estimate_for(root)
+        self.assertGreater(narrated, wordless)
+        self.assertEqual(wordless, unvoiced)
+        row = gateway_engine.price_for(MODEL)
+        self.assertGreater(narrated - wordless,
+                           2 * listen.TRANSCRIPT_OUTPUT_TOKENS * float(row["output"]) / 1e6
+                           - 1e-4)
 
 
 class TranscriptStage(Listen):
@@ -1174,6 +1274,103 @@ class TranscriptStage(Listen):
         self.run_qa()
         self.assertEqual(self.node.count, 2)
         self.assertEqual(self.listening_json("pass-02")["transcript"]["status"], "done")
+
+    # -- the fix round -------------------------------------------------------
+
+    def test_a_long_narration_read_verbatim_is_held_to_the_whole_take(self):
+        # build.json keeps 300 characters of a shot's narration; the take
+        # holds it all, and a perfect read of it is no finding
+        takes = [dict(t) for t in listening._takes()]
+        takes[1]["text"] = LONG
+        self.make_project(voice=listening._voice(takes))
+        build = _voiced_build()
+        build["shots"][1]["narration"] = " ".join(LONG.split())[:300]
+        self.put("build.json", build)
+        later = (self.root / "scene.xml").stat().st_mtime + 60
+        os.utime(self.root / "build.json", (later, later))
+        self.node.replies(ok(answer()), ok(heard(**{"1_2": LONG})))
+        self.run_qa()
+        record = self.listening_json()["transcript"]
+        row = next(s for s in record["shots"] if s["label"] == "1.2")
+        self.assertEqual(row["wer"], 0.0)
+        self.assertEqual(row["expected"], " ".join(LONG.split()))
+        self.assertEqual(record["flagged"], [])
+        self.assertFalse([f for f in self.card()["findings"]
+                          if f.get("category") == "voiceover"])
+
+    def test_a_render_landing_during_the_listen_asks_no_transcript(self):
+        listener = _listen()._Listener
+        decide = listener.decide
+
+        def then_render(harness, name, *a, **kw):
+            out = decide(harness, name, *a, **kw)
+            if name.startswith("listen-"):
+                (self.root / "video.mp4").write_bytes(b"film-rendered-meanwhile")
+            return out
+        self.node.replies(ok(answer()), ok(heard()))
+        with mock.patch.object(listener, "decide", then_render):
+            self.run_qa()
+        self.assertEqual(self.node.count, 1)                     # nothing paid for it
+        record = self.listening_json()
+        self.assertFalse(record["current"])
+        self.assertEqual(record["transcript"]["status"], "not_evidenced")
+        self.assertIn("changed while the listener heard it", record["transcript"]["reason"])
+        self.assertEqual(self.names(), [f"listen-{record['audio']['sha256'][:16]}"])
+
+    def test_a_render_landing_during_the_transcript_discards_both(self):
+        listener = _listen()._Listener
+        decide = listener.decide
+
+        def then_render(harness, name, *a, **kw):
+            out = decide(harness, name, *a, **kw)
+            if name.startswith("transcript-"):
+                (self.root / "video.mp4").write_bytes(b"film-rendered-meanwhile")
+            return out
+        self.node.replies(ok(answer()), ok(heard(**{"1_2": "And its sail is in front."})))
+        with mock.patch.object(listener, "decide", then_render):
+            self.run_qa()
+        record = self.listening_json()
+        self.assertFalse(record["current"])
+        self.assertEqual(record["transcript"]["status"], "not_evidenced")
+        self.assertEqual([f["owner"] for f in record["findings"]], ["external"])
+
+    def test_the_record_names_who_served_the_listen_and_who_the_transcript(self):
+        self.node.replies(ok(answer(), routing={"resolvedProvider": "google"}),
+                          ok(heard(), routing={"resolvedProvider": "vertex"}))
+        self.run_qa()
+        record = self.listening_json()
+        self.assertEqual((record["served_model"], record["provider"]), (MODEL, "google"))
+        self.assertEqual((record["transcript"]["served_model"],
+                          record["transcript"]["provider"]), (MODEL, "vertex"))
+        # the same mix again, both from decisions/qa/: the earlier pass says
+        self.run_qa()
+        again = self.listening_json("pass-02")
+        self.assertEqual((again["served_model"], again["provider"]), (MODEL, "google"))
+
+    def test_the_listen_budget_counts_the_transcript_of_a_narrated_film(self):
+        self.node.replies(ok(answer()), ok(heard()))
+        self.run_qa(listen_budget_usd=5.0)
+        full = self.listening_json()["estimate_usd"]
+        row = gateway_engine.price_for(MODEL)
+        # under the listen and its transcript, over the listen alone (the
+        # transcript's output tokens alone cost more than this margin)
+        margin = listen_out = (_listen().TRANSCRIPT_OUTPUT_TOKENS * float(row["output"])
+                               / 1_000_000)
+        self.assertGreater(listen_out, 0)
+        budget = round(full - margin, 6)
+        self.refused("--listen-budget-usd", listen_budget_usd=budget)
+        # a wordless film asks no transcript, so the same budget holds it
+        self.make_project(voice={"engine": "none", "wordless": True, "takes": []})
+        self.node.replies(ok(answer()))
+        self.run_qa(listen_budget_usd=budget)                     # a new project: pass-01
+        self.assertEqual(self.node.count, 3)
+        self.assertLessEqual(self.listening_json()["estimate_usd"], budget)
+        # and so does a film with no voiced shot
+        super().make_project()
+        self.node.replies(ok(answer()))
+        self.run_qa(listen_budget_usd=budget)
+        self.assertEqual(self.node.count, 4)
+        self.assertLessEqual(self.listening_json()["estimate_usd"], budget)
 
 
 def _anchored_build(**extra):

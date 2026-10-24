@@ -449,7 +449,7 @@ def preflight(args, project, *, home: Path, scene: str, build: dict, script: dic
     if isinstance(voice, dict) and voice.get("wordless"):
         skip = "a wordless film: voice.json has no takes, so there are no words to hear"
     else:
-        shots = voiced_shots(build, script)
+        shots = voiced_shots(build, script, voice)
         skip = "" if shots else "no shot in build.json is voiced: there are no words to hear"
     estimate = estimate_usd(model, seconds, len(prompt) + len(system) + 2000,
                             transcript=bool(shots),
@@ -570,15 +570,19 @@ def served_before(pass_dir: Path, decisions: list[dict]) -> tuple[str | None, st
     so the same question) and says who answered. The cache keeps the
     answer, not the routing, so the record of the pass that asked does.
     ("cached", "cached") when no such record is left."""
-    asked = [(d.get("name"), d.get("digest")) for d in decisions if isinstance(d, dict)]
+    def listens(rows) -> list[tuple]:
+        # the listen's own: the transcript's (AUTO-152) records who served it
+        return [(d.get("name"), d.get("digest")) for d in rows or []
+                if isinstance(d, dict) and d.get("kind") != "failed"
+                and not str(d.get("name") or "").startswith("transcript-")]
+    asked = listens(decisions)
     for path in sorted(Path(pass_dir).parent.glob(f"pass-*/{LISTENING}"), reverse=True):
         if path.parent == Path(pass_dir):
             continue
         old = read_json(path, warn=False)
         if not isinstance(old, dict) or old.get("served_model") in (None, "cached"):
             continue
-        if [(d.get("name"), d.get("digest")) for d in old.get("decisions") or []
-                if isinstance(d, dict) and d.get("kind") != "failed"] == asked:
+        if listens(old.get("decisions")) == asked:
             return old.get("served_model"), old.get("provider")
     return "cached", "cached"
 
@@ -668,9 +672,18 @@ _SCALES = ((10 ** 9, "billion"), (10 ** 6, "million"), (1000, "thousand"))
 _ORDINALS = {"one": "first", "two": "second", "three": "third", "five": "fifth",
              "eight": "eighth", "nine": "ninth", "twelve": "twelfth"}
 #: A number as written: thousands grouped by commas or not, a decimal part,
-#: an ordinal ending, a percent sign.
-_NUMBER = re.compile(r"(?<![\w.,])(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?(st|nd|rd|th)?(?!\w)"
+#: an ordinal ending or a decade's "s", a percent sign.
+_NUMBER = re.compile(r"(?<![\w.,])(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?(st|nd|rd|th|s)?(?!\w)"
                      r"(\s*%)?")
+#: An amount of dollars: "$5" is said "five dollars", "$1.5 million" "one
+#: point five million dollars".
+_MONEY = re.compile(r"\$\s?(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)"
+                    r"(\s+(?:thousand|million|billion|trillion)\b)?", re.IGNORECASE)
+#: A year as written: four digits from 1100 to 2099, no comma, no decimal
+#: part, no percent, with a decade's "s" or not. A narrator says it either
+#: way ("eighteen fifty-nine" or "one thousand eight hundred fifty-nine"),
+#: so the comparison takes the reading nearer what was heard (`_readings`).
+_YEAR = re.compile(r"(?<![\w.,$])(1[1-9]\d\d|20\d\d)(s?)(?![\w%]|[.,]\d|\s*%)")
 #: A word: letters and digits, joined inside by apostrophes and hyphens.
 _WORD = re.compile(r"[^\W_]+(?:['\-][^\W_]+)*")
 
@@ -708,10 +721,17 @@ def _ordinal(word: str) -> str:
     return head + sep + last
 
 
+def _plural(word: str) -> str:
+    """A decade's last word: "ninety" is "nineties", "hundred" "hundreds"."""
+    return word[:-1] + "ies" if word.endswith("y") else word + "s"
+
+
 def _spell(m: re.Match) -> str:
     whole, decimals, ordinal, percent = m.groups()
     words = number_words(int(whole.replace(",", "")))
-    if ordinal and not decimals:
+    if ordinal == "s" and not decimals:
+        words[-1] = _plural(words[-1])
+    elif ordinal and not decimals:
         words[-1] = _ordinal(words[-1])
     if decimals:
         words += ["point"] + [_ONES[int(d)] for d in decimals]
@@ -720,13 +740,71 @@ def _spell(m: re.Match) -> str:
     return f" {' '.join(words)} "
 
 
+def _dollars(m: re.Match) -> str:
+    amount, scale = m.group(1), (m.group(2) or "").strip().lower()
+    unit = "dollar" if amount == "1" and not scale else "dollars"
+    return f" {amount} {scale} {unit} "
+
+
 def normalise_words(text: Any) -> list[str]:
     """The words of `text` for comparing what was said with what was
     written: lower case, punctuation gone but an apostrophe or hyphen inside
-    a word kept, and numbers spelled out (1.5% is "one point five percent")."""
+    a word kept, and numbers spelled out (1.5% is "one point five percent",
+    $5 "five dollars", the 1990s "one thousand nine hundred nineties")."""
     text = str(text or "").replace("’", "'").replace("‘", "'")
+    text = _MONEY.sub(_dollars, text)
     text = _NUMBER.sub(_spell, text).replace("%", " percent ")
     return _WORD.findall(text.lower())
+
+
+def _split(words: list[str]) -> list[str]:
+    """Each hyphenated word as its parts: a transcriber writes "twenty-one"
+    or "twenty one", "well-known" or "well known", for the same sound, so
+    the comparison counts neither as an error."""
+    return [part for word in words for part in word.split("-") if part]
+
+
+def _year_readings(year: int, decade: bool) -> list[list[str]]:
+    """The ways a year is said: as a number ("one thousand eight hundred
+    fifty-nine") and in pairs ("eighteen fifty-nine", "nineteen oh five",
+    "nineteen hundred"; "twenty oh five" beside "two thousand five"), each
+    plural for a decade ("nineteen nineties")."""
+    head, tail = divmod(year, 100)
+    paired = number_words(head)
+    if tail == 0:
+        paired += ["hundred"]
+    elif tail < 10:
+        paired += ["oh"] + number_words(tail)
+    else:
+        paired += number_words(tail)
+    out = []
+    for reading in (number_words(year), paired):
+        words = _split(reading)
+        if decade:
+            words[-1] = _plural(words[-1])
+        if words not in out:
+            out.append(words)
+    return out
+
+
+def _readings(text: Any) -> list:
+    """`text` as compared: its words, hyphens split, with each year as the
+    list of its readings (`_year_readings`) where the words would have one."""
+    text = str(text or "").replace("’", "'").replace("‘", "'")
+    pieces = _YEAR.split(text)
+    out: list = []
+    for i in range(0, len(pieces), 3):
+        out += _split(normalise_words(pieces[i]))
+        if i + 1 < len(pieces):
+            out.append(_year_readings(int(pieces[i + 1]), bool(pieces[i + 2])))
+    return out
+
+
+def _words(readings: list, choice: dict[int, int]) -> list[str]:
+    out: list[str] = []
+    for i, part in enumerate(readings):
+        out += part[choice.get(i, 0)] if isinstance(part, list) else [part]
+    return out
 
 
 def wer(expected: list[str], heard: list[str]) -> float:
@@ -767,32 +845,60 @@ def compare_words(expected: str, heard: str, *, pronounce=()) -> dict:
     """What was written against what was heard: the WER, with each pronouncer
     term left out of both sides (written as the term, heard as the term or
     its `say`, which a transcriber spells as it likes), and how many of the
-    written terms were left out."""
-    want, got = normalise_words(expected), normalise_words(heard)
-    dropped = 0
-    for row in pronounce or ():
-        if not isinstance(row, dict):
-            continue
-        want, n = _drop(want, normalise_words(row.get("term")))
-        dropped += n
+    written terms were left out. Hyphenated words count as their parts on
+    both sides, and each year written is held to whichever of its readings
+    is nearer what was heard, one year at a time."""
+    readings = _readings(expected)
+    got = _split(normalise_words(heard))
+    terms = [row for row in pronounce or () if isinstance(row, dict)]
+    for row in terms:
         for said in (row.get("term"), row.get("say")):
-            got, _ = _drop(got, normalise_words(said))
-    return {"wer": round(wer(want, got), 4), "pronounced": dropped}
+            got, _ = _drop(got, _split(normalise_words(said)))
+
+    def scored(choice: dict[int, int]) -> tuple[float, int]:
+        want, dropped = _words(readings, choice), 0
+        for row in terms:
+            want, n = _drop(want, _split(normalise_words(row.get("term"))))
+            dropped += n
+        return wer(want, got), dropped
+    choice: dict[int, int] = {}
+    for i, part in enumerate(readings):
+        if isinstance(part, list) and len(part) > 1:
+            choice[i] = min(range(len(part)), key=lambda k: scored({**choice, i: k})[0])
+    rate, dropped = scored(choice)
+    return {"wer": round(rate, 4), "pronounced": dropped}
 
 
-def voiced_shots(build: dict | None, script: dict | None = None) -> list[dict]:
+def voiced_shots(build: dict | None, script: dict | None = None,
+                 voice: dict | None = None) -> list[dict]:
     """The shots build.json placed with words to say, in film order: label,
     `at`, `seconds`, the narration (what the transcript is held to) and the
-    screenplay's pronouncers for the shot."""
+    screenplay's pronouncers for the shot.
+
+    build.json keeps 300 characters of a shot's narration (build.py's shots
+    manifest), and a longer shot cut there, often mid-word, would be held
+    to words it was never meant to end on. So the narration is the whole
+    take text from voice.json (the caption text), else the screenplay
+    shot's, whenever that begins with what build.json placed; a take that
+    does not is another read, and the placed text stands."""
     from .script import spoken
     terms: dict[str, list] = {}
+    whole: dict[str, str] = {}
     sections = script.get("sections") if isinstance(script, dict) else None
     for sec in sections if isinstance(sections, list) else []:
         planned = sec.get("shots") if isinstance(sec, dict) else None
         for shot in planned if isinstance(planned, list) else []:
-            if isinstance(shot, dict) and isinstance(shot.get("pronounce"), list):
+            if not isinstance(shot, dict):
+                continue
+            if isinstance(shot.get("pronounce"), list):
                 terms[str(shot.get("label"))] = [r for r in shot["pronounce"]
                                                  if isinstance(r, dict)]
+            if isinstance(shot.get("narration"), str):
+                whole.setdefault(str(shot.get("label")), spoken(shot["narration"]))
+    takes = voice.get("takes") if isinstance(voice, dict) else None
+    for take in takes if isinstance(takes, list) else []:
+        if isinstance(take, dict) and isinstance(take.get("text"), str):
+            whole[str(take.get("label"))] = spoken(take["text"])
     out = []
     built = build.get("shots") if isinstance(build, dict) else None
     for shot in built if isinstance(built, list) else []:
@@ -807,6 +913,8 @@ def voiced_shots(build: dict | None, script: dict | None = None) -> list[dict]:
             continue
         if words and math.isfinite(at) and math.isfinite(seconds):
             label = str(shot.get("label"))
+            full = whole.get(label, "")
+            words = full if full.startswith(words) else words
             out.append({"label": label, "at": at, "seconds": seconds, "narration": words,
                         "pronounce": terms.get(label, [])})
     return sorted(out, key=lambda s: s["at"])
@@ -884,8 +992,8 @@ def transcript_record(reason: str, model: str, shots: list[dict], *, why: str = 
     """A transcript that compared nothing, not evidenced for `reason`: every
     shot in `shots` named unheard for `why` (none when it was skipped, with
     no call, for a wordless film or one with no voiced shot)."""
-    return {"status": "not_evidenced", "reason": reason, "model": model, "shots": [],
-            "flagged": [],
+    return {"status": "not_evidenced", "reason": reason, "model": model,
+            "served_model": None, "provider": None, "shots": [], "flagged": [],
             "not_evidenced": [{"label": s["label"], "why": why or reason} for s in shots],
             "findings": []}
 
@@ -955,6 +1063,17 @@ def transcribe(listener: Harness, prepared: Prepared, shots: list[dict], *,
             "not_evidenced": unheard, "findings": findings}
 
 
+def _changed(prepared: Prepared) -> str:
+    """Why the film there is not the film the listener heard, or "": the
+    video changed, or the scene was edited after it was rendered."""
+    video, scene = Path(prepared.film["path"]), Path(prepared.scene_path)
+    if not video.is_file() or _sha256(video) != prepared.film["sha256"]:
+        return f"{video.name} changed while the listener heard it; listen again"
+    if scene.is_file() and video.stat().st_mtime < scene.stat().st_mtime:
+        return f"{video.name} is now older than {scene.name}; render and listen again"
+    return ""
+
+
 def listen(project, pass_dir: Path, prepared: Prepared, args, *, house: str = "",
            house_digest: dict | None = None) -> dict:
     """Ask, check, record: the listen's record, also written to
@@ -1000,31 +1119,36 @@ def listen(project, pass_dir: Path, prepared: Prepared, args, *, house: str = ""
                 kept, dropped = merged((kept, dropped), (more, failed))
     except HarnessError as exc:
         reason = str(exc)
+    # Who served the listen, read before the transcript makes a call of its
+    # own (served() reads the last one made).
+    served, provider = listener.served()
+    asked = len(listener.built)
+    # Current only while the film heard is the film there: a render that
+    # landed during the call carries another mix, and nothing is asked of
+    # it, the transcript included.
+    reason = reason or _changed(prepared)
+    if reason:
+        kept, dropped = [], []
     # The transcript (AUTO-152): what the narration said, shot by shot, on
     # the same harness and track; asked only after the listen answered.
     shots = list(prepared.shots or [])
     if not shots:
         transcript = transcript_record(prepared.transcript_skip, prepared.model, [])
     elif reason:
-        transcript = transcript_record(f"the listen did not answer: {reason}",
+        transcript = transcript_record(f"the listen is not current: {reason}",
                                        prepared.model, shots)
     else:
         transcript = transcribe(listener, prepared, shots, where=_where(project))
-    if not reason:
-        # Current only while the film heard is the film there: a render
-        # that landed during the call carries another mix.
-        video, scene = Path(prepared.film["path"]), Path(prepared.scene_path)
-        if not video.is_file() or _sha256(video) != prepared.film["sha256"]:
-            reason = f"{video.name} changed while the listener heard it; listen again"
-        elif scene.is_file() and video.stat().st_mtime < scene.stat().st_mtime:
-            reason = f"{video.name} is now older than {scene.name}; render and listen again"
-        kept, dropped = ([], []) if reason else (kept, dropped)
-        if reason and shots:
+        transcript["served_model"], transcript["provider"] = (
+            listener.served() if len(listener.built) > asked else ("cached", "cached"))
+        # and a render that landed during the transcript takes both
+        reason = _changed(prepared)
+        if reason:
+            kept, dropped = [], []
             transcript = transcript_record(reason, prepared.model, shots)
     kept = kept + transcript.pop("findings")
-    served, provider = listener.served()
     report = listener.report()
-    if served is None and not listener.built and report["decisions"]:
+    if served is None and not asked and report["decisions"]:
         # Nothing was asked: every answer came from decisions/qa/.
         served, provider = served_before(pass_dir, report["decisions"])
     current = not reason
