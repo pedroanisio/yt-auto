@@ -1590,6 +1590,29 @@ class SettingsPlan(unittest.TestCase):
                 self.assertIn(words, prompt)
             self.assertNotIn("the default is none", prompt)
 
+    def test_two_sections_with_one_heading_mark_only_their_own_line(self):
+        twin = dict(SECTION, shots=[dict(SECTION["shots"][0], label="3.1", visual="twin")])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            idea = Idea(title="T", genre="g", description="d")
+            bundle = {"idea": idea, "outline": {}, "claims": [], "assets": [], "premise": ""}
+            planner = vfx.VfxPlanner(bundle, Dossier(root, idea, at=root), vfx.Workspace(root),
+                                     model="sonnet", verbose=False)
+            prompts = []
+
+            def decide(name, prompt, schema):
+                prompts.append(prompt)
+                return {"effects": [], "cuts": []}
+            with patch.object(planner, "_decide", decide), \
+                    patch.object(planner, "vocabulary", lambda: ""):
+                planner.effects({"sections": [SECTION, self.LATER, twin]}, STYLE)
+        self.assertEqual(len(prompts), 3)
+        for prompt in prompts:
+            own = 3 if "- 3.1 (" in prompt else 2 if "- 2.1 (" in prompt else 1
+            marked = [line for line in prompt.splitlines() if vfx.THIS_SECTION in line]
+            self.assertEqual(len(marked), 1, prompt)
+            self.assertTrue(marked[0].startswith(f"{own}. "), marked)
+
     def test_the_plan_keeps_the_setting_and_each_cuts_setting(self):
         def answer(name):
             if name == "plan-effects-open":

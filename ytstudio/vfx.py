@@ -3365,11 +3365,14 @@ class VfxPlanner:
             "carry meaning by red/green alone.",
             STYLE_SCHEMA))
 
-    def _section_effects(self, section: dict, style: dict, *, film: list[dict] = ()) -> dict:
+    def _section_effects(self, section: dict, style: dict, *, film: list[dict] = (),
+                         at: int | None = None) -> dict:
         """One section's effects plan. `film` is the film's sections in order
         (heading and first picture, from effects()): static context, so the
         planner can move to another setting where the story moves instead of
-        re-using its neighbour's."""
+        re-using its neighbour's. `at` is this section's place in `film`
+        (from 1), which marks its line: two sections may share a heading.
+        Without it the line whose heading matches is marked."""
         claims = self.bundle["claims"]
         heading = section.get("heading", "")
         quoted = [c for c in claims
@@ -3383,7 +3386,9 @@ class VfxPlanner:
             for s in shots) or "- (no screenplay yet; leave `shots` empty)"
         film_lines = "".join(
             f"{n}. {row.get('heading', '')}: {row.get('visual') or '(no shot yet)'}"
-            + (f"  {THIS_SECTION}" if row.get("heading", "") == heading else "") + "\n"
+            + (f"  {THIS_SECTION}" if (n == at if at is not None
+                                       else row.get("heading", "") == heading) else "")
+            + "\n"
             for n, row in enumerate(film, 1))
         prompt = (
             f"{self._idea_block()}\n\n"
@@ -3485,8 +3490,8 @@ class VfxPlanner:
         def work() -> list[dict]:
             self._say(f"  {len(sections)} sections, {self.jobs} at a time")
             with ThreadPoolExecutor(max_workers=self.jobs) as pool:
-                futures = [pool.submit(self._section_effects, s, style, film=film)
-                           for s in sections]
+                futures = [pool.submit(self._section_effects, s, style, film=film, at=n)
+                           for n, s in enumerate(sections, 1)]
                 out = []
                 for section, future in zip(sections, futures):
                     try:
