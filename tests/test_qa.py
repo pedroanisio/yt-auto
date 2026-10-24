@@ -328,6 +328,11 @@ class StoryRole(unittest.TestCase):
         self.assertIn("narrative_clarity", qa.ROLE)
         self.assertIn("editing_pacing", qa.ROLE)
 
+    def test_the_role_carries_the_tension_row(self):
+        # AUTO-136: rising stakes across sections now has a row of its own
+        self.assertIn("tension", qa.STORY_RUBRIC)
+        self.assertIn(narrative.criterion("tension").levels["Excellent"], qa.ROLE)
+
     def test_the_categories_stay_ten(self):
         self.assertEqual(len(qa.CATEGORIES), 10)
         self.assertNotIn("story", qa.CATEGORIES)

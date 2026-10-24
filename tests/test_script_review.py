@@ -74,12 +74,16 @@ def kind(schema):
     return ""
 
 
-def sample(verdict="recommend", grades=None, flags=(), previous=None):
+def sample(verdict="recommend", grades=None, flags=(), previous=None, trigger=None):
     g = {k: "Good" for k in narrative.KEYS}
     g.update(grades or {})
     out = {"logline": "a bridge that should have stood", "synopsis": "it falls; why",
            "grades": g, "verdict": verdict, "flags": [dict(f) for f in flags],
            "first_minute": {"promise_match": "yes", "question_and_stakes": "why it fell"}}
+    if trigger is not None:
+        # AUTO-136: the curiosity trigger the sample heard in the opening
+        out["first_minute"].update(trigger=trigger, gap="" if trigger == "not_heard"
+                                   else "why the bridge fell")
     if previous:
         out["previous"] = {"verdict": previous, "findings": []}
     return out
@@ -313,6 +317,146 @@ class Samples(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- #
+# the opening's trigger and the tension row (AUTO-136)
+# --------------------------------------------------------------------------- #
+
+def planned(trigger):
+    plan = copy.deepcopy(PLAN)
+    plan["hook"]["trigger"] = trigger
+    return plan
+
+
+def heard(*triggers, **grades):
+    """The samples of round 1, each hearing its trigger."""
+    return {f"review-r1-s{k}": sample("recommend", grades, trigger=trigger)
+            for k, trigger in enumerate(triggers, 1)}
+
+
+def redrafted(prompt, schema):
+    return {"shots": [{"visual": "v", "narration": "a redrafted line", "seconds": 5,
+                       "asset": "make", "style": "s", "function": "context", "shows": "s"}]}
+
+
+class Trigger(unittest.TestCase):
+    def round_of(self, answers):
+        """One round over the plan alone (no line drafted, so not_heard is
+        an honest answer)."""
+        w = writer()
+        faked(w, answers)
+        return w.review_round([], PLAN, 1)
+
+    def test_the_round_hears_the_label_most_valid_samples_give(self):
+        self.assertEqual(self.round_of(heard("question", "question", "paradox"))["trigger"],
+                         "question")
+
+    def test_a_tie_too_few_samples_or_not_heard_is_not_evidenced(self):
+        tie = heard("question", "paradox")
+        tie["review-r1-s3"] = tie["review-r1-s3-again"] = sample("recommend",
+                                                                 {"stakes": "Poor"})
+        self.assertEqual(self.round_of(tie)["trigger"], "not_evidenced")
+        self.assertEqual(self.round_of(heard("not_heard", "not_heard", "question"))["trigger"],
+                         "not_evidenced")
+        one = heard("question")
+        for k in (2, 3):
+            one[f"review-r1-s{k}"] = one[f"review-r1-s{k}-again"] = sample(
+                "recommend", {"stakes": "Poor"}, trigger="question")
+        self.assertEqual(self.round_of(one)["trigger"], "not_evidenced")
+        # samples that name no trigger say nothing about it
+        self.assertEqual(self.round_of({})["trigger"], "not_evidenced")
+
+    def test_not_heard_over_narrated_shots_is_asked_again(self):
+        w = writer()
+        calls = faked(w, {"review-r1-s1": sample(trigger="not_heard"),
+                          "review-r1-s1-again": sample(trigger="question")})
+        record = w.run(review=True, fix=False)["review"]
+        again = next(c for c in calls if c["name"] == "review-r1-s1-again")
+        self.assertIn("not_heard", again["prompt"])
+        first = next(s for s in record["samples"] if s["name"] == "review-r1-s1")
+        self.assertTrue(first["again"])
+        self.assertTrue(first["valid"])
+
+    def test_a_heard_none_files_one_hook_trigger_match_flag(self):
+        w = writer()
+        faked(w, heard("none", "none", "question", hook="Fair"))
+        data = w.run(review=True)
+        record = data["review"]
+        self.assertEqual(record["trigger"], {"planned": "unexpected_observation",
+                                             "heard": "none"})
+        filed = [f for f in record["unresolved"] if f.get("by") == "hook-trigger-match"]
+        self.assertEqual(len(filed), 1, record["unresolved"])
+        self.assertEqual({k: filed[0][k] for k in ("n", "section", "criterion", "severity",
+                                                     "problem", "fix", "command")},
+                         {"n": 0, "section": 0, "criterion": "hook", "severity": "important",
+                          "problem": "the first three spoken sentences open no curiosity "
+                                     "trigger",
+                          "fix": "open on the planned trigger: unexpected_observation",
+                          "command": script.REPLAN_FIX})
+        said = [f for f in data["findings"] if "open no curiosity trigger" in f]
+        self.assertEqual(len(said), 1, data["findings"])
+        self.assertTrue(said[0].startswith("warning: story review:"), said[0])
+        self.assertIn(script.REPLAN_FIX, said[0])
+
+    def test_a_heard_trigger_other_than_the_planned_files_nothing(self):
+        w = writer()
+        faked(w, {"plan": planned("question"), **heard("paradox", "paradox", "question")})
+        record = w.run(review=True)["review"]
+        self.assertEqual(record["trigger"], {"planned": "question", "heard": "paradox"})
+        self.assertEqual(record["unresolved"], [])
+        lines = script.story_review_lines(record)
+        self.assertIn("hook trigger: planned question, heard paradox (differs)", lines)
+        self.assertIn("| tension | Good |", lines)
+
+    def test_not_evidenced_files_nothing_and_shows_no_difference(self):
+        w = writer()
+        faked(w, heard("question", "paradox", "unresolved_outcome"))
+        record = w.run(review=True)["review"]
+        self.assertEqual(record["trigger"]["heard"], "not_evidenced")
+        self.assertEqual(record["unresolved"], [])
+        lines = script.story_review_lines(record)
+        self.assertIn("hook trigger: planned unexpected_observation, heard not_evidenced",
+                      lines)
+        self.assertFalse([line for line in lines if "(differs)" in line])
+
+    def test_a_drifted_plan_trigger_is_recorded_as_none(self):
+        w = writer()
+        faked(w, {"plan": planned("teaser"), **heard("none", "none", "none", hook="Fair")})
+        record = w.run(review=True)["review"]
+        self.assertEqual(record["trigger"], {"planned": None, "heard": "none"})
+        filed = [f for f in record["unresolved"] if f.get("by") == "hook-trigger-match"]
+        self.assertEqual(len(filed), 1)
+        self.assertNotIn("None", filed[0]["fix"])
+
+
+class TensionRow(unittest.TestCase):
+    def test_a_fair_tension_is_a_consider_and_its_section_flag_is_redrafted(self):
+        w = writer()
+        flat = flag(n=0, section=2, criterion="tension",
+                    problem="section 2 risks nothing the opening did not",
+                    fix="make the twin's opening date the new cost")
+        first = sample("consider", {"tension": "Fair"}, flags=[flat])
+        answers = consider_then(("recommend", "better"), flags=[flat], first=first)
+        answers["redraft-02"] = redrafted
+        calls = faked(w, answers)
+        data = w.run(review=True)
+        self.assertEqual(data["review"]["rounds"][0]["verdict"], "consider")
+        self.assertEqual(data["review"]["rounds"][0]["grades"]["tension"], "Fair")
+        prompt = next(c for c in calls if c["name"] == "redraft-02")["prompt"]
+        self.assertIn("section 2 risks nothing the opening did not", prompt)
+        self.assertIn("tension", prompt)
+
+    def test_a_tension_shot_flag_reaches_revise_story(self):
+        w = writer()
+        flat = flag(n=3, section=2, criterion="tension",
+                    problem="this line restates the risk", fix="raise the cost")
+        first = sample("consider", {"tension": "Fair"}, flags=[flat])
+        answers = consider_then(("recommend", "better"), flags=[flat], first=first)
+        calls = faked(w, answers)
+        w.run(review=True)
+        prompt = next(c for c in calls if c["name"] == "revise-story-1")["prompt"]
+        self.assertIn("this line restates the risk", prompt)
+
+
+# --------------------------------------------------------------------------- #
 # failed samples, through the harness
 # --------------------------------------------------------------------------- #
 
@@ -336,7 +480,9 @@ class Engine(FakeEngine):
             order = tuple(schema["properties"]["grades"]["properties"]["train"]["enum"])
             if any(order == narrative.grade_levels(s) for s in Engine.fail_seeds):
                 raise ClaudeError("the reviewer timed out")
-            return sample("recommend")
+            # through the harness the schema holds: the first minute names
+            # the trigger it heard (AUTO-136)
+            return sample("recommend", trigger="unexpected_observation")
         if which == "cold-read":
             return copy.deepcopy(COLD)
         if which == "answers":

@@ -297,6 +297,14 @@ class TheShippedText(unittest.TestCase):
             with self.subTest(section=name):
                 self.assertLess(len(body), 1500)
 
+    def test_the_script_section_names_the_opening_trigger_and_stays_short(self):
+        # AUTO-136: the trigger went into an existing bullet, not a new one
+        script = self.raw["script"]
+        self.assertIn("on a question, a paradox or an unexpected observation", script)
+        self.assertIn(("attention", 1), cited(COMMENT.search(script).group(1)))
+        self.assertEqual(len(self.parsed["script"].splitlines()), 11)
+        self.assertLess(len(script), 1500)
+
     def test_all_is_three_sentences_at_most(self):
         # `## all` reaches every stage that asks the model, props and gate too.
         sentences = [s for s in re.split(r"(?<=[.!?])\s+", self.parsed["all"]) if s.strip()]

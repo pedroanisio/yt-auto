@@ -48,7 +48,8 @@ from tests import test_script_review as review_tests  # noqa: E402
 #: is graded on.
 SEEDED = {"list-plan": "train", "topic-train": "train", "empty-payoff": "ending",
           "and-chain": "train", "reveal-first": "reveal_setup",
-          "recap-ending": "ending", "hook-enumerates": "hook"}
+          "recap-ending": "ending", "hook-enumerates": "hook",
+          "flat-tension": "tension", "no-trigger": "hook"}
 
 #: The seeded faults only the cold read catches (judging 14): the story
 #: review is read on them and not judged.
@@ -166,7 +167,9 @@ class TheSet(unittest.TestCase):
                 self.assertEqual(problems(said, narrative.REVIEW_SCHEMA), [])
                 self.assertEqual(narrative.check_review(said), [])
                 got = {"verdict": said["verdict"], "grades": said["grades"],
-                       "flags": said["flags"]}
+                       "flags": said["flags"],
+                       # the round's heard trigger: not_heard is not_evidenced
+                       "trigger": script.heard_trigger([said, said])}
                 if "plan_review" in expected:
                     got["plan_review"] = expected["plan_review"]["verdict"]
                 if "cold_read" in expected:
@@ -374,6 +377,43 @@ def rated(verdict: str, **grades) -> dict:
     return {"verdict": verdict, "grades": g}
 
 
+class TensionAndTrigger(unittest.TestCase):
+    """AUTO-136: flat stakes and an opening with no curiosity trigger."""
+
+    def test_the_two_cases_load_with_a_script_and_their_criterion(self):
+        names = cases()
+        for name, key in (("flat-tension", "tension"), ("no-trigger", "hook")):
+            with self.subTest(case=name):
+                for part in ("plan.json", "script.json", "expected.json"):
+                    self.assertTrue((names[name] / part).is_file(), part)
+                expected = load(names[name] / "expected.json")
+                self.assertEqual(expected["criterion"], key)
+                self.assertIn(key, narrative.KEYS)
+                self.assertEqual(expected["verdict"], "consider")
+        self.assertEqual(load(names["no-trigger"] / "expected.json")["trigger"], "none")
+        self.assertNotIn("trigger", load(names["flat-tension"] / "expected.json"))
+
+    def test_judge_case_fails_a_reviewer_that_misses_either_fault(self):
+        flat = load(FIXTURES / "flat-tension" / "expected.json")
+        quiet = load(FIXTURES / "no-trigger" / "expected.json")
+        self.assertEqual(narrative.judge_case(flat, got_for("flat-tension")), [])
+        self.assertEqual(narrative.judge_case(quiet, got_for("no-trigger", trigger="none")),
+                         [])
+        for expected, name in ((flat, "flat-tension"), (quiet, "no-trigger")):
+            with self.subTest(case=name):
+                self.assertTrue(narrative.judge_case(
+                    expected, got_for(name, verdict="recommend", trigger="none")))
+        grades = dict(got_for("flat-tension")["grades"], tension="Good")
+        failed = narrative.judge_case(flat, got_for("flat-tension", grades=grades))
+        self.assertTrue(any("tension graded Good" in line for line in failed), failed)
+        for trigger in ("question", "not_evidenced", None):
+            with self.subTest(trigger=trigger):
+                failed = narrative.judge_case(quiet, got_for("no-trigger", trigger=trigger))
+                self.assertEqual(len(failed), 1, failed)
+                self.assertIn("trigger", failed[0])
+                self.assertIn("none", failed[0])
+
+
 class LengthAudit(unittest.TestCase):
     def test_who_wins_a_pair(self):
         self.assertEqual(narrative.pair_winner(rated("consider"), rated("recommend")), "longer")
@@ -439,6 +479,25 @@ class Calibrate(Hermetic):
         self.assertTrue(report["audit"]["passed"])
         self.assertGreaterEqual(report["audit"]["pairs"], 3)
         self.assertTrue(report["passed"])
+
+    def test_the_rounds_heard_trigger_is_judged_on_no_trigger(self):
+        report, _ = self.calibrate()
+        rows = {r["name"]: r for r in report["cases"]}
+        self.assertEqual(rows["no-trigger"]["trigger"], "none")
+        self.assertTrue(rows["no-trigger"]["passed"], rows["no-trigger"])
+        self.assertEqual(rows["good"]["trigger"], "unexpected_observation")
+        self.assertEqual(rows["topic-train"]["trigger"], "not_evidenced")    # not_heard
+
+        def opens_on_a_question(case, kind):
+            if kind == "review" and case == "no-trigger":
+                said = copy.deepcopy(load(FIXTURES / case / "expected.json")["review"])
+                said["first_minute"]["trigger"] = "question"
+                return said
+            return None
+        report, _ = self.calibrate(opens_on_a_question)
+        row = next(r for r in report["cases"] if r["name"] == "no-trigger")
+        self.assertFalse(row["passed"])
+        self.assertTrue(any("trigger" in f for f in row["failures"]), row["failures"])
 
     def test_it_asks_the_plan_review_the_three_samples_and_the_cold_read(self):
         report, asked = self.calibrate()
@@ -623,7 +682,7 @@ class Entry(Hermetic):
         self.assertEqual(set(report["audit"]), {"pairs", "longer", "shorter", "ties",
                                                 "ceiling", "passed"})
         base = {"name", "criterion", "story", "expected", "got", "plan_review",
-                "cold_read", "ran", "passed", "failures", "grades", "samples"}
+                "cold_read", "ran", "passed", "failures", "grades", "samples", "trigger"}
         for row in report["cases"]:
             with self.subTest(case=row["name"]):
                 padded = (FIXTURES / row["name"] / "padded.json").is_file()

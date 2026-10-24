@@ -26,7 +26,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from ytstudio import harness, script  # noqa: E402
+from ytstudio import harness, narrative, script  # noqa: E402
 from ytstudio.core import Idea  # noqa: E402
 
 from tests.test_harness_decisions import FakeEngine, blank  # noqa: E402
@@ -64,6 +64,8 @@ PLAN = {
     "misconception": "[M1] Bridges fail because they are old.",
     "misconception_why": "",
     "audience": "lay",
+    "hook": {"trigger": "unexpected_observation",
+             "gap": "why a bridge built to stand a century fell in its twentieth year"},
     "reveal": {"section": 3, "constraint_section": 2},
     "questions": [
         {"id": "Q1", "text": "What brought the bridge down?", "opened_in": 1, "closed_in": 3},
@@ -128,12 +130,19 @@ class Schema(unittest.TestCase):
                      "questions", "ending"):
             self.assertIn(name, required)
         section = script.PLAN_SCHEMA["properties"]["sections"]["items"]
-        for name in ("opens", "closes", "connective", "anchor_visual"):
+        # AUTO-136: rehook and escalation are present in every section; the
+        # value may be empty where the description allows (section 1, and
+        # the payoff section's escalation)
+        for name in ("opens", "closes", "connective", "rehook", "escalation",
+                     "anchor_visual"):
             self.assertIn(name, section["required"])
-        # asked for, not retried
-        for name in ("rehook", "escalation"):
-            self.assertIn(name, section["properties"])
-            self.assertNotIn(name, section["required"])
+        self.assertEqual(script.SECTION_STORY_REQUIRED,
+                         ["opens", "closes", "connective", "rehook", "escalation",
+                          "anchor_visual"])
+        self.assertIn("empty only for section 1",
+                      section["properties"]["rehook"]["description"])
+        self.assertIn("final payoff section",
+                      section["properties"]["escalation"]["description"])
         self.assertIn("misconception", script.PLAN_SCHEMA["properties"])
         self.assertEqual(section["properties"]["connective"]["enum"],
                          ["open", "and", "but", "therefore", "because"])
@@ -146,6 +155,30 @@ class Schema(unittest.TestCase):
         self.assertEqual(set(props["ending"]["required"]),
                          {"payoff_line", "callback", "next_film"})
         self.assertNotIn("tail_seconds", json.dumps(script.PLAN_SCHEMA))
+
+    def test_the_plan_declares_its_hooks_trigger_and_gap(self):
+        # AUTO-136: the trigger vocabulary is narrative's, never a copy here
+        self.assertIn("hook", script.STORY_REQUIRED)
+        self.assertIn("hook", script.PLAN_SCHEMA["required"])
+        self.assertIn("hook", script.PLAN_FIELDS_SCHEMA["required"])
+        hook = script.PLAN_SCHEMA["properties"]["hook"]
+        self.assertIs(hook, script.STORY_PROPERTIES["hook"])
+        self.assertEqual(sorted(hook["required"]), ["gap", "trigger"])
+        self.assertEqual(hook["properties"]["trigger"]["enum"],
+                         list(narrative.HOOK_TRIGGERS))
+        self.assertIn("recorded", hook["properties"]["trigger"]["description"])
+        self.assertIn("pre-check", hook["properties"]["gap"]["description"])
+        self.assertFalse(hasattr(script, "HOOK_TRIGGERS"))
+        self.assertFalse(hasattr(script, "HEARD_TRIGGERS"))
+        for words in ("hook", "trigger", "gap", "paradox"):
+            self.assertIn(words, script.STORY_BRIEF)
+        # the per-section sentence says when rehook and escalation may be empty
+        brief = " ".join(script.STORY_BRIEF.split())
+        self.assertIn("empty only for section 1", brief)
+        self.assertIn("the final payoff section", brief)
+
+    def test_the_plan_view_passes_the_hook_on(self):
+        self.assertEqual(script.plan_view(PLAN)["hook"], PLAN["hook"])
 
     def test_every_shot_states_its_function_and_what_it_shows(self):
         for sourced in (False, True):
@@ -205,13 +238,50 @@ class ThroughTheHarness(unittest.TestCase):
         self.assertEqual(len(FakeEngine.json_calls), 2)
         self.assertIn("train is missing", FakeEngine.json_calls[1]["prompt"])
 
-    def test_a_plan_without_a_rehook_is_not_asked_again(self):
+    def test_a_plan_without_a_rehook_key_is_asked_again_then_fails(self):
+        # AUTO-136 reverses AUTO-90 here on purpose: the key is required in
+        # every section, so a plan that leaves it out is asked again.
         answer = blank(script.PLAN_SCHEMA)
         answer["sections"] = [blank(script.PLAN_SCHEMA["properties"]["sections"]["items"])]
-        self.assertNotIn("rehook", answer["sections"][0])
+        del answer["sections"][0]["rehook"]
+        FakeEngine.answer = answer
+        with self.assertRaises(harness.HarnessError) as caught:
+            self.writer().plan()
+        self.assertIn("rehook", str(caught.exception))
+        self.assertEqual(len(FakeEngine.json_calls), 2)
+
+    def test_a_plan_without_an_escalation_key_is_asked_again_then_fails(self):
+        answer = blank(script.PLAN_SCHEMA)
+        answer["sections"] = [blank(script.PLAN_SCHEMA["properties"]["sections"]["items"])]
+        del answer["sections"][0]["escalation"]
+        FakeEngine.answer = answer
+        with self.assertRaises(harness.HarnessError) as caught:
+            self.writer().plan()
+        self.assertIn("escalation", str(caught.exception))
+        self.assertEqual(len(FakeEngine.json_calls), 2)
+        self.assertIn("escalation", FakeEngine.json_calls[1]["prompt"])
+
+    def test_an_empty_rehook_in_section_1_is_accepted(self):
+        answer = blank(script.PLAN_SCHEMA)
+        answer["sections"] = [blank(script.PLAN_SCHEMA["properties"]["sections"]["items"])]
+        self.assertEqual(answer["sections"][0]["rehook"], "")
         FakeEngine.answer = answer
         self.writer().plan()
         self.assertEqual(len(FakeEngine.json_calls), 1)
+
+    def test_a_hook_trigger_off_the_list_is_asked_again_then_recorded(self):
+        answer = copy.deepcopy(PLAN)
+        answer["hook"]["trigger"] = "teaser"
+        FakeEngine.answer = answer
+        w = self.writer()
+        w.plan()
+        self.assertEqual(len(FakeEngine.json_calls), 2)
+        self.assertIn("trigger", FakeEngine.json_calls[1]["prompt"])
+        self.assertIn("note: hook trigger 'teaser' not in the schema; it is not compared "
+                      "with the heard opening", w.findings)
+        self.assertEqual(script.planned_trigger(answer), None)
+        self.assertEqual(script.planned_trigger(PLAN), "unexpected_observation")
+        self.assertEqual(script.planned_trigger({}), None)
 
     def test_a_connective_off_the_list_is_asked_again_then_recorded(self):
         answer = copy.deepcopy(PLAN)

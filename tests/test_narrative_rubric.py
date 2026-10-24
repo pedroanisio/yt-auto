@@ -1,7 +1,7 @@
 """AUTO-91: the narrative rubric, one tuple read by the writer and the reviewer.
 
-`ytstudio/narrative.py` holds the seven criteria a story is judged on (train,
-hook, stakes, open loops, reveal setup, ending, honesty), each with four
+`ytstudio/narrative.py` holds the eight criteria a story is judged on (train,
+hook, stakes, open loops, reveal setup, tension, ending, honesty), each with four
 labelled levels, a worked example, the strength of its lead rule from
 docs/narrative/README.md and the corpus rules it is drawn from; the review's
 schema in the shape of script coverage (judging 12); the plan review's schema;
@@ -63,10 +63,11 @@ def every_text() -> list[str]:
 
 
 class Rubric(unittest.TestCase):
-    def test_seven_criteria_with_the_named_keys(self):
+    def test_eight_criteria_with_the_named_keys(self):
+        # AUTO-136: tension, rising stakes across sections, after reveal_setup
         self.assertEqual([c.key for c in narrative.RUBRIC],
                          ["train", "hook", "stakes", "open_loops", "reveal_setup",
-                          "ending", "honesty"])
+                          "tension", "ending", "honesty"])
         self.assertEqual(narrative.KEYS, tuple(c.key for c in narrative.RUBRIC))
 
     def test_every_criterion_has_four_labelled_one_line_levels_and_an_example(self):
@@ -254,7 +255,8 @@ class Schema(unittest.TestCase):
             self.assertIn(field, props)
         self.assertLess(props.index("synopsis"), props.index("grades"))
         first = narrative.REVIEW_SCHEMA["properties"]["first_minute"]
-        self.assertEqual(sorted(first["required"]), ["promise_match", "question_and_stakes"])
+        self.assertEqual(sorted(first["required"]), ["gap", "promise_match",
+                                                     "question_and_stakes", "trigger"])
         answered = narrative.REVIEW_SCHEMA["properties"]["answered"]["items"]
         self.assertEqual(sorted(answered["properties"]), ["question_id", "shot_index"])
         self.assertNotIn("score", props)
@@ -379,6 +381,91 @@ class CheckReview(unittest.TestCase):
                          ["a consider names problems to fix before voicing: it carries no flag"])
 
 
+class Tension(unittest.TestCase):
+    """AUTO-136: a row grades rising stakes across the sections."""
+
+    def test_tension_follows_reveal_setup_and_leads_with_attention_9(self):
+        keys = list(narrative.KEYS)
+        self.assertEqual(keys.index("tension"), keys.index("reveal_setup") + 1)
+        tension = narrative.criterion("tension")
+        self.assertEqual(tension.strength, "practitioner")
+        self.assertEqual(tension.rules, ("attention 9", "structure 23", "structure 25",
+                                         "structure 26"))
+        self.assertIn("re-hook", tension.question)
+        # the final section resolves; it is not asked to raise the stakes
+        self.assertIn("final section resolves", tension.question)
+
+    def test_the_reviewer_reads_its_four_levels_and_its_lead_rule(self):
+        text = narrative.rubric_text("reviewer", keys=["tension"])
+        tension = narrative.criterion("tension")
+        for level in narrative.LEVELS:
+            self.assertIn(tension.levels[level], text)
+        self.assertIn("attention 9", text)
+        self.assertIn("rehook", tension.levels["Excellent"])
+        self.assertIn("plateaus", tension.levels["Good"])
+        self.assertIn("flat", tension.levels["Fair"])
+        self.assertIn("list", tension.levels["Poor"])
+
+    def test_a_poor_tension_is_never_a_reject_ground(self):
+        # The four criteria that decide a film stay four; tension is not one.
+        role = " ".join(narrative.reviewer_role().split())
+        self.assertIn("(train, stakes, open_loops, ending)", role)
+        deciding = role[role.index("one of the four"):role.index("is Poor")]
+        self.assertNotIn("tension", deciding)
+        self.assertNotIn("tension", narrative.reviewer_role(plan=True))
+
+
+class Trigger(unittest.TestCase):
+    """AUTO-136: the opening's curiosity trigger (attention 1)."""
+
+    def test_the_vocabulary_lives_here_and_heard_adds_none_and_not_heard(self):
+        self.assertEqual(narrative.HOOK_TRIGGERS,
+                         ("question", "paradox", "unexpected_observation",
+                          "unresolved_outcome", "someone_knows"))
+        self.assertEqual(narrative.HEARD_TRIGGERS,
+                         narrative.HOOK_TRIGGERS + ("none", "not_heard"))
+
+    def test_the_hook_question_names_the_triggers_and_cites_attention_1(self):
+        hook = narrative.criterion("hook")
+        for words in ("curiosity trigger", "a question", "a paradox",
+                      "an unexpected observation", "an unresolved outcome",
+                      "something someone knows that the viewer does not"):
+            self.assertIn(words, hook.question)
+        self.assertIn("the trigger is concrete within the first three sentences",
+                      hook.levels["Excellent"])
+        self.assertIn("or the first three sentences hold no trigger", hook.levels["Fair"])
+        self.assertIn("attention 1", hook.rules)
+        self.assertEqual(hook.rules[0], "structure 10")      # the strength stays platform
+        self.assertEqual(hook.strength, "platform")
+
+    def test_the_first_minute_names_the_trigger_and_the_gap_it_heard(self):
+        first = narrative.REVIEW_SCHEMA["properties"]["first_minute"]
+        for name in ("promise_match", "question_and_stakes", "trigger", "gap"):
+            self.assertIn(name, first["required"])
+        self.assertEqual(first["properties"]["trigger"]["enum"],
+                         list(narrative.HEARD_TRIGGERS))
+        self.assertIn("not_heard", first["properties"]["trigger"]["description"])
+        self.assertIn("first three spoken sentences",
+                      first["properties"]["trigger"]["description"])
+        role = " ".join(narrative.reviewer_role().split())
+        self.assertIn("trigger", role[role.index("Read the first minute twice"):])
+
+    def test_a_heard_none_contradicts_a_good_hook(self):
+        def heard(trigger, hook):
+            said = review("recommend", {"hook": hook})
+            said["first_minute"].update(trigger=trigger, gap="")
+            return narrative.check_review(said)
+        for hook in ("Excellent", "Good"):
+            found = heard("none", hook)
+            self.assertEqual(len(found), 1, found)
+            self.assertIn("none", found[0])
+            self.assertIn("hook", found[0])
+        self.assertEqual(heard("none", "Fair"), [])
+        # a plan-only review hears nothing, and may grade the hook from the plan
+        self.assertEqual(heard("not_heard", "Excellent"), [])
+        self.assertEqual(heard("paradox", "Excellent"), [])
+
+
 # --------------------------------------------------------------------------- #
 # the seeded calibration set
 # --------------------------------------------------------------------------- #
@@ -403,7 +490,8 @@ def at(doc: dict, dotted: str):
 #: criterion it fails on.
 SEEDED = {"list-plan": "train", "topic-train": "train", "empty-payoff": "ending",
           "and-chain": "train", "reveal-first": "reveal_setup",
-          "recap-ending": "ending", "hook-enumerates": "hook"}
+          "recap-ending": "ending", "hook-enumerates": "hook",
+          "flat-tension": "tension", "no-trigger": "hook"}
 
 #: The faults only the cold read catches: a premise a first-time viewer
 #: could not restate, and terms a lay audience is never given. judging 14
@@ -526,8 +614,8 @@ class Fixtures(unittest.TestCase):
             self.assertFalse((path / "script.json").is_file())
             said = load(path / "expected.json")["review"]
             with self.subTest(case=name):
-                for text in said["first_minute"].values():
-                    self.assertIn("plan", text)
+                for key in ("promise_match", "question_and_stakes"):
+                    self.assertIn("plan", said["first_minute"][key])
         said = load(FIXTURES / "list-plan" / "expected.json")["review"]
         self.assertNotIn("Quebec", json.dumps(said))
         for key in ("hook", "stakes"):
@@ -564,6 +652,48 @@ class Fixtures(unittest.TestCase):
         self.assertTrue(said["list-plan"]["sections_advancing_none"])
         self.assertFalse(said["topic-train"]["train_ok"])
         self.assertFalse(said["empty-payoff"]["payoff_concrete"])
+
+    def test_every_review_grades_tension_and_names_the_trigger_it_heard(self):
+        # AUTO-136: a plan-only case has no narration to hear
+        for name, path in cases().items():
+            said = load(path / "expected.json")["review"]
+            with self.subTest(case=name):
+                self.assertIn(said["grades"]["tension"], narrative.LEVELS)
+                first = said["first_minute"]
+                self.assertIn(first["trigger"], narrative.HEARD_TRIGGERS)
+                if name in PLAN_ONLY:
+                    self.assertEqual((first["trigger"], first["gap"]), ("not_heard", ""))
+                else:
+                    self.assertNotEqual(first["trigger"], "not_heard")
+        self.assertEqual(load(FIXTURES / "good" / "expected.json")["review"]
+                         ["first_minute"]["trigger"], "unexpected_observation")
+        self.assertEqual(load(FIXTURES / "no-trigger" / "expected.json")["review"]
+                         ["first_minute"]["trigger"], "none")
+
+    def test_every_plan_declares_its_hook(self):
+        for name, path in cases().items():
+            hook = load(path / "plan.json")["hook"]
+            with self.subTest(case=name):
+                self.assertIn(hook["trigger"], narrative.HOOK_TRIGGERS)
+                self.assertTrue(hook["gap"].strip())
+
+    def test_the_two_tension_and_trigger_cases_are_good_with_one_fault(self):
+        good = {n: load(FIXTURES / "good" / n) for n in ("plan.json", "script.json")}
+        flat = {n: load(FIXTURES / "flat-tension" / n) for n in ("plan.json", "script.json")}
+        sections = flat["plan.json"]["sections"]
+        self.assertEqual(sections[1]["escalation"], sections[2]["escalation"])
+        # the hook and the ending are good's
+        for i in (0, 3):
+            self.assertEqual(flat["script.json"]["sections"][i],
+                             good["script.json"]["sections"][i])
+        quiet = {n: load(FIXTURES / "no-trigger" / n) for n in ("plan.json", "script.json")}
+        self.assertEqual(quiet["plan.json"], good["plan.json"])
+        self.assertEqual(quiet["script.json"]["sections"][1:],
+                         good["script.json"]["sections"][1:])
+        opening = " ".join(s["narration"] for s in
+                           quiet["script.json"]["sections"][0]["shots"])
+        self.assertNotIn("?", opening)
+        self.assertTrue(opening.startswith("Comets are made of ice and dust"))
 
     def test_the_good_pair_can_be_recommended(self):
         expected = load(FIXTURES / "good" / "expected.json")
