@@ -540,6 +540,24 @@ class DeliveryWiring(unittest.TestCase):
         ns = parser.parse_args(cli.stage_argv("improve", base, extra))
         self.assertEqual((ns.model, ns.qa_model), ("opus", "sonnet"))
 
+    def test_the_tail_hands_on_no_gateway_only_flag(self):
+        # The tail's gate, qa and improve run on the claude and codex CLIs:
+        # no --listen, --watch or --compare-model reaches them from yt run.
+        base = ["--project", "work/x", "--model", "sonnet", "--quiet"]
+        parser = cli.build_parser()
+        for reviewer in ([], ["--reviewer-model", "gpt-5.1-codex"],
+                         ["--reviewer-model", "sdk:zai/glm-5.3"]):
+            extra = cli.run_extras(self.args("--model", "sonnet", *reviewer), redo=set())
+            for stage in ("gate", "qa", "improve"):
+                argv = cli.stage_argv(stage, base, extra)
+                for flag in ("--listen", "--watch", "--compare-model"):
+                    self.assertNotIn(flag, argv, (stage, reviewer))
+            qa_ns = parser.parse_args(cli.stage_argv("qa", base, extra))
+            self.assertFalse(getattr(qa_ns, "listen", None), reviewer)
+            self.assertFalse(getattr(qa_ns, "watch", None), reviewer)
+            improve_ns = parser.parse_args(cli.stage_argv("improve", base, extra))
+            self.assertIsNone(improve_ns.compare_model, reviewer)
+
     def test_render_is_final_when_the_tail_runs(self):
         self.assertEqual(cli.run_extras(self.args(), redo=set())["render"],
                          ["--quality", "final"])
@@ -563,12 +581,31 @@ class DeliveryWiring(unittest.TestCase):
         code, said = self.walk("--model", "opus", "--no-deliver",
                                "--skip", "keyframe,vfx,script,build,styles")
         self.assertIsNone(code, said)
-        code, said = self.walk("--model", "opus", "--reviewer-model", "sonnet",
+        code, said = self.walk("--model", "sonnet", "--reviewer-model", "opus",
                                "--skip", "keyframe,vfx,script,build,styles")
         self.assertIsNone(code, said)
         # --skip render runs no tail, so nothing judges it
         code, said = self.walk("--model", "opus", "--skip", "keyframe,vfx,script,build,styles,"
                                "render")
+        self.assertIsNone(code, said)
+
+    def test_an_opus_author_is_refused_for_improves_reruns_before_any_stage(self):
+        # improve takes no --reviewer-model: the stages it reruns review
+        # with vfx.REVIEWER_MODEL, so it refuses an opus author (exit 2). A
+        # run that would reach it is refused here, before the research is
+        # paid for, not after the render, gate and qa.
+        for reviewer in ("gpt-5.1-codex", "sonnet"):
+            code, said = self.walk("--model", "opus", "--reviewer-model", reviewer)
+            self.assertEqual(code, 2, said)
+            self.assertIn("does not grade its own work", said)
+            self.assertIn("yt improve", said)
+            self.assertIn(vfx_reviewer(), said)
+            self.assertIn("--no-deliver", said)
+            code, said = self.walk("--model", "opus", "--reviewer-model", reviewer,
+                                   "--no-deliver")
+            self.assertIsNone(code, said)
+        # --quick runs no tail, so no improve
+        code, said = self.walk("--model", "opus", "--reviewer-model", "gpt-5.1-codex", "--quick")
         self.assertIsNone(code, said)
 
 
@@ -662,7 +699,9 @@ class StylesReviewer(unittest.TestCase):
         code, said = self.walk("--model", "opus", "--skip", "keyframe,vfx,script")
         self.assertEqual(code, 2, said)
         self.assertIn("different model", said)
-        code, said = self.walk("--model", "opus", "--reviewer-model", "sonnet",
+        # --no-deliver: the tail's improve reviews with opus whatever
+        # --reviewer-model says (DeliveryWiring), which is not styles' check
+        code, said = self.walk("--model", "opus", "--reviewer-model", "sonnet", "--no-deliver",
                                "--skip", "keyframe,vfx,script")
         self.assertIsNone(code, said)
 

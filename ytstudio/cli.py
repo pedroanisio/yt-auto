@@ -640,6 +640,16 @@ def _run_pipeline(args) -> int:
               f"{tail_reviewer(args)}: pass --reviewer-model of another family, or "
               "--no-deliver to stop at the render", file=sys.stderr)
         return 2
+    # improve, when QA is not READY, reruns stages that review with
+    # vfx.REVIEWER_MODEL (it takes no --reviewer-model) and refuses an author
+    # of that family itself; refused here, before the research is paid for,
+    # rather than by improve after the render, gate and qa.
+    if deliver and flags.own_reviewer(args.model, vfx.REVIEWER_MODEL):
+        print(f"error: the delivery tail's `yt improve` reruns stages that review with "
+              f"{vfx.REVIEWER_MODEL}, whatever --reviewer-model says, and --model "
+              f"{args.model} is that family: a model does not grade its own work; pass "
+              "another --model, or --no-deliver to stop at the render", file=sys.stderr)
+        return 2
 
     idea, project = workspace.resolve(args)
     if getattr(args, "paper", None):
