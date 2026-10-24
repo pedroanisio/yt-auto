@@ -574,7 +574,9 @@ An honest spec says where it is blind, so nobody mistakes silence for a pass:
   nothing, and READY means what §2 says either way. `fixtures` true means
   this pass's judge (its model, role, categories, bar, schemas, prompt
   template and house rules, `qa.judge_digest`) passed every case of the
-  set. It does not mean that this film's scores are right, that the judge
+  shipped set (`fixture_set` in the report), on what two of its readings
+  agree on, and that the pass neither listened nor watched, since the
+  fixtures run the unheard judge only. It does not mean that this film's scores are right, that the judge
   agrees with the owner on real films (`labelled` counts those, and is 0),
   or anything about the audio categories, which the fixtures carry no
   listening review for. The re-run rule: any card that edits qa.ROLE, the
