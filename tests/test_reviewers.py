@@ -652,7 +652,8 @@ class SendsBack(GatewayFake):
         if which == "review" and "previous" not in schema.get("required", []):
             if n == 1:
                 return sample("consider", flags=[flag(n=99)])
-            return sample("consider", flags=[flag(), flag(n=0, section=2)])
+            # every section is written as shots_for(1): section 2 says "line 1.1" too
+            return sample("consider", flags=[flag(), flag(n=0, section=2, quote="line 1.1")])
         if "sections" in schema.get("properties", {}) and which == "":
             return {"sections": [{"section": i, "claim": f"claim {i}", "carries_beat": True,
                                   "missing": "", "confused_at": []} for i in (1, 2, 3)],

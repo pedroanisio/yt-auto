@@ -26,7 +26,8 @@
         "criterion": "train",
         "problem": "Famous comets moves the train not at all; it could sit anywhere.",
         "severity": "blocker",
-        "fix": "Cut it, or turn one comet into the case that raises the question."
+        "fix": "Cut it, or turn one comet into the case that raises the question.",
+        "quote": ""
       },
       {
         "n": 0,
@@ -34,7 +35,8 @@
         "criterion": "train",
         "problem": "Future missions answers nothing the film asked.",
         "severity": "important",
-        "fix": "Cut it; end on the opening comet."
+        "fix": "Cut it; end on the opening comet.",
+        "quote": ""
       },
       {
         "n": 0,
@@ -42,7 +44,8 @@
         "criterion": "hook",
         "problem": "Section 1 opens on what comets are made of; the comet flying tail first, which the title promises, is not shown or asked about.",
         "severity": "important",
-        "fix": "Open on a comet leaving the Sun with its tail ahead, and ask why."
+        "fix": "Open on a comet leaving the Sun with its tail ahead, and ask why.",
+        "quote": ""
       },
       {
         "n": 0,
@@ -50,7 +53,8 @@
         "criterion": "stakes",
         "problem": "No section says what is at risk: the plan's stakes (the wind reaching Earth) appear nowhere, and the film explains before it gives a reason to care.",
         "severity": "blocker",
-        "fix": "Put the wind that reaches Earth into section 1, before any mechanism."
+        "fix": "Put the wind that reaches Earth into section 1, before any mechanism.",
+        "quote": ""
       },
       {
         "n": 0,
@@ -58,7 +62,8 @@
         "criterion": "open_loops",
         "problem": "Q1 is marked closed in Tail types, but naming two tails does not say why the tail leads.",
         "severity": "important",
-        "fix": "Close Q1 with the answer: the tail is pushed outward, by sunlight and by the wind."
+        "fix": "Close Q1 with the answer: the tail is pushed outward, by sunlight and by the wind.",
+        "quote": ""
       },
       {
         "n": 0,
@@ -66,7 +71,8 @@
         "criterion": "ending",
         "problem": "The last section is about a future mission; the promise is not paid there.",
         "severity": "blocker",
-        "fix": "End on the opening comet seen again, with the payoff line."
+        "fix": "End on the opening comet seen again, with the payoff line.",
+        "quote": ""
       }
     ],
     "first_minute": {

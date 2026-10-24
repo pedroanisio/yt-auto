@@ -29,7 +29,8 @@
         "criterion": "hook",
         "problem": "The opening line praises comets instead of showing the tail in front.",
         "severity": "important",
-        "fix": "Open on the comet leaving the Sun with its tail ahead."
+        "fix": "Open on the comet leaving the Sun with its tail ahead.",
+        "quote": "Comets are some of the most beautiful sights in the night sky."
       },
       {
         "n": 10,
@@ -37,7 +38,8 @@
         "criterion": "ending",
         "problem": "The last line pays no promise.",
         "severity": "important",
-        "fix": "End on the tail showing the wind."
+        "fix": "End on the tail showing the wind.",
+        "quote": "Comets really are remarkable."
       }
     ],
     "first_minute": {

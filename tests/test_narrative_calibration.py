@@ -175,6 +175,28 @@ class TheSet(unittest.TestCase):
                                         "unexplained_terms": first_names(cold.get("terms"))}
                 self.assertEqual(narrative.judge_case(expected, got), [])
 
+    def test_every_flag_quotes_words_its_script_says(self):
+        # AUTO-112: a case's review is read over its script and its padded
+        # copy, so each quote is in both; a plan-only case has no words yet
+        for name, path in cases().items():
+            said = load(path / "expected.json")["review"]
+            for copy_name in ("script.json", "padded.json"):
+                if not (path / copy_name).is_file() and copy_name == "padded.json":
+                    continue
+                sections = (script.sections_of(load(path / copy_name))
+                            if (path / copy_name).is_file() else [])
+                w = script.Screenwriter(script.Idea(title="t", genre="g", description="d"),
+                                        verbose=False, review_log=None)
+                shots = w._renumber(sections)
+                with self.subTest(case=name, copy=copy_name):
+                    self.assertEqual(script.Screenwriter._sample_problems(
+                        said, narrative.REVIEW_SCHEMA, {s.n: s.narration for s in shots},
+                        {i: [s.n for s in sec.shots]
+                         for i, sec in enumerate(sections, 1)}), [])
+                    for f in said["flags"]:
+                        if f["n"] or (f["section"] and sections):
+                            self.assertTrue(f["quote"].strip(), f)
+
     def test_a_new_case_is_held_below_reject_only_with_its_reason(self):
         for name in ("and-chain", "no-premise", "jargon"):
             expected = load(FIXTURES / name / "expected.json")
@@ -488,7 +510,9 @@ class Calibrate(Hermetic):
                 said["grades"]["open_loops"] = "Fair"
                 said["verdict"] = "consider"
                 said["flags"].append({"n": 0, "section": 2, "criterion": "open_loops",
-                                      "problem": "p", "severity": "important", "fix": "f"})
+                                      "problem": "p", "severity": "important", "fix": "f",
+                                      # in section 2 of the script and of its padded copy
+                                      "quote": "a grain of dust"})
                 return said
             return None
         report, _ = self.calibrate(longer_wins)

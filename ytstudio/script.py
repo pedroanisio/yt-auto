@@ -1553,9 +1553,41 @@ _COLD_NAME = re.compile(r"^cold-read(?:-answers)?(?:-r\d+)?$")
 _MATCH_NAME = re.compile(r"^cold-read-match(?:-r\d+)?$")
 
 
+#: Curly quote marks, read as their straight forms when a flag's quote is
+#: checked against the script (AUTO-112).
+_QUOTE_MARKS = str.maketrans({"‘": "'", "’": "'", "‚": "'", "‛": "'",
+                              "“": '"', "”": '"', "„": '"', "‟": '"'})
+
+
+def _plain(text) -> str:
+    return " ".join(str(text or "").translate(_QUOTE_MARKS).split())
+
+
+def said_in(quote, line) -> bool:
+    """Whether `quote` is words `line` says (AUTO-112). Whitespace and curly
+    or straight quote marks are read alike on both sides, and nothing else:
+    a reviewer's quote is never trimmed or matched loosely on its behalf,
+    since a flag on words the script does not say is a broken answer. The
+    quote starts and ends on whole words: "a" or "riv" found inside
+    "abandon" or "river" names no clause the writer can find."""
+    words, said = _plain(quote), _plain(line)
+    if not words:
+        return False
+    at = said.find(words)
+    while at >= 0:
+        end = at + len(words)
+        if not (words[0].isalnum() and at and said[at - 1].isalnum()) and \
+                not (words[-1].isalnum() and end < len(said) and said[end].isalnum()):
+            return True
+        at = said.find(words, at + 1)
+    return False
+
+
 def merge_flags(samples: list[dict]) -> list[dict]:
     """The valid samples' flags, one per shot, section and criterion: the
-    most severe wording kept, with how many samples raised it."""
+    most severe wording kept, with its quote and the line it contradicts,
+    how many samples raised it, and the distinct words they quoted
+    (`quotes`), so two samples that meant different clauses are seen."""
     rank = {s: i for i, s in enumerate(narrative.SEVERITIES)}
     merged: dict[tuple, dict] = {}
     for sample in samples:
@@ -1564,22 +1596,44 @@ def merge_flags(samples: list[dict]) -> list[dict]:
                 continue
             key = (int(f.get("n", 0) or 0), int(f.get("section", 0) or 0),
                    str(f.get("criterion", "")))
+            quote = str(f.get("quote") or "").strip()
             have = merged.get(key)
             if have is None:
-                merged[key] = dict(f, n=key[0], section=key[1], samples=1)
+                merged[key] = dict(f, n=key[0], section=key[1], samples=1,
+                                   quotes=[quote] if quote else [])
                 continue
             have["samples"] += 1
+            # the same words spelled with other spaces or quote marks are
+            # one quote, as said_in reads them; the first spelling is kept
+            seen = {_plain(q) for q in have["quotes"]}
+            quotes = have["quotes"] + ([quote] if quote and _plain(quote) not in seen
+                                       else [])
+            have["quotes"] = quotes
             if rank.get(f.get("severity"), 9) < rank.get(have.get("severity"), 9):
-                merged[key] = dict(f, n=key[0], section=key[1], samples=have["samples"])
+                merged[key] = dict(f, n=key[0], section=key[1], samples=have["samples"],
+                                   quotes=quotes)
     return [merged[k] for k in sorted(merged)]
 
 
+def _quoted(f: dict) -> str:
+    """A flag's words and the line it contradicts, as story_flag_line and
+    the story revise show them; empty when it quotes nothing."""
+    quote = str(f.get("quote") or "").strip()
+    other = f.get("conflicts_with")
+    out = f' "{quote}"' if quote else ""
+    if isinstance(other, dict) and other.get("n"):
+        out += f' (contradicts shot {other["n"]}: "{str(other.get("quote") or "").strip()}")'
+    return out
+
+
 def story_flag_line(f: dict) -> str:
-    """One review flag as the writer and the operator read it."""
+    """One review flag as the writer and the operator read it: the place,
+    the words it is about and the line they contradict (AUTO-112), the
+    criterion and severity, the problem and the fix."""
     where = (f"shot {f['n']}" if f.get("n") else
              f"section {f['section']}" if f.get("section") else "the whole script")
     fix = str(f.get("fix") or "").strip()
-    return (f"{where} [{f.get('criterion', '')}, {f.get('severity', '')}]: "
+    return (f"{where}{_quoted(f)} [{f.get('criterion', '')}, {f.get('severity', '')}]: "
             f"{str(f.get('problem') or '').strip()}" + (f" (fix: {fix})" if fix else ""))
 
 
@@ -2280,10 +2334,15 @@ class Screenwriter:
         if not todo:
             return result
         self._say(f"[revise] {len(todo)} flagged line(s)")
-        problems = "\n".join(
-            f"{n}. " + " / ".join(f"{f['severity']}: {f.get('problem', '')} "
-                                  f"(suggested: {f.get('fix', '')})" for f in fs)
-            for n, fs in sorted(todo.items()))
+        # The story review's flags quote the words they are about and the
+        # line they contradict (AUTO-112), so the writer changes that clause
+        # instead of guessing which one the reviewer meant.
+        def said(f: dict) -> str:
+            words = _quoted(f) if flagged_by == "the story review" else ""
+            return (f"{f['severity']}:{words + ':' if words else ''} "
+                    f"{f.get('problem', '')} (suggested: {f.get('fix', '')})")
+        problems = "\n".join(f"{n}. " + " / ".join(said(f) for f in fs)
+                             for n, fs in sorted(todo.items()))
         if picture:
             # Direction 4 and attention 15, 22: the screen carries what the
             # voice says, a large number has its comparison, a list its
@@ -2513,15 +2572,17 @@ class Screenwriter:
         return "\n\n".join(parts)
 
     @staticmethod
-    def _sample_problems(review: dict, schema: dict, shots: set[int] | None = None,
-                         sections: int = 0) -> list[str]:
+    def _sample_problems(review: dict, schema: dict, shots: dict[int, str] | None = None,
+                         sections: dict[int, list[int]] | None = None) -> list[str]:
         """What one sample says that its rubric or its schema forbids: the
         rubric's own contradictions (narrative.check_review), a verdict or a
-        grade off its list, a revision round's missing `previous`, and a
-        flag on a shot (`shots`, the script's numbers) or a section (1 to
-        `sections`) the script does not have. A stray number is a broken
-        answer: read as given it would send a whole section or the plan
-        back for one sample's slip."""
+        grade off its list, a revision round's missing `previous`, a flag on
+        a shot (`shots`, each number's narration) or a section (`sections`,
+        each number's shots) the script does not have, and a flag quoting
+        words its place does not say (_quote_problems). A stray number or
+        quote is a broken answer: read as given it would send a whole
+        section or the plan back for one sample's slip, or have the writer
+        change a line for words it never said."""
         if not isinstance(review, dict):
             return ["the answer is not a review"]
         found = narrative.check_review(review)
@@ -2548,13 +2609,69 @@ class Screenwriter:
             if shots is not None and n and n not in shots:
                 found.append(f"a flag names shot {n}; the script's shots are numbered "
                              f"1 to {max(shots, default=0)}")
-            elif sections and not 0 <= section <= sections:
+            elif sections and not 0 <= section <= len(sections):
                 found.append(f"a flag names section {section}; the script has "
-                             f"{sections} sections")
+                             f"{len(sections)} sections")
+            elif shots is not None:
+                found += Screenwriter._quote_problems(f, n, section, shots, sections or {})
+        return found
+
+    @staticmethod
+    def _quote_problems(f: dict, n: int, section: int, shots: dict[int, str],
+                        sections: dict[int, list[int]]) -> list[str]:
+        """AUTO-112: a flag quotes words its place says (said_in): a shot
+        flag shot n's line, a section flag one of that section's lines, a
+        whole-script flag nothing or any line; `conflicts_with` names a
+        shot whose line says its quote. A place with no narration (a silent
+        shot, a section of silent shots, or a plan read before any line is
+        drafted) says no words, so its only quote is an empty one: any other
+        is made up. A `conflicts_with` of shot 0 with no words is no
+        contradiction (some engines fill an optional object with its zero
+        value), as story_flag_line reads it."""
+        found = []
+        quote = str(f.get("quote") or "")
+        if n:
+            where, lines = f"shot {n}", [shots.get(n) or ""]
+        elif section:
+            where = f"section {section}"
+            lines = [shots.get(m) or "" for m in sections.get(section) or []]
+        else:
+            where, lines = "the whole script", list(shots.values())
+        lines = [line for line in lines if spoken(line)]
+        if not lines:
+            if quote.strip():
+                found.append(f"a flag on {where} quotes \"{quote}\", but {where} has no "
+                             "narration: leave quote empty")
+        elif not quote.strip():
+            if n or section:
+                found.append(f"a flag on {where} quotes none of its words: quote the words "
+                             "the flag is about exactly as the narration says them")
+        elif not any(said_in(quote, line) for line in lines):
+            found.append(f"a flag on {where} quotes \"{quote}\", which {where} does not "
+                         "say: quote its whole words exactly, never a paraphrase")
+        other = f.get("conflicts_with")
+        if isinstance(other, dict) and not other.get("n") and \
+                not str(other.get("quote") or "").strip():
+            other = None
+        if other is None:
+            return found
+        try:
+            m = int(other.get("n", 0) or 0) if isinstance(other, dict) else None
+        except (TypeError, ValueError):
+            m = None
+        if m is None:
+            found.append(f"a flag's conflicts_with is not a shot number and its words: {other}")
+        elif m not in shots:
+            found.append(f"a flag's conflicts_with names shot {m}; the script's shots are "
+                         f"numbered 1 to {max(shots, default=0)}")
+        elif not said_in(other.get("quote"), shots[m]):
+            found.append(f"a flag's conflicts_with quotes \"{other.get('quote') or ''}\", "
+                         f"which shot {m} does not say: quote the other line exactly")
         return found
 
     def story_sample(self, name: str, prompt: str, schema: dict,
-                     shots: set[int] | None = None, sections: int = 0) -> dict:
+                     shots: dict[int, str] | None = None,
+                     sections: dict[int, list[int]] | None = None) -> dict:
         """One sample of the story review, as a row. A sample whose answer
         breaks its rubric is asked once more as `<name>-again` with what it
         broke; still broken, it is not valid. A sample whose call fails is
@@ -2599,12 +2716,15 @@ class Screenwriter:
         samples (narrative.median); fewer than two valid samples is
         `not_evidenced`, never a verdict."""
         prompt = self._story_prompt(sections, plan, previous)
-        numbers = {s.n for sec in sections for s in sec.shots}
+        # What a flag may name and quote (AUTO-112): each shot's line, and
+        # each section's shots.
+        lines = {s.n: s.narration for sec in sections for s in sec.shots}
+        by_section = {i: [s.n for s in sec.shots] for i, sec in enumerate(sections, 1)}
 
         def one(k: int) -> dict:
             schema = narrative.review_schema(delta=previous is not None, seed=k)
             return self.story_sample(f"review-r{round_no}-s{k}", prompt, schema,
-                                     shots=numbers, sections=len(sections))
+                                     shots=lines, sections=by_section)
         seeds = range(1, self.samples + 1)
         if self.jobs > 1 and self.samples > 1:
             # The samples are independent readings; the books are shared

@@ -26,7 +26,8 @@
         "criterion": "ending",
         "problem": "The plan's payoff is empty and its last line, \"And that's comets.\", pays nothing the promise asked.",
         "severity": "blocker",
-        "fix": "Write the payoff as the answer to why the comet flies tail first, and end on it."
+        "fix": "Write the payoff as the answer to why the comet flies tail first, and end on it.",
+        "quote": ""
       }
     ],
     "first_minute": {

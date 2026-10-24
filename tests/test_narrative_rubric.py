@@ -219,6 +219,34 @@ class Schema(unittest.TestCase):
         for field in ("n", "section", "criterion", "problem", "severity", "fix"):
             self.assertIn(field, flag["required"])
 
+    def test_a_flag_quotes_its_words_and_may_name_the_line_it_contradicts(self):
+        # AUTO-112: the words a flag is about, copied exactly, and for a
+        # contradiction the other line too
+        flag = narrative.REVIEW_SCHEMA["properties"]["flags"]["items"]
+        self.assertIn("quote", flag["required"])
+        self.assertEqual(flag["properties"]["quote"]["type"], "string")
+        self.assertIn("exactly", flag["properties"]["quote"]["description"])
+        other = flag["properties"]["conflicts_with"]
+        self.assertNotIn("conflicts_with", flag["required"])
+        self.assertEqual(other["type"], "object")
+        self.assertEqual(sorted(other["required"]), ["n", "quote"])
+        self.assertEqual(other["properties"]["n"]["type"], "integer")
+        self.assertIn("exactly", other["properties"]["quote"]["description"])
+        # a revision's schema, with its own level order, carries them
+        later = narrative.review_schema(delta=True, seed=2)["properties"]["flags"]["items"]
+        self.assertIn("quote", later["required"])
+        self.assertEqual(later["properties"]["conflicts_with"], other)
+        # the plan has no narration to quote yet
+        self.assertNotIn("quote", json.dumps(narrative.PLAN_REVIEW_SCHEMA))
+        self.assertNotIn("conflicts_with", json.dumps(narrative.PLAN_REVIEW_SCHEMA))
+
+    def test_the_story_role_says_a_flag_quotes_exactly_and_the_plan_role_does_not(self):
+        role = " ".join(narrative.reviewer_role().split())
+        self.assertIn("never paraphrase", role)
+        self.assertIn("exactly", role)
+        plan = " ".join(narrative.reviewer_role(plan=True).split())
+        self.assertNotIn("paraphrase", plan)
+
     def test_coverage_shape_with_the_synopsis_before_the_grades(self):
         props = list(narrative.REVIEW_SCHEMA["properties"])
         for field in ("logline", "synopsis", "grades", "verdict", "flags",

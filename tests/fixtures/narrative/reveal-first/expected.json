@@ -27,7 +27,8 @@
         "criterion": "reveal_setup",
         "problem": "The answer is given in the first section, before the viewer knows sunlight falls short.",
         "severity": "important",
-        "fix": "Keep shot 3 as the question; let the solar wind arrive in section 3."
+        "fix": "Keep shot 3 as the question; let the solar wind arrive in section 3.",
+        "quote": "The answer is the solar wind, a stream of particles from the Sun."
       }
     ],
     "first_minute": {
