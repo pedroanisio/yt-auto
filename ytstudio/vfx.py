@@ -67,7 +67,9 @@ from .framecheck import DIM_STD, FLAT_STD, frame_stats, judge_frame  # noqa: F40
 from .ideas import CHANNEL_STYLES
 from .research import Dossier
 from .scene_sdk import sdk
-from .script import Shot, load_script, visible_text
+from .assets import press_items
+from .script import (Shot, _as_quoted, cited_headline, load_script, screen_strings,
+                     source_line, visible_text)
 
 #: The stack. Stated once, read by the prompts and the reports.
 STACK = "scene-render (Rust engine) + sr-core (schema and SDK)"
@@ -1665,7 +1667,69 @@ INPUT_SHOT_FIELDS = ("label", "narration", "super", "on_screen", "visual", "show
                      "function", "asset", "at", "seconds")
 
 
-def section_inputs_digest(section: dict, group: dict, tokens: dict, look_digest: str) -> str:
+def cited_press(shots: list[dict], press: list[dict] | None) -> dict[str, dict]:
+    """The press items (`assets.press_items`) the shots stage as headline
+    cards (AUTO-149), by id in the order first cited, each with the labels
+    of the shots citing it under `shots`. An id the list does not hold is
+    not a card: `yt script` cleared it and said so."""
+    out: dict[str, dict] = {}
+    for shot in shots or []:
+        if not isinstance(shot, dict):
+            continue
+        item = cited_headline(Shot(asset=str(shot.get("asset") or "")), press or [])
+        if item is not None:
+            out.setdefault(item["id"], {**item, "shots": []})["shots"].append(
+                str(shot.get("label", "")))
+    return out
+
+
+def headline_card_lines(assets: list[dict], shots: list[dict]) -> list[str]:
+    """The section brief's "## Headline cards to typeset" (AUTO-149): each
+    press headline a shot of this section cites, with its outlet, date, url
+    and the shots, and how a card is made. Read from the bundle's raw
+    dossier assets, as research_block numbers them, so N2 here is the N2 the
+    screenplay's writer was shown. A section citing none gets no lines.
+
+    The dossier is numbered as it is now, and `yt research` may have run
+    again since `yt script`: a shot whose on-screen text does not hold the
+    headline its Nk now names is listed as a mismatch to re-run the script
+    for, never with the other article's headline to quote, which would
+    contradict the screenplay the shot is built from."""
+    press = press_items(assets)
+    by_label = {str(s.get("label", "")): s for s in shots or [] if isinstance(s, dict)}
+    cards, stale = [], []
+    for nid, item in cited_press(shots, press).items():
+        held = [label for label in item["shots"]
+                if _as_quoted(item["headline"]) in {
+                    _as_quoted(t) for t in screen_strings(Shot(
+                        on_screen_text=list(by_label.get(label, {}).get("on_screen_text")
+                                            or [])))}]
+        stale += [(label, nid) for label in item["shots"] if label not in held]
+        if held:
+            label = "shot" if len(held) == 1 else "shots"
+            cards.append(f"- {nid} ({label} {', '.join(held)}): \"{item['headline']}\" "
+                         f"— {source_line(item)} ({item['url']})")
+    if not cards and not stale:
+        return []
+    lines = ["## Headline cards to typeset", "",
+             "These shots stage a press headline the research found as a recreated card. "
+             "Typeset it in the film's own type, never the outlet's masthead, logo, "
+             "masthead font or page layout, and never a screenshot of the article: the "
+             "card is made from its text alone. Show \"outlet, date\" as a visible source "
+             "line on the card."
+             + (" Quote the headline verbatim, as given here; never paraphrase or "
+                "shorten it." if cards else ""), ""]
+    lines += cards
+    lines += [f"- shot {label} cites {nid}, but its on-screen text does not hold the "
+              f"dossier's {nid} headline: the research changed after the screenplay was "
+              "written. Typeset no headline for it from the dossier; re-run `yt script`, "
+              "then this section."
+              for label, nid in stale]
+    return lines + [""]
+
+
+def section_inputs_digest(section: dict, group: dict, tokens: dict, look_digest: str,
+                          *, press: list[dict] | None = None) -> str:
     """The sha256 of what one section was authored and reviewed against: its
     heading and shots (with the measured `at` and `seconds` the section dict
     already carries), its effects group (effects, cuts and, once planned, the
@@ -1677,7 +1741,12 @@ def section_inputs_digest(section: dict, group: dict, tokens: dict, look_digest:
     `at` counts from the section's first shot, as its world does
     (`world_symbols`): an earlier section re-voiced to another length moves
     every later shot on the film clock, and that changes nothing a later
-    section was authored or reviewed against."""
+    section was authored or reviewed against.
+
+    `press` is the dossier's press list (AUTO-149): a section whose shots
+    cite a headline card adds the cited records under `press`, so a changed
+    headline makes that section stale; a section citing none keeps the
+    digest it had."""
     def number(value):
         plain = isinstance(value, (int, float)) and not isinstance(value, bool)
         return float(value) if plain else value
@@ -1699,6 +1768,10 @@ def section_inputs_digest(section: dict, group: dict, tokens: dict, look_digest:
     # settings keeps the sha its review was recorded against.
     if (group or {}).get("setting"):
         body["setting"] = group["setting"]
+    cited = cited_press(rows, press)
+    if cited:
+        body["press"] = [{k: item[k] for k in ("id", "headline", "outlet", "date", "url")}
+                         for item in cited.values()]
     text = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
                       default=str)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -2379,6 +2452,7 @@ class Workspace:
                     lines.append(f"  Carries: {e['data_or_claim']}")
                 lines += [f"  Brief: {e.get('brief', '')}", ""]
         lines += research_asset_lines(assets, self.root, self.dir)
+        lines += headline_card_lines(assets, section.get("shots") or [])
         props = props_items(self.root)
         if props:
             hdris = [it for it in props if it.get("kind") == "hdri"]
@@ -4448,7 +4522,8 @@ class VfxPlanner:
         is none: the look pass authors with no approved look, so its own
         digest names none, and carrying it into the film changes nothing."""
         look = "" if (record or {}).get("look") else self._look_digest
-        return section_inputs_digest(section, group, self._tokens, look)
+        return section_inputs_digest(section, group, self._tokens, look,
+                                     press=press_items(self.bundle.get("assets", [])))
 
     def _provenance(self, n: int, findings: list) -> dict:
         """What a section record says about the look: made as the look (the

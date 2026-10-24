@@ -359,7 +359,7 @@ class FakeEngine:
                            "searches": ["comet"]}],
                 "topic_searches": [], "working_title": "t", "runtime": "60 s",
                 "sections": [], "misconceptions": [],
-                "identifiable_case": {"who": "", "source": ""}}
+                "identifiable_case": {"who": "", "source": ""}, "human_stories": []}
 
 
 class Dossier(unittest.TestCase):

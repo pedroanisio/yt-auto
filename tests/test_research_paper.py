@@ -815,14 +815,16 @@ def explainer_prompts(root: Path) -> dict[str, str]:
 #: sha256 of each explainer prompt, taken on develop 57fd5a5 before AUTO-131.
 #: The 01-questions plan text is the one prompt the card changes. AUTO-132
 #: then adds the standing sentence to the claims prompt, so 03-claims is
-#: re-pinned on its branch; every other prompt is still the pre-AUTO-131 one.
+#: re-pinned on its branch; AUTO-149 adds the people affected to the web pass
+#: (agent) and human_stories to the outline, so both are re-pinned; every other
+#: prompt is still the pre-AUTO-131 one.
 EXPLAINER_PROMPTS = {
-    "agent": "40aecd0bec5f6b21ccf32481177e96e69260d254002fd877266ae30120b7d92e",
+    "agent": "2c49542bd3f2e903eed0c62054a0c1b4040270ae61637723d2173bc8bf34f776",
     "03-claims": "868682117c8ed29d1acd01bacb4005d3c4ad502ec50e08bfd2bd908659a48e9a",
     "04-sources": "d7ff65c3dcfc7e03124571646e8ae195e5a4914f3b74a73f721a24540d79dacb",
     "05-shots": "976cc3da462e8e565fa327d28ab84651b079c689c981cae74ed8c413f8d55b09",
     "06-gaps": "2d574b5c6ff5f40b2a635451dd2d18687e70eea8b47fdcad25e0e3c9b94a655e",
-    "07-outline": "6467f044b75ccd12dd98a6f8f8d90177977ddd4071c0d12258a14ee946522121",
+    "07-outline": "5dd9cdae03b7d5ad860043573180fa3ec4fed5ef275f3cd0223d296f382a5384",
 }
 
 

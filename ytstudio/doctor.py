@@ -39,6 +39,7 @@ from . import (env, gateway, house, keyframe, narrative, render, retention, rhyt
                workspace)
 from .assets import kind_for, licence_tier
 from .core import read_json, timecode, write_json
+from .research import STORY_DROPPED
 
 #: Levels, in the order the report sorts them.
 LEVELS = ("fail", "warn", "note", "ok")
@@ -1108,9 +1109,18 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
             report.add("fail", "research", "claims exist but no page was opened "
                        "during research; the dossier may be written from memory",
                        _cmd("research", project, "--fresh"))
-        for warning in dossier.get("warnings", []):
-            report.add("warn", "research", warning, _cmd("research", project, "--fresh"))
-        if opened and not dossier.get("warnings"):
+        # A dropped human story (AUTO-149) shares the dossier's warnings but
+        # is no provenance trouble: the outline offered a story it could not
+        # trace, which a fresh research would not fix. It is noted, never
+        # enforced, and it must not silence the blind-question check below.
+        warnings = [str(w) for w in dossier.get("warnings") or []]
+        provenance = [w for w in warnings if not w.startswith(STORY_DROPPED)]
+        for warning in warnings:
+            if warning.startswith(STORY_DROPPED):
+                report.add("note", "research", warning)
+            else:
+                report.add("warn", "research", warning, _cmd("research", project, "--fresh"))
+        if opened and not provenance:
             # The paper's own read (AUTO-131) is not a question: numbered
             # past it, "question n" is the dossier's n-th question.
             asked = [e for e in dossier.get("notes", []) if not e.get("paper")]

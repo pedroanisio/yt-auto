@@ -351,7 +351,8 @@ footage, sound, meshes), the Internet Archive, the RCSB PDB (structures,
 CC0), open-access papers in PMC (the PDF, captioned figures, supplementary
 movies), the open-access papers the research itself cites, and news
 (Wikinews under CC BY; the rest of the press as `reference_only` records,
-cited and never downloaded). Each shot's shortlist holds the best relevant
+cited and never downloaded; a reference-only article reaches the screen only
+as a recreated, attributed headline card, see "Headlines on screen"). Each shot's shortlist holds the best relevant
 hit of each kind before more stills, the subject's own searches are one need
 searched once, and the vetting decision keeps at most `--per-shot` of each
 kind per shot. `kind` is one of `assets.KINDS`. A cached search made with
@@ -365,6 +366,43 @@ the licensed images and clips. `yt run` always passes it (AUTO-143), and
 image or video assets have no `ok` row in `raw/08-downloads.json`: never
 downloaded when there is no manifest, none succeeded when its rows are all
 deferred or failed.
+
+**Headlines on screen (AUTO-149).** `assets.press_items` reads the
+dossier's `article` records back into headline, outlet, date and url
+(`assets.press_reference`: only the exact " (outlet)" suffix removed; a
+title cut at 160 characters, or one with no outlet, is `truncated` and left
+out, since a cut headline cannot be quoted verbatim, and so is one with no
+date, which the card's "outlet, date" line could not attribute) and numbers at most 8
+of them N1.. in dossier order: the one place an N id is given. `yt script`'s
+research block lists them as press coverage to stage as a recreated
+headline card (typeset, attributed, never a screenshot), apart from
+"Licensed footage and imagery found by the research", which no longer
+holds articles. A shot staging one sets `asset` to "headline [Nk]" and puts
+the headline verbatim in `on_screen_text` with "outlet, date" as a second
+string. With the press list the narration rules leave exactly those two
+strings out of rule:wall-of-text, rule:legibility and rule:unspoken-number
+(a quotation keeps its words and figures), and `script.headline_findings`
+measures them instead as `source:headline` (important, a screen rule):
+the headline not verbatim (the problem quotes it, so `revise-rules`
+restores it), no string naming the outlet, or a hold shorter than headline
+and source line at `READING_CPS` (minor and never sent to revise, which
+cannot change a shot's seconds: split the shot or hold the card longer at
+`yt retime`, never a shorter headline).
+`revise_rules`, the final re-read and the `--revise` re-check all read
+them; an id the press list does not hold is cleared from `asset` with a
+`warning: source:headline:` finding. Without a dossier (no press list)
+every rule and every prompt is as it was. `yt vfx`'s section brief gets
+"## Headline cards to typeset" for the ids its shots cite: typeset in the
+film's own type, never the outlet's masthead, logo or a screenshot, the
+source line visible, the headline never paraphrased (a shot whose
+on-screen text no longer holds the headline its Nk names, the research
+re-run since the script, is listed as a mismatch to re-run `yt script` for,
+never with the other article to quote); a section citing
+one adds the cited records to its `inputs_sha256` under `press`, so a
+changed headline re-reviews that section and the others keep their
+digest. Nothing is downloaded, and no AssetHit field or cached search
+changes. Whether a verbatim, attributed headline is fair quotation in the
+channel's markets is the owner's call, not checked here.
 
 **Research scales to the film's length.** `yt research` reads the idea's
 stated runtime ("60 seconds", "8-12 min"). A film under ten minutes shrinks the
@@ -424,7 +462,13 @@ priced at `spend.PAPER_USD` ($1.00, assumed until a record measures it).
 film's `promise` and `payoff`, its `train` (who wants what, what is in the
 way), the `stakes` and `viewer_stake`, the `misconception` it breaks (cited
 as `[M1]` from the research block, which numbers the dossier's sourced
-misconceptions and names its identifiable case), the `audience` (lay,
+misconceptions and names its identifiable case and, as `P1`.., its
+`human_stories`: AUTO-149, up to three people the subject affected, what
+happened to them and what followed, each kept by `research.human_stories_of`
+only when its claim is a dossier claim and its source that claim's or a page
+the research opened, a dropped one a `human story dropped:` warning in
+dossier.json that `yt doctor` shows as a note, not a provenance warning,
+and none never a failure), the `audience` (lay,
 enthusiast, expert), an optional `persona` (AUTO-158: the narrator's
 `temperament` for this film, free text, and `why` the subject calls for it;
 the house format's temperament when it names one), told to every section

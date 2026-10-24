@@ -862,6 +862,61 @@ def search_news(query: str, limit: int, user_agent: str) -> list[AssetHit]:
     return hits
 
 
+#: The longest title search_news stores; a title this long was cut there.
+NEWS_TITLE_MAX = 160
+
+#: The most press headlines a script brief lists (AUTO-149).
+PRESS_ITEMS = 8
+
+
+def press_reference(record: dict) -> dict:
+    """A stored news record (search_news's shape) read back as the parts a
+    headline card shows: `headline`, `outlet`, `date`, `url`, and
+    `truncated`, true when the title reached NEWS_TITLE_MAX or lacks its
+    " (outlet)" suffix. Only that exact suffix is removed, so a headline
+    that itself ends in parentheses keeps them. A cut headline cannot be
+    quoted verbatim, so press_items leaves it out. Pure: nothing is fetched
+    and the record is not changed (AUTO-149)."""
+    title = str(record.get("title") or "")
+    source = str(record.get("source") or "")
+    outlet = source[len("news/"):] if source.startswith("news/") else ""
+    outlet = "Wikinews" if outlet.lower() == "wikinews" else outlet
+    suffix = f" ({outlet})"
+    whole = bool(outlet) and title.endswith(suffix)
+    headline = title[:-len(suffix)] if whole else title
+    if outlet == "Wikinews":
+        date = str(record.get("note") or "")[:10]
+    else:
+        credit = str(record.get("credit_line") or "")
+        date = credit[len(outlet) + 2:] if outlet and credit.startswith(f"{outlet}, ") else ""
+    return {"headline": " ".join(headline.split()), "outlet": outlet,
+            "date": " ".join(date.split()),
+            "url": str(record.get("url") or record.get("page_url") or ""),
+            "truncated": len(title) >= NEWS_TITLE_MAX or not whole}
+
+
+def press_items(records: list[dict]) -> list[dict]:
+    """The press coverage a film may stage as a recreated headline card: the
+    `article` records in dossier order, each read by press_reference, the
+    truncated ones and those with no headline or no date left out (a card
+    is attributed "outlet, date", and an undated one would be attributed by
+    outlet alone with nothing to say so), at most PRESS_ITEMS,
+    numbered N1.. under `id`. This is the one place an N id is given, so
+    the script brief, the screenplay's checks and the vfx brief all call it
+    on the dossier's raw assets and name the same headline by the same id."""
+    out: list[dict] = []
+    for record in records or []:
+        if not isinstance(record, dict) or record.get("kind") != "article":
+            continue
+        ref = press_reference(record)
+        if ref["truncated"] or not ref["headline"] or not ref["date"]:
+            continue
+        out.append({"id": f"N{len(out) + 1}", **ref})
+        if len(out) == PRESS_ITEMS:
+            break
+    return out
+
+
 SOURCES = {
     "nasa": search_nasa,
     "openverse": search_openverse,

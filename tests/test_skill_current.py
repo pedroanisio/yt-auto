@@ -126,6 +126,13 @@ class Missing(unittest.TestCase):
                       qa_row)
         self.assertIn(f"`TRANSCRIPT_OUTPUT_TOKENS` {listen.TRANSCRIPT_OUTPUT_TOKENS}", qa_row)
 
+    def test_headlines_on_screen_are_documented(self):
+        # AUTO-149
+        for needle in ("**Headlines on screen (AUTO-149).**", "`assets.press_items`",
+                       "headline [Nk]", "`source:headline`", "## Headline cards to typeset",
+                       "never the outlet's masthead"):
+            self.assertIn(needle, FLAT, needle)
+
 
 if __name__ == "__main__":
     unittest.main()

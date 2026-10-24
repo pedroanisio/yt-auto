@@ -77,7 +77,8 @@ class FakeEngine:
         return {"premise": "p", "questions": [], "gaps": [], "verdict": "v",
                 "claims": [], "sources": [], "shots": [], "topic_searches": [],
                 "working_title": "t", "runtime": "60 s", "sections": [],
-                "misconceptions": [], "identifiable_case": {"who": "", "source": ""}}
+                "misconceptions": [], "identifiable_case": {"who": "", "source": ""},
+                "human_stories": []}
 
 
 class Plan(unittest.TestCase):

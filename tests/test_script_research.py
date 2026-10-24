@@ -191,5 +191,110 @@ class Cap(unittest.TestCase):
                          ("c7", "established", ""))
 
 
+# --------------------------------------------------------------------------- #
+# AUTO-149: the people the subject affected, by P id
+# --------------------------------------------------------------------------- #
+
+STORY = {"who": "Families of the 43 victims, Genoa",
+         "what_happened": "lost relatives when the deck fell",
+         "consequence": "Italy revoked the concession in 2020",
+         "source": "https://example.org/morandi", "claim": "x"}
+
+
+class HumanStories(unittest.TestCase):
+    def block(self, data, **kw):
+        with contextlib.redirect_stderr(io.StringIO()):
+            return script.research_block(data, **kw)
+
+    def test_the_kept_stories_are_numbered_beside_the_case(self):
+        data = {"claims": [claim("one fact")],
+                "identifiable_case": {"who": "The Morandi bridge", "source": "u"},
+                "human_stories": [STORY, dict(STORY, who="Truck drivers on the A10",
+                                              consequence="")]}
+        text = self.block(data)
+        self.assertIn("- P1: Families of the 43 victims, Genoa: lost relatives when the "
+                      "deck fell; consequence: Italy revoked the concession in 2020 "
+                      "(source: https://example.org/morandi)", text)
+        self.assertIn("- P2: Truck drivers on the A10: lost relatives when the deck fell "
+                      "(source: https://example.org/morandi)", text)
+        # next to the identifiable case
+        self.assertLess(text.index("An identifiable case"), text.index("- P1:"))
+
+    def test_no_stories_no_block(self):
+        self.assertNotIn("P1", self.block({"claims": [claim("one fact")],
+                                           "human_stories": []}))
+
+
+# --------------------------------------------------------------------------- #
+# AUTO-149: press coverage by N id, apart from the licensed footage
+# --------------------------------------------------------------------------- #
+
+def article(headline, outlet="Reuters", date="03 Mar 2024", n=0):
+    return {"kind": "article", "title": f"{headline} ({outlet})",
+            "source": f"news/{outlet}", "licence": "All rights reserved",
+            "credit_line": f"{outlet}, {date}", "note": "",
+            "url": f"https://news.example/{n}", "reference_only": True}
+
+
+def image(n):
+    return {"kind": "image", "title": f"photo {n}", "licence": "CC0",
+            "commercial_ok": True, "use_for": "the deck"}
+
+
+class PressBlock(unittest.TestCase):
+    def block(self, data, **kw):
+        with contextlib.redirect_stderr(io.StringIO()):
+            return script.research_block(data, **kw)
+
+    def test_the_press_is_numbered_and_kept_out_of_the_footage(self):
+        data = {"assets": [image(n) for n in range(70)]
+                + [article("Genoa bridge inquiry names 59 defendants", n=1),
+                   article("Bridge operator loses concession", "AP", "15 Jul 2020", 2)]}
+        text = self.block(data)
+        self.assertIn("Press coverage you may stage as a recreated headline card "
+                      "(typeset, attributed, never a screenshot):\n"
+                      "- N1: \"Genoa bridge inquiry names 59 defendants\" — Reuters, "
+                      "03 Mar 2024 (https://news.example/1)\n"
+                      "- N2: \"Bridge operator loses concession\" — AP, 15 Jul 2020 "
+                      "(https://news.example/2)", text)
+        footage = text.split("Licensed footage and imagery found by the research:\n", 1)[1]
+        footage = footage.split("\n\n", 1)[0]
+        self.assertNotIn("[article]", footage)
+        self.assertEqual(footage.count("[image]"), 60)
+
+    def test_an_older_dossier_differs_only_in_the_footage_heading(self):
+        data = {"claims": [claim("one fact")], "assets": [image(1), image(2)],
+                "misconceptions": [{"belief": "b", "source": "s"}],
+                "identifiable_case": {"who": "w", "source": "s"}}
+        text = self.block(data)
+        self.assertNotIn("Press coverage", text)
+        self.assertNotIn("P1", text)
+        # develop's research_block for this dossier before AUTO-149, verbatim:
+        # with the old footage heading swapped in, nothing else differs
+        self.assertEqual(
+            text.replace("Licensed footage and imagery found by the research:",
+                         "Footage and imagery already found and licensed:"),
+            "Every claim you may put on camera, with the source to cite for it and its "
+            "id:\n- c1: one fact --  (source: s, https://h.example/fact; primary, high "
+            "confidence)\n\nFootage and imagery already found and licensed:\n"
+            "- [image] photo 1 (CC0, commercial ok) -- for the deck\n"
+            "- [image] photo 2 (CC0, commercial ok) -- for the deck\n\n"
+            "Misconceptions to correct out loud, with where people are documented "
+            "believing them:\n- M1: b (source: s)\n\n"
+            "An identifiable case the film can follow: w (source: s)")
+        self.assertIn("Licensed footage and imagery found by the research:", text)
+
+    def test_without_ids_the_block_is_todays_whatever_the_dossier_holds(self):
+        # a screenplay written before the ids is revised against the block it
+        # was written from, so its cached revisions hold
+        data = {"assets": [image(1), article("A headline", n=1)],
+                "human_stories": [STORY]}
+        text = self.block(data, ids=False)
+        self.assertIn("Footage and imagery already found and licensed:", text)
+        self.assertIn("[article] A headline (Reuters)", text)
+        self.assertNotIn("Press coverage", text)
+        self.assertNotIn("P1", text)
+
+
 if __name__ == "__main__":
     unittest.main()

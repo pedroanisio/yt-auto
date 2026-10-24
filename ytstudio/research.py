@@ -90,8 +90,12 @@ SCOPES = {
             "what a lay viewer most often wrongly believes about the subject "
             "and where that belief is documented, and look for one named, "
             "identifiable case -- a person, a place, an event -- the film can "
-            "follow. For each, give 2-4 web searches that would actually find "
-            "the answer, and restate the premise in one sentence."),
+            "follow. At least one question asks about the people the subject "
+            "affected: their documented experience and what followed (a cost, "
+            "a decision, a change), kept checkable -- a named person or group, "
+            "a dated event, a source. For each, give 2-4 web searches that "
+            "would actually find the answer, and restate the premise in one "
+            "sentence."),
         "claims": (
             "Extract every factual claim worth putting on camera. Use only "
             "what the notes support -- do not add knowledge of your own. Keep "
@@ -124,7 +128,12 @@ SCOPES = {
             "published correction); leave the list empty rather than name a "
             "belief no source documents. And identifiable_case: one named "
             "person, place or event the film can follow, with its source, or "
-            "an empty who when the research found none."),
+            "an empty who when the research found none. And human_stories: up "
+            "to three people or groups the subject affected, each with who, "
+            "what_happened to them, the consequence that followed, the source "
+            "that documents it and the claim it rests on (quote the claim "
+            "text); leave the list empty rather than name a story no source "
+            "documents."),
     },
     "cinematic": {
         "name": "cinematic",
@@ -176,8 +185,9 @@ SCOPES = {
             "motion rests on under claims_used (quote the claim text) and the "
             "reference it matches under assets_used (quote the titles). Total "
             "runtime should match the target length. Return an empty "
-            "misconceptions list and an empty identifiable_case: nothing is "
-            "said aloud to correct or to follow."),
+            "misconceptions list, an empty identifiable_case and an empty "
+            "human_stories list: nothing is said aloud to correct or to "
+            "follow."),
     },
 }
 
@@ -659,6 +669,9 @@ GAPS_SCHEMA = {
     "required": ["gaps", "verdict"],
 }
 
+#: The most human stories a dossier keeps (AUTO-149).
+HUMAN_STORIES = 3
+
 OUTLINE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -702,9 +715,29 @@ OUTLINE_SCHEMA = {
             },
             "required": ["who", "source"],
         },
+        # AUTO-149: the people the subject affected, each resting on a claim
+        # of the dossier, so a film has someone in it and nobody invented.
+        "human_stories": {
+            "type": "array",
+            "maxItems": HUMAN_STORIES,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "who": {"type": "string",
+                            "description": "a named person or group the subject affected"},
+                    "what_happened": {"type": "string"},
+                    "consequence": {"type": "string",
+                                    "description": "what followed: a cost, a decision, a change"},
+                    "source": {"type": "string", "description": "the URL that documents it"},
+                    "claim": {"type": "string",
+                              "description": "the claim it rests on, quoted from the claims"},
+                },
+                "required": ["who", "what_happened", "consequence", "source", "claim"],
+            },
+        },
     },
     "required": ["working_title", "runtime", "sections", "misconceptions",
-                 "identifiable_case"],
+                 "identifiable_case", "human_stories"],
 }
 
 
@@ -789,6 +822,59 @@ def case_of(outline: dict) -> dict:
     case = case if isinstance(case, dict) else {}
     return {"who": str(case.get("who") or "").strip(),
             "source": str(case.get("source") or "").strip()}
+
+
+#: A human story's fields, in the order the brief prints them.
+STORY_FIELDS = ("who", "what_happened", "consequence", "source", "claim")
+
+#: How a dropped story's warning opens, so the dossier's markdown can tell
+#: it from a provenance warning about the claims.
+STORY_DROPPED = "human story dropped:"
+
+
+def human_stories_of(outline: dict | None, claims: list[dict],
+                     urls_opened: list[str]) -> tuple[list[dict], list[dict]]:
+    """The outline's human stories (AUTO-149) as `(kept, dropped)`.
+
+    A story is kept only when it names who, what happened and a source;
+    when its `claim` is one of the dossier's claims, matched as research_block
+    matches them (`claim_key`); and when its source is that claim's
+    source_url or a page the research opened. The model's word is not
+    enough: a story it could not trace is dropped, with `why`, because no
+    story is better than an invented one. At most HUMAN_STORIES are kept;
+    an outline written before the field gives ([], [])."""
+    rows = (outline or {}).get("human_stories") if isinstance(outline, dict) else None
+    if not isinstance(rows, list):
+        return [], []
+    known = {claim_key(c.get("claim", "")): c for c in claims or [] if isinstance(c, dict)}
+    opened = {str(u).strip() for u in urls_opened or []}
+    kept: list[dict] = []
+    dropped: list[dict] = []
+    for raw in rows:
+        if not isinstance(raw, dict):
+            continue
+        row = {k: " ".join(str(raw.get(k) or "").split()) for k in STORY_FIELDS}
+        claim = known.get(claim_key(row["claim"])) if row["claim"] else None
+        if not (row["who"] and row["what_happened"] and row["source"]):
+            why = "who, what happened or source is empty"
+        elif claim is None:
+            why = "claim not in the dossier"
+        elif row["source"] != str(claim.get("source_url") or "").strip() \
+                and row["source"] not in opened:
+            why = "source never opened"
+        elif len(kept) >= HUMAN_STORIES:
+            why = f"more than {HUMAN_STORIES} stories"
+        else:
+            kept.append(row)
+            continue
+        dropped.append({**row, "why": why})
+    return kept, dropped
+
+
+def story_warnings(dropped: list[dict]) -> list[str]:
+    """One dossier warning for each dropped human story."""
+    return [f"{STORY_DROPPED} {d.get('who') or '(no one named)'}: {d['why']}"
+            for d in dropped]
 
 
 # --------------------------------------------------------------------------- #
@@ -953,8 +1039,10 @@ class Researcher:
             "rather than trusting search snippets.\n\n"
             "Write dense research notes: specific numbers with units and dates, "
             "named people and organisations, direct quotes worth reading on "
-            "camera, and the full URL beside every fact. Flag anything you "
-            "could not verify. No preamble, no summary of your process."
+            "camera, first-hand or reported accounts of named people affected "
+            "and the dated consequences that followed, and the full URL beside "
+            "every fact. Flag anything you could not verify. No preamble, no "
+            "summary of your process."
         )
         visited: list[str] = []
         notes: list[str] = []
@@ -1442,6 +1530,8 @@ class Researcher:
                 *([lambda: self.paper_digest(claims, sources)] if paper else [])))
         digest = digest[0] if digest else None
         outline = self.outline(claims, assets, gaps, digest)
+        stories, dropped = human_stories_of(outline, claims.get("claims", []),
+                                            sorted(set(self.visited)))
         idea = asdict(self.idea)
         if paper:
             # A local paper's path stays in idea.json, never in the dossier.
@@ -1461,12 +1551,15 @@ class Researcher:
             "gaps": gaps.get("gaps", []),
             "misconceptions": sourced_misconceptions(outline, gaps),
             "identifiable_case": case_of(outline),
+            # The people the subject affected, each traced to a claim and a
+            # page opened; the untraced ones are warnings (AUTO-149).
+            "human_stories": stories,
             "verdict": gaps.get("verdict", ""),
             "outline": outline,
             # What the paper means, each item citing its claims (AUTO-131).
             **({"paper": digest} if digest is not None else {}),
             "urls_opened": sorted(set(self.visited)),
-            "warnings": provenance_warnings(notes),
+            "warnings": provenance_warnings(notes) + story_warnings(dropped),
             "allow_sa": self.allow_sa,
             "usage": spend.from_usage(self.usage, self.model),
             "engine": self.harness.report(),
@@ -1828,8 +1921,10 @@ def write_dossier(dossier: Dossier, data: dict, downloads: list[dict]) -> list[P
         md += ["> **Scope.** A wordless piece: the research covers reference, the "
                "look and the physics of what is on screen. It speaks no claim, so an "
                "unsourced number is not a blocker here.", ""]
-    if data.get("warnings"):
-        md += ["> **Provenance.** " + " ".join(data["warnings"]) + " Treat the "
+    provenance = [w for w in data.get("warnings") or []
+                  if not str(w).startswith(STORY_DROPPED)]
+    if provenance:
+        md += ["> **Provenance.** " + " ".join(provenance) + " Treat the "
                "affected claims as unverified until re-run with `--fresh`.", ""]
 
     paper = data.get("paper")
@@ -1931,6 +2026,16 @@ def write_dossier(dossier: Dossier, data: dict, downloads: list[dict]) -> list[P
     if isinstance(case, dict) and case.get("who"):
         md += ["", "## A case to follow", "",
                f"- {case['who']}" + (f" — {case['source']}" if case.get("source") else "")]
+    stories = [s for s in data.get("human_stories") or [] if isinstance(s, dict)]
+    dropped = [w for w in data.get("warnings") or [] if str(w).startswith(STORY_DROPPED)]
+    if stories or dropped:
+        # AUTO-149: who the subject affected and what followed, each with
+        # its source; the stories the research could not trace, said so.
+        md += ["", "## People and consequences", ""]
+        md += [f"- **{s.get('who', '')}**: {s.get('what_happened', '')}"
+               + (f"; consequence: {s['consequence']}" if s.get("consequence") else "")
+               + f" — {s.get('source', '')}" for s in stories]
+        md += [f"- *{w}*" for w in dropped]
 
     outline = data.get("outline") or {}
     if outline.get("sections"):
