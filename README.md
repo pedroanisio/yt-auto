@@ -987,6 +987,22 @@ a film with no section settings makes today's calls. A row that names no
 section reaches no take and is listed in voice.json `delivery.unmatched`;
 `delivery` also counts what was applied and what was only recorded, by kind.
 
+`yt voice --draft` is direction 29's read-aloud before any voice is paid
+for: kokoro, else espeak-ng, reads the screenplay sentence by sentence with
+its marks, with no casting and no model call (elevenlabs and the stub are
+refused). Each sentence's trimmed WAV is its measured length;
+`voice-draft/` holds the takes and `voice-draft.json` the `engine`, the
+`script_sha` of the lines and marks read, per sentence `seconds`, `words`
+and `wpm`, the per-section drift and the findings: a sentence over 10 s
+fails (a practitioner number, not calibrated), a numeral said again in a
+later sentence warns, and the drift is info. `listened` stays "not
+evidenced"; no stage reads the draft as the voice. A paid (elevenlabs) run
+then checks it: no draft, or one of another script, is a warning naming
+rule 29; a current draft with a fail stops the run before casting unless
+`--accept-draft`. voice.json records `draft: {status, fails}`
+(current, stale, missing or accepted); local engines and `--dry-run` are
+not gated and get no `draft` key.
+
 Writes `voice/` (one file per shot), `voice.json`, `narration.vtt` and
 `narration.srt`, plus `voice.wav` with `--stitch`. `--layout sequential` (the
 default) places takes back to back with real gaps and gives the honest runtime;
