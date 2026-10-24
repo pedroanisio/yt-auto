@@ -520,5 +520,102 @@ class Manual(unittest.TestCase):
             self.assertIn(needle, text)
 
 
+# --------------------------------------------------------------------------- #
+# AUTO-149: the headline cards a section stages
+# --------------------------------------------------------------------------- #
+
+def article(headline, outlet="Reuters", date="03 Mar 2024", n=0):
+    return {"kind": "article", "title": f"{headline} ({outlet})", "source": f"news/{outlet}",
+            "licence": "All rights reserved", "credit_line": f"{outlet}, {date}", "note": "",
+            "url": f"https://news.example/{n}", "reference_only": True}
+
+
+ASSETS = [{"kind": "image", "title": "deck", "file": "downloads/deck.jpg"},
+          article("Operator skipped inspections for years", n=1),
+          article("Inquiry names the engineers", "AP", "15 Jul 2020", n=2)]
+
+
+def citing(section: dict, label: str, asset: str) -> dict:
+    out = copy.deepcopy(section)
+    for shot in out["shots"]:
+        if shot["label"] == label:
+            shot["asset"] = asset
+    return out
+
+
+class HeadlineCards(unittest.TestCase):
+    def test_only_the_cited_headlines_are_listed_with_the_rules(self):
+        lines = vfx.headline_card_lines(ASSETS, citing(SECTION, "1.2", "headline [N2]")["shots"])
+        text = "\n".join(lines)
+        self.assertEqual(lines[0], "## Headline cards to typeset")
+        self.assertIn("- N2 (shot 1.2): \"Inquiry names the engineers\" — AP, 15 Jul 2020 "
+                      "(https://news.example/2)", text)
+        self.assertNotIn("Operator skipped", text)
+        for words in ("never the outlet's masthead, logo", "screenshot",
+                      "\"outlet, date\"", "verbatim", "never paraphrase"):
+            self.assertIn(words, text)
+
+    def test_n2_is_the_headline_the_script_brief_called_n2(self):
+        from ytstudio import script
+        brief = script.research_block({"assets": ASSETS})
+        listed = next(line for line in brief.splitlines() if line.startswith("- N2: "))
+        card = next(line for line in vfx.headline_card_lines(
+            ASSETS, citing(SECTION, "1.3", "headline [N2]")["shots"])
+            if line.startswith("- N2"))
+        self.assertEqual(listed.split(": ", 1)[1], card.split(": ", 1)[1])
+
+    def test_a_section_citing_none_adds_no_lines(self):
+        self.assertEqual(vfx.headline_card_lines(ASSETS, SECTION["shots"]), [])
+        self.assertEqual(vfx.headline_card_lines(
+            ASSETS, citing(SECTION, "1.2", "headline [N9]")["shots"]), [])
+
+    def test_the_digest_of_a_section_citing_none_is_todays(self):
+        press = vfx.press_items(ASSETS)
+        self.assertEqual(vfx.section_inputs_digest(SECTION, GROUP, TOKENS, "", press=press),
+                         vfx.section_inputs_digest(SECTION, GROUP, TOKENS, ""))
+
+    def test_a_changed_cited_headline_changes_the_digest(self):
+        cites = citing(SECTION, "1.2", "headline [N1]")
+        press = vfx.press_items(ASSETS)
+        before = vfx.section_inputs_digest(cites, GROUP, TOKENS, "", press=press)
+        self.assertNotEqual(before, vfx.section_inputs_digest(cites, GROUP, TOKENS, ""))
+        changed = vfx.press_items([ASSETS[0], article("Operator skipped checks", n=1),
+                                   ASSETS[2]])
+        self.assertNotEqual(before,
+                            vfx.section_inputs_digest(cites, GROUP, TOKENS, "", press=changed))
+        # an uncited headline changing leaves it alone
+        other = vfx.press_items([ASSETS[0], ASSETS[1], article("Something else", n=2)])
+        self.assertEqual(before,
+                         vfx.section_inputs_digest(cites, GROUP, TOKENS, "", press=other))
+
+    def test_the_planner_digests_the_bundles_press(self):
+        root = Path(tempfile.mkdtemp())
+        idea = Idea(title="T", genre="g", description="d")
+        bundle = {"idea": idea, "outline": {}, "claims": [], "assets": ASSETS, "premise": ""}
+        planner = vfx.VfxPlanner(bundle, Dossier(root, idea, at=root), vfx.Workspace(root),
+                                 model="sonnet", sections=[SECTION], revisions=0,
+                                 author_bar=7.0, verbose=False)
+        cites = citing(SECTION, "1.2", "headline [N1]")
+        self.assertEqual(planner._inputs_sha256(SECTION, GROUP),
+                         vfx.section_inputs_digest(SECTION, GROUP, {}, ""))
+        self.assertEqual(planner._inputs_sha256(cites, GROUP),
+                         vfx.section_inputs_digest(cites, GROUP, {}, "",
+                                                   press=vfx.press_items(ASSETS)))
+        self.assertNotEqual(planner._inputs_sha256(cites, GROUP),
+                            vfx.section_inputs_digest(cites, GROUP, {}, ""))
+
+    def test_the_section_brief_carries_the_cards(self):
+        ws = vfx.Workspace(Path(tempfile.mkdtemp()), version="v01")
+        cites = citing(SECTION, "1.2", "headline [N2]")
+        path = ws.brief(1, idea=Idea(title="t", genre="g", description="d"), house_rules="",
+                        style=STYLE, tokens=TOKENS, frame=(1920, 1080), section=cites,
+                        effects=EFFECTS, words={}, assets=ASSETS)
+        self.assertIn("## Headline cards to typeset", path.read_text(encoding="utf-8"))
+        path = ws.brief(1, idea=Idea(title="t", genre="g", description="d"), house_rules="",
+                        style=STYLE, tokens=TOKENS, frame=(1920, 1080), section=SECTION,
+                        effects=EFFECTS, words={}, assets=ASSETS)
+        self.assertNotIn("Headline cards", path.read_text(encoding="utf-8"))
+
+
 if __name__ == "__main__":
     unittest.main()
