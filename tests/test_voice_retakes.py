@@ -356,5 +356,88 @@ class TheStageKeepsTheMark(unittest.TestCase):
         self.assertEqual(data["delivery"]["by_kind"]["speed"], {"applied": 0, "recorded_only": 2})
 
 
+class AnOldProjectIsNotRecast(unittest.TestCase):
+    """With YT_GATEWAY unset, a project voiced before AUTO-139 whose
+    screenplay carries no marks is asked exactly today's casting and retake
+    questions: their kept answers serve, no model is called, and the cast
+    (voice, speed, settings) and so the takes and their bill stay as they
+    were. The digests are pinned from develop 57fd5a5 running this same
+    fixture: the shots carry notes and the cast gave a section note."""
+
+    #: Harness digests develop 57fd5a5 saved for this fixture (stub engine).
+    DEVELOP = {"casting": "885d82f6098e4d74", "retakes": "e6b558df5cee1623"}
+    CAST = {"voice": "", "speed": 1.0, "why": "w",
+            "delivery": [{"section": "One", "note": "slow and low"}]}
+    REVIEW = {"verdict": "ok", "retakes": [], "notes": "n"}
+
+    def setUp(self):
+        saved = harness.ENGINE
+        self.addCleanup(setattr, harness, "ENGINE", saved)
+        harness.ENGINE = test_wordless.FakeEngine
+        test_wordless.FakeEngine.prompts = []
+        test_wordless.FakeEngine.answers = []
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.script = {"sections": [
+            {"heading": "One", "shots": [
+                {"n": 1, "label": "1.1", "visual": "v", "narration": "Line number 1.",
+                 "seconds": 3, "note": "wry"},
+                {"n": 2, "label": "1.2", "visual": "v", "narration": "Line number 2.",
+                 "seconds": 3}]},
+            {"heading": "Two", "shots": [
+                {"n": 3, "label": "2.1", "visual": "v", "narration": "Line number 3.",
+                 "seconds": 3, "note": "hushed"}]}]}
+        (self.root / "script.json").write_text(json.dumps(self.script), encoding="utf-8")
+        (self.root / "idea.json").write_text(json.dumps(
+            {"title": "T", "genre": "g", "description": "d"}), encoding="utf-8")
+
+    def run_stage(self):
+        args = test_wordless.WordlessRun.args(self)
+        args.engine = "stub"
+        self.assertEqual(voice.run(args), 0)
+        return json.loads((self.root / "voice.json").read_text(encoding="utf-8"))
+
+    def digests(self):
+        director = harness.Harness(self.root, "voice")
+        return {name: json.loads(director.path(name).read_text(encoding="utf-8"))["digest"]
+                for name in self.DEVELOP}
+
+    def test_todays_questions_are_asked_of_a_pre_marks_screenplay(self):
+        test_wordless.FakeEngine.answers = [dict(self.CAST), dict(self.REVIEW)]
+        self.run_stage()
+        self.assertEqual(self.digests(), self.DEVELOP)
+
+    def test_the_kept_answers_serve_and_no_model_is_called(self):
+        director = harness.Harness(self.root, "voice")
+        for name, result in (("casting", self.CAST), ("retakes", self.REVIEW)):
+            director._save(name, self.DEVELOP[name], result, kind="decide", cost=0.0)
+        data = self.run_stage()                 # no answers queued: a call would fail
+        self.assertEqual(test_wordless.FakeEngine.prompts, [])
+        self.assertEqual(data["casting"]["delivery"], [{"section": "One", "note": "slow and low"}])
+        self.assertEqual(data["takes"][0]["delivery"]["section_note"], "slow and low")
+
+    def test_a_pre_marks_cast_applies_no_section_speed_or_settings(self):
+        # The old question offers none; an answer that gives one anyway is
+        # kept as a note only, so the takes keep today's settings.
+        test_wordless.FakeEngine.answers = [
+            self.CAST | {"delivery": [{"section": "One", "note": "slow", "speed": 0.9,
+                                       "settings": {"style": 0.4}}]}, dict(self.REVIEW)]
+        data = self.run_stage()
+        self.assertEqual(data["delivery"]["by_kind"], {})
+        self.assertEqual(data["casting"]["delivery"], [{"section": "One", "note": "slow"}])
+
+    def test_a_marked_screenplay_is_asked_the_new_questions(self):
+        self.script["sections"][0]["shots"][0]["emphasis"] = ["number"]
+        (self.root / "script.json").write_text(json.dumps(self.script), encoding="utf-8")
+        test_wordless.FakeEngine.answers = [dict(self.CAST), dict(self.REVIEW)]
+        self.run_stage()
+        casting, retakes = test_wordless.FakeEngine.prompts
+        self.assertIn("wry", casting)
+        self.assertIn("its own `speed`", casting)
+        self.assertIn("slow and low", retakes)
+        self.assertNotEqual(self.digests()["casting"], self.DEVELOP["casting"])
+
+
 if __name__ == "__main__":
     unittest.main()

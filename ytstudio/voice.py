@@ -51,7 +51,7 @@ from pathlib import Path
 from . import design, house, spend, workspace
 from .harness import Harness, HarnessError, brief
 from .core import Idea, read_json, timecode, write_json
-from .script import Section, load_script, mark_at, mark_tokens, shot_marks
+from .script import Section, has_marks, load_script, mark_at, mark_tokens, shot_marks
 from .script import sentences as split_sentences
 
 #: Caption rule the delivery gate enforces: 17 characters per second.
@@ -145,6 +145,22 @@ CAST_SCHEMA = {
         "why": {"type": "string"},
     },
     "required": ["voice", "speed", "why"],
+}
+
+#: The casting question a screenplay with no delivery marks is asked: the
+#: one asked before AUTO-139, delivery as {section, note}. Its digest is
+#: today's, so a project voiced before the marks keeps its kept cast (the
+#: voice, speed and settings its takes were billed under) and is not cast
+#: again; a marked screenplay is a new script and gets CAST_SCHEMA.
+CAST_SCHEMA_PRE_MARKS = {
+    **CAST_SCHEMA,
+    "properties": {
+        **CAST_SCHEMA["properties"],
+        "delivery": {"type": "array",
+                     "items": {"type": "object",
+                               "properties": {"section": {"type": "string"},
+                                              "note": {"type": "string"}},
+                               "required": ["section", "note"]}}},
 }
 
 RETAKE_SCHEMA = {
@@ -400,6 +416,17 @@ def delivery_from(cast: dict, sections: list[Section]) -> tuple[dict[str, dict],
     return by_heading, unmatched
 
 
+def notes_only(cast: dict) -> dict:
+    """A cast whose delivery rows keep their section and note alone: what a
+    pre-marks screenplay's cast is used for, since its question offered no
+    per-section speed or settings (an answer that gives one anyway would
+    move takes into new calls, and re-bill them)."""
+    rows = (cast or {}).get("delivery")
+    return dict(cast or {}, delivery=[
+        {"section": row.get("section", ""), "note": row.get("note", "")}
+        for row in (rows if isinstance(rows, list) else []) if isinstance(row, dict)])
+
+
 def casting_delivery(cast: dict) -> list[dict]:
     """casting.delivery as voice.json keeps it: each row's section and note
     as the director wrote them, with its speed and settings clamped."""
@@ -528,17 +555,20 @@ def require_voice(engine: str, voice: str, offered: list[dict]) -> None:
            "account reachable?)") + ".")
 
 
-def cast_instruction(engine: str, lang: str) -> str:
-    """The first paragraph of the casting brief: what `voice` may be."""
+def cast_instruction(engine: str, lang: str, *, marked: bool = True) -> str:
+    """The first paragraph of the casting brief: what `voice` may be. A
+    screenplay with no delivery marks (`marked` false) is asked it as it
+    was before them, word for word, so its kept cast still serves."""
     default = ("the engine has no default: `voice` must be one of the candidate ids"
                if engine not in ENGINES_WITH_DEFAULT else
                "empty keeps the engine's default")
     return (f"Cast the narrator for this film and set the read. Engine: {engine}; "
             f"language: {lang or 'unspecified'}. Choose `voice` from the "
             f"candidates ({default}), `speed` within {SPEED_RANGE}, and one "
-            "delivery note per section, naming it by its heading; give a section "
-            "its own `speed` (and, for elevenlabs, `settings`) only where its tone "
-            "needs a different read from the cast's.")
+            + ("delivery note per section, naming it by its heading; give a section "
+               "its own `speed` (and, for elevenlabs, `settings`) only where its tone "
+               "needs a different read from the cast's." if marked else
+               "delivery note per section."))
 
 
 def apply_cast(cast: dict, offered: list[dict], *, engine: str,
@@ -1956,9 +1986,13 @@ def run(args) -> int:
                        fresh=getattr(args, "fresh", False), verbose=not args.quiet)
     offered = candidates(engine, engine_lang(engine, args.lang))
     styles = read_json(project.source("styles"), warn=False) or {}
+    # A screenplay with no marks was written before them (or by a writer
+    # that gave none): it is asked today's casting and retake questions, so
+    # a project voiced before AUTO-139 keeps its kept answers and its bill.
+    marked = has_marks(sections)
     try:
         cast = director.decide("casting", "\n\n".join([
-            cast_instruction(engine, args.lang),
+            cast_instruction(engine, args.lang, marked=marked),
             brief("Film", {"title": idea.title, "premise": idea.description,
                            "genre": idea.genre,
                            "treatment": (styles.get("styles") or [{}])[0].get("name", "")
@@ -1967,8 +2001,10 @@ def run(args) -> int:
             brief("Sections", [{"heading": sec.heading, "purpose": sec.purpose,
                                 "opening_line": next((sh.narration for sh in sec.shots
                                                       if sh.narration.strip()), "")[:200],
-                                "notes": [sh.note for sh in sec.shots if sh.note][:8]}
-                               for sec in sections])]), CAST_SCHEMA)
+                                **({"notes": [sh.note for sh in sec.shots if sh.note][:8]}
+                                   if marked else {})}
+                               for sec in sections])]),
+            CAST_SCHEMA if marked else CAST_SCHEMA_PRE_MARKS)
     except HarnessError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -1982,6 +2018,8 @@ def run(args) -> int:
     if not args.quiet:
         print(f"cast: {voice_id or 'engine default'} at {opts['speed']}x -- "
               f"{str(cast.get('why', ''))[:120]}", file=sys.stderr)
+    if not marked:
+        cast = notes_only(cast)
     by_heading, unmatched = delivery_from(cast, sections)
     if unmatched:
         print(f"warning: {len(unmatched)} delivery note(s) name no section and "
@@ -2027,7 +2065,7 @@ def run(args) -> int:
                     "planned": t.planned_seconds, "cps": round(t.cps, 1),
                     "text": t.text[:160],
                     **{k: t.delivery[k] for k in ("emphasis", "pauses", "pronounce", "section_note")
-                       if (t.delivery or {}).get(k)}} for t in takes]),
+                       if marked and (t.delivery or {}).get(k)}} for t in takes]),
             brief("Drift by section", data["by_section"]),
             brief("Overlaps", data["overlaps"])]), RETAKE_SCHEMA)
     except HarnessError as exc:
