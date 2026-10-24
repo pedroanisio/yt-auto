@@ -114,6 +114,18 @@ class Missing(unittest.TestCase):
         for needle in ("`doctor.real_engines`", "Needs a human decision"):
             self.assertIn(needle, FLAT)
 
+    def test_qa_listen_checks_the_transcript(self):
+        # AUTO-152 Part B: the qa row names the transcript, its check and bar
+        from ytstudio import listen
+        qa_row = " ".join(row("| `yt qa`").split())
+        for needle in ("transcript-<audio sha256[:16]>", "`listen.TRANSCRIPT_SCHEMA`",
+                       "`listen.transcript_check`", "`listen.normalise_words`", "`listen.wer`",
+                       "never its words", "owned by voice", "`listen.transcript`"):
+            self.assertIn(needle, qa_row)
+        self.assertIn(f"`INTELLIGIBILITY_WER` ({listen.INTELLIGIBILITY_WER:g}, provisional",
+                      qa_row)
+        self.assertIn(f"`TRANSCRIPT_OUTPUT_TOKENS` {listen.TRANSCRIPT_OUTPUT_TOKENS}", qa_row)
+
 
 if __name__ == "__main__":
     unittest.main()

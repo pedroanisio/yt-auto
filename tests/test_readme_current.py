@@ -80,6 +80,19 @@ class Missing(unittest.TestCase):
             self.assertIn(needle, text)
         self.assertIn("`doctor.real_engines`", flat(section("improve")))
 
+    def test_qa_listen_checks_the_transcript(self):
+        # AUTO-152 Part B: the per-shot transcript under --listen
+        from ytstudio import listen
+        text = flat(section("qa"))
+        for needle in ("transcript-<audio sha256[:16]>", "`listen.transcript_check`",
+                       "`listen.normalise_words`", "`listen.wer`", "`INTELLIGIBILITY_WER`",
+                       "`TRANSCRIPT_TIME_SLACK_S`", "`TRANSCRIPT_OUTPUT_TOKENS`",
+                       "never the words", "owned by voice", "TO VERIFY"):
+            self.assertIn(needle, text)
+        self.assertIn(f"({listen.INTELLIGIBILITY_WER:g}, provisional", text)
+        self.assertIn(f"({listen.TRANSCRIPT_TIME_SLACK_S:.1f})", text)
+        self.assertIn(f"({listen.TRANSCRIPT_OUTPUT_TOKENS})", text)
+
     def test_voice_retakes_and_redo(self):
         text = flat(section("voice"))
         self.assertIn("speed", text)
