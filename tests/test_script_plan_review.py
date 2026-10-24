@@ -976,6 +976,18 @@ class Form(unittest.TestCase):
                 self.assertIn("a form that does not follow from the subject is a ground to "
                               "revise only", role)
 
+    def test_the_docs_name_the_form_as_revise_only_with_its_advisory(self):
+        root = Path(__file__).resolve().parent.parent
+        for doc, said in ((root / "README.md", "a ground to revise only, never to reject"),
+                          (root / "ytstudio" / "SKILL.md",
+                           "grounds to revise only, never to reject")):
+            with self.subTest(doc=doc.name):
+                flat = " ".join(doc.read_text(encoding="utf-8").split())
+                self.assertIn(said, flat)
+                for words in ("`form_fits`", "`form_problem`", 'advisory: ["form"]',
+                              "- Form: ", "`script.FORMS`"):
+                    self.assertIn(words, flat)
+
     def test_the_form_is_read_by_the_reviewer_of_another_family(self):
         engine = harness.ENGINE
         harness.ENGINE = ByModel
