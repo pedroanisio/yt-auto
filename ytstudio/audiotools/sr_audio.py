@@ -72,7 +72,8 @@ RANGE_LOW_PCT, RANGE_HIGH_PCT = 10, 95
 #: floor above) while another channel is over -60 dBFS is muted, as from a mono
 #: source on one side or a pan or bus error. Integrated loudness drops only
 #: about 3 LU, so the loudness window can still pass it. Both channels silent is
-#: the silence check's business, not this one's.
+#: the silence check's business, not this one's. Stereo only: in 5.1 an empty LFE
+#: or surround channel can be on purpose, and render.py delivers stereo.
 MUTED_CHANNEL_DB = -90.0
 MUTED_CARRIER_DB = -60.0
 #: NO STANDARD. Working convention after eko/qc's "Phase" row (out of phase at
@@ -80,6 +81,10 @@ MUTED_CARRIER_DB = -60.0
 #: uncorrelated, +1 mono): a programme whose mean is under 0, or a run of at
 #: least 1 s at or under -0.5, cancels when folded to mono (phone speakers,
 #: some TV paths). A fault threshold, not a judgement of the stereo width.
+#: aphasemeter reads +1 on digital silence, so the mean leaves out readings
+#: inside silencedetect's spans; counted, a silent lead-in or tail would pull a
+#: mildly anti-correlated mix over 0 and hide it. Runs keep every reading: a
+#: silence breaks a run rather than joining the two sides of it.
 PHASE_MEAN_FLOOR = 0.0
 PHASE_RUN_FLOOR = -0.5
 PHASE_RUN_S = 1.0
@@ -239,6 +244,13 @@ def parse_ametadata(text: str, key: str) -> list[tuple[float, float]]:
         elif line.startswith(key + "="):
             out.append((t, _db(line.split("=", 1)[1].strip(), FLOOR_DB)))
     return out
+
+
+def parse_phase(text: str) -> list[tuple[float, float]]:
+    """aphasemeter correlation readings. A reading outside [-1, 1] (nan, inf,
+    unparsable) is not a correlation and is dropped: parse_ametadata floors it
+    at FLOOR_DB, which would drag the mean far under 0 and count as a run."""
+    return [(t, v) for t, v in parse_ametadata(text, PHASE_KEY) if -1.0 <= v <= 1.0]
 
 
 def momentary(path: Path) -> list[Frame]:
@@ -503,7 +515,7 @@ def phase_runs(phase) -> list[tuple[float, float]]:
 
 def channel_findings(channels) -> list[str]:
     channels = list(channels)
-    if len(channels) < 2:
+    if len(channels) != 2:
         return []
     loudest = max(range(len(channels)), key=lambda n: channels[n])
     if channels[loudest] <= MUTED_CARRIER_DB:
@@ -513,14 +525,15 @@ def channel_findings(channels) -> list[str]:
             for n, value in enumerate(channels) if value <= MUTED_CHANNEL_DB]
 
 
-def mean_phase(phase) -> float | None:
-    values = [v for _, v in phase]
+def mean_phase(phase, silences=()) -> float | None:
+    """Mean correlation over the readings outside digital silence, which reads +1."""
+    values = [v for t, v in phase if not any(a <= t < b for a, b in silences)]
     return statistics.fmean(values) if values else None
 
 
-def phase_findings(phase) -> list[str]:
+def phase_findings(phase, silences=()) -> list[str]:
     out = []
-    mean = mean_phase(phase)
+    mean = mean_phase(phase, silences)
     if mean is not None and mean < PHASE_MEAN_FLOOR:
         out.append(f"stereo phase correlation averages {mean:.2f}; the mix cancels in mono")
     for a, b in phase_runs(phase):
@@ -545,7 +558,7 @@ def audio_findings(*, true_peak, dc, silences, duration, spans, short_term,
     if spread is not None and spread > SPEECH_RANGE_LIMIT_LU:
         out.append(f"loudness range inside the narration is {spread:.1f} LU, "
                    f"limit {SPEECH_RANGE_LIMIT_LU:g} LU")
-    return out + channel_findings(channels) + phase_findings(phase)
+    return out + channel_findings(channels) + phase_findings(phase, silences)
 
 
 def sibilant_bursts(rows, overall_db: float, limit_db: float) -> list[tuple[float, float, float]]:
@@ -580,9 +593,9 @@ def audiocheck_measure(path: Path) -> dict:
     # aphasemeter folds any other layout to stereo without saying so; its number
     # would then describe a downmix, not the file
     if len(channels) == 2:
-        phase = parse_ametadata(run_ffmpeg(
+        phase = parse_phase(run_ffmpeg(
             ["-i", str(path), "-vn", "-af", f"aphasemeter=video=0,ametadata=print:key={PHASE_KEY}:file=-",
-             "-f", "null", "-"]).stdout, PHASE_KEY)
+             "-f", "null", "-"]).stdout)
     return {"true_peak": summary["true_peak"], "integrated": summary["integrated"],
             "dc": parse_dc_offsets(loud), "frames": frames, "duration": duration,
             "silences": parse_silences(quiet, duration), "channels": channels, "phase": phase}
@@ -974,8 +987,9 @@ def audiocheck_main(argv=None) -> int:
             spans = [(t.start, t.end) for t in narration_tracks(scene.read_text(encoding="utf-8"), scene.parent)]
         m = audiocheck_measure(Path(args.video))
         rms = ", ".join(f"{v:.1f}" for v in m["channels"]) or "none"
-        mean = mean_phase(m["phase"])
-        phase = f"{mean:.2f}" if mean is not None else "n/a (not stereo)"
+        mean = mean_phase(m["phase"], m["silences"])
+        phase = (f"{mean:.2f}" if mean is not None
+                 else "n/a (all silence)" if m["phase"] else "n/a (not stereo)")
         print(f"sr-audiocheck: integrated {m['integrated']} LUFS, true peak {m['true_peak']} dBTP, "
               f"DC {m['dc']}, channel RMS {rms} dBFS, mean phase {phase}, "
               f"{len(m['silences'])} silence(s) over {SILENCE_DETECT_S:g} s, {len(spans)} narration span(s)")

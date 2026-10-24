@@ -86,6 +86,21 @@ frame:1    pts:1024    pts_time:0.02133
 lavfi.aphasemeter.phase=1.000000
 """
 
+#: aphasemeter readings that are not a correlation: parse_ametadata would floor
+#: them at FLOOR_DB (-120), far outside [-1, 1], and drag the mean under 0.
+PHASE_NOT_FINITE = """\
+frame:0    pts:0       pts_time:0
+lavfi.aphasemeter.phase=0.800000
+frame:1    pts:1024    pts_time:0.02133
+lavfi.aphasemeter.phase=nan
+frame:2    pts:2048    pts_time:0.04267
+lavfi.aphasemeter.phase=-inf
+frame:3    pts:3072    pts_time:0.064
+lavfi.aphasemeter.phase=garbage
+frame:4    pts:4096    pts_time:0.08533
+lavfi.aphasemeter.phase=-1.000000
+"""
+
 SILENCE = """\
 [silencedetect @ 0x55] silence_start: 0
 [silencedetect @ 0x55] silence_end: 0.5 | silence_duration: 0.5
@@ -196,6 +211,10 @@ class Parsing(unittest.TestCase):
     def test_phase_values_pass_through_the_metadata_parser_unchanged(self):
         rows = lib.parse_ametadata(PHASE, "lavfi.aphasemeter.phase")
         self.assertEqual(rows, [(0.0, -0.910156), (0.02133, 1.0)])
+
+    def test_phase_keeps_only_readings_that_are_a_correlation(self):
+        self.assertEqual(lib.parse_phase(PHASE), [(0.0, -0.910156), (0.02133, 1.0)])
+        self.assertEqual(lib.parse_phase(PHASE_NOT_FINITE), [(0.0, 0.8), (0.08533, -1.0)])
 
     def test_ametadata_values(self):
         rows = lib.parse_ametadata(AMETADATA, "lavfi.astats.Overall.RMS_level")
@@ -359,6 +378,26 @@ class ChannelsAndPhase(unittest.TestCase):
     def test_a_quiet_but_live_channel_is_not_muted(self):
         self.assertEqual(self.findings(channels=[-20.0, -70.0]), [])
 
+    def test_a_silent_channel_in_a_surround_layout_is_not_a_finding(self):
+        # an LFE or surround channel may be empty on purpose; render.py delivers
+        # stereo, and the muted-channel rule is about a stereo pair
+        self.assertEqual(self.findings(channels=[-20.0, -20.0, -22.0, -120.0, -120.0, -120.0]), [])
+
+    def test_the_mean_leaves_out_readings_inside_digital_silence(self):
+        # aphasemeter reads +1 on digital silence; a silent lead-in would pull a
+        # mildly anti-correlated mix's mean over 0 and hide it
+        values = [1.0] * 60 + [-0.3] * 40
+        silences = [(0.0, 6.0)]
+        out = self.findings(channels=[-20.0, -20.0], phase=self.phase(values), silences=silences)
+        self.assertEqual(out, ["stereo phase correlation averages -0.30; the mix cancels in mono"])
+        self.assertAlmostEqual(lib.mean_phase(self.phase(values), silences), -0.3)
+        self.assertAlmostEqual(lib.mean_phase(self.phase(values)), 0.48)
+
+    def test_a_programme_that_is_all_silence_has_no_mean_phase(self):
+        self.assertIsNone(lib.mean_phase(self.phase([1.0] * 10), [(0.0, 20.0)]))
+        self.assertEqual(self.findings(channels=[-120.0, -120.0], phase=self.phase([1.0] * 10),
+                                       silences=[(0.0, 20.0)]), [])
+
     def test_a_mono_file_has_no_channel_or_phase_finding(self):
         self.assertEqual(self.findings(channels=[-20.0], phase=[]), [])
 
@@ -398,7 +437,7 @@ class MeasurePasses(unittest.TestCase):
     """audiocheck_measure runs the phase pass only on stereo: aphasemeter
     silently downmixes any other layout, so its number would mean nothing."""
 
-    def run_with(self, channels):
+    def run_with(self, channels, phase=PHASE):
         rows = "".join(f"[Parsed_astats_1 @ 0x1] Channel: {n}\n"
                        f"[Parsed_astats_1 @ 0x1] DC offset: 0.0\n"
                        f"[Parsed_astats_1 @ 0x1] RMS level dB: -20.0\n" for n in range(1, channels + 1))
@@ -411,7 +450,7 @@ class MeasurePasses(unittest.TestCase):
             if chain.startswith("ebur128"):
                 return subprocess.CompletedProcess(args, 0, "", loud)
             if chain.startswith("aphasemeter"):
-                return subprocess.CompletedProcess(args, 0, PHASE, "")
+                return subprocess.CompletedProcess(args, 0, phase, "")
             return subprocess.CompletedProcess(args, 0, "", "")
 
         with mock.patch.object(lib, "run_ffmpeg", fake):
@@ -423,6 +462,10 @@ class MeasurePasses(unittest.TestCase):
         self.assertIn("aphasemeter=video=0,ametadata=print:key=lavfi.aphasemeter.phase:file=-", chains)
         self.assertEqual(m["channels"], [-20.0, -20.0])
         self.assertEqual(m["phase"], [(0.0, -0.910156), (0.02133, 1.0)])
+
+    def test_a_reading_that_is_not_a_correlation_is_dropped(self):
+        m, _ = self.run_with(2, phase=PHASE_NOT_FINITE)
+        self.assertEqual(m["phase"], [(0.0, 0.8), (0.08533, -1.0)])
 
     def test_mono_and_surround_do_not(self):
         for n in (1, 6):
@@ -443,6 +486,26 @@ class MeasurePasses(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("channel RMS -20.0, -21.5 dBFS", out.getvalue())
         self.assertIn("mean phase 0.60", out.getvalue())
+
+    def test_the_summary_mean_leaves_out_digital_silence(self):
+        m = {"true_peak": -3.0, "integrated": -14.0, "dc": [0.0, 0.0], "frames": [],
+             "duration": 10.0, "silences": [(0.0, 0.1)], "channels": [-20.0, -21.5],
+             "phase": [(0.0, 1.0), (0.1, 0.5), (0.2, 0.7)]}
+        out = io.StringIO()
+        with mock.patch.object(lib, "audiocheck_measure", return_value=m), \
+                contextlib.redirect_stdout(out):
+            lib.audiocheck_main(["/p", "/p/video.mp4"])
+        self.assertIn("mean phase 0.60", out.getvalue())
+
+    def test_an_all_silent_stereo_summary_does_not_call_it_mono(self):
+        m = {"true_peak": -3.0, "integrated": -14.0, "dc": [0.0, 0.0], "frames": [],
+             "duration": 10.0, "silences": [(0.0, 10.0)], "channels": [-120.0, -120.0],
+             "phase": [(0.0, 1.0), (0.1, 1.0)]}
+        out = io.StringIO()
+        with mock.patch.object(lib, "audiocheck_measure", return_value=m), \
+                contextlib.redirect_stdout(out):
+            lib.audiocheck_main(["/p", "/p/video.mp4"])
+        self.assertIn("mean phase n/a (all silence)", out.getvalue())
 
     def test_a_mono_summary_says_phase_was_not_measured(self):
         m = {"true_peak": -3.0, "integrated": -14.0, "dc": [0.0], "frames": [],
@@ -542,7 +605,33 @@ class RealFfmpeg(unittest.TestCase):
         for path in (wav, self.aac(wav)):
             with self.subTest(file=path.name):
                 found = lib.audiocheck_file(path, spans=[])
-                self.assertTrue(any("phase" in f for f in found), found)
+                # both paths: the programme mean and the run that lasts the file
+                self.assertEqual(len(found), 2, found)
+                self.assertRegex(found[0], r"^stereo phase correlation averages -(0\.[5-9]\d|1\.00); ")
+                self.assertRegex(found[1], r"^stereo out of phase \(<= -0\.5\) 0\.0-(3\.9|4\.0) s$")
+
+    def test_a_short_inversion_is_named_as_a_run_and_leaves_the_mean_alone(self):
+        left = noise(4, -24)
+        right = [-x if 1.25 * RATE <= n < 2.75 * RATE else x for n, x in enumerate(left)]
+        wav = write_stereo_wav(self.dir / "flip.wav", left, right)
+        for path in (wav, self.aac(wav)):
+            with self.subTest(file=path.name):
+                found = lib.audiocheck_file(path, spans=[])
+                self.assertEqual(len(found), 1, found)
+                a, b = (float(x) for x in found[0].removeprefix("stereo out of phase (<= -0.5) ")
+                        .removesuffix(" s").split("-"))
+                self.assertAlmostEqual(a, 1.25, delta=0.2)
+                self.assertAlmostEqual(b, 2.75, delta=0.2)
+
+    def test_a_silent_lead_in_does_not_hide_an_anti_correlated_mix(self):
+        # correlation about -0.3 after 6 s of digital silence: counted with the
+        # silence's +1 readings the mean would be about +0.6
+        left, other = noise(3, -24), noise(3, -24, seed=7)
+        right = [-0.3 * x + 0.95 * y for x, y in zip(left, other)]
+        lead = [0.0] * (6 * RATE)
+        wav = write_stereo_wav(self.dir / "lead.wav", lead + left, lead + right)
+        found = lib.audiocheck_file(wav, spans=[])
+        self.assertTrue(any(f.startswith("stereo phase correlation averages -0.") for f in found), found)
 
     def test_identical_stereo_and_clean_mono_pass(self):
         left = noise(4, -24)
