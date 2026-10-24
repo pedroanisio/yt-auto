@@ -28,7 +28,13 @@ other sample. The seeded cases each change one thing and say what must fall:
 - placeholder-moving: one shot's frames a grey placeholder card drifting
   over the picture, with build.placeholders left empty;
 - tells-not-shows: three shots' narration rewritten to describe a process
-  the frames never show, frames untouched.
+  the frames never show, frames untouched;
+- generic-identity (AUTO-146): every frame the same subject as stock
+  explainer clip art (a flat two-tone backdrop, one rounded card, a sun
+  disc and a comet icon), identical from shot to shot but for a slow
+  slide, with the base's super and caption drawn again where they were,
+  the words untouched: competent and generic, a look that could be moved
+  onto any other topic, so editorial_identity must fall.
 
 From the stand-in, band-violation and illegible-type redraw the picture
 without its overlays (`picture`) and draw the overlays where the case
@@ -570,6 +576,37 @@ def tells_not_shows(base: dict, out: Path) -> tuple[dict, dict | None, list[dict
     return script, voice, samples, labels
 
 
+def generic_identity(base: dict, out: Path) -> None:
+    """The base's film as a stock explainer template: what it shows is the
+    same (the Sun, a comet with its tail pointed away from it), but drawn
+    as the clip art any explainer on any topic would use, in one card that
+    is the same in every shot. Only the card slides, so every shot moves
+    (no frozen check sees the fault). The overlays are drawn again where
+    `overlays_of` puts them; a captured base's own are covered."""
+    fps = qa._fps(base["build"])
+
+    def change(im, row, t, shot):
+        w, h = im.size
+        frame = Image.new("RGB", (w, h), (232, 238, 246))
+        px = ImageDraw.Draw(frame)
+        px.rectangle([0, scaled(TOP, im), w, scaled(BOTTOM, im)], fill=(214, 224, 238))
+        step = round(t * fps) - round(float(shot["at"]) * fps)
+        x0 = round(w * 0.22) + round(0.6 * step)
+        y0, y1 = scaled(TOP + 22, im), scaled(BOTTOM - 22, im)
+        x1 = x0 + round(w * 0.46)
+        px.rounded_rectangle([x0, y0, x1, y1], radius=14, fill=(244, 246, 250),
+                             outline=(196, 208, 224), width=2)
+        cy, r = (y0 + y1) // 2, max(10, (y1 - y0) // 6)
+        px.ellipse([x0 + 24, cy - r, x0 + 24 + 2 * r, cy + r], fill=(250, 190, 60))
+        hx = x1 - 3 * r
+        px.ellipse([hx - r // 2, cy - r // 2, hx + r // 2, cy + r // 2], fill=(70, 110, 200))
+        px.polygon([(hx + r // 2, cy - r // 3), (x1 - 14, cy - r), (x1 - 14, cy + r),
+                    (hx + r // 2, cy + r // 3)], fill=(150, 176, 228))
+        heading, term = overlays_of(base, str(row["label"]))
+        return draw_overlays(frame, heading, term)
+    transform(base, out, change)
+
+
 def span(shot: dict) -> list[float]:
     return [round(float(shot["at"]), 3), round(float(shot["at"]) + float(shot["seconds"]), 3)]
 
@@ -608,11 +645,14 @@ def seeded(name: str, base: dict, out: Path) -> None:
         expected.update(under_bar=["narrative_clarity"], drop={"narrative_clarity": 1.0},
                         must_find=[{"t_range": [span(shots[0])[0], span(shots[-1])[1]],
                                     "owners": ["script", "vfx"]}])
+    elif name == "generic-identity":
+        generic_identity(base, case)
+        expected.update(under_bar=["editorial_identity"], drop={"editorial_identity": 1.0})
     write_case(case, build, script, voice, samples, expected)
 
 
 SEEDED = ("slide-drift", "wall-of-text", "band-violation", "illegible-type",
-          "placeholder-moving", "tells-not-shows")
+          "placeholder-moving", "tells-not-shows", "generic-identity")
 
 
 def main(argv: list[str] | None = None) -> int:

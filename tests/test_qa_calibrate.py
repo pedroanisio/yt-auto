@@ -48,7 +48,7 @@ from ytstudio.core import read_json  # noqa: E402
 FIXTURES = ROOT / "tests" / "fixtures" / "qa"
 SEED = ROOT / "scripts" / "seed_qa_fixtures.py"
 CASES = ("good", "good-b", "slide-drift", "wall-of-text", "band-violation",
-         "illegible-type", "placeholder-moving", "tells-not-shows")
+         "illegible-type", "placeholder-moving", "tells-not-shows", "generic-identity")
 SIDE = qa.SIDE_CATEGORIES
 
 
@@ -278,7 +278,7 @@ class Fixtures(unittest.TestCase):
         judged = [c for c in CASES if expected_of(c)["judge_only"]]
         self.assertEqual(sorted(judged), sorted(["slide-drift", "wall-of-text", "band-violation",
                                                  "illegible-type", "placeholder-moving",
-                                                 "tells-not-shows"]))
+                                                 "tells-not-shows", "generic-identity"]))
         for case in judged + ["good", "good-b"]:
             path = FIXTURES / case
             samples = qa.measure(json.loads((path / "samples.json").read_text()),
@@ -307,6 +307,17 @@ class Fixtures(unittest.TestCase):
         self.assertEqual(frames("tells-not-shows"), base)
         said = json.loads((FIXTURES / "tells-not-shows" / "script.json").read_text())
         self.assertNotEqual(said, json.loads((good / "script.json").read_text()))
+        # generic-identity (AUTO-146) changes the look and not one word: every
+        # frame is a stock explainer template of the same subject, and the
+        # only category it must sink is editorial_identity
+        generic = frames("generic-identity")
+        self.assertEqual(set(generic), set(base))
+        self.assertTrue(all(generic[k] != base[k] for k in base))
+        for name in ("script.json", "voice.json", "samples.json", "build.json"):
+            self.assertEqual((FIXTURES / "generic-identity" / name).read_bytes(),
+                             (good / name).read_bytes(), name)
+        self.assertEqual(expected_of("generic-identity")["under_bar"], ["editorial_identity"])
+        self.assertEqual(expected_of("generic-identity")["drop"], {"editorial_identity": 1.0})
         for case in CASES:
             if case.startswith("good"):
                 continue
