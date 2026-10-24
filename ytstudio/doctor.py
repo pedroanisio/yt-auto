@@ -1051,8 +1051,10 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
         for warning in dossier.get("warnings", []):
             report.add("warn", "research", warning, _cmd("research", project, "--fresh"))
         if opened and not dossier.get("warnings"):
-            blind = [str(n) for n, e in enumerate(dossier.get("notes", []), 1)
-                     if not e.get("visited")]
+            # The paper's own read (AUTO-131) is not a question: numbered
+            # past it, "question n" is the dossier's n-th question.
+            asked = [e for e in dossier.get("notes", []) if not e.get("paper")]
+            blind = [str(n) for n, e in enumerate(asked, 1) if not e.get("visited")]
             if blind:
                 report.add("warn", "research", f"question(s) {', '.join(blind)} "
                            "opened no page; those facts rest on search snippets")

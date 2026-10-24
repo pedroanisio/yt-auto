@@ -482,6 +482,20 @@ class Provenance(unittest.TestCase):
         out = research.provenance_warnings([self.paper(visited=["file:a.pdf"])])
         self.assertEqual(out, ["the paper: no public URL; the primary source is file:a.pdf"])
 
+    def test_doctor_numbers_a_blind_question_without_the_paper_entry(self):
+        from ytstudio import doctor, workspace
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "idea.json").write_text(json.dumps({"title": "T", "paper": ARXIV}))
+            (root / "dossier.json").write_text(json.dumps({
+                "claims": CLAIMS, "urls_opened": [PDF], "warnings": [],
+                "notes": [self.paper(), {"question": "q", "notes": "n", "visited": [],
+                                         "searches": 2}]}))
+            found = [f.message for f in doctor.check_project(workspace.Project(root)).findings
+                     if f.area == "research" and "opened no page" in f.message]
+        self.assertEqual(found, ["question(s) 1 opened no page; those facts rest on "
+                                 "search snippets"])
+
     def test_a_denied_paper_read_is_named_as_the_papers(self):
         out = research.provenance_warnings(
             [self.paper(denied=[{"tool": "WebFetch", "wanted": PDF}])])
