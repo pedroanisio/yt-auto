@@ -914,8 +914,8 @@ a reason to care (`no-stakes`) also fails a plan review that says its
 `stakes_concrete` is true. It costs about $1 a case at opus, revises
 nothing and logs nothing, and prints a pass/fail table and how often the
 reviewer agreed with the labels; `yt doctor` warns `gate on with N labelled
-verdicts (20 needed)` for a gated script.json below that count. `yt run` never
-passes it, and it is refused without `--review` or with `--revise`, which
+verdicts (20 needed)` for a gated script.json below that count. `yt run`
+passes it once `narrative.gate_ready` holds for that reviewer (AUTO-148: `<work>/calibration/calibration.json` passed over every case of the shipped tests/fixtures/narrative under today's rubric, its `rubric_sha256`, by a reviewer of that family, a pool reviewer by its `reviewer` record, and 20 rows of work/review-log.jsonl that family wrote carry a person's label), and prints `story gate off: <reason>` otherwise, and it is refused without `--review` or with `--revise`, which
 never reads the story again. The record is `script.json` `review` and the
 `## Story review` section of `script.md`.
 
@@ -2698,7 +2698,7 @@ keyframe --approve`, then `yt run` again; a rejected look is authored again
 with the notes; `--skip keyframe` runs without one). `--redo stage[,stage]` or `--redo all` forces them, `--skip` leaves
 stages out, and `--quick` drops the quality passes (deliberation, polish,
 fact-check, which it turns off with `--no-verify`, plan review, listen-back) for a cheaper first draft and renders at draft
-quality. `cli.run_extras` is the flags each stage gets (`--download` for
+quality, with no delivery tail. `cli.run_extras` is the flags each stage gets (`--download` for
 research on every run, `--quick` included, with `--fresh` beside it on a
 `--redo` without `--quick`, so build and vfx have the vetted pictures and
 clips on disk (AUTO-143); `--rich` and
@@ -2736,6 +2736,31 @@ nothing from the gateway: the providers are read when the script runs.
 run: a stage whose estimate plus what the run has spent does not fit is not
 started, the refusal names the estimate and the run exits 3
 (`retime.UNSETTLED`), and `yt vfx` gets what is left as `--stage-budget-usd`.
+
+After the render the run finishes the validated path (AUTO-148,
+`cli.deliver_tail`): `yt gate` unless a deliverable gate already holds for
+these bytes (`doctor.gate_problem`), `yt qa` unless qa.json is newer than
+gate.json and video.mp4, judged on this scene.xml and with no
+`gate_evidence`, `yt improve` only when QA is not READY TO PUBLISH, then
+doctor's delivery verdict, printed last. It runs after a render that ran or
+was already done, never after a stop, a failed stage, `--skip render`,
+`--no-deliver` or `--quick` (a draft render is never delivered), and the
+render it follows is asked for `--quality final`, the tier delivery
+requires. The tail's gate triage and QA are scored by `--reviewer-model`
+when it is a claude or codex model, else `opus` (`vfx.REVIEWER_MODEL`), never
+the author's family: `yt run --model opus` with no `--reviewer-model` is
+refused with exit 2 before any stage, unless `--no-deliver`; improve's passes
+are `--model`'s and its QA `--qa-model` that reviewer. A gate that writes no
+gate.json for this render (no render host: `--host` or `RS_RENDER_HOSTS`)
+stops the run with gate's exit; one that finds the film not deliverable goes
+on to QA. Under `--budget-usd` gate and qa are refused like any stage (exit
+3) and improve is handed what is left as its `--budget-usd`, nothing left
+being exit 3; with no cap improve keeps its own $15. The exit is 0 only when
+doctor finds delivery ready, `cli.UNDELIVERED` (4) when the tail ran and it
+is not; a stage's failure keeps its code. The tail never passes `--listen`,
+`--watch` or `--compare-model`. `--dry-run` lists gate and qa priced like any
+stage, improve as `up to $<what is left of the cap, else 15.00>` and doctor
+at $0 after the render.
 
 ### `yt ls`
 

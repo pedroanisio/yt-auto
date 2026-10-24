@@ -527,6 +527,14 @@ yt review --title <slug> --engine rs           # the PDF sheet, read by the mode
 yt qa     --title <slug>                       # this brief, as a pass: qa/pass-NN
 ```
 
+`yt run` runs the render, the gate and QA of these itself (AUTO-148; not the
+pilot or the review sheet): the render at `--quality final`, `yt gate` unless a deliverable gate already
+holds for those bytes, `yt qa`, `yt improve` while QA is not READY, then
+`yt doctor`'s delivery verdict as its last word (exit 0 only when delivery is
+ready, 4 when it is not). Gate's triage and QA are scored by
+`--reviewer-model` (a claude or codex model, else opus), never the author's
+family; `--no-deliver` or `--quick` stops the run at the render instead.
+
 `yt gate` needs ffprobe and the engine, so it runs on a render host
 (`--host`, or the one an encode would go to; `--local` runs it here) in a
 job directory of its own that is removed afterwards. `production_gate.py`

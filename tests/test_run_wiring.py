@@ -466,6 +466,148 @@ class WalkOrder(_RunCase):
         self.assertNotIn("--review", row)
 
 
+class DeliveryWiring(unittest.TestCase):
+    """AUTO-148: what `yt run` hands the tail and the script's story gate."""
+
+    def args(self, *argv):
+        return cli.build_parser().parse_args(["run", "--title", "T", *argv])
+
+    def walk(self, *argv):
+        import contextlib
+        import io
+        with mock.patch.object(workspace, "resolve",
+                               side_effect=AssertionError("passed the check")), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            try:
+                code = cli._run_pipeline(self.args(*argv))
+            except AssertionError as exc:
+                self.assertEqual(str(exc), "passed the check")
+                code = None
+        return code, err.getvalue()
+
+    def extras(self, *argv, ready=(False, "no calibration"), work=Path("work")):
+        import contextlib
+        import io
+        from ytstudio import narrative
+        asked = []
+
+        def gate_ready(w, reviewer):
+            asked.append((w, reviewer))
+            return ready
+        with mock.patch.object(narrative, "gate_ready", gate_ready), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            extra = cli.run_extras(self.args(*argv), redo=set(), work=work)
+        return extra, err.getvalue(), asked
+
+    def test_the_script_gets_gate_only_once_calibrated(self):
+        extra, said, asked = self.extras(ready=(True, ""))
+        self.assertIn("--gate", extra["script"])
+        self.assertEqual(asked, [(Path("work"), "opus")])
+        self.assertEqual(said, "")
+        extra, said, _ = self.extras(ready=(False, "12 labelled verdicts by opus"))
+        self.assertNotIn("--gate", extra["script"])
+        self.assertIn("story gate off: 12 labelled verdicts by opus", said)
+
+    def test_the_reviewer_asked_is_the_one_the_gate_is_calibrated_for(self):
+        _, _, asked = self.extras("--reviewer-model", "sdk:zai/glm-5.3", ready=(True, ""))
+        self.assertEqual(asked[0][1], "sdk:zai/glm-5.3")
+
+    def test_quick_or_no_work_never_asks(self):
+        extra, said, asked = self.extras("--quick", ready=(True, ""))
+        self.assertNotIn("--gate", extra["script"])
+        self.assertEqual((said, asked), ("", []))
+        extra, said, asked = self.extras(ready=(True, ""), work=None)
+        self.assertNotIn("--gate", extra["script"])
+        self.assertEqual((said, asked), ("", []))
+
+    def test_the_tails_judges_are_the_cli_reviewer(self):
+        extra = cli.run_extras(self.args("--model", "opus", "--reviewer-model", "sonnet"),
+                               redo=set())
+        self.assertEqual(extra["gate"], ["--model", "sonnet"])
+        self.assertEqual(extra["qa"], ["--model", "sonnet"])
+        self.assertEqual(extra["improve"], ["--model", "opus", "--qa-model", "sonnet"])
+        for reviewer in ([], ["--reviewer-model", "sdk:zai/glm-5.3"]):
+            extra = cli.run_extras(self.args(*reviewer), redo=set())
+            self.assertEqual(extra["gate"], ["--model", vfx_reviewer()], reviewer)
+            self.assertEqual(extra["qa"], ["--model", vfx_reviewer()], reviewer)
+        base = ["--project", "work/x", "--model", "opus", "--quiet"]
+        parser = cli.build_parser()
+        extra = cli.run_extras(self.args("--model", "opus", "--reviewer-model", "sonnet"),
+                               redo=set())
+        for stage in ("gate", "qa"):
+            self.assertEqual(parser.parse_args(cli.stage_argv(stage, base, extra)).model,
+                             "sonnet", stage)
+        ns = parser.parse_args(cli.stage_argv("improve", base, extra))
+        self.assertEqual((ns.model, ns.qa_model), ("opus", "sonnet"))
+
+    def test_render_is_final_when_the_tail_runs(self):
+        self.assertEqual(cli.run_extras(self.args(), redo=set())["render"],
+                         ["--quality", "final"])
+        self.assertEqual(cli.run_extras(self.args("--quick"), redo=set())["render"],
+                         ["--quality", "draft"])
+        self.assertEqual(cli.run_extras(self.args("--no-deliver"), redo=set())["render"], [])
+
+    def test_the_parser_takes_no_deliver(self):
+        self.assertTrue(self.args("--no-deliver").no_deliver)
+        self.assertFalse(self.args().no_deliver)
+        self.assertFalse(cli.delivers(self.args("--quick"), set()))
+        self.assertFalse(cli.delivers(self.args("--no-deliver"), set()))
+        self.assertFalse(cli.delivers(self.args(), {"render"}))
+        self.assertTrue(cli.delivers(self.args(), set()))
+
+    def test_the_authors_family_as_the_tails_judge_is_refused_before_any_stage(self):
+        code, said = self.walk("--model", "opus", "--skip", "keyframe,vfx,script,build,styles")
+        self.assertEqual(code, 2, said)
+        self.assertIn("does not grade its own work", said)
+        self.assertIn("--no-deliver", said)
+        code, said = self.walk("--model", "opus", "--no-deliver",
+                               "--skip", "keyframe,vfx,script,build,styles")
+        self.assertIsNone(code, said)
+        code, said = self.walk("--model", "opus", "--reviewer-model", "sonnet",
+                               "--skip", "keyframe,vfx,script,build,styles")
+        self.assertIsNone(code, said)
+        # --skip render runs no tail, so nothing judges it
+        code, said = self.walk("--model", "opus", "--skip", "keyframe,vfx,script,build,styles,"
+                               "render")
+        self.assertIsNone(code, said)
+
+
+def vfx_reviewer() -> str:
+    from ytstudio import vfx
+    return vfx.REVIEWER_MODEL
+
+
+class DryRunTail(Priced):
+    """AUTO-148: a dry run that would reach the render lists the tail."""
+
+    def test_the_tail_rows_follow_the_render_and_nothing_runs(self):
+        with mock.patch.object(cli.keyframe, "approval_state", lambda root: {"state": "approved"}):
+            self.assertEqual(self.run_yt("--dry-run", "--skip", "keyframe"), 0)
+        self.assertEqual(self.order, [])
+        lines = [line.split()[0] for line in self.out.splitlines()[1:] if line.strip()]
+        self.assertEqual(lines[lines.index("render"):],
+                         ["render", "gate", "qa", "improve", "doctor", "total"], self.out)
+        rows = self.rows()
+        self.assertEqual((rows["gate"], rows["qa"], rows["doctor"]), ("$9.00", "$9.00", "$0.00"))
+        self.assertIn("up to $15.00 assumed (improve's cap, only when QA is not READY)",
+                      self.out)
+        walked = sum(PRICES[s] for s in cli.walk_order({"keyframe"}))
+        self.assertEqual(rows["total"], f"${walked + 18:.2f}")
+
+    def test_under_a_cap_improve_is_up_to_what_is_left(self):
+        with mock.patch.object(cli.keyframe, "approval_state", lambda root: {"state": "approved"}):
+            self.assertEqual(self.run_yt("--dry-run", "--skip", "keyframe",
+                                         "--budget-usd", "100"), 0)
+        walked = sum(PRICES[s] for s in cli.walk_order({"keyframe"})) + 18
+        self.assertIn(f"up to ${100 - walked:.2f} assumed", self.out)
+
+    def test_no_deliver_lists_no_tail(self):
+        with mock.patch.object(cli.keyframe, "approval_state", lambda root: {"state": "approved"}):
+            self.assertEqual(self.run_yt("--dry-run", "--skip", "keyframe", "--no-deliver"), 0)
+        self.assertNotIn("gate", self.rows())
+        self.assertNotIn("improve", self.out)
+
+
 class EnvHints(unittest.TestCase):
     def test_the_freesound_keys_are_named(self):
         self.assertIn("FREESOUND_CLIENT_ID", env.KNOWN)
@@ -529,8 +671,10 @@ class StylesReviewer(unittest.TestCase):
         self.assertIsNone(code, said)
 
     def test_skipping_styles_drops_its_check(self):
-        # build's joins review (AUTO-142) is checked too, so it is skipped
-        code, said = self.walk("--model", "opus", "--skip", "keyframe,vfx,script,build,styles")
+        # build's joins review (AUTO-142) is checked too, so it is skipped, and
+        # the delivery tail's judges (AUTO-148) are left out with --no-deliver
+        code, said = self.walk("--model", "opus", "--no-deliver",
+                               "--skip", "keyframe,vfx,script,build,styles")
         self.assertIsNone(code, said)
 
     def test_a_pool_reviewer_names_styles_among_the_stages_keeping_their_default(self):

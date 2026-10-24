@@ -7,8 +7,10 @@ vfx on its own thread, since only the build reads the cue sheet (AUTO-75).
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -24,6 +26,7 @@ sys.path.insert(0, str(HERE.parent))
 from ytstudio import cli, spend, workspace  # noqa: E402
 from ytstudio import (build, keyframe, props, render, research, retime, script,  # noqa: E402
                       sound, styles, vfx, voice)
+from ytstudio import doctor, gate, improve, qa  # noqa: E402
 
 MODULES = {"research": research, "styles": styles, "script": script, "props": props,
            "voice": voice, "retime": retime, "keyframe": keyframe, "vfx": vfx,
@@ -50,6 +53,60 @@ class RunCase(unittest.TestCase):
             patch = mock.patch.object(module, "run", self.fake(stage))
             patch.start()
             self.addCleanup(patch.stop)
+        # The delivery tail (AUTO-148): gate writes a deliverable gate.json on
+        # the bytes on disk, qa a READY card, and doctor says delivery is
+        # ready, unless a test says otherwise.
+        self.gate_writes: str | None = "deliverable"
+        self.qa_verdict = qa.READY
+        self.delivered = True
+        for stage, module in (("gate", gate), ("qa", qa), ("improve", improve)):
+            patch = mock.patch.object(module, "run", self.tail_fake(stage))
+            patch.start()
+            self.addCleanup(patch.stop)
+        patch = mock.patch.object(doctor, "check_project", self.fake_doctor)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def digest(self, name: str) -> str:
+        path = self.root / name
+        return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else ""
+
+    def gate_json(self, verdict: str = "deliverable") -> dict:
+        return {"mode": "technical", "exit": 0 if verdict == "deliverable" else 1,
+                "triage": {"verdict": verdict,
+                           "blocking": [] if verdict == "deliverable" else ["loudness"]},
+                "video_sha256": self.digest("video.mp4"),
+                "scene_sha256": self.digest("scene.xml"),
+                "usage": spend.record(self.costs.get("gate", 0.0), "fake", 1)}
+
+    def qa_json(self, verdict: str) -> dict:
+        return {"verdict": verdict, "pass": "pass-01", "overall": 9.3,
+                "scene_sha256": self.digest("scene.xml"), "gate_evidence": "",
+                "usage": spend.record(self.costs.get("qa", 0.0), "fake", 1)}
+
+    def tail_fake(self, stage):
+        def run(args):
+            self.order.append(f"{stage}:start")
+            self.seen[stage] = args
+            if stage in self.hooks:
+                self.hooks[stage]()
+            if stage == "gate" and self.gate_writes:
+                (self.root / "gate.json").write_text(json.dumps(self.gate_json(self.gate_writes)))
+            if stage == "qa":
+                (self.root / "qa.json").write_text(json.dumps(self.qa_json(self.qa_verdict)))
+            self.order.append(f"{stage}:end")
+            return self.codes.get(stage, 0 if stage != "gate" or self.gate_writes
+                                  in (None, "deliverable") else 1)
+        return run
+
+    def fake_doctor(self, project, work=None):
+        self.order.append("doctor:start")
+        report = doctor.Report(project.root.name)
+        missing = [] if self.delivered else ["QA pass-01 is NOT READY"]
+        report.metrics["delivery"] = {"ready": self.delivered, "missing": missing}
+        for problem in missing:
+            report.add("fail", "delivery", problem, "yt improve --project film")
+        return report
 
     def fake(self, stage):
         artifact = dict(workspace.STAGES)[stage]
@@ -193,8 +250,190 @@ class SkipAndRedo(RunCase):
     def test_the_walk_is_in_pipeline_order_with_sound_beside_the_keyframe(self):
         self.assertEqual(self.run_yt(), 0)
         serial = [s[:-6] for s in self.order if s.endswith(":start") and s != "sound:start"]
-        self.assertEqual(serial, [s for s in cli.PIPELINE if s != "sound"])
+        # the delivery tail follows the render (AUTO-148); QA is READY, so
+        # improve does not run
+        self.assertEqual(serial, [s for s in cli.PIPELINE if s != "sound"]
+                         + ["gate", "qa", "doctor"])
         self.assertLess(self.order.index("sound:start"), self.order.index("keyframe:end"))
+
+
+class Tail(RunCase):
+    """AUTO-148: after the render, `yt run` runs gate, then qa, then improve
+    when QA is not READY, and ends on doctor's delivery verdict: exit 0 only
+    when delivery is ready, cli.UNDELIVERED (4) when the tail ran and it is
+    not."""
+
+    def tail(self) -> list[str]:
+        return [s[:-6] for s in self.order if s.endswith(":start")
+                and s[:-6] in ("gate", "qa", "improve", "doctor")]
+
+    def rendered(self):
+        for name in ("scene.xml", "video.mp4", "dossier.json", "styles.json", "script.json",
+                     "props.json", "voice.json", "retime.json", "keyframe.json", "vfx.json",
+                     "sound.json"):
+            (self.root / name).write_text(json.dumps({"name": name}) + "\n")
+
+    def test_gate_then_qa_and_no_improve_when_qa_is_ready(self):
+        self.assertEqual(self.run_yt(), 0)
+        self.assertEqual(self.tail(), ["gate", "qa", "doctor"])
+        self.assertLess(self.order.index("render:end"), self.order.index("gate:start"))
+        self.assertIn("delivery", self.err)
+
+    def test_improve_runs_when_qa_is_not_ready(self):
+        self.qa_verdict = qa.NOT_READY
+        self.delivered = False
+        self.assertEqual(self.run_yt(), cli.UNDELIVERED)
+        self.assertEqual(cli.UNDELIVERED, 4)
+        self.assertEqual(self.tail(), ["gate", "qa", "improve", "doctor"])
+        self.assertIn("QA pass-01 is NOT READY", self.err)
+        self.assertIn("yt improve --project film", self.err)
+        # improve's passes are the author's, its QA the tail's reviewer
+        self.assertEqual(self.seen["improve"].model, "sonnet")
+        self.assertEqual(self.seen["improve"].qa_model, vfx.REVIEWER_MODEL)
+        # without a cap, improve keeps its own budget
+        self.assertEqual(self.seen["improve"].budget_usd, 15.0)
+
+    def test_the_tails_judges_are_the_reviewer_not_the_author(self):
+        self.assertEqual(self.run_yt("--reviewer-model", "haiku"), 0)
+        self.assertEqual((self.seen["gate"].model, self.seen["qa"].model), ("haiku", "haiku"))
+        self.assertEqual(self.seen["render"].quality, "final")
+
+    def test_a_cached_render_still_runs_the_tail(self):
+        self.rendered()
+        self.assertEqual(self.run_yt(), 0)
+        self.assertEqual(self.started("render"), [])
+        self.assertEqual(self.tail(), ["gate", "qa", "doctor"])
+
+    def test_skip_render_runs_no_tail(self):
+        self.assertEqual(self.run_yt("--skip", "render"), 0)
+        self.assertEqual(self.tail(), [])
+
+    def test_no_deliver_ends_at_render(self):
+        self.delivered = False
+        self.assertEqual(self.run_yt("--no-deliver"), 0)
+        self.assertEqual(self.tail(), [])
+        self.assertIn("render:end", self.order)
+        self.assertIsNone(self.seen["render"].quality)
+
+    def test_quick_runs_no_tail(self):
+        self.delivered = False
+        self.assertEqual(self.run_yt("--quick"), 0)
+        self.assertEqual(self.tail(), [])
+        self.assertEqual(self.seen["render"].quality, "draft")
+
+    def test_a_keyframe_stop_or_a_failed_stage_runs_no_tail(self):
+        with mock.patch.object(keyframe, "approval_state", lambda root: {"state": "pending"}):
+            self.assertEqual(self.run_yt(), 0)
+        self.assertEqual(self.tail(), [])
+        self.order.clear()
+        self.codes["render"] = 1
+        self.assertEqual(self.run_yt("--redo", "render"), 1)
+        self.assertEqual(self.tail(), [])
+
+    def test_a_gate_that_wrote_nothing_stops_the_tail_with_its_code(self):
+        self.gate_writes = None
+        self.codes["gate"] = 1
+        self.assertEqual(self.run_yt(), 1)
+        self.assertEqual(self.tail(), ["gate"])
+        self.assertIn("gate did not run on this render; " + gate.HOST_HINT, self.err)
+
+    def test_a_gate_that_left_the_old_gate_json_stops_the_tail(self):
+        self.rendered()
+        old = self.gate_json("blocked")
+        (self.root / "gate.json").write_text(json.dumps(old))
+        self.gate_writes = None
+        self.codes["gate"] = 1
+        self.assertEqual(self.run_yt(), 1)
+        self.assertEqual(self.tail(), ["gate"])
+        self.assertIn("gate did not run on this render", self.err)
+
+    def test_a_gate_that_found_it_not_deliverable_goes_on_to_qa(self):
+        self.gate_writes = "blocked"
+        self.qa_verdict = qa.NOT_READY
+        self.delivered = False
+        self.assertEqual(self.run_yt(), cli.UNDELIVERED)
+        self.assertEqual(self.tail(), ["gate", "qa", "improve", "doctor"])
+
+    def test_a_current_deliverable_gate_is_not_run_again(self):
+        self.rendered()
+        (self.root / "gate.json").write_text(json.dumps(self.gate_json()))
+        self.assertEqual(self.run_yt(), 0)
+        self.assertEqual(self.tail(), ["qa", "doctor"])
+
+    def test_a_current_qa_is_not_run_again_unless_the_gate_ran(self):
+        self.rendered()
+        (self.root / "gate.json").write_text(json.dumps(self.gate_json()))
+        (self.root / "qa.json").write_text(json.dumps(self.qa_json(qa.READY)))
+        later = (self.root / "gate.json").stat().st_mtime + 5
+        os.utime(self.root / "qa.json", (later, later))
+        self.assertEqual(self.run_yt(), 0)
+        self.assertEqual(self.tail(), ["doctor"])
+        # a gate written in this run makes QA run again, current or not
+        self.order.clear()
+        (self.root / "gate.json").write_text(json.dumps(self.gate_json("blocked")))
+        self.assertEqual(self.run_yt(), 0)
+        self.assertEqual(self.tail(), ["gate", "qa", "doctor"])
+
+    def test_a_qa_of_another_scene_or_with_gate_evidence_runs_again(self):
+        self.rendered()
+        (self.root / "gate.json").write_text(json.dumps(self.gate_json()))
+        later = (self.root / "gate.json").stat().st_mtime + 5
+        for card in ({**self.qa_json(qa.READY), "scene_sha256": "0" * 64},
+                     {**self.qa_json(qa.READY), "gate_evidence": "no delivery gate"}):
+            (self.root / "qa.json").write_text(json.dumps(card))
+            os.utime(self.root / "qa.json", (later, later))
+            self.order.clear()
+            self.assertEqual(self.run_yt(), 0)
+            self.assertEqual(self.tail(), ["qa", "doctor"], card)
+
+    def test_an_improve_refusal_is_returned_as_is(self):
+        self.qa_verdict = qa.NOT_READY
+        self.codes["improve"] = 2
+        self.assertEqual(self.run_yt(), 2)
+        self.assertNotIn("doctor:start", self.order)
+
+
+class TailBudget(RunCase):
+    """Under --budget-usd the tail starts no stage whose estimate does not
+    fit, and improve is handed what is left of the cap."""
+
+    def setUp(self):
+        super().setUp()
+        prices = {"vfx": 20.0, "gate": 9.0, "qa": 9.0}
+
+        def estimates(root, stages, sections=None, extras=None):
+            return [{"stage": s, "usd": prices.get(s, 0.0), "basis": "fake", "source": "test"}
+                    for s in list(stages) + ["gate", "qa"]]
+        patch = mock.patch.object(spend, "stage_estimates", estimates)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.costs.update(vfx=30.0)
+
+    def test_a_cap_that_fits_render_but_not_qa_exits_3(self):
+        self.costs["gate"] = 7.0
+        self.assertEqual(self.run_yt("--budget-usd", "45"), retime.UNSETTLED)
+        self.assertIn("render:end", self.order)
+        self.assertEqual([s for s in self.order if s.startswith("qa:")], [])
+        self.assertIn("== qa: estimated at $9.00", self.err)
+
+    def test_a_gate_that_does_not_fit_exits_3(self):
+        self.assertEqual(self.run_yt("--budget-usd", "38"), retime.UNSETTLED)
+        self.assertEqual(self.started("gate"), [])
+        self.assertIn("== gate: estimated at $9.00", self.err)
+
+    def test_improve_is_handed_the_remainder(self):
+        self.costs.update(gate=7.0, qa=3.0)
+        self.qa_verdict = qa.NOT_READY
+        self.delivered = False
+        self.assertEqual(self.run_yt("--budget-usd", "60"), cli.UNDELIVERED)
+        self.assertAlmostEqual(self.seen["improve"].budget_usd, 60 - 30 - 7 - 3)
+
+    def test_no_remainder_starts_no_improve(self):
+        self.costs.update(gate=5.0, qa=10.0)
+        self.qa_verdict = qa.NOT_READY
+        self.assertEqual(self.run_yt("--budget-usd", "45"), retime.UNSETTLED)
+        self.assertEqual(self.started("improve"), [])
+        self.assertIn("improve", self.err)
 
 
 class FactCheckStop(RunCase):

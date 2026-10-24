@@ -1143,6 +1143,10 @@ def reached(card: dict, target: float) -> bool:
 #: How a loop stopped on a delivery-gate reason no stage owns says what to run.
 GATE_EVIDENCE_FIX = "run `yt gate` (on the render host: --host or RS_RENDER_HOSTS)"
 
+#: The loop's spend cap when none is given (--budget-usd); `yt run`'s tail
+#: hands it what is left of the run's cap instead, when there is one.
+BUDGET_USD = 15.0
+
 
 # --------------------------------------------------------------------------- #
 # the loop
@@ -2200,8 +2204,8 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--max-passes", type=int, default=3, dest="max_passes",
                    help="improvement passes at most (default 3)")
-    p.add_argument("--budget-usd", type=float, default=15.0, dest="budget_usd",
-                   help="spend cap for the whole loop, stages included (default 15)")
+    p.add_argument("--budget-usd", type=float, default=BUDGET_USD, dest="budget_usd",
+                   help=f"spend cap for the whole loop, stages included (default {BUDGET_USD:g})")
     p.add_argument("--target", type=float, default=9.0,
                    help="stop when a kept pass is READY TO PUBLISH at this overall or "
                         "above: it raises the stop above READY's own bar, so a value "
