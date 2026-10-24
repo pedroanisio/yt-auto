@@ -449,6 +449,45 @@ class Samples(unittest.TestCase):
         for mine, theirs in zip(got["prompts"], golden["prompts"]):
             self.assertEqual(mine, theirs)
 
+        # score_evidence directly, on a copy of the pass's evidence under a
+        # project of its own (so nothing is served from run()'s cache): the
+        # same prompts, the same system, the same names.
+        from ytstudio import reach
+        other = self.tmp / "other"
+        before = self.root / "qa" / "pass-01"
+        here = other / "qa" / "pass-01"
+        shutil.copytree(before / "frames", here / "frames")
+        samples = json.loads((before / "samples.json").read_text())
+        build = json.loads((self.root / "build.json").read_text())
+        script = json.loads((self.root / "script.json").read_text())
+        voice = json.loads((self.root / "voice.json").read_text())
+        sound = json.loads((self.root / "sound.json").read_text())
+        for key in ("prompts", "merges"):
+            self.seen[key].clear()
+        systems.clear()
+        self.answers[:] = [sample(8.0, findings=[f1]), sample(8.0, findings=[f2]),
+                           sample(8.0)]
+        reviewer = harness.Harness(other, "qa", model="sonnet", role=qa.ROLE,
+                                   verbose=False, timeout=1800.0)
+        measurements = qa.stage_measurements(
+            build, voice, sound=sound, gate=None,
+            geometry={"status": "skipped", "why": "a fake geometry check"}, styles={},
+            reach=None)
+        self.assertIsNone(reach.summary(None))
+        direct = qa.score_evidence(
+            reviewer, here, title="one take", build=build, script=script, voice=voice,
+            samples=samples, frames_dir=here / "frames", listening=card["listening"],
+            mechanical=card["mechanical"], diagnostics={}, measurements=measurements,
+            blockers=[])
+        again = self._asked() | {"decisions": [d["name"] for d in
+                                               reviewer.report()["decisions"]]}
+        self.assertEqual(again["decisions"], golden["decisions"])
+        self.assertEqual(again["merges"], golden["merges"])
+        self.assertEqual(again["systems"], golden["systems"])
+        self.assertEqual(again["prompts"], golden["prompts"])
+        self.assertEqual(direct["scores"]["cinematography"], 8.0)
+        self.assertNotIn("gaps", direct)
+
     def test_no_merge_is_asked_when_no_two_samples_have_findings(self):
         self.answers[:] = [sample(8.0, findings=[finding("a")]), sample(8.0), sample(8.0)]
         self.run_qa()

@@ -214,7 +214,7 @@ from collections import Counter
 from pathlib import Path
 
 from . import geometry as geo
-from . import framecheck, house, narrative, reach, spend, workspace
+from . import framecheck, house, narrative, spend, workspace
 from . import listen as listen_pass
 from .proofframes import (PROOF_DIFF, PROOF_LIMIT, mismatch_text,  # noqa: F401
                           proof_diff, proof_plan, ungraded)
@@ -3135,6 +3135,244 @@ def combine_samples(reviewer: Harness, pass_name: str, rows: list[dict], *,
             "gaps": chosen["gaps"]}
 
 
+# --------------------------------------------------------------------------- #
+# the review, as one seam (AUTO-156)
+# --------------------------------------------------------------------------- #
+#
+# What run() asks the reviewer, pulled out of it so the QA calibration set
+# (`calibrate`, below) is judged by the very code a pass is: the evidence
+# rows, the stages' measurements, the prompt and the scoring. run() calls
+# score_evidence; the prompts it sends and the inspections' names are what
+# they were before the extraction (test_qa_samples pins them to a golden).
+
+#: The contact sheet's file name in a pass.
+CONTACT_SHEET = "contact-sheet.png"
+
+
+def evidence_rows(samples: list[dict], script: dict, voice: dict | None, *, have: set,
+                  diagnostics: dict, mechanical: list[dict]) -> list[dict]:
+    """What the reviewer sees beside each frame: the shot it belongs to, the
+    line said there, the take, and what was measured of it (the still's
+    statistics, the burst's motion, the engine's diagnostics and the
+    mechanical findings already filed on its shot). `have` is the stills
+    that exist under frames/."""
+    voice = voice or {}
+    shots = {s.get("label"): s for sec in script.get("sections", [])
+             for s in sec.get("shots", [])}
+    takes = {t.get("label"): t for t in voice.get("takes", [])}
+    evidence = []
+    for row in samples:
+        shot = shots.get(row["label"], {})
+        take = takes.get(row["label"], {})
+        evidence.append({
+            "frame": row["frame"], "present": row["frame"] in have,
+            "timestamp": row["t"], "why_sampled": row["why"],
+            "shot": row["label"], "section": row["section"],
+            "visual": str(shot.get("visual", ""))[:300],
+            # Its role in the story and what its picture must demonstrate of
+            # its line (AUTO-90): the visual support narrative_clarity reads.
+            **{k: str(shot[k])[:300] for k in ("function", "shows") if shot.get(k)},
+            **super_fields(shot),
+            "narration": str(shot.get("narration", ""))[:300],
+            # The line said where this still was taken (AUTO-104), with the
+            # time it starts and the frame that shows that moment: is it on
+            # screen when it is said?
+            **({"lines": [{"at": ln.get("at"), "text": str(ln.get("text", ""))[:300],
+                           "frame": ln.get("frame", row["frame"])}
+                          for ln in row["lines"]]} if row.get("lines") else {}),
+            "drawn_by": row.get("asset", ""),
+            "take": {k: take.get(k) for k in ("seconds", "planned_seconds", "cps")
+                     if k in take},
+            # Measured, not judged: the still's statistics, the burst's motion
+            # numbers, what the engine said about this shot, and what the
+            # mechanical checks already filed for it.
+            "still": row.get("still"),
+            "burst": {"frames": (row.get("burst") or {}).get("frames"),
+                      "span_seconds": (row.get("burst") or {}).get("span"),
+                      "files": (row.get("burst") or {}).get("files")},
+            "motion": row.get("motion"),
+            "engine": diagnostics.get(row["label"]),
+            "mechanical": [f"[{f['severity']}] {f['kind']}: {f['problem']}"
+                           for f in mechanical if f["shot"] == row["label"]]})
+    return evidence
+
+
+def stage_measurements(build: dict, voice: dict | None, *, sound: dict, gate: dict | None,
+                       geometry: dict, styles: dict, reach: dict | None) -> dict:
+    """The measurements and decisions of the stages, as the reviewer is shown
+    them: the build's frame and findings, the narration, the cue sheet and
+    mix, the gate's triage, the geometry check (`geometry`, its report),
+    the treatment, and how far the authored documents reach into the engine
+    (`reach`, vfx.json's `reach`, or None without one)."""
+    from . import reach as reach_audit       # the parameter is the record
+    voice, sound, styles = voice or {}, sound or {}, styles or {}
+    cues_near = [{"at": c.get("at"), "seconds": c.get("seconds"), "kind": c.get("kind"),
+                  "level": c.get("level"), "motif": c.get("motif")}
+                 for c in sound.get("cues", [])][:80]
+    return {
+        "runtime": build.get("scene", {}).get("duration"),
+        "frame": {k: build.get("scene", {}).get(k) for k in ("width", "height", "fps")},
+        "layers": build.get("layers"), "placeholders": build.get("placeholders"),
+        "legibility": build.get("legibility"), "stale_takes": build.get("stale_takes"),
+        "editorial": build.get("editorial"), "findings": build.get("findings"),
+        "narration": narration_measurements(voice),
+        "sound_cues": cues_near, "mix": sound.get("mix"),
+        "gate": (gate or {}).get("triage"),
+        "geometry": {k: (geometry or {}).get(k) for k in
+                     ("status", "why", "evaluated", "worst", "floating", "reads_merged")},
+        "treatment": (styles.get("styles") or [{}])[0] if isinstance(
+            styles.get("styles"), list) else styles.get("treatment"),
+        # How far the authored documents reach into the engine, per `yt vfx`:
+        # a weak-motion finding can name the construct that was left unused.
+        "reach": reach_audit.summary(reach),
+    }
+
+
+def review_prompt(*, title: str, pass_name: str, sheet_name: str, has_narration: bool,
+                  missing: list[str], total_shots: int, dropped_lines: list[dict],
+                  narrated_total: int, story: dict | None, evidence: list[dict],
+                  mechanical: list[dict], listening: list[dict], unheard: dict,
+                  silent_film: bool, measurements: dict, blockers: list[str],
+                  extra_briefs=()) -> str:
+    """The scorecard's prompt, before each sample's category order is added.
+    `extra_briefs` are the listener's and the watcher's text (`--listen`,
+    `--watch`), placed after the measurements."""
+    return "\n\n".join([
+        f"Review {pass_name} of \"{title}\". Read `{sheet_name}` first "
+        "(every still tiled in time order with its timestamp), then every PNG "
+        "directly under `frames/` (each is one still of the rendered composition "
+        "at the timestamp in its name), judge each against the shot it belongs "
+        "to and the bands (supers in the top 21%, stage in the middle, captions "
+        "in the bottom 24%), then score the ten categories against the whole "
+        "runtime and file the scorecard. Motion is evidenced by the burst under "
+        f"`frames/burst/` (up to {BURST_MAX_FRAMES} consecutive frames over "
+        f"{BURST_SECONDS:g}s around each still, which is the middle one) and "
+        "summarised beside each frame as `motion.steps`, the mean absolute "
+        "difference between consecutive frames, and `motion.total`, first frame "
+        "against last: both near zero is frozen, one step far above the rest is "
+        "a jump; read the burst frames themselves only where those numbers or "
+        "the still call for it. A frame sampled where a line of the narration "
+        "starts (`why_sampled` has `line: ...`) carries that line under `lines` "
+        "with the time it starts and `frame`, the file under `frames/` that shows "
+        "that moment: the still itself, or the burst frame when the line starts "
+        "a few frames from the still. Judge from that file whether the picture "
+        "shows what the line says at the moment it is said; a picture that does "
+        "not is a finding on its shot. The "
+        "mechanical findings are measured, not judged: do not repeat them as "
+        "your own, but score as if they stand, because they do. Blocking items "
+        "already proven by the manifests are listed; add what the frames show."
+        + (" " + unseen_brief(missing, total_shots) if missing else "")
+        + (" " + unseen_lines_brief(dropped_lines, narrated_total)
+           if dropped_lines else ""),
+        (f"Read `{NARRATION}` too: the whole narration, one shot a line with its "
+         "time on the film. Judge narrative_clarity and editing_pacing on the film "
+         "as told: can the explanation be followed by ear alone, from the "
+         "narration, and by eye alone, from the frames? It should need both "
+         "(attention 23): frames that repeat the narration as text, or narration "
+         "the pictures add nothing to, count against narrative_clarity. "
+         if has_narration else
+         "There is no narration to read; judge the story from the frames. ")
+        + "The screenplay's story below is what the writer declared, context and "
+        "not evidence: judge whether the film delivers it. Then fill `story`: "
+        "restate the premise in one sentence as the film made it, say for each "
+        "section what the viewer has at its end that they lacked at its start "
+        "(structure 20: one line for every section of the screenplay, none blank; "
+        "where a section leaves the viewer nothing new, the line says so), and predict how satisfied a viewer who watched to the "
+        "end would say they were, with why. That prediction is recorded for "
+        "calibration and scores nothing (judging 4). A finding on the story "
+        f"itself ({', '.join(STORY_DUTY)}) is owned by `script`; a picture that "
+        "does not show what its line says is owned by whoever draws it.",
+        brief("The screenplay's story, as the plan declared it", story)
+        if story else "The screenplay declares no story fields (written before them).",
+        brief("Frames and what each should show", evidence),
+        brief("Mechanical findings, measured before this review (a blocking one "
+              f"caps {' and '.join(CAPPED)} at {MECHANICAL_CAP:g})", mechanical),
+        brief("Listening evidence: the reviews that heard the film's sound, each "
+              "marked with what it heard (`heard`) and whether that is what the film "
+              "carries (`current`); what a stale or absent one said is left out and "
+              "`why` says what is missing", listening),
+        (f"No current listening review covers {', '.join(unheard)}: do not score "
+         f"{'it' if len(unheard) == 1 else 'them'} (enter 0; the number is discarded "
+         "and each is recorded not evidenced), leave them out of `overall` (it is "
+         "recomputed as the mean of the categories you score), and file no finding on "
+         "how they sound, since nothing heard them."
+         if unheard else
+         f"Every one of {', '.join(k for k in AUDIO if k not in SILENT or not silent_film)} "
+         "has a current listening review: score it from what that review heard, "
+         "with the measurements as context only."),
+        brief("Measurements and decisions from the stages", measurements),
+        *extra_briefs,
+        brief("Blocking, already proven", blockers),
+        brief("Each finding's owner is exactly one of these; one you cannot place is "
+              "`external`, with the reason in `fix`", {o: DUTIES[o] for o in OWNERS}),
+        # Nothing of the previous pass (AUTO-106): shown its scores, the
+        # reviewer filed them again. compare() takes the deltas from the
+        # two scorecards once this one exists, and --recheck puts the
+        # previous findings to a decision of their own after the scoring.
+    ])
+
+
+def score_evidence(reviewer: Harness, pass_dir: Path, *, title: str, build: dict,
+                   script: dict, voice: dict | None, samples: list[dict], frames_dir: Path,
+                   listening: list[dict], mechanical: list[dict], diagnostics: dict,
+                   measurements: dict, blockers: list[str], extra_briefs=(),
+                   watched: bool = False, quiet: bool = True,
+                   readings: list | None = None) -> dict:
+    """The review of one pass's evidence: the raw combined scorecard of
+    QA_SAMPLES readings, before any rule (score_silence, score_unheard,
+    cap_scores) or bar is applied.
+
+    `samples` are measured (`measure`). The pass's narration.txt is written
+    from the files when it is missing, and so is its contact sheet; then the
+    evidence rows, the story brief and what went unsampled make the prompt,
+    the samples are asked (`ask_samples`) and combined (`combine_samples`),
+    and a story line still missing is named under not_evidenced. `readings`,
+    when given, is extended with the samples' rows (the watch's merge reads
+    them)."""
+    pass_dir, frames_dir, voice = Path(pass_dir), Path(frames_dir), voice or {}
+    narration_file = pass_dir / NARRATION
+    if not narration_file.is_file():
+        said = narration_text(script, build, voice)
+        if said:
+            narration_file.write_text(said, encoding="utf-8")
+    sheet = pass_dir / CONTACT_SHEET
+    if not sheet.is_file():
+        contact_sheet(samples, frames_dir, sheet)
+    have = {p.name for p in frames_dir.glob("*.png")} if frames_dir.is_dir() else set()
+    evidence = evidence_rows(samples, script, voice, have=have, diagnostics=diagnostics,
+                             mechanical=mechanical)
+    story = story_brief(script, build)
+    # What a --frames below the shot count (or past the default) left
+    # unseen is said to the reviewer before it scores, and in the scorecard;
+    # and which narrated lines no still shows where they start (AUTO-104).
+    missing = unsampled(build, samples)
+    dropped_lines = lines_unsampled(build, voice, samples)
+    unheard = audio_unheard(listening, silent=silent(build))
+    prompt = review_prompt(
+        title=title, pass_name=pass_dir.name, sheet_name=sheet.name,
+        has_narration=narration_file.is_file(), missing=missing,
+        total_shots=len(build.get("shots", [])), dropped_lines=dropped_lines,
+        narrated_total=len(narrated_lines(build, voice)), story=story, evidence=evidence,
+        mechanical=mechanical, listening=listening, unheard=unheard,
+        silent_film=silent(build), measurements=measurements, blockers=blockers,
+        extra_briefs=extra_briefs)
+    # QA_SAMPLES readings of the same evidence (AUTO-107): one reading's
+    # noise is the size of the steps read as progress. structure 20 is
+    # checked past the schema in each (one non-blank line per screenplay
+    # section, asked once more); what still lacks a line is named under
+    # not_evidenced, never filled in.
+    rows = ask_samples(reviewer, pass_dir, prompt, script, quiet=quiet,
+                       **({"watched": True} if watched else {}))
+    if readings is not None:
+        readings.extend(rows)
+    card = combine_samples(reviewer, pass_dir.name, rows, unheard=unheard)
+    gaps = card.pop("gaps")
+    if gaps:
+        card["not_evidenced"] = list(card.get("not_evidenced") or []) + [
+            f"story.sections (structure 20): {'; '.join(gaps)}, asked once more"]
+    return card
+
+
 def register(sub, parents=()) -> argparse.ArgumentParser:
     from . import cutcompare      # it reads this module's categories and tally
     p = sub.add_parser(
@@ -3355,64 +3593,10 @@ def run(args) -> int:
                   f"{f['shot']}: {f['problem']}", file=sys.stderr)
 
     # -- what the reviewer sees beside each frame ----------------------------
-    shots = {s.get("label"): s for sec in script.get("sections", [])
-             for s in sec.get("shots", [])}
-    takes = {t.get("label"): t for t in voice.get("takes", [])}
-    evidence = []
-    for row in samples:
-        shot = shots.get(row["label"], {})
-        take = takes.get(row["label"], {})
-        evidence.append({
-            "frame": row["frame"], "present": row["frame"] in have,
-            "timestamp": row["t"], "why_sampled": row["why"],
-            "shot": row["label"], "section": row["section"],
-            "visual": str(shot.get("visual", ""))[:300],
-            # Its role in the story and what its picture must demonstrate of
-            # its line (AUTO-90): the visual support narrative_clarity reads.
-            **{k: str(shot[k])[:300] for k in ("function", "shows") if shot.get(k)},
-            **super_fields(shot),
-            "narration": str(shot.get("narration", ""))[:300],
-            # The line said where this still was taken (AUTO-104), with the
-            # time it starts and the frame that shows that moment: is it on
-            # screen when it is said?
-            **({"lines": [{"at": ln.get("at"), "text": str(ln.get("text", ""))[:300],
-                           "frame": ln.get("frame", row["frame"])}
-                          for ln in row["lines"]]} if row.get("lines") else {}),
-            "drawn_by": row.get("asset", ""),
-            "take": {k: take.get(k) for k in ("seconds", "planned_seconds", "cps")
-                     if k in take},
-            # Measured, not judged: the still's statistics, the burst's motion
-            # numbers, what the engine said about this shot, and what the
-            # mechanical checks already filed for it.
-            "still": row.get("still"),
-            "burst": {"frames": (row.get("burst") or {}).get("frames"),
-                      "span_seconds": (row.get("burst") or {}).get("span"),
-                      "files": (row.get("burst") or {}).get("files")},
-            "motion": row.get("motion"),
-            "engine": diagnostics.get(row["label"]),
-            "mechanical": [f"[{f['severity']}] {f['kind']}: {f['problem']}"
-                           for f in mechanical if f["shot"] == row["label"]]})
-    cues_near = [{"at": c.get("at"), "seconds": c.get("seconds"), "kind": c.get("kind"),
-                  "level": c.get("level"), "motif": c.get("motif")}
-                 for c in sound.get("cues", [])][:80]
-    measurements = {
-        "runtime": build.get("scene", {}).get("duration"),
-        "frame": {k: build.get("scene", {}).get(k) for k in ("width", "height", "fps")},
-        "layers": build.get("layers"), "placeholders": build.get("placeholders"),
-        "legibility": build.get("legibility"), "stale_takes": build.get("stale_takes"),
-        "editorial": build.get("editorial"), "findings": build.get("findings"),
-        "narration": narration_measurements(voice),
-        "sound_cues": cues_near, "mix": sound.get("mix"),
-        "gate": (gate or {}).get("triage"),
-        "geometry": {k: geometry_report.get(k) for k in
-                     ("status", "why", "evaluated", "worst", "floating", "reads_merged")},
-        "treatment": (styles.get("styles") or [{}])[0] if isinstance(
-            styles.get("styles"), list) else styles.get("treatment"),
-        # How far the authored documents reach into the engine, per `yt vfx`:
-        # a weak-motion finding can name the construct that was left unused.
-        "reach": reach.summary((read_json(project.source("vfx"), warn=False) or {}).get("reach")
-                               if project.source("vfx") else None),
-    }
+    measurements = stage_measurements(
+        build, voice, sound=sound, gate=gate, geometry=geometry_report, styles=styles,
+        reach=(read_json(project.source("vfx"), warn=False) or {}).get("reach")
+        if project.source("vfx") else None)
     blockers = mechanical_blockers(build, gate=gate) + problems
     previous = chosen
     for earlier in [] if named else reversed(_passes(home)):
@@ -3426,7 +3610,6 @@ def run(args) -> int:
     if not named and previous is not None:
         previous = kept_instead(home, previous) or previous
 
-    story = story_brief(script, build)
     # What a --frames below the shot count (or past the default) left
     # unseen is said to the reviewer before it scores, and in the scorecard.
     missing = unsampled(build, samples)
@@ -3473,92 +3656,14 @@ def run(args) -> int:
                        house=rules, house_digest=digest,
                        fresh=getattr(args, "fresh", False), verbose=not args.quiet,
                        timeout=1800.0)
-    prompt = "\n\n".join([
-        f"Review {pass_dir.name} of \"{idea.title}\". Read `{sheet.name}` first "
-        "(every still tiled in time order with its timestamp), then every PNG "
-        "directly under `frames/` (each is one still of the rendered composition "
-        "at the timestamp in its name), judge each against the shot it belongs "
-        "to and the bands (supers in the top 21%, stage in the middle, captions "
-        "in the bottom 24%), then score the ten categories against the whole "
-        "runtime and file the scorecard. Motion is evidenced by the burst under "
-        f"`frames/burst/` (up to {BURST_MAX_FRAMES} consecutive frames over "
-        f"{BURST_SECONDS:g}s around each still, which is the middle one) and "
-        "summarised beside each frame as `motion.steps`, the mean absolute "
-        "difference between consecutive frames, and `motion.total`, first frame "
-        "against last: both near zero is frozen, one step far above the rest is "
-        "a jump; read the burst frames themselves only where those numbers or "
-        "the still call for it. A frame sampled where a line of the narration "
-        "starts (`why_sampled` has `line: ...`) carries that line under `lines` "
-        "with the time it starts and `frame`, the file under `frames/` that shows "
-        "that moment: the still itself, or the burst frame when the line starts "
-        "a few frames from the still. Judge from that file whether the picture "
-        "shows what the line says at the moment it is said; a picture that does "
-        "not is a finding on its shot. The "
-        "mechanical findings are measured, not judged: do not repeat them as "
-        "your own, but score as if they stand, because they do. Blocking items "
-        "already proven by the manifests are listed; add what the frames show."
-        + (" " + unseen_brief(missing, total_shots) if missing else "")
-        + (" " + unseen_lines_brief(dropped_lines, len(narrated))
-           if dropped_lines else ""),
-        (f"Read `{NARRATION}` too: the whole narration, one shot a line with its "
-         "time on the film. Judge narrative_clarity and editing_pacing on the film "
-         "as told: can the explanation be followed by ear alone, from the "
-         "narration, and by eye alone, from the frames? It should need both "
-         "(attention 23): frames that repeat the narration as text, or narration "
-         "the pictures add nothing to, count against narrative_clarity. "
-         if narration_file.is_file() else
-         "There is no narration to read; judge the story from the frames. ")
-        + "The screenplay's story below is what the writer declared, context and "
-        "not evidence: judge whether the film delivers it. Then fill `story`: "
-        "restate the premise in one sentence as the film made it, say for each "
-        "section what the viewer has at its end that they lacked at its start "
-        "(structure 20: one line for every section of the screenplay, none blank; "
-        "where a section leaves the viewer nothing new, the line says so), and predict how satisfied a viewer who watched to the "
-        "end would say they were, with why. That prediction is recorded for "
-        "calibration and scores nothing (judging 4). A finding on the story "
-        f"itself ({', '.join(STORY_DUTY)}) is owned by `script`; a picture that "
-        "does not show what its line says is owned by whoever draws it.",
-        brief("The screenplay's story, as the plan declared it", story)
-        if story else "The screenplay declares no story fields (written before them).",
-        brief("Frames and what each should show", evidence),
-        brief("Mechanical findings, measured before this review (a blocking one "
-              f"caps {' and '.join(CAPPED)} at {MECHANICAL_CAP:g})", mechanical),
-        brief("Listening evidence: the reviews that heard the film's sound, each "
-              "marked with what it heard (`heard`) and whether that is what the film "
-              "carries (`current`); what a stale or absent one said is left out and "
-              "`why` says what is missing", listening),
-        (f"No current listening review covers {', '.join(unheard)}: do not score "
-         f"{'it' if len(unheard) == 1 else 'them'} (enter 0; the number is discarded "
-         "and each is recorded not evidenced), leave them out of `overall` (it is "
-         "recomputed as the mean of the categories you score), and file no finding on "
-         "how they sound, since nothing heard them."
-         if unheard else
-         f"Every one of {', '.join(k for k in AUDIO if k not in SILENT or not silent(build))} "
-         "has a current listening review: score it from what that review heard, "
-         "with the measurements as context only."),
-        brief("Measurements and decisions from the stages", measurements),
-        *([listen_pass.brief_for(heard)] if listened else []),
-        *([watch_pass.brief_for(watched, samples)] if asked_watched else []),
-        brief("Blocking, already proven", blockers),
-        brief("Each finding's owner is exactly one of these; one you cannot place is "
-              "`external`, with the reason in `fix`", {o: DUTIES[o] for o in OWNERS}),
-        # Nothing of the previous pass (AUTO-106): shown its scores, the
-        # reviewer filed them again. compare() takes the deltas from the
-        # two scorecards once this one exists, and --recheck puts the
-        # previous findings to a decision of their own after the scoring.
-    ])
-    # QA_SAMPLES readings of the same evidence (AUTO-107): one reading's
-    # noise is the size of the steps read as progress. structure 20 is
-    # checked past the schema in each (one non-blank line per screenplay
-    # section, asked once more); what still lacks a line is named under
-    # not_evidenced, never filled in.
-    readings = ask_samples(reviewer, pass_dir, prompt, script, quiet=args.quiet,
-                           **({"watched": True} if asked_watched else {}))
-    card = combine_samples(reviewer, pass_dir.name, readings, unheard=unheard)
-    gaps = card.pop("gaps")
-    if gaps:
-        card["not_evidenced"] = list(card.get("not_evidenced") or []) + [
-            f"story.sections (structure 20): {'; '.join(gaps)}, asked once more"]
+    readings: list[dict] = []
+    card = score_evidence(
+        reviewer, pass_dir, title=idea.title, build=build, script=script, voice=voice,
+        samples=samples, frames_dir=frames_dir, listening=listening, mechanical=mechanical,
+        diagnostics=diagnostics, measurements=measurements, blockers=blockers,
+        extra_briefs=[*([listen_pass.brief_for(heard)] if listened else []),
+                      *([watch_pass.brief_for(watched, samples)] if asked_watched else [])],
+        watched=asked_watched, quiet=args.quiet, readings=readings)
     if heard is not None:
         card = listen_pass.merge_into(card, heard)     # the listener's own findings
     if watched is not None:
