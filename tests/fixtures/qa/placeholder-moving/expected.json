@@ -1,0 +1,26 @@
+{
+  "label": "seeded",
+  "judge_only": true,
+  "verdict": "NOT_READY",
+  "under_bar": [
+    "visual_quality",
+    "overall_production"
+  ],
+  "over_bar": [],
+  "must_find": [
+    {
+      "t_range": [
+        20.0,
+        25.0
+      ],
+      "owners": [
+        "vfx",
+        "build"
+      ]
+    }
+  ],
+  "base": "good",
+  "drop": {
+    "overall_production": 1.0
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "label": "seeded",
+  "judge_only": true,
+  "verdict": "NOT_READY",
+  "under_bar": [
+    "graphics_overlays"
+  ],
+  "over_bar": [],
+  "must_find": [],
+  "base": "good",
+  "drop": {
+    "graphics_overlays": 1.0
+  }
+}

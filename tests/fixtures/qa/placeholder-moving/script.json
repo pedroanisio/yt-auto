@@ -1,0 +1,131 @@
+{
+  "idea": {
+    "title": "Why a comet's tail runs ahead of it"
+  },
+  "train": "A comet's tail must point somewhere: what pushes it?",
+  "promise": "why the tail runs ahead of the comet",
+  "payoff": "the solar wind, shown bending the tail",
+  "stakes": "the same wind can put a power grid out",
+  "viewer_stake": "your lights",
+  "questions": [
+    {
+      "id": "Q1",
+      "text": "What pushes the tail?",
+      "opened_in": 1,
+      "closed_in": 3,
+      "left_open_why": ""
+    },
+    {
+      "id": "Q2",
+      "text": "Why is light not enough?",
+      "opened_in": 2,
+      "closed_in": 3,
+      "left_open_why": ""
+    }
+  ],
+  "ending": {
+    "payoff_line": "The tail is showing you the wind.",
+    "callback": "the tail in front",
+    "next_film": "the heliopause"
+  },
+  "sections": [
+    {
+      "heading": "The tail",
+      "shots": [
+        {
+          "label": "1.1",
+          "narration": "This comet is leaving the Sun, and its tail is in front.",
+          "visual": "the comet, tail ahead",
+          "function": "hook",
+          "shows": "tail ahead",
+          "seconds": 5.0
+        },
+        {
+          "label": "1.2",
+          "narration": "Dust and gas stream off the head as it warms.",
+          "visual": "the comet, dust and gas",
+          "function": "context",
+          "shows": "dust and gas",
+          "seconds": 5.0
+        },
+        {
+          "label": "1.3",
+          "narration": "So what is pushing them the other way?",
+          "visual": "the comet, what pushes?",
+          "function": "context",
+          "shows": "what pushes?",
+          "seconds": 5.0
+        }
+      ],
+      "opens": [
+        "Q1"
+      ],
+      "closes": [],
+      "rehook": "",
+      "escalation": "the tail leads"
+    },
+    {
+      "heading": "The push",
+      "shots": [
+        {
+          "label": "2.1",
+          "narration": "Sunlight presses on the dust, but only gently.",
+          "visual": "the comet, light pressure",
+          "function": "rehook",
+          "shows": "light pressure",
+          "seconds": 5.0
+        },
+        {
+          "label": "2.2",
+          "narration": "The gas is pushed by something faster: the solar wind.",
+          "visual": "the comet, solar wind",
+          "function": "reveal",
+          "shows": "solar wind",
+          "seconds": 5.0
+        },
+        {
+          "label": "2.3",
+          "narration": "It blows straight out from the Sun at every point.",
+          "visual": "the comet, radial flow",
+          "function": "context",
+          "shows": "radial flow",
+          "seconds": 5.0
+        }
+      ],
+      "opens": [
+        "Q2"
+      ],
+      "closes": [],
+      "rehook": "Q1",
+      "escalation": "light is too weak to do it"
+    },
+    {
+      "heading": "The wind",
+      "shots": [
+        {
+          "label": "3.1",
+          "narration": "So the tail always points away from the Sun.",
+          "visual": "the comet, away from the sun",
+          "function": "context",
+          "shows": "away from the sun",
+          "seconds": 5.0
+        },
+        {
+          "label": "3.2",
+          "narration": "The tail is showing you the wind.",
+          "visual": "the comet, the wind, shown",
+          "function": "payoff",
+          "shows": "the wind, shown",
+          "seconds": 5.0
+        }
+      ],
+      "opens": [],
+      "closes": [
+        "Q1",
+        "Q2"
+      ],
+      "rehook": "",
+      "escalation": "the wind is everywhere"
+    }
+  ]
+}

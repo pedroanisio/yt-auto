@@ -1,0 +1,258 @@
+[
+  {
+    "t": 2.5,
+    "why": "hook; section start: The tail; longest authored effect",
+    "label": "1.1",
+    "at": 0.0,
+    "section": "The tail",
+    "asset": "effect",
+    "frame": "t_00m02s500.png",
+    "seconds": 5.0,
+    "burst": {
+      "frames": [
+        68,
+        75,
+        82
+      ],
+      "times": [
+        2.267,
+        2.5,
+        2.733
+      ],
+      "span": 0.5,
+      "fps": 30.0,
+      "range": "68..83",
+      "still_frame": 75,
+      "pattern": "burst/t_00m02s500_%04d.png",
+      "files": [
+        "burst/t_00m02s500_0068.png",
+        "burst/t_00m02s500_0075.png",
+        "burst/t_00m02s500_0082.png"
+      ]
+    }
+  },
+  {
+    "t": 7.5,
+    "why": "longest authored effect",
+    "label": "1.2",
+    "at": 5.0,
+    "section": "The tail",
+    "asset": "effect",
+    "frame": "t_00m07s500.png",
+    "seconds": 5.0,
+    "burst": {
+      "frames": [
+        218,
+        225,
+        232
+      ],
+      "times": [
+        7.267,
+        7.5,
+        7.733
+      ],
+      "span": 0.5,
+      "fps": 30.0,
+      "range": "218..233",
+      "still_frame": 225,
+      "pattern": "burst/t_00m07s500_%04d.png",
+      "files": [
+        "burst/t_00m07s500_0218.png",
+        "burst/t_00m07s500_0225.png",
+        "burst/t_00m07s500_0232.png"
+      ]
+    }
+  },
+  {
+    "t": 12.5,
+    "why": "25% of runtime; longest authored effect",
+    "label": "1.3",
+    "at": 10.0,
+    "section": "The tail",
+    "asset": "effect",
+    "frame": "t_00m12s500.png",
+    "seconds": 5.0,
+    "burst": {
+      "frames": [
+        368,
+        375,
+        382
+      ],
+      "times": [
+        12.267,
+        12.5,
+        12.733
+      ],
+      "span": 0.5,
+      "fps": 30.0,
+      "range": "368..383",
+      "still_frame": 375,
+      "pattern": "burst/t_00m12s500_%04d.png",
+      "files": [
+        "burst/t_00m12s500_0368.png",
+        "burst/t_00m12s500_0375.png",
+        "burst/t_00m12s500_0382.png"
+      ]
+    }
+  },
+  {
+    "t": 17.5,
+    "why": "section start: The push; beat: rehook",
+    "label": "2.1",
+    "at": 15.0,
+    "section": "The push",
+    "asset": "effect",
+    "frame": "t_00m17s500.png",
+    "seconds": 5.0,
+    "burst": {
+      "frames": [
+        518,
+        525,
+        532
+      ],
+      "times": [
+        17.267,
+        17.5,
+        17.733
+      ],
+      "span": 0.5,
+      "fps": 30.0,
+      "range": "518..533",
+      "still_frame": 525,
+      "pattern": "burst/t_00m17s500_%04d.png",
+      "files": [
+        "burst/t_00m17s500_0518.png",
+        "burst/t_00m17s500_0525.png",
+        "burst/t_00m17s500_0532.png"
+      ]
+    }
+  },
+  {
+    "t": 22.5,
+    "why": "50% of runtime",
+    "label": "2.2",
+    "at": 20.0,
+    "section": "The push",
+    "asset": "effect",
+    "frame": "t_00m22s500.png",
+    "seconds": 5.0,
+    "burst": {
+      "frames": [
+        668,
+        675,
+        682
+      ],
+      "times": [
+        22.267,
+        22.5,
+        22.733
+      ],
+      "span": 0.5,
+      "fps": 30.0,
+      "range": "668..683",
+      "still_frame": 675,
+      "pattern": "burst/t_00m22s500_%04d.png",
+      "files": [
+        "burst/t_00m22s500_0668.png",
+        "burst/t_00m22s500_0675.png",
+        "burst/t_00m22s500_0682.png"
+      ]
+    }
+  },
+  {
+    "t": 27.5,
+    "why": "shot",
+    "label": "2.3",
+    "at": 25.0,
+    "section": "The push",
+    "asset": "effect",
+    "frame": "t_00m27s500.png",
+    "seconds": 5.0,
+    "burst": {
+      "frames": [
+        818,
+        825,
+        832
+      ],
+      "times": [
+        27.267,
+        27.5,
+        27.733
+      ],
+      "span": 0.5,
+      "fps": 30.0,
+      "range": "818..833",
+      "still_frame": 825,
+      "pattern": "burst/t_00m27s500_%04d.png",
+      "files": [
+        "burst/t_00m27s500_0818.png",
+        "burst/t_00m27s500_0825.png",
+        "burst/t_00m27s500_0832.png"
+      ]
+    }
+  },
+  {
+    "t": 32.5,
+    "why": "section start: The wind; 75% of runtime",
+    "label": "3.1",
+    "at": 30.0,
+    "section": "The wind",
+    "asset": "effect",
+    "frame": "t_00m32s500.png",
+    "seconds": 5.0,
+    "burst": {
+      "frames": [
+        968,
+        975,
+        982
+      ],
+      "times": [
+        32.267,
+        32.5,
+        32.733
+      ],
+      "span": 0.5,
+      "fps": 30.0,
+      "range": "968..983",
+      "still_frame": 975,
+      "pattern": "burst/t_00m32s500_%04d.png",
+      "files": [
+        "burst/t_00m32s500_0968.png",
+        "burst/t_00m32s500_0975.png",
+        "burst/t_00m32s500_0982.png"
+      ]
+    }
+  },
+  {
+    "t": 37.5,
+    "why": "ending; beat: payoff",
+    "label": "3.2",
+    "at": 35.0,
+    "section": "The wind",
+    "asset": "effect",
+    "frame": "t_00m37s500.png",
+    "seconds": 5.0,
+    "burst": {
+      "frames": [
+        1118,
+        1125,
+        1132
+      ],
+      "times": [
+        37.267,
+        37.5,
+        37.733
+      ],
+      "span": 0.5,
+      "fps": 30.0,
+      "range": "1118..1133",
+      "still_frame": 1125,
+      "pattern": "burst/t_00m37s500_%04d.png",
+      "files": [
+        "burst/t_00m37s500_1118.png",
+        "burst/t_00m37s500_1125.png",
+        "burst/t_00m37s500_1132.png"
+      ]
+    }
+  }
+]
