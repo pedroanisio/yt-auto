@@ -1040,9 +1040,11 @@ def judge_case(expected: Mapping, got: Mapping) -> list[str]:
     good script whose one joke makes the point must not be marked down for
     it, which its verdict alone cannot show, since a recommend may carry a
     Fair; a level that is no LEVELS label fails the case. The failure line
-    gives the humour case's reason, the only `at_least` shipped; a floor on
-    another criterion would want a reason of its own. A case without
-    `at_least` is judged as before. A plan
+    names the floor and adds the case's `at_least_why` when it sets one, so
+    the humour reason is the humour case's and a floor on another criterion
+    never prints it. The floor is read only when the story review gave a
+    verdict: a reading without one already fails on that alone. A case
+    without `at_least` is judged as before. A plan
     case's plan review must send a bad plan back and accept the good one; a
     cold-read case's reader must find the mismatch or the terms it hides. A
     case naming a `trigger` (AUTO-136) fails a round that heard another, or
@@ -1083,8 +1085,10 @@ def judge_case(expected: Mapping, got: Mapping) -> list[str]:
                 # a typo would otherwise pass every grade; fail the row closed
                 failed.append(f"{floor_key}: at_least names no level ({floor})")
             elif grade not in level or level[grade] > level[floor]:
-                failed.append(f"{floor_key} graded {grade or 'nothing'}; humour or colour "
-                              f"that serves a claim is graded no lower than {floor}")
+                why = expected.get("at_least_why")
+                failed.append(f"{floor_key} graded {grade or 'nothing'}; this case holds "
+                              f"{floor_key} no lower than {floor}"
+                              + (f": {why}" if why else ""))
             if any(f.get("criterion") == floor_key for f in flags):
                 failed.append(f"a flag on {floor_key}, where this case has nothing to fix")
     trigger = expected.get("trigger")

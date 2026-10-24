@@ -157,6 +157,10 @@ class TheSet(unittest.TestCase):
                 self.assertIsInstance(floor, dict)
                 self.assertFalse(set(floor) - set(narrative.KEYS), floor)
                 self.assertFalse(set(floor.values()) - set(narrative.LEVELS), floor)
+                # the reason a failure line gives for the floor, only beside one
+                if "at_least_why" in expected:
+                    self.assertTrue(floor, name)
+                    self.assertIsInstance(expected["at_least_why"], str)
                 if name in COLD_READ:
                     self.assertIs(expected["story"], False)
                     self.assertNotIn("criterion", expected)
@@ -379,6 +383,7 @@ class JudgeCase(unittest.TestCase):
         self.assertEqual(len(failed), 1, failed)
         self.assertIn("voice graded Fair", failed[0])
         self.assertIn("no lower than Good", failed[0])
+        self.assertIn("humour", failed[0])          # the case's own at_least_why
         flag = {"n": 5, "section": 2, "criterion": "voice", "severity": "minor",
                 "problem": "a joke", "fix": "cut it",
                 "quote": "like blowing out a candle from the next town"}
@@ -416,6 +421,26 @@ class JudgeCase(unittest.TestCase):
         failed = narrative.judge_case(expected, read_of("claim-joke"))
         self.assertEqual(len(failed), 1, failed)
         self.assertIn("voice: at_least names no level (good)", failed[0])
+
+    def test_a_floor_without_a_reason_gives_no_humour_reason(self):
+        # the humour reason is the claim-joke case's own (`at_least_why`); a
+        # floor on another criterion must not print it
+        expected = dict(load(FIXTURES / "good" / "expected.json"),
+                        at_least={"honesty": "Excellent"})
+        grades = dict(read_of("good")["grades"], honesty="Good")
+        failed = narrative.judge_case(expected, read_of("good", grades=grades))
+        self.assertEqual(failed, ["honesty graded Good; this case holds honesty "
+                                  "no lower than Excellent"])
+
+    def test_a_reading_with_no_verdict_fails_without_a_floor_line(self):
+        # the floor is read only when the story review gave a verdict: the
+        # missing verdict already fails the row, and is the one reason given
+        expected = load(FIXTURES / "claim-joke" / "expected.json")
+        grades = dict(read_of("claim-joke")["grades"], voice="Poor")
+        failed = narrative.judge_case(expected, read_of("claim-joke", verdict=None,
+                                                        grades=grades))
+        self.assertEqual(len(failed), 1, failed)
+        self.assertIn("gave no verdict", failed[0])
 
     def test_a_case_without_at_least_is_judged_as_before(self):
         # `at_least` is opt-in: the good case sets none, so a Fair voice under
@@ -840,9 +865,27 @@ class Entry(Hermetic):
             return None
         code, out, err = self.main(override=lets_through)
         self.assertEqual(code, 1, out)
-        row = next(line for line in out.splitlines() if line.startswith("aside-joke"))
-        self.assertIn("fail", row.split())
-        self.assertIn("recommend", row.split())
+        lines = out.splitlines()
+        at = next(i for i, line in enumerate(lines) if line.startswith("aside-joke"))
+        self.assertIn("fail", lines[at].split())
+        self.assertIn("recommend", lines[at].split())
+        # what the reviewer missed is printed under the row, each on voice
+        missed = []
+        for line in lines[at + 1:]:
+            if line.split() and line.split()[0] in [*SEEDED, *COLD_READ, *GOOD]:
+                break
+            missed.append(line)
+        said = "\n".join(missed)
+        self.assertIn("recommend", said)
+        self.assertIn("consider", said)
+        self.assertIn("voice graded Good", said)
+        self.assertIn("no flag on voice", said)
+        # every other row is as the faithful reviewer left it
+        others = [line for line in lines[:at] + lines[at + 1 + len(missed):]
+                  if line.split() and line.split()[0] in [*SEEDED, *COLD_READ, *GOOD]
+                  and line.split()[0] != "aside-joke"]
+        self.assertEqual(len(others), len(SEEDED) + len(COLD_READ) + len(GOOD) - 1)
+        self.assertFalse([line for line in others if "fail" in line.split()], others)
 
     def test_a_failing_reviewer_exits_1_and_says_which_rows_failed(self):
         def lenient(case, kind):

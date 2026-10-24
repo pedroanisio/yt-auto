@@ -84,7 +84,8 @@ judging 13; Zeigarnik → attention Contested.
    an analogy that maps a comet's tail onto its path, an aside that serves
    no claim), the good pair, and a joke that makes the point: the good
    script with one joke whose punchline is the shot's claim, which expects
-   recommend with voice no lower than Good (its `at_least`, AUTO-159),
+   recommend with voice no lower than Good (its `at_least`, AUTO-159,
+   with the reason a failing row prints in `at_least_why`),
    since a recommend may carry a Fair and its verdict alone would pass a
    reviewer that marks the joke down; the good
    script and the recap ending each have a padded copy. judging 10 asks
