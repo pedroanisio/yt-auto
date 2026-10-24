@@ -248,6 +248,31 @@ class Routing(ImproveCase):
                          ["voice", "script", "vfx", "vfx"])
         self.assertEqual({r["by"] for r in routing["routes"].values()}, {"mechanical"})
 
+    def test_build_and_density_findings_route_to_vfx_without_the_model(self):
+        # AUTO-145: measured from frames and from the document vfx authored
+        def advisory(kind, problem):
+            return dict(mech(kind, "1.2", owner="vfx", severity="minor"), problem=problem)
+        findings = improve.collect(card(5.0, mechanical=[
+            advisory("no-build", "effect `fx-steps` is on screen whole from the cut"),
+            advisory("text-dense", "`shot-1.2/l-long` carries 9 words")]))
+        FakeEngine.route = route_all_to("sound")
+        h = harness.Harness(self.root, "improve", verbose=False)
+        routing = improve.route(h, findings, name="route-pass-01")
+        self.assertEqual([routing["routes"][f"F{n}"]["stage"] for n in (1, 2)],
+                         ["vfx", "vfx"])
+        self.assertEqual({r["by"] for r in routing["routes"].values()}, {"mechanical"})
+        for kind in ("no-build", "text-dense"):
+            self.assertIn(kind, improve.MECHANICAL_KINDS)
+
+    def test_two_dense_nodes_in_one_shot_are_two_defects(self):
+        def dense(ident):
+            return dict(mech("text-dense", "1.2", severity="minor"),
+                        problem=f"`shot-1.2/{ident}` carries 9 words, over the 6")
+        a, b = improve.fingerprint(dense("l-one")), improve.fingerprint(dense("l-two"))
+        self.assertNotEqual(a, b)
+        self.assertEqual(a, "text-dense|1.2|l-one")
+        self.assertEqual(improve.fingerprint(dict(dense("l-one"), timestamp=99.0)), a)
+
     def test_prose_findings_are_routed_by_the_model(self):
         findings = improve.collect(card(5.0, findings=[
             prose("the hero reads flat under the key", owner="scene-render lighting"),

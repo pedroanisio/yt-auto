@@ -97,7 +97,8 @@ ROUTES = ROUTABLE + HUMAN
 #: vfx, a section read too fast or slow to voice.
 MECHANICAL_KINDS = ("penetration", "reads-merged", "flat", "clipped", "frozen", "jump",
                     "off_camera", "proof-mismatch",
-                    "hold", "metronomic", "slow-opening", "wpm")
+                    "hold", "metronomic", "slow-opening", "wpm",
+                    "no-build", "text-dense")
 
 #: Expensive, and they change the film's facts: never re-run as a side effect.
 EXPENSIVE = ("research", "script")
