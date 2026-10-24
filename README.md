@@ -344,7 +344,7 @@ Or all of it at once, for one idea:
 | stage | what it produces | typical cost |
 |---|---|---|
 | `yt ideas` | titles, genres, premises; deduplicated against a growing store | cents |
-| `yt research` | claims with sources, a vetted source list, licence-checked footage, gaps, an outline | **$0.78** for a cut-down run; more at the defaults |
+| `yt research` | claims with sources, a vetted source list, licence-checked footage, gaps, an outline | **$0.78** for a cut-down run; more at the defaults; `--paper` adds the paper read and the `06b-paper` digest (`spend.PAPER_USD`, assumed $1.00) |
 | `yt styles` | visual treatments ranked against the video's message, with shots, palette, type, motion | $0.06–0.10 |
 | `yt script` | the full AV screenplay: picture, narration verbatim, supers, assets, citations | **$0.51** for 3 minutes with polish and fact-check |
 | `yt props` | CC0 glTF models, HDRIs and texture maps from Poly Haven under `props/`, listed in `props.json` for the vfx brief | two cached model decisions when no phrase is given, else none; no key |
@@ -368,7 +368,7 @@ costs more. `--effort {low..max}` and `--fallback-model` apply to every call a
 stage makes (or set `CLAUDE_ENGINE_EFFORT` / `CLAUDE_ENGINE_FALLBACK_MODEL`
 once); a decision asked at a different effort is asked again rather than
 served from the project's cache. `yt research` and `yt sound` are the expensive stages — research
-because it actually browses the web, sound because a cue sheet is long.
+because it actually browses the web (and, with `--paper`, reads the paper first), sound because a cue sheet is long.
 
 ## Where things land
 
@@ -569,7 +569,8 @@ stage is cached, so a re-run resumes instead of paying twice; `--fresh`
 forces the work again.
 
 `--depth` questions · `--jobs` · `--shots` / `--per-shot` · `--asset-sources` ·
-`--allow-sa` · `--agentic-assets` · `--download` · `--budget-usd` · `--fresh`
+`--allow-sa` · `--agentic-assets` · `--download` · `--budget-usd` · `--fresh` ·
+`--paper`
 
 The plan depends on the genre. A narrated explainer gets the full scope; a
 wordless piece -- a genre or premise that says cinematic, music video,
@@ -578,6 +579,25 @@ ambient loop, "no narration" -- gets the lighter cinematic scope
 physics of what moves, no misconception hunt, claims only about what is on
 screen, and gaps that do not block on unsourced numbers. The dossier records
 which scope it got; an explicit `--depth` wins over either.
+
+`--paper REF` (or `yt run --paper REF`; a DOI, an arXiv id or page, a URL,
+or a local PDF) makes a film that explains one paper: the `paper` scope.
+The paper is read first (`raw/00-paper.json`), by WebFetch or, for a local
+file, Read; the read fails unless the agent's own tool events show the paper
+opened, and a local path never enters the dossier, which names the file
+`file:<basename>`. The questions then ask after the problem's cost, the state
+of the art before it, the reception, the consequences and the limitations;
+the paper is the first source, and its own claims cite it. One more decision,
+`06b-paper` (one `-again` at most), writes the dossier's `paper` digest:
+its citation and six items (problem, contribution, significance,
+implications, consequences, limitations), each resting on claims quoted
+from the dossier, the contribution on one sourced to the paper itself. The
+dossier gains a `## The paper` section. `yt script` then places each item in
+a section (`framing`, `mechanism_section`), and the plan's pre-checks hold
+the problem, significance and implications before the mechanism, with a
+misplaced item recorded as a `warning: paper framing:` finding that
+`yt doctor` reports. Under `YT_ENGINE=codex`, `--paper` is refused with exit
+2: codex reports no WebFetch or Read events, so the read cannot be evidenced.
 
 Downloaded assets are untrusted bytes from the open web: they are written to
 `downloads/` and never opened or executed.
