@@ -990,6 +990,323 @@ class RulesOnTheCommandLine(unittest.TestCase):
         self.assertTrue((self.film / "narration.txt").exists())
         self.assertTrue(any(f.startswith("error: rule:filler") for f in record["findings"]))
 
+    def test_a_dossier_film_records_claim_status_and_ceiling_on_every_shot(self):
+        # AUTO-132, through the command: the dossier's claim table caps each
+        # line, script.md prints it, and with no --review the status check
+        # is recorded as not evidenced, never as passed.
+        import json
+        dossier = {"claims": [
+            {"claim": "The bolt rusted", "detail": "", "source_title": "NTSB",
+             "source_url": "u", "source_kind": "primary", "confidence": "high",
+             "standing": "established"},
+            {"claim": "Paint hid it", "detail": "", "source_title": "NTSB",
+             "source_url": "u", "source_kind": "primary", "confidence": "high",
+             "standing": "limitation"}]}
+        (self.film / "dossier.json").write_text(json.dumps(dossier))
+        lines = [("The bridge you cross fell at dawn.", "hook", "c1", "established"),
+                 ("One bolt held up four lanes.", "payoff", "c2", "established")]
+        from unittest import mock
+        from tests.test_harness_decisions import FakeEngine, blank
+
+        def answer(prompt, schema, system=None):
+            FakeEngine.json_calls.append({"prompt": prompt, "schema": schema})
+            out = blank(schema)
+            if "questions" in schema["properties"]:
+                out.update(RULE_PLAN)
+                out["sections"] = [dict(blank(schema["properties"]["sections"]["items"]),
+                                        heading="One", seconds=10, beats=["b"])]
+            elif "shots" in schema["properties"]:
+                out["shots"] = [{"visual": "v", "narration": line, "seconds": 5,
+                                 "asset": "", "style": "", "function": fn, "shows": "s",
+                                 "source": "NTSB", "claim": cid, "status": status}
+                                for line, fn, cid, status in lines]
+            elif "fixes" in schema["properties"]:
+                out["fixes"] = [{"n": 2, "action": "keep", "narration": "",
+                                 "why": "the record shows it"}]
+            return out
+        from ytstudio import cli
+        args = cli.build_parser().parse_args(
+            ["script", "--project", str(self.film), "--work", str(self.root / "work"),
+             "--quiet", "--verify"])
+        with mock.patch.object(FakeEngine, "ask_json", staticmethod(answer)), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            script.run(args)
+        record = json.loads((self.film / "script.json").read_text())
+        shots = [s for sec in record["sections"] for s in sec["shots"]]
+        self.assertEqual([(s["claim"], s["status"], s["ceiling"]) for s in shots],
+                         [("c1", "established", "established"),
+                          ("c2", "established", "hypothesis")])
+        for s in shots:
+            effective = script.effective_status(script.Shot(**s))
+            self.assertLessEqual(script.LADDER.index(s["ceiling"]),
+                                 script.LADDER.index(effective))
+        self.assertEqual(record["cited_claims"]["c2"]["standing"], "limitation")
+        self.assertEqual(record["check"]["status"]["not_evidenced"], script.STATUS_UNREAD)
+        self.assertNotIn("verdict", record["check"]["status"])
+        self.assertIn("not_evidenced: verify-status (status check needs a reviewer of "
+                      "another family (--review))", record["findings"])
+        self.assertTrue(any("rule:unframed-status" in f for f in record["findings"]))
+        md = (self.film / "script.md").read_text()
+        self.assertIn("**STATUS** — hypothesis (c2, limitation), capped from established", md)
+        self.assertIn("**STATUS** — established (c1, established)", md)
+        # the writer was shown the ids
+        write = next(c["prompt"] for c in FakeEngine.json_calls
+                     if "shots" in c["schema"]["properties"])
+        self.assertIn("- c2: Paint hid it", write)
+
+
+# --------------------------------------------------------------------------- #
+# AUTO-132: the status of a line, checked by another family and weakened
+# --------------------------------------------------------------------------- #
+
+#: c4 is a limitation the paper names; c7 a claim the research rates low.
+TABLE = {"c1": {"standing": "established", "confidence": "high", "caveat": "",
+                "source_kind": "primary"},
+         "c4": {"standing": "limitation", "confidence": "high", "caveat": "",
+                "source_kind": "primary"},
+         "c7": {"standing": "hypothesis", "confidence": "high", "caveat": "",
+                "source_kind": "primary"}}
+
+
+def status_shots():
+    shots = [shot(1, "The core is liquid.", status="established", claim="c1",
+                  source="P"),
+             shot(2, "The core might be molten.", status="hypothesis", claim="c7",
+                  source="P"),
+             shot(3, "Scientists have proven the core is molten.", status="hypothesis",
+                  claim="c7", source="P")]
+    script.cap(shots, TABLE)
+    return shots
+
+
+def status_writer(**kw):
+    kw.setdefault("claim_table", copy.deepcopy(TABLE))
+    kw.setdefault("reviewer_model", "gpt-5")
+    return writer(**kw)
+
+
+class StatusCheck(unittest.TestCase):
+    def asked(self, w, *, checks=None, status=None, fixes=None):
+        """Answer `_ask` by decision name and keep every call."""
+        calls = []
+        checks, status, fixes = list(checks or []), list(status or []), list(fixes or [])
+
+        def ask(name, prompt, schema):
+            calls.append({"name": name, "prompt": prompt, "schema": schema})
+            if name.startswith("verify-status"):
+                return status.pop(0) if status else {"flags": [], "verdict": "ok"}
+            if name.startswith("verify"):
+                return checks.pop(0) if checks else {"flags": [], "verdict": "ok"}
+            return fixes.pop(0) if fixes else {"fixes": []}
+        w._ask = ask
+        return calls
+
+    def test_the_listing_names_each_lines_status_and_claim(self):
+        listing = script.shot_listing(status_shots(), cite=True)
+        self.assertIn("[status: hypothesis, claim c7]", listing)
+        self.assertIn("[status: established, claim c1]", listing)
+        self.assertNotIn("status", script.shot_listing([shot(1, "Plain.")], cite=True))
+        self.assertNotIn("status", script.shot_listing(status_shots()))
+
+    def test_status_flags_join_the_fact_check_tagged(self):
+        w = status_writer()
+        calls = self.asked(w, status=[{"flags": [flag(3, "blocker", "proven on a "
+                                                    "hypothesis")], "verdict": "no"}])
+        check = w.verify_and_revise(status_shots(), fix=False)
+        names = [c["name"] for c in calls]
+        self.assertEqual(names, ["verify", "verify-status"])
+        self.assertEqual([(f["n"], f.get("check")) for f in check["flags"]], [(3, "status")])
+        self.assertEqual(check["status"]["verdict"], "no")
+        prompt = calls[1]["prompt"]
+        self.assertIn("[status: hypothesis, claim c7]", prompt)
+        self.assertIn("marked none or what-if but asserts a fact", prompt)
+        self.assertIn("scientists have proven", prompt)
+        self.assertIn("R", prompt)          # the research
+
+    def test_it_is_asked_of_the_status_reader_not_the_author(self):
+        w = status_writer()
+        seen = []
+
+        def record(who):
+            def decide(name, prompt, schema, **kw):
+                seen.append((who, name))
+                return {"flags": [], "verdict": "ok"}
+            return decide
+        w.harness.decide = record("author")
+        w._drafter.decide = record("drafter")
+        reader = w._reader("status")
+        reader.decide = record("status")
+        w.verify_and_revise(status_shots(), fix=False)
+        self.assertEqual(seen, [("author", "verify"), ("status", "verify-status")])
+        self.assertEqual(reader.model, "gpt-5")
+        self.assertEqual(reader.house, "")
+        self.assertIn(script.STATUS_ROLE, reader.system)
+
+    def test_without_another_family_it_is_not_evidenced_never_passed(self):
+        w = status_writer(reviewer_model=None)
+        calls = self.asked(w)
+        check = w.verify_and_revise(status_shots())
+        self.assertEqual([c["name"] for c in calls], ["verify"])
+        self.assertEqual(check["status"]["not_evidenced"],
+                         "status check needs a reviewer of another family (--review)")
+        self.assertNotIn("verdict", check["status"])
+
+    def test_a_failed_status_call_is_not_evidenced(self):
+        w = status_writer()
+
+        def ask(name, prompt, schema):
+            if name.startswith("verify-status"):
+                raise script.ClaudeError("timed out")
+            return {"flags": [], "verdict": "ok"}
+        w._ask = ask
+        check = w.verify_and_revise(status_shots())
+        self.assertIn("timed out", check["status"]["not_evidenced"])
+
+    def test_with_no_claims_nothing_changes(self):
+        shots = status_shots()
+        w = writer(reviewer_model="gpt-5")
+        calls = self.asked(w, checks=[{"flags": [flag(3)], "verdict": "no"}],
+                           fixes=[{"fixes": [{"n": 3, "action": "keep", "narration": "",
+                                              "why": "fine"}]}])
+        check = w.verify_and_revise(shots)
+        self.assertEqual([c["name"] for c in calls], ["verify", "revise-1"])
+        self.assertIs(calls[1]["schema"], script.REVISE_SCHEMA)
+        self.assertNotIn("status", check)
+
+    def test_an_older_screenplay_asks_what_it_always_did(self):
+        shots = [shot(1, "Fine."), shot(2, "Exactly 9 tons.", source="P")]
+        w = status_writer()
+        calls = self.asked(w, checks=[{"flags": [flag(2)], "verdict": "no"}],
+                           fixes=[{"fixes": [{"n": 2, "action": "keep", "narration": "",
+                                              "why": "fine"}]}])
+        w.verify_and_revise(shots)
+        self.assertEqual([c["name"] for c in calls], ["verify", "revise-1"])
+        self.assertIs(calls[1]["schema"], script.REVISE_SCHEMA)
+
+
+class StatusRevise(unittest.TestCase):
+    def test_the_fact_check_revise_may_weaken_a_status(self):
+        shots = status_shots()
+        w = status_writer()
+        seen = []
+
+        def ask(name, prompt, schema):
+            seen.append(schema)
+            return {"fixes": [{"n": 2, "action": "fix", "narration": shots[1].narration,
+                               "status": "speculation", "why": "one lab only"}]}
+        w._ask = ask
+        result = w.revise(shots, [flag(2)], name="revise-1")
+        self.assertIs(seen[0], script.FACT_REVISE_SCHEMA)
+        self.assertEqual(shots[1].status, "speculation")
+        self.assertEqual(result["applied"][0]["status_before"], "hypothesis")
+        self.assertEqual(result["applied"][0]["status_after"], "speculation")
+
+    def test_a_stronger_status_is_ignored(self):
+        shots = status_shots()
+        w = status_writer()
+        w._ask = lambda name, prompt, schema: {"fixes": [
+            {"n": 2, "action": "fix", "narration": shots[1].narration,
+             "status": "established", "why": "sure"}]}
+        result = w.revise(shots, [flag(2)], name="revise-1")
+        self.assertEqual(shots[1].status, "hypothesis")
+        self.assertEqual(result["applied"], [])
+
+    def test_a_status_only_fix_clears_its_blocker_after_the_recheck(self):
+        shots = status_shots()
+        w = status_writer()
+        calls = StatusCheck.asked(
+            StatusCheck(), w,
+            status=[{"flags": [flag(3, "blocker", "proven on a hypothesis")],
+                     "verdict": "no"}, {"flags": [], "verdict": "ok"}],
+            fixes=[{"fixes": [{"n": 3, "action": "fix", "narration": shots[2].narration,
+                               "status": "speculation", "why": "it is a guess"}]}])
+        check = w.verify_and_revise(shots)
+        names = [c["name"] for c in calls]
+        self.assertEqual(names, ["verify", "verify-status", "revise-1", "verify-1",
+                                 "verify-status-1"])
+        for name in ("verify-1", "verify-status-1"):
+            prompt = next(c["prompt"] for c in calls if c["name"] == name)
+            self.assertIn("Scientists have proven", prompt)
+            self.assertNotIn("The core is liquid.", prompt)
+        self.assertEqual(check["flags"], [])
+        self.assertEqual(check["unresolved"], [])
+        self.assertEqual(check["revisions"][0]["status_after"], "speculation")
+
+    def test_no_other_revise_reads_a_status(self):
+        for kw in ({"rules": True, "name": "revise-rules"},
+                   {"back": "the operator", "name": "revise-labels"},
+                   {"flagged_by": "the story review", "name": "revise-story-1"}):
+            shots = status_shots()
+            w = status_writer()
+            seen = []
+
+            def ask(name, prompt, schema, shots=shots):
+                seen.append(schema)
+                return {"fixes": [{"n": 2, "action": "fix", "narration": shots[1].narration,
+                                   "status": "speculation", "why": "w"}]}
+            w._ask = ask
+            result = w.revise(shots, [dict(flag(2), rule="rule:unframed-status")], **kw)
+            self.assertEqual(shots[1].status, "hypothesis", kw)
+            self.assertEqual(result["applied"], [], kw)
+            self.assertIsNot(seen[0], script.FACT_REVISE_SCHEMA, kw)
+
+    def test_a_rules_fix_for_an_unframed_status_may_label_the_screen(self):
+        shots = status_shots()
+        w = status_writer()
+        w._ask = lambda name, prompt, schema: {"fixes": [
+            {"n": 2, "action": "fix", "narration": shots[1].narration,
+             "on_screen_text": ["Hypothesis"], "why": "label it"}]}
+        result = w.revise(shots, [dict(flag(2), rule="rule:unframed-status")],
+                          rules=True, name="revise-rules")
+        self.assertEqual(shots[1].on_screen_text, ["Hypothesis"])
+        self.assertEqual(result["applied"][0]["on_screen_after"], ["Hypothesis"])
+
+
+class StatusDrafting(unittest.TestCase):
+    def test_write_section_caps_each_shot_from_the_claim_table(self):
+        w = status_writer()
+        w._ask = lambda name, prompt, schema: {"shots": [
+            {"visual": "v", "narration": "The core is liquid.", "seconds": 5,
+             "asset": "", "style": "", "function": "context", "shows": "s",
+             "source": "P", "claim": "c4", "status": "established",
+             "ceiling": "established"},
+            {"visual": "v", "narration": "It rains iron.", "seconds": 5, "asset": "",
+             "style": "", "function": "context", "shows": "s", "source": "P",
+             "claim": "c99", "status": "established"}]}
+        shots = w.write_section({"heading": "A", "seconds": 10, "beats": []}, index=1,
+                                total=1, plan={}, written=[], next_heading="",
+                                sourced=True)
+        self.assertEqual([s.ceiling for s in shots], ["hypothesis", "speculation"])
+
+    def test_the_run_records_the_status_check_and_the_cited_claims(self):
+        plan = {"sections": [{"heading": "A", "seconds": 10, "beats": []}]}
+        w = status_writer(reviewer_model=None)
+        StatusCheck.asked(StatusCheck(), w)
+        w.plan = lambda: plan
+        w.write_section = lambda *a, **k: status_shots()
+        data = w.run(do_verify=True)
+        self.assertIn("not_evidenced: verify-status (status check needs a reviewer of "
+                      "another family (--review))", data["findings"])
+        self.assertEqual(sorted(data["cited_claims"]), ["c1", "c7"])
+        shot3 = data["sections"][0]["shots"][2]
+        self.assertEqual((shot3["claim"], shot3["status"], shot3["ceiling"]),
+                         ("c7", "hypothesis", "hypothesis"))
+        self.assertTrue(any("rule:unframed-status: shot 1.3" in f
+                            for f in data["findings"]), data["findings"])
+
+    def test_a_status_off_the_list_is_noted(self):
+        plan = {"sections": [{"heading": "A", "seconds": 10, "beats": []}]}
+        w = status_writer(reviewer_model=None)
+        StatusCheck.asked(StatusCheck(), w)
+        w.plan = lambda: plan
+        odd = status_shots()
+        odd[0].status = "proven"
+        w.write_section = lambda *a, **k: odd
+        data = w.run()
+        self.assertTrue(any(f.startswith("note: shot 1.1: status 'proven'")
+                            for f in data["findings"]), data["findings"])
+
 
 if __name__ == "__main__":
     unittest.main()
