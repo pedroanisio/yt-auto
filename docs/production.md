@@ -321,7 +321,11 @@ film has none.
 Each rendered transition is sampled from build.json's `joins` (AUTO-142):
 a still at the join, labelled `transition: <type> (<kind>)`, whose burst
 spans the window from a frame before it to a frame after, so the frames
-before, during and after are evidence. A join's still is its own: it never
+before, during and after are evidence. A burst is at most 16 consecutive
+frames (`BURST_MAX_FRAMES`), so a window longer than that (over about half
+a second at 30 fps) is clipped to the 16 frames around its middle: its
+first and last frames, and the frames either side, are not in it. A join's
+still is its own: it never
 merges into a shot's, and a shot's burst still stays inside its shot. They
 come after the line stills and beyond the still count, at most 12, sections
 first, then worlds, then pictures. A dip, a push or a whip-pan is a

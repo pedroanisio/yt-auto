@@ -1207,9 +1207,9 @@ def _add_joins(out: list[dict], shots: list[dict], joins: list[dict], row, *,
     """The transition stills (AUTO-142), added to `out` in place, last of
     all and beyond `limit`. Each rendered join (build.json `joins`, not a
     cut, not a gap) gets a row of its own at its window's middle, labelled
-    with the incoming shot, its burst the window and a frame either side,
-    clipped to BURST_MAX_FRAMES around the middle: the frames before,
-    during and after. It never merges into a shot's still, whose burst
+    with the incoming shot, its burst the window and a frame either side
+    (the frames before, during and after), clipped to BURST_MAX_FRAMES
+    around the middle, so a longer window loses its edges. It never merges into a shot's still, whose burst
     stays inside its shot; two joins within a burst of each other share
     the first's row (`joins`). At most TRANSITION_SAMPLES_MAX rows, in the
     order TRANSITION_ORDER, then time."""
@@ -4177,7 +4177,9 @@ def review_prompt(*, title: str, pass_name: str, sheet_name: str, has_narration:
         + (f" The {join_stills} stills whose `why_sampled` is `transition: <type> "
            "(<kind>)` sit inside a rendered transition between two shots, with "
            "`transition` saying which and its window: their burst spans the "
-           "frames before, during and after it, and its numbers are under "
+           "window and a frame either side, so the frames before, during and "
+           f"after it, except that a window over {BURST_MAX_FRAMES} frames is "
+           f"cut to the {BURST_MAX_FRAMES} around its middle, and its numbers are under "
            "`join_motion`, a discontinuity on purpose, never a frozen or jump "
            "defect. Judge from those frames whether the join reads as the "
            "transition named (not a hard cut, a held frame or a black gap) and "
