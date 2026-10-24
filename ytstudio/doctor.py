@@ -1102,10 +1102,18 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
                                                   a.get("url", ""))) in ("image", "video")]
         fetched = any(isinstance(row, dict) and str(row.get("status", "")) == "ok"
                       for row in manifest)
-        if pictures and not fetched:
+        if pictures and not fetched and not manifest:
             report.add("warn", "assets", f"{len(pictures)} vetted picture or clip "
                        "asset(s) were never downloaded; build and vfx place only "
                        "files on disk", _cmd("research", project, "--download"))
+        elif pictures and not fetched:
+            # The download ran and nothing came back: the deferred and failed
+            # warnings below say which rows, and this says what it costs.
+            report.add("warn", "assets", f"none of the {len(manifest)} download(s) "
+                       f"succeeded, so {len(pictures)} vetted picture or clip asset(s) "
+                       "are not on disk; build and vfx place only files on disk",
+                       "read the deferred and failed rows in raw/08-downloads.json, then "
+                       + _cmd("research", project, "--download"))
         if manifest:
             by = {}
             for row in manifest:

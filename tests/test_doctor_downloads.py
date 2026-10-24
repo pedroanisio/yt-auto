@@ -63,7 +63,18 @@ class DownloadsWarn(unittest.TestCase):
     def test_a_manifest_with_no_ok_row_warns_too(self):
         self.dossier(CLIP)
         self.manifest("failed: 404", "deferred: 429")
-        self.assertEqual(len(self.warns()), 1)
+        found = self.warns()
+        self.assertEqual(len(found), 1)
+        # the download ran: the warning says none succeeded, not that it never ran
+        self.assertNotIn("never downloaded", found[0].message)
+        self.assertIn("none of the 2 download(s) succeeded", found[0].message)
+        self.assertIn("deferred and failed", found[0].fix)
+
+    def test_no_manifest_says_never_downloaded(self):
+        self.dossier(CLIP)
+        self.assertIn("never downloaded", self.warns()[0].message)
+        self.manifest()                                   # an empty manifest
+        self.assertIn("never downloaded", self.warns()[0].message)
 
     def test_one_ok_download_says_nothing(self):
         self.dossier(PICTURE, CLIP)
