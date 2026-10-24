@@ -806,6 +806,19 @@ class BuildStage(StageCase):
         self.assertIn("fx-steps", f["problem"])
         self.assertEqual(card["scores"]["visual_quality"], 9.2)   # advisory: no cap
 
+    def test_a_diagram_phase_inside_the_sections_world_is_judged(self):
+        # The default layout (AUTO-145 fix): one world per section, every
+        # shot of it folded into the include of its first shot. The diagram
+        # starts at 1.2, inside 1.1's world, and is still judged.
+        build = json.loads((self.root / "build.json").read_text())
+        for shot in build["shots"]:
+            shot["include"] = "shot-1.1"
+        (self.root / "build.json").write_text(json.dumps(build))
+        qa.RENDERER = self.renderer(grows=False)
+        qa.run(self.args(frame_limit=None))
+        [f] = [f for f in self.card()["mechanical"] if f["kind"] == "no-build"]
+        self.assertEqual(f["shot"], "1.2")
+
     def test_a_diagram_that_grows_files_none_and_nor_does_its_later_shot(self):
         qa.RENDERER = self.renderer(grows=True)
         qa.run(self.args(frame_limit=None))

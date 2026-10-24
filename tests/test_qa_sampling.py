@@ -398,6 +398,25 @@ class BuildStills(unittest.TestCase):
         tight = qa.sample(build, limit=3, builds=builds)
         self.assertEqual(sum(1 for r in tight if r.get("builds")), 12)
 
+    def test_a_diagram_phase_inside_a_folded_world_gets_build_stills(self):
+        # One world per section (vfx.scene_for): build folds the section's
+        # shots into one include owned by its first shot, so the diagram's
+        # first shot, 2.3, opens no include of its own. It is still the
+        # first shot of its effect, and is judged; its second shot is not.
+        def shot(label, at):
+            return {"label": label, "at": at, "seconds": 6.0, "asset": "effect",
+                    "section": "2", "include": "shot-2.1", "file": "vfx/v01/b.scene.xml#world"}
+        build = {"scene": {"fps": 30}, "shots": [shot("2.1", 0.0), shot("2.2", 6.0),
+                                                 shot("2.3", 12.0), shot("2.4", 18.0)]}
+        vfx = {"sections": [{"effects": [
+            {"id": "fx-open", "type": "text-callout", "shots": ["2.1", "2.2"]},
+            {"id": "fx-steps", "type": "2d-diagram", "shots": ["2.3", "2.4"]}]}]}
+        self.assertEqual(qa.build_shots(vfx, build), {"2.3": "fx-steps"})
+        rows = qa.sample(build, builds=qa.build_shots(vfx, build))
+        self.assertEqual([r["why"] for r in _builds(rows, "2.3")],
+                         ["build: first", "build: last"])
+        self.assertEqual(_builds(rows, "2.4"), [])
+
     def test_with_no_vfx_json_the_samples_are_unchanged(self):
         build, _ = _diagram_film()
         self.assertEqual(qa.build_shots(None, build), {})

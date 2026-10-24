@@ -1207,20 +1207,21 @@ def _add_builds(out: list[dict], shots: list[dict], builds, row, *, fps: float) 
 def build_shots(vfx: dict | None, build: dict | None) -> dict[str, str]:
     """The shots that get build stills (AUTO-145), as label to effect id in
     film order: for each effect of a BUILD_TYPES type that vfx.json keeps
-    (not under `scene.dropped`), its earliest shot, when that shot is the
-    first to draw its include (a shot that continues an earlier one, or
-    is extended from one, opens on what was built before), and it lasts
-    BUILD_MIN_SECONDS. Empty with no vfx.json."""
+    (not under `scene.dropped`), its earliest shot, drawn by an effect and
+    lasting BUILD_MIN_SECONDS. The effect's later shots continue its take
+    and open on what it built, and so does a shot extended from another;
+    neither is judged. A shot that runs on in an earlier shot's include is
+    judged all the same: one world per section folds every shot of the
+    section into the include of its first (build.py), so a diagram that is
+    the world's second phase opens no include of its own, yet it is still
+    the first shot of its effect, and the ink series measures growth from
+    whatever the earlier phase left on screen. Empty with no vfx.json."""
     if not isinstance(vfx, dict) or not isinstance(build, dict):
         return {}
     shots = sorted(build.get("shots") or [], key=lambda s: float(s.get("at") or 0))
     order: dict[str, int] = {}
-    opener: dict[str, str] = {}
     for n, shot in enumerate(shots):
-        label = str(shot.get("label", ""))
-        order.setdefault(label, n)
-        if shot.get("include"):
-            opener.setdefault(str(shot["include"]), label)
+        order.setdefault(str(shot.get("label", "")), n)
     by_label = {str(s.get("label", "")): s for s in reversed(shots)}
     dropped = set((vfx.get("scene") or {}).get("dropped") or {})
     out: dict[str, str] = {}
@@ -1233,10 +1234,8 @@ def build_shots(vfx: dict | None, build: dict | None) -> dict[str, str]:
                 continue
             label = min(labels, key=order.__getitem__)
             shot = by_label[label]
-            include = str(shot.get("include") or "")
-            if (shot.get("asset") != "effect" or not include
+            if (shot.get("asset") != "effect" or not shot.get("include")
                     or "(extended from" in str(shot.get("file") or "")
-                    or opener.get(include) != label
                     or float(shot.get("seconds") or 0) < BUILD_MIN_SECONDS):
                 continue
             out.setdefault(label, str(effect.get("id") or ""))
