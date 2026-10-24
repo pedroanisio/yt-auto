@@ -1,0 +1,244 @@
+{
+ "plain": {
+  "properties": {
+   "avoid": {
+    "items": {
+     "properties": {
+      "name": {
+       "type": "string"
+      },
+      "why": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "name",
+      "why"
+     ],
+     "type": "object"
+    },
+    "type": "array"
+   },
+   "combination": {
+    "type": "string"
+   },
+   "demands": {
+    "items": {
+     "type": "string"
+    },
+    "type": "array"
+   },
+   "message": {
+    "type": "string"
+   },
+   "styles": {
+    "items": {
+     "properties": {
+      "effort": {
+       "enum": [
+        "low",
+        "medium",
+        "high"
+       ],
+       "type": "string"
+      },
+      "fit": {
+       "type": "number"
+      },
+      "name": {
+       "type": "string"
+      },
+      "pitfalls": {
+       "type": "string"
+      },
+      "shots": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "shows_well": {
+       "type": "string"
+      },
+      "why": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "name",
+      "fit",
+      "why",
+      "shows_well",
+      "shots",
+      "effort",
+      "pitfalls"
+     ],
+     "type": "object"
+    },
+    "type": "array"
+   }
+  },
+  "required": [
+   "message",
+   "demands",
+   "styles",
+   "combination",
+   "avoid"
+  ],
+  "type": "object"
+ },
+ "rich": {
+  "properties": {
+   "avoid": {
+    "items": {
+     "properties": {
+      "name": {
+       "type": "string"
+      },
+      "why": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "name",
+      "why"
+     ],
+     "type": "object"
+    },
+    "type": "array"
+   },
+   "combination": {
+    "type": "string"
+   },
+   "demands": {
+    "items": {
+     "type": "string"
+    },
+    "type": "array"
+   },
+   "identity": {
+    "properties": {
+     "atmosphere": {
+      "type": "string"
+     },
+     "belongs_because": {
+      "type": "string"
+     },
+     "motif": {
+      "type": "string"
+     },
+     "personality": {
+      "type": "string"
+     },
+     "signature": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "atmosphere",
+     "personality",
+     "motif",
+     "signature",
+     "belongs_because"
+    ],
+    "type": "object"
+   },
+   "message": {
+    "type": "string"
+   },
+   "styles": {
+    "items": {
+     "properties": {
+      "effort": {
+       "enum": [
+        "low",
+        "medium",
+        "high"
+       ],
+       "type": "string"
+      },
+      "fit": {
+       "type": "number"
+      },
+      "motion": {
+       "type": "string"
+      },
+      "name": {
+       "type": "string"
+      },
+      "palette": {
+       "type": "string"
+      },
+      "pitfalls": {
+       "type": "string"
+      },
+      "references": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "shots": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "shows_well": {
+       "type": "string"
+      },
+      "sound": {
+       "type": "string"
+      },
+      "time_estimate": {
+       "type": "string"
+      },
+      "tools": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "typography": {
+       "type": "string"
+      },
+      "why": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "name",
+      "fit",
+      "why",
+      "shows_well",
+      "shots",
+      "effort",
+      "pitfalls",
+      "tools",
+      "time_estimate",
+      "palette",
+      "typography",
+      "motion",
+      "sound",
+      "references"
+     ],
+     "type": "object"
+    },
+    "type": "array"
+   },
+   "thumbnail": {
+    "type": "string"
+   }
+  },
+  "required": [
+   "message",
+   "demands",
+   "styles",
+   "combination",
+   "avoid",
+   "thumbnail",
+   "identity"
+  ],
+  "type": "object"
+ }
+}
