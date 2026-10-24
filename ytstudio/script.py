@@ -2553,6 +2553,12 @@ class Screenwriter:
                      "add a fact. When the shot is right as written, answer keep and "
                      "say why in one clause. Answer for every flagged number and no "
                      "other."]
+            # A keep stands nothing PICTURE_UNKEPT flags; say so, only then,
+            # so the one revise is not spent on a keep that changes nothing.
+            if any(f.get("kind") in PICTURE_UNKEPT for fs in todo.values() for f in fs):
+                parts[-1] += (" A keep does not answer a static process: only a changed "
+                              "`visual` or `shows` that lets the viewer watch the change "
+                              "does.")
         elif rules:
             parts = [self._brief(), *([self.research] if self.research else []),
                      "The script as written:\n\n"
