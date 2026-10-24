@@ -1460,6 +1460,15 @@ PRESS_HEADING = ("Press coverage you may stage as a recreated headline card "
                  "(typeset, attributed, never a screenshot)")
 
 
+#: The shot field line a writer with press coverage is given (AUTO-149).
+HEADLINE_FIELD = (
+    "  A shot that stages a press headline from the research (N1, N2 ...) sets "
+    "asset to \"headline [Nk]\" and on_screen_text to the headline verbatim as "
+    "one string and its source line \"<outlet>, <date>\" as a second string: a "
+    "card typeset in the film's own type, never a screenshot or the outlet's "
+    "masthead; the shot holds long enough to read both\n")
+
+
 def human_story_lines(data: dict) -> list[str]:
     """The dossier's kept human stories (AUTO-149) as brief lines, `P<k>` for
     their place in the dossier; [] for a dossier written before them."""
@@ -3033,9 +3042,15 @@ class Screenwriter:
                  samples: int = STORY_SAMPLES, fresh: bool = False,
                  review_log: Path | str | None = None,
                  paper: dict | None = None, claims: list[dict] | None = None,
-                 claim_table: dict | None = None,
+                 claim_table: dict | None = None, press: list[dict] | None = None,
                  verbose: bool = True, root: Path | str | None = None) -> None:
         self.idea = idea
+        #: The dossier's press coverage (AUTO-149, `assets.press_items`), the
+        #: N ids the research block lists: a shot staging "headline [Nk]" is
+        #: measured by headline_findings and its card strings are left out
+        #: of the wall-of-text and legibility rules. None with no dossier,
+        #: which is measured and asked exactly what it always was.
+        self.press = press
         #: The dossier's claims by id (AUTO-132, `claim_table`): every
         #: drafted or loaded shot's ceiling is set from it (`cap`). None with
         #: no dossier, or for a screenplay written before the ids, which is
@@ -3487,6 +3502,44 @@ class Screenwriter:
 
     # -- stage two: write it -----------------------------------------------
 
+    def _shot_fields(self) -> str:
+        """The fields each drafted shot gives, as the section prompt lists
+        them. With the dossier's press (AUTO-149) one line more says how a
+        shot stages a headline card; without it the text is as it was."""
+        asset = ("- asset: the licensed asset it uses, or what has to be made\n"
+                 + (HEADLINE_FIELD if self.press else ""))
+        return (
+            "For each shot give:\n"
+            "- visual: what is on screen, concretely enough to shoot or build\n"
+            "- narration: the words spoken, verbatim, as they will be read "
+            "aloud. Numbers written the way they are said. No stage "
+            "directions in this field, and an empty string where the picture "
+            "plays alone.\n"
+            "- on_screen: the direction for a super, label or lower third -- "
+            "where it sits and how it moves -- or empty\n"
+            "- on_screen_text: the exact strings a viewer reads on screen, one "
+            "per string, with no direction in them; an empty list when "
+            "nothing is shown\n"
+            + asset
+            + "- style: which visual treatment this shot belongs to\n"
+            "- seconds: its duration\n"
+            "- note: pacing, sound or performance direction, or empty\n"
+            "- function: what the shot does in the story, one of "
+            + ", ".join(FUNCTIONS) + " (rehook: it re-opens a question to hold "
+            "the viewer; payoff: it pays the film's promise)\n"
+            "- shows: one clause saying what the picture demonstrates of this "
+            "line's claim: the picture proves the words, it does not decorate "
+            "them\n"
+            "- emphasis: the one word to stress in each sentence of the "
+            "narration, verbatim, in sentence order (direction 28)\n"
+            "- pauses: the words of the line a beat lands just before -- "
+            "before the sentence's key term or number (direction 27) -- "
+            "verbatim, or an empty list\n"
+            "- pronounce: for every name or term whose pronunciation is not "
+            "obvious, its term verbatim from the line and how to say it as "
+            "one hyphenated token with the stressed syllable in capitals, "
+            "e.g. SHROH-ding-er (direction 28)")
+
     def write_section(self, spec: dict, *, index: int, total: int,
                       plan: dict, written: list[Shot],
                       next_heading: str, sourced: bool,
@@ -3573,37 +3626,7 @@ class Screenwriter:
             f"Break the section into shots of 4-15 seconds, {seconds} seconds "
             f"in total, and about {budget} words of narration across the whole "
             "section -- this is the runtime budget, so write to it rather than "
-            "past it.\n\n"
-            "For each shot give:\n"
-            "- visual: what is on screen, concretely enough to shoot or build\n"
-            "- narration: the words spoken, verbatim, as they will be read "
-            "aloud. Numbers written the way they are said. No stage "
-            "directions in this field, and an empty string where the picture "
-            "plays alone.\n"
-            "- on_screen: the direction for a super, label or lower third -- "
-            "where it sits and how it moves -- or empty\n"
-            "- on_screen_text: the exact strings a viewer reads on screen, one "
-            "per string, with no direction in them; an empty list when "
-            "nothing is shown\n"
-            "- asset: the licensed asset it uses, or what has to be made\n"
-            "- style: which visual treatment this shot belongs to\n"
-            "- seconds: its duration\n"
-            "- note: pacing, sound or performance direction, or empty\n"
-            "- function: what the shot does in the story, one of "
-            + ", ".join(FUNCTIONS) + " (rehook: it re-opens a question to hold "
-            "the viewer; payoff: it pays the film's promise)\n"
-            "- shows: one clause saying what the picture demonstrates of this "
-            "line's claim: the picture proves the words, it does not decorate "
-            "them\n"
-            "- emphasis: the one word to stress in each sentence of the "
-            "narration, verbatim, in sentence order (direction 28)\n"
-            "- pauses: the words of the line a beat lands just before -- "
-            "before the sentence's key term or number (direction 27) -- "
-            "verbatim, or an empty list\n"
-            "- pronounce: for every name or term whose pronunciation is not "
-            "obvious, its term verbatim from the line and how to say it as "
-            "one hyphenated token with the stressed syllable in capitals, "
-            "e.g. SHROH-ding-er (direction 28)")
+            "past it.\n\n" + self._shot_fields())
         if sourced:
             parts.append("- source: the source backing this shot's claim, as "
                          "given in the research. Put the word UNSOURCED where "
@@ -4862,13 +4885,17 @@ class Screenwriter:
         fix the line or keep it with a reason. The rules are read again
         after every change; a line revised and still breaking its rule goes
         round once more. Returns the `revisions` and what was `kept`, keyed
-        by (rule, shot number). The house and minor tiers are not sent."""
+        by (rule, shot number). The house and minor tiers are not sent.
+
+        The headline cards (AUTO-149) are read with them: a "[Nk]" the press
+        list does not hold is cleared from its shot's asset first, a finding
+        each, and every round adds headline_findings to the rules' flags."""
         context = {**plan, "idea": asdict(self.idea)}
         revisions: list[dict] = []
         kept: dict[tuple, str] = {}
+        self.findings += clear_unknown_headlines(shots, self.press)
         for round_no in range(1, max(0, rounds) + 1):
-            flags = rule_findings(context, sections, self.wpm, self.lang,
-                                  claims=self.claims)
+            flags = self.screen_flags(context, sections)
             todo = [f for f in flags if f["severity"] in REVISABLE
                     and (f["rule"], f["n"]) not in kept]
             if not todo:
@@ -4883,6 +4910,14 @@ class Screenwriter:
             if not result["applied"]:
                 break
         return {"revisions": revisions, "kept": kept}
+
+    def screen_flags(self, plan: dict, sections: list[Section]) -> list[dict]:
+        """The narration rules and, with the dossier's press, the headline
+        cards' (AUTO-149): what revise_rules sends and the final re-read
+        reports. With no press list it is rule_findings alone, as before."""
+        flags = rule_findings(plan, sections, self.wpm, self.lang, claims=self.claims,
+                              press=self.press)
+        return flags + headline_findings(sections, self.press, self.wpm)
 
     # -- say it, show it: the pictures read without the words (AUTO-98) ----
 
@@ -5117,13 +5152,15 @@ class Screenwriter:
                     if review and written else None)
         # The narration rules after the polish and before the fact-check, so
         # the check reads the lines the rules changed (AUTO-94).
+        if written and not fix:
+            # Deterministic, so --report-only clears an unknown press id too.
+            self.findings += clear_unknown_headlines(written, self.press)
         ruled = (self.revise_rules(sections, written, plan)
                  if fix and written else {"revisions": [], "kept": {}})
         check = (self.verify_and_revise(written, rounds=self.rounds, fix=fix)
                  if do_verify and written else {})
         # Read once more on the final text: the fact-check's rewrites count.
-        flags = (rule_findings({**plan, "idea": asdict(self.idea)}, sections,
-                               self.wpm, self.lang, claims=self.claims)
+        flags = (self.screen_flags({**plan, "idea": asdict(self.idea)}, sections)
                  if written else [])
         kept = ruled["kept"]
         self.findings += self.ledger_lines(plan, sections, cold, fix=fix)
@@ -5259,12 +5296,132 @@ def screen_strings(shot: Shot) -> list[str]:
             for m in _QUOTED.finditer(shot.on_screen or "")]
 
 
-def legibility(sections: list[Section], timings: dict | None = None) -> list[dict]:
-    """Supers nobody can finish reading in the time they are on screen."""
+#: A press id cited in a shot's asset ("headline [N2]", AUTO-149).
+_PRESS_ID = re.compile(r"\[(N\d+)\]")
+
+
+def cited_headline(shot: Shot, press: list[dict] | None) -> dict | None:
+    """The press item (`assets.press_items`) a shot stages as a headline
+    card, read from the "[Nk]" in its `asset`; None when it cites none, cites
+    an id the list does not hold, or there is no press list."""
+    if press is None:
+        return None
+    by_id = {p.get("id"): p for p in press}
+    for nid in _PRESS_ID.findall(shot.asset or ""):
+        if nid in by_id:
+            return by_id[nid]
+    return None
+
+
+def source_line(item: dict) -> str:
+    """The visible attribution of a headline card: "outlet, date"."""
+    return ", ".join(p for p in (item.get("outlet", ""), item.get("date", "")) if p)
+
+
+def _as_quoted(text: str) -> str:
+    """A screen string as a quotation is compared: curly quotes made straight,
+    whitespace folded, the quote marks around it dropped. Nothing looser: a
+    headline with another word in it is not the headline."""
+    text = str(text or "")
+    for curly, straight in (("“", '"'), ("”", '"'), ("„", '"'), ("‘", "'"), ("’", "'")):
+        text = text.replace(curly, straight)
+    return " ".join(text.split()).strip("\"' ")
+
+
+def card_strings(shot: Shot, item: dict | None) -> set[str]:
+    """Which of a shot's screen strings are its headline card's own: the
+    cited headline verbatim and its "outlet, date" line. Only these two are
+    left out of rule:wall-of-text and rule:legibility; every other string on
+    the shot is measured as before."""
+    if not item:
+        return set()
+    own = {_as_quoted(item.get("headline", "")), _as_quoted(source_line(item))}
+    return {t for t in screen_strings(shot) if _as_quoted(t) in own}
+
+
+def clear_unknown_headlines(shots: list[Shot], press: list[dict] | None) -> list[str]:
+    """Remove from each shot's `asset` a "[Nk]" the press list does not hold,
+    and say so, one warning each. A revise never sees or edits `asset`, so
+    an unknown id is not something it can fix; with the token gone the
+    shot's strings fall under the normal rules again. No press list (no
+    dossier) changes nothing."""
+    if press is None:
+        return []
+    known = {p.get("id") for p in press}
+    out = []
+    for shot in shots:
+        for nid in _PRESS_ID.findall(shot.asset or ""):
+            if nid in known:
+                continue
+            shot.asset = " ".join(shot.asset.replace(f"[{nid}]", " ").split())
+            out.append(f"warning: source:headline: shot {shot.label} cited {nid}, which "
+                       "the dossier does not hold; citation removed")
+    return out
+
+
+def headline_findings(sections: list[Section], press: list[dict] | None,
+                      wpm: int = DEFAULT_WPM) -> list[dict]:
+    """The headline cards measured (AUTO-149), as rule flags with the tier
+    in the flag (`source:headline`, important), so flag_lines and the
+    revise's kept keys read them without a RULES row. For each shot whose
+    asset cites a press item: the headline must be one on-screen string,
+    verbatim (the problem quotes it, so a revise restores it from the flag
+    alone); some string must name the outlet; and the shot must hold the
+    headline and its source line for READING_CPS. Its fix is more time,
+    never a shorter headline. A shot with no length is timed from its
+    narration at `wpm`."""
+    out: list[dict] = []
+    for section in sections:
+        for shot in section.shots:
+            item = cited_headline(shot, press)
+            if item is None:
+                continue
+            headline, attribution = item.get("headline", ""), source_line(item)
+            strings = screen_strings(shot)
+            where = f"shot {shot.label}: " if shot.label else ""
+
+            def flag(problem: str, fix: str) -> None:
+                out.append({"n": shot.n, "rule": "source:headline", "tier": "important",
+                            "severity": "important",
+                            "problem": f"source:headline: {where}{problem}", "fix": fix})
+            if _as_quoted(headline) not in {_as_quoted(t) for t in strings}:
+                flag(f"the card citing {item['id']} does not show its headline verbatim: "
+                     f"\"{headline}\" ({attribution})",
+                     "put the headline in on_screen_text exactly as quoted, as one string, "
+                     f"with \"{attribution}\" as a second string; never paraphrase or "
+                     "shorten it")
+            outlet = item.get("outlet", "")
+            if outlet and not any(re.search(r"(?<!\w)" + re.escape(outlet.lower())
+                                            + r"(?!\w)", t.lower()) for t in strings):
+                flag(f"the card citing {item['id']} never names its outlet, {outlet}",
+                     f"add \"{attribution}\" to on_screen_text as the card's source line")
+            seconds = float(shot.seconds or 0)
+            if seconds <= 0 and wpm > 0:
+                seconds = len(spoken(shot.narration).split()) * 60 / wpm
+            needs = len(f"{headline} {attribution}") / READING_CPS
+            if seconds < needs:
+                flag(f"the card citing {item['id']} is on screen {seconds:g} s; its headline "
+                     f"and source line need {needs:.1f} s at {READING_CPS:.0f} characters "
+                     "a second",
+                     "give the shot more narration, or split it so the card holds longer; "
+                     "never shorten the headline")
+    return out
+
+
+def legibility(sections: list[Section], timings: dict | None = None, *,
+               press: list[dict] | None = None) -> list[dict]:
+    """Supers nobody can finish reading in the time they are on screen.
+
+    With the press list (AUTO-149), a headline card's own headline and
+    source line are left out of the count: headline_findings times them,
+    and its fix is more time, never a shorter headline."""
     out = []
     for section in sections:
         for shot in section.shots:
             text = visible_text(shot)
+            own = card_strings(shot, cited_headline(shot, press))
+            if own:
+                text = " ".join(t for t in screen_strings(shot) if t not in own)
             seconds = float((timings or {}).get(shot.label, shot.seconds) or 0)
             if not text or seconds <= 0:
                 continue
@@ -5277,18 +5434,27 @@ def legibility(sections: list[Section], timings: dict | None = None) -> list[dic
     return out
 
 
-def unspoken_numbers(sections: list[Section]) -> list[dict]:
+def unspoken_numbers(sections: list[Section], *,
+                     press: list[dict] | None = None) -> list[dict]:
     """Figures put on screen that the narration never says out loud.
 
     The house rule is that the voice carries what the viewer must understand.
     This is a heuristic and says so: a figure may be spoken in words, so the
     common number words count as spoken. What is left is worth a look.
+
+    With the press list (AUTO-149), a headline card's own headline and its
+    "outlet, date" line are left out: a quotation keeps its figures and a
+    source line its date, and the rule's fix, taking the figure off the
+    screen, would break the quotation.
     """
     out = []
     for section in sections:
         for shot in section.shots:
             said = (shot.narration or "").lower()
             shown = visible_text(shot)
+            own = card_strings(shot, cited_headline(shot, press))
+            if own:
+                shown = " ".join(t for t in screen_strings(shot) if t not in own)
             for raw in re.findall(r"\d[\d.,]*", shown):
                 digits = raw.rstrip(".,")
                 if digits in said:
@@ -5560,9 +5726,10 @@ _RULE = {r.id: r for r in RULES + LEDGER_RULES}
 #: The rules that measure what the shot shows rather than what it says: only
 #: a flag of one of these lets `revise` change the shot's on_screen_text.
 #: An unframed status (AUTO-132) is read from both, and a label on screen
-#: ("Hypothesis") answers it as well as a hedge said aloud.
+#: ("Hypothesis") answers it as well as a hedge said aloud. A headline card
+#: (AUTO-149, headline_findings) is restored on screen.
 SCREEN_RULES = ("rule:legibility", "rule:unspoken-number", "rule:wall-of-text",
-                "rule:unframed-status")
+                "rule:unframed-status", "source:headline")
 
 #: The words a lexical rule looks for, by language. Lower case; a phrase
 #: matches on word boundaries.
@@ -5796,7 +5963,8 @@ def _status_flags(voiced: list[tuple], lex: dict, lang: str, on: dict,
 
 
 def rule_findings(plan: dict, sections: list[Section], wpm: int = DEFAULT_WPM,
-                  lang: str = "", *, claims: dict | None = None) -> list[dict]:
+                  lang: str = "", *, claims: dict | None = None,
+                  press: list[dict] | None = None) -> list[dict]:
     """The narration measured against RULES, as flags in CHECK_SCHEMA's
     shape: `n`, `severity`, `problem` (opening with the rule), `fix`, plus
     `rule` and `tier`. `plan` is the plan or script.json (its title under
@@ -5804,7 +5972,12 @@ def rule_findings(plan: dict, sections: list[Section], wpm: int = DEFAULT_WPM,
     rule out quietly, as an older screenplay has none. A rule whose
     languages exclude `lang` is not run here; `not_evidenced` names it.
     `claims` is the dossier's claim table, read only to say why a cap
-    lowered a line's status (AUTO-132); the ceiling itself is on the shot."""
+    lowered a line's status (AUTO-132); the ceiling itself is on the shot.
+    `press` is the dossier's press list (AUTO-149, `assets.press_items`):
+    given, a shot staging a cited headline has that headline and its
+    "outlet, date" line left out of rule:wall-of-text, rule:legibility and
+    rule:unspoken-number, which headline_findings measures instead; None measures every string as
+    before, byte for byte."""
     plan = plan or {}
     on = {r.id: _applies(r, lang) for r in RULES}
     lex = LEXICON.get(rule_lang(lang), LEXICON["en"])
@@ -5859,14 +6032,14 @@ def rule_findings(plan: dict, sections: list[Section], wpm: int = DEFAULT_WPM,
 
     # -- what is on screen: legibility, unspoken figures --------------------
     by_label = {shot.label: shot for _, shot, _ in timed}
-    for row in legibility(sections):
+    for row in legibility(sections, press=press):
         out.append(_flag("rule:legibility", by_label.get(row["label"]),
                          f"\"{row['text']}\" is {row['chars']} characters in "
                          f"{row['seconds']} s ({row['cps']} a second, over "
                          f"{READING_CPS:.0f}); it needs {row['needs_seconds']} s",
                          "shorten the on-screen text"))
     if on["rule:unspoken-number"]:
-        for row in unspoken_numbers(sections):
+        for row in unspoken_numbers(sections, press=press):
             out.append(_flag("rule:unspoken-number", by_label.get(row["label"]),
                              f"the screen shows {row['number']}, which the narration "
                              "never says",
@@ -5876,7 +6049,10 @@ def rule_findings(plan: dict, sections: list[Section], wpm: int = DEFAULT_WPM,
     for _, shot, _ in timed:
         said = _screen_words(spoken(shot.narration))
         runs = {tuple(said[i:i + echo + 1]) for i in range(len(said) - echo)}
+        own = card_strings(shot, cited_headline(shot, press))
         for text in screen_strings(shot):
+            if text in own:
+                continue        # a quotation is not a wall of text (AUTO-149)
             words = _screen_words(text)
             why = []
             if len(words) > longest:
@@ -6664,6 +6840,8 @@ def run(args) -> int:
         claims=(dossier or {}).get("claims") if paper_film else None,
         # The claims by id, each line's ceiling (AUTO-132).
         claim_table=claim_table(dossier) if dossier else None,
+        # The press the brief numbers N1.., for the headline cards (AUTO-149).
+        press=press_items(dossier.get("assets") or []) if dossier else None,
         reviewer_model=args.reviewer_model if args.review else None, reviewer=pooled,
         review_budget_usd=args.review_budget_usd, rounds=args.rounds,
         fresh=getattr(args, "fresh", False),
@@ -6935,7 +7113,9 @@ def run_revise(args, idea: Idea, project) -> int:
         idea, house=rules, house_digest=digest, root=project.root, model=args.model,
         minutes=float(data.get("target_seconds") or 60) / 60, wpm=wpm, lang=lang,
         research=research_block(dossier, ids=statused) if dossier else "",
-        claim_table=claim_table(dossier) if statused else None, verbose=not args.quiet)
+        claim_table=claim_table(dossier) if statused else None,
+        press=press_items(dossier.get("assets") or []) if dossier else None,
+        verbose=not args.quiet)
     if statused:
         cap(shots, writer.claims)
     elif has_status(sections):
@@ -7012,7 +7192,9 @@ def run_revise(args, idea: Idea, project) -> int:
     ruled = data.get("rules") if isinstance(data.get("rules"), dict) else {}
     old = [f for f in ruled.get("flags") or [] if isinstance(f, dict)]
     stale = [f["problem"] for f in old if f.get("n") in changed and f.get("problem")]
-    fresh = [f for f in rule_findings(data, sections, wpm, lang, claims=writer.claims)
+    fresh = [f for f in rule_findings(data, sections, wpm, lang, claims=writer.claims,
+                                      press=writer.press)
+             + headline_findings(sections, writer.press, wpm)
              if f["n"] in changed]
     data["findings"] = ([line for line in data.get("findings") or []
                          if not any(p in str(line) for p in stale)]
