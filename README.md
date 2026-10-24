@@ -1481,6 +1481,8 @@ Each shot is drawn by the first of these that applies:
 4. **An honest placeholder** for what was blocked, counted and named. A
    placeholder is disqualifying, so the manifest carries `publishable: false`
    while any remain, and so does anything the editor listed under `blocking`.
+   The card draws in the design's `ink` role at its `label` size, with no
+   literal colour.
 
 **Joins** (AUTO-142). Once every shot is placed (`SceneBuilder.layout()`, no
 model), the build finds each place one node gives way to the next
@@ -1505,8 +1507,6 @@ summary prints one line (`9 joins: 4 crossfade, 2 push, 3 cut, 1 gap
 today's scene.xml byte for byte, every join a `cut` reviewed `off`; `yt run
 --quick` passes it, and a full `yt run` passes build its `--reviewer-model`
 (unless it is a pool value) and `--review-budget-usd`.
-   The card draws in the design's `ink` role at its `label` size, with no
-   literal colour.
 
 A malformed number from the editor (`tail_seconds`) or the sound designer (a
 cue's `fade_in`, `fade_out` or `gain_db`, or a `level` written in words only)
