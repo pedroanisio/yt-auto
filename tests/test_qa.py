@@ -182,6 +182,49 @@ class Bar(unittest.TestCase):
                                                 gate=None), [])
 
 
+class FallbackPalette(unittest.TestCase):
+    """A film in design.py's house fallback palette is not READY, whatever it
+    scores (AUTO-155); the blocker names the stage that owns the fix."""
+
+    def manifest(self, **design):
+        return {"placeholders": [], "findings": [], "design": design}
+
+    def test_a_fallback_design_blocks(self):
+        blockers = qa.mechanical_blockers(
+            self.manifest(source="fallback", fallback="no styles.json"), gate=None)
+        self.assertEqual(len(blockers), 1, blockers)
+        self.assertTrue(blockers[0].startswith("styles:"), blockers[0])
+        self.assertIn("yt styles --rich", blockers[0])
+        self.assertIn("no styles.json", blockers[0])
+
+    def test_a_build_from_before_the_reason_still_blocks(self):
+        blockers = qa.mechanical_blockers(self.manifest(source="fallback"), gate=None)
+        self.assertEqual(len(blockers), 1, blockers)
+        self.assertIn("source fallback", blockers[0])
+
+    def test_a_styled_or_older_build_does_not(self):
+        self.assertEqual(qa.mechanical_blockers(self.manifest(source="styles.json"),
+                                                gate=None), [])
+        self.assertEqual(qa.mechanical_blockers({"placeholders": [], "findings": []},
+                                                gate=None), [])
+
+    def test_the_build_warning_is_not_lifted_twice(self):
+        manifest = self.manifest(source="fallback", fallback="no styles.json")
+        manifest["findings"] = [
+            "warning: design: the film is in design.py's house fallback palette "
+            "(no styles.json), not its own; run yt styles --rich, then yt build"]
+        blockers = [b for b in qa.mechanical_blockers(manifest, gate=None) if "palette" in b]
+        self.assertEqual(len(blockers), 1, blockers)
+
+    def test_every_score_at_the_top_is_still_not_ready(self):
+        blockers = qa.mechanical_blockers(
+            self.manifest(source="fallback", fallback="no styles.json"), gate=None)
+        verdict, reasons = qa.verdict_of({k: 9.5 for k in qa.CATEGORIES}, 9.5,
+                                         blocking=blockers)
+        self.assertEqual(verdict, qa.NOT_READY)
+        self.assertTrue(reasons)
+
+
 class Comparison(unittest.TestCase):
     def test_regressions_are_categories_that_dropped(self):
         prev = {"scores": {k: 9.0 for k in qa.CATEGORIES}, "overall": 9.0}

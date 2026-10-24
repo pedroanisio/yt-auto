@@ -2058,6 +2058,14 @@ def mechanical_blockers(build: dict, *, gate: dict | None) -> list[str]:
             out.append(f"build: {finding}")
     for item in (build.get("editorial") or {}).get("blocking", []):
         out.append(f"editor: {item}")
+    # A film in the house fallback palette looks like every other film that
+    # fell back (AUTO-155). The build only warns; READY is refused here, and
+    # the prefix names the stage that owns the fix.
+    design = build.get("design") or {}
+    if design.get("source") == "fallback":
+        why = design.get("fallback") or "source fallback"
+        out.append(f"styles: the film is in the house fallback palette ({why}); "
+                   "run yt styles --rich, then yt build")
     if gate and gate.get("exit"):
         for row in (gate.get("triage") or {}).get("blocking", []):
             out.append(f"gate: {row.get('what', '')}")
