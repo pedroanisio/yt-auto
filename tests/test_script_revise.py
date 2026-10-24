@@ -1267,6 +1267,38 @@ class StatusRevise(unittest.TestCase):
             self.assertEqual(shots[0].status, given if applied else "none", given)
             self.assertEqual(bool(result["applied"]), applied, given)
 
+    def test_none_is_never_a_weakening_of_a_line_that_states_a_fact(self):
+        # An uncited line on a real source has no ceiling, and a cited one
+        # its claim's; neither may be hidden behind none by the fact-check.
+        for status, claim in (("established", ""), ("hypothesis", "c7")):
+            shots = [shot(1, "The core is liquid.", status=status, claim=claim,
+                          source="P")]
+            script.cap(shots, TABLE)
+            w = status_writer()
+            w._ask = lambda name, prompt, schema: {"fixes": [
+                {"n": 1, "action": "fix", "narration": shots[0].narration,
+                 "status": "none", "why": "w"}]}
+            result = w.revise(shots, [flag(1)], name="revise-1")
+            self.assertEqual(shots[0].status, status, status)
+            self.assertEqual(result["applied"], [], status)
+
+    def test_the_rules_revise_names_only_cues_the_rule_accepts(self):
+        shots = status_shots()
+        w = status_writer()
+        seen = []
+
+        def ask(name, prompt, schema):
+            seen.append(prompt)
+            return {"fixes": []}
+        w._ask = ask
+        w.revise(shots, [dict(flag(2), rule="rule:unframed-status")], rules=True,
+                 name="revise-rules")
+        self.assertIn(script.FRAMING_CUES, seen[0])
+        self.assertIn(f'"{script.FRAMING_LABEL}"', seen[0])
+        self.assertIn(f'"{script.WHATIF_LABEL}"', seen[0])
+        self.assertNotIn("one study", seen[0])
+        self.assertNotIn("(may,", seen[0])
+
     def test_a_rules_fix_for_an_unframed_status_may_label_the_screen(self):
         shots = status_shots()
         w = status_writer()
@@ -1294,6 +1326,35 @@ class StatusDrafting(unittest.TestCase):
                                 total=1, plan={}, written=[], next_heading="",
                                 sourced=True)
         self.assertEqual([s.ceiling for s in shots], ["hypothesis", "speculation"])
+
+    def test_the_write_prompt_names_only_cues_the_rule_accepts(self):
+        w = status_writer()
+        seen = []
+
+        def ask(name, prompt, schema):
+            seen.append(prompt)
+            return {"shots": []}
+        w._ask = ask
+        w.write_section({"heading": "A", "seconds": 10, "beats": []}, index=1, total=1,
+                        plan={}, written=[], next_heading="", sourced=True)
+        self.assertIn(script.FRAMING_CUES, seen[0])
+        self.assertIn(f"a label such as {script.FRAMING_LABEL}", seen[0])
+
+    def test_a_statused_film_drafted_without_the_fact_check_says_so(self):
+        plan = {"sections": [{"heading": "A", "seconds": 10, "beats": []}]}
+        w = status_writer()
+        StatusCheck.asked(StatusCheck(), w)
+        w.plan = lambda: plan
+        w.write_section = lambda *a, **k: status_shots()
+        data = w.run(do_verify=False)
+        self.assertIn("not_evidenced: verify-status (needs --verify --review)",
+                      data["findings"])
+        plain = writer()
+        StatusCheck.asked(StatusCheck(), plain)
+        plain.plan = lambda: plan
+        plain.write_section = lambda *a, **k: [shot(1, "Plain.")]
+        self.assertFalse([f for f in plain.run(do_verify=False)["findings"]
+                          if "verify-status" in f])
 
     def test_the_run_records_the_status_check_and_the_cited_claims(self):
         plan = {"sections": [{"heading": "A", "seconds": 10, "beats": []}]}

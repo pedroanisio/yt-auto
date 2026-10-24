@@ -97,6 +97,16 @@ STATUSES = ("established", "hypothesis", "speculation", "what-if", "none")
 #: The statuses a claim can cap a line at, strongest first (`ceiling`).
 LADDER = ("established", "hypothesis", "speculation")
 
+#: The framing cues the write prompt, the rules revise and the flag's own
+#: fix give as examples (AUTO-132). Each is one LEXICON["en"] accepts
+#: ("it might be" holds "might be"), so a line reframed as it was told to
+#: be is no longer flagged; an example the lexicon lacks would spend the
+#: revise and leave the warning on a framed line.
+FRAMING_CUES = "it might be, suggests, researchers think, so far"
+FRAMING_LABEL = "Hypothesis"
+WHATIF_CUES = "imagine, what if"
+WHATIF_LABEL = "What if"
+
 #: A status off the list cannot be read as "no role": the line still says
 #: something, so it is read at its claim's ceiling (`effective_status`).
 _STATUS_DRIFT = ("A value outside this list is asked again once, then recorded as a "
@@ -1641,8 +1651,11 @@ def effective_status(shot: Shot, lang: str = "") -> str:
 
     none on a line that cites a claim states a fact, so the ceiling
     applies; a what-if is one when it cites no claim or says or shows it is
-    one (the whatif lexicon), else the ceiling applies; a label off the
-    list is read at the ceiling."""
+    one (the whatif lexicon), else the ceiling applies, also in a language
+    with no lexicon, where not knowing is no evidence of framing. A label
+    off the list states something, so it is read at the ceiling, and with
+    no ceiling (an uncited line on a real source) at established, the
+    strongest it could claim, which rule:uncited-claim then notes."""
     status = str(shot.status or "").strip()
     if not status:
         return ""
@@ -1651,11 +1664,12 @@ def effective_status(shot: Shot, lang: str = "") -> str:
         return _weaker(status, top) if top else status
     cited = bool(str(shot.claim or "").strip())
     if status == "what-if":
-        if not cited or _framed_whatif(shot, lang) is not False:
+        if not cited or _framed_whatif(shot, lang):
             return "what-if"
         return top or "what-if"
-    # none, or a label off the list
-    return (top or "none") if cited or status != "none" else "none"
+    if status == "none":
+        return (top or "none") if cited else "none"
+    return top or "established"
 
 
 def direction_block(data: dict) -> str:
@@ -3520,8 +3534,7 @@ class Screenwriter:
                 "what-if (a framed hypothetical, thought experiment or "
                 "counterfactual) or none (connective or picture-only narration that "
                 "states no fact); every line that is not established says so aloud "
-                "or on screen (it might be, researchers think, so far; or a label "
-                "such as Hypothesis).")
+                f"or on screen ({FRAMING_CUES}; or a label such as {FRAMING_LABEL}).")
 
         data = self._ask(name or f"write-{index:02d}", "\n\n".join(parts),
                          section_schema(sourced))
@@ -3763,9 +3776,9 @@ class Screenwriter:
                 # shown; the status itself is not this revise's to change.
                 parts.append("A line flagged rule:unframed-status is read at a status "
                              "below established with nothing telling the viewer so: "
-                             "hedge its narration (may, suggests, one study), or label "
-                             "it on screen (on_screen_text, for example \"Hypothesis\" "
-                             "or \"What if\"). Its status stays as it is.")
+                             f"hedge its narration ({FRAMING_CUES}), or label it on "
+                             f"screen (on_screen_text, for example \"{FRAMING_LABEL}\" "
+                             f"or \"{WHATIF_LABEL}\"). Its status stays as it is.")
         elif back:
             # Direction 29: after the read, rewrite the line that stumbles,
             # runs out of breath or buries its point. Judging 15: that pass
@@ -5033,9 +5046,13 @@ class Screenwriter:
         # counted as passed (AUTO-132).
         # A fact-check that failed asked no status either (verify_status
         # runs on its reading), so a film whose lines carry one says that.
+        # A film drafted without the fact-check (`yt script --review` with
+        # no --verify) asked no status either, and says so rather than
+        # leaving a missing check to be read as nothing found.
         unread = ((check.get("status") or {}).get("not_evidenced") if check
-                  else "fact-check failed" if do_verify and self._statused(written)
-                  else None)
+                  else None if not self._statused(written)
+                  else "fact-check failed" if do_verify
+                  else "needs --verify --review")
         if unread:
             self.findings.append(f"not_evidenced: verify-status ({unread})")
         # The claims the lines cite, with what capped them, for script.md
@@ -5671,16 +5688,16 @@ def _status_flags(voiced: list[tuple], lex: dict, lang: str, on: dict,
             out.append(_flag("rule:unframed-status", shot,
                              f"a {effective} line with no framing cue in its narration "
                              f"or on-screen text{why}",
-                             "say it is not settled (it might be, researchers think, so "
-                             "far) or label it on screen (Hypothesis); or keep it with a "
-                             "reason"))
+                             f"say it is not settled ({FRAMING_CUES}) or label it on "
+                             f"screen ({FRAMING_LABEL}); or keep it with a reason"))
         elif on["rule:unframed-status"] and effective == "what-if" \
                 and _framed_whatif(shot, lang) is False:
             out.append(_flag("rule:unframed-status", shot,
                              "a what-if line with no what-if cue (what if, imagine, "
                              "suppose) in its narration or on-screen text",
-                             "frame it aloud as a hypothetical (imagine, what if) or "
-                             "label it on screen; or keep it with a reason"))
+                             f"frame it aloud as a hypothetical ({WHATIF_CUES}) or "
+                             f"label it on screen ({WHATIF_LABEL}); or keep it with a "
+                             "reason"))
         source = str(shot.source or "").strip()
         if on["rule:uncited-claim"] and not cid and source and source.upper() != \
                 "UNSOURCED" and effective in ("established", "hypothesis"):

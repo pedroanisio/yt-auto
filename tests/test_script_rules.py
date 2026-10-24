@@ -915,5 +915,56 @@ class UnframedStatus(unittest.TestCase):
         self.assertIn("rule:unframed-status", script.SCREEN_RULES)
 
 
+class FramingCues(unittest.TestCase):
+    """Every cue the prompts and the flag's fix name as an example clears
+    the flag: a line reframed as it was told to be is framed."""
+
+    def test_each_named_hedge_clears_a_hypothesis_line(self):
+        cues = script.FRAMING_CUES.split(", ")
+        self.assertGreaterEqual(len(cues), 3)
+        for cue in cues:
+            line = f"The core, {cue}, is liquid."
+            self.assertEqual(framed(status_shot(line, "hypothesis", "c4")), [], cue)
+            self.assertEqual(framed(status_shot(line, "established", "c7")), [], cue)
+        self.assertEqual(framed(status_shot("The core is liquid.", "hypothesis", "c4",
+                                            on_screen=[script.FRAMING_LABEL])), [])
+
+    def test_each_named_what_if_cue_clears_a_what_if_line(self):
+        for cue in script.WHATIF_CUES.split(", "):
+            self.assertEqual(framed(status_shot(f"{cue}, a sea of iron.", "what-if")),
+                             [], cue)
+        self.assertEqual(framed(status_shot("A sea of iron.", "what-if",
+                                            on_screen=[script.WHATIF_LABEL])), [])
+
+    def test_the_flags_fix_names_the_cues_it_accepts(self):
+        hedge = framed(status_shot("The core is liquid.", "hypothesis", "c4"))
+        self.assertIn(script.FRAMING_CUES, hedge[0]["fix"])
+        self.assertIn(script.FRAMING_LABEL, hedge[0]["fix"])
+        whatif = framed(status_shot("A sea of iron.", "what-if"))
+        self.assertIn(script.WHATIF_CUES, whatif[0]["fix"])
+
+
+class StatusEdges(unittest.TestCase):
+    def test_a_label_off_the_list_on_an_uncited_sourced_line_reads_established(self):
+        shot = status_shot("The bridge carries four lanes.", "proven", "",
+                           source="DOT 2019")
+        self.assertEqual(script.effective_status(shot), "established")
+        self.assertEqual([f["rule"] for f in framed(shot)], ["rule:uncited-claim"])
+        # cited, it is read at its claim's ceiling as before
+        self.assertEqual(script.effective_status(status_shot("It melts.", "proven",
+                                                             "c7")), "speculation")
+        # unsourced, at the speculation the cap gives it
+        self.assertEqual(script.effective_status(status_shot("It melts.", "proven", "",
+                                                             source="UNSOURCED")),
+                         "speculation")
+
+    def test_a_cited_what_if_takes_its_ceiling_where_there_is_no_lexicon(self):
+        shot = status_shot("Das Meer kocht.", "what-if", "c7")
+        self.assertEqual(script.effective_status(shot, "de"), "speculation")
+        self.assertEqual(script.effective_status(status_shot("Das Meer kocht.",
+                                                             "what-if"), "de"),
+                         "what-if")
+
+
 if __name__ == "__main__":
     unittest.main()
