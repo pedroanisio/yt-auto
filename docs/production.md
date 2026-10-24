@@ -158,7 +158,10 @@ One scene-render document, `scene.xml`, built with the `sr_core.scene` SDK:
   shots the same authored world draws (its clock continuous across them),
   pointing at the cleaned copy `vfx/vNN/<section>.include.scene.xml`, with
   the file's styles, paints and lights hoisted into the scene; images and
-  the editor's placements for the rest
+  the editor's placements for the rest; and a `<transition>` (`join-N`) at
+  each section, world or picture join the editor chose one for and a
+  reviewer of another family read (a cut writes nothing; never across a
+  gap, inside one world's run, or beside a placeholder card)
 - `<markers>` — `kind="section"` per section, `kind="beat"` per shot;
   everything downstream anchors to markers, never to timecodes
 - `<audioMix>` — a track per take on the `narration` bus; an `<audio>`
@@ -201,8 +204,13 @@ naming the world), `not checked` with no host, or `no proof frames`); `fonts`; t
 (`audio_missing`), the transient staging (`audio_staging`: the bed level,
 the headroom derived from the loudness and true-peak targets, the shift and
 the cues shifted); `cues` and `markers`; the reading checks `legibility` and
-`stale_takes`; the `findings`; the `shots` as placed; and the `engine` report
-of the decisions taken. `publishable` is false while a placeholder, a
+`stale_takes`; the `findings`; the `shots` as placed; `joins` (every join in
+time order, gaps and placeholder joins included: its kind `section`,
+`world`, `shot` or `gap`, the nodes on either side, the type, duration,
+alignment and the narrative `why`, and its review: `accepted`, `revised`,
+`unresolved`, `fallback`, `not-asked` or `off` under `--hard-cuts`) and
+`joins_review` (the reviewer model, whether it accepted and the problems it
+named); and the `engine` report of the decisions taken, both models billed. `publishable` is false while a placeholder, a
 blocking editorial note, a picture that ends before its narration or a sound
 design of which nothing reached the mix remains.
 
@@ -310,6 +318,18 @@ and reveal lines come first when fewer stills are asked for, after every
 shot's own, then the lines said inside a shot, spread over the runtime;
 the lines left without a still are named (`lines_unsampled`); a wordless
 film has none.
+Each rendered transition is sampled from build.json's `joins` (AUTO-142):
+a still at the join, labelled `transition: <type> (<kind>)`, whose burst
+spans the window from a frame before it to a frame after, so the frames
+before, during and after are evidence. A join's still is its own: it never
+merges into a shot's, and a shot's burst still stays inside its shot. They
+come after the line stills and beyond the still count, at most 12, sections
+first, then worlds, then pictures. A dip, a push or a whip-pan is a
+discontinuity on purpose, so the burst at a join is evidence, not a
+mechanical defect: it raises no `frozen` or `jump` finding (nor `flat` at
+the middle of a dip to a colour), it is no shot's still, and its motion
+is shown to the reviewer as the join's, to judge a held frame or a black
+gap by eye.
 
 A still cannot evidence motion. Render each sample as one contiguous window
 of frames around the midpoint — half a second, at most 16 frames, kept
