@@ -2030,10 +2030,15 @@ attribution, a credit that is a placeholder ("TBD", "[credit]"). The reader
 is handed build.json's `credits` and `credit_errors` and files neither again;
 a headline card with its "outlet, date" line is attributed. A credit issue
 names its `asset`, asked once more (`sheet-retry`) when it does not, then an
-`error:` and exit 1 with no review.json. It blocks whatever its severity or
-the verdict: review.json records `credit_issues` and `scene_sha256`, the
-digest of the scene the sheet was made from, and `yt review` exits 1 while
-there is one, 0 otherwise; no other kind changes the exit code.
+`error:` and exit 1 with no new review.json; a retry that drops the issue
+instead is said in a `note:` and listed in `credits_dropped_on_retry`. It
+blocks whatever its severity or the verdict: review.json records
+`credit_issues` and `scene_sha256`, the digest of the scene the sheet was
+made from, and `yt review` exits 1 while there is one, 0 otherwise; no other
+kind changes the exit code. review.json is always the project's (`--out`
+moves only the PDF), and a read that fails voids the one that was there
+(its digest dropped, `failed` saying why), so no earlier answer stands for
+it.
 
 `yt qa` and `yt doctor` read `credit_issues` only while scene.xml is still
 that scene (`review.current_credits`). QA files each as a blocking
@@ -2042,7 +2047,9 @@ READY, caps no score (a credit is not a frame defect) and is not briefed to
 the scorecard reviewer; `yt improve` routes it to a human and dispatches no
 stage. Doctor fails it in area `licence`, with where the credit goes. After
 a rebuild changes scene.xml, both ignore the old review.json and print its
-`not_evidenced:` note (`review.STALE_REVIEW`: run `yt review` again) instead:
+`not_evidenced:` note (`review.STALE_REVIEW`; `review.OLD_REVIEW` for one
+written before the digest, `review.FAILED_REVIEW` after a failed read: run
+`yt review` again) instead:
 QA in findings.md under Mechanical and as the scorecard's `review_note`,
 doctor as a `licence` note. `yt run` does not call `yt review`.
 
