@@ -3207,6 +3207,25 @@ def accuracy_refusal(model: str, authors: list[tuple[str, str]]) -> str:
     return ""
 
 
+def accuracy_model_refusal(model: str | None) -> str:
+    """Why an explicit --accuracy-model cannot run, or "". The check is a
+    plain claude or codex CLI decision (accuracy_harness), so the gateway
+    pool, an `sdk:` model, a provider/model id and a model of another maker
+    would reach the CLI and fail there, after the render, on a check a
+    `--fresh` retry cannot mend."""
+    from . import flags, models, reviewers
+    text = str(model or "").strip()
+    if not text:
+        return ""
+    if (reviewers.is_gateway(text) or models.canonical(text)[0]
+            or models.maker(text) not in flags.CLI_MAKERS):
+        return (f"error: --accuracy-model {text}: the on-screen accuracy check runs on the "
+                "claude or codex CLI and takes a claude or codex model (for example "
+                f"{ACCURACY_MODEL} or gpt-5), never the gateway pool, an sdk: model or a "
+                "provider/model id")
+    return ""
+
+
 def accuracy_harness(root, model: str | None, *, house: str, house_digest: dict,
                      fresh: bool, verbose: bool) -> Harness:
     """The accuracy check's own harness: a plain CLI one (no gateway, no

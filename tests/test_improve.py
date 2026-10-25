@@ -1517,8 +1517,8 @@ class AccuracyFindings(ImproveCase):
     and are tracked across passes by shot and quote."""
 
     @staticmethod
-    def accurate(quote="40%", shot="1.1", owner="vfx", start=3.0):
-        c = card(5.0)
+    def accurate(quote="40%", shot="1.1", owner="vfx", start=3.0, overall=5.0):
+        c = card(overall)
         c["accuracy"] = {"fact_check": [], "final": {
             "status": "done", "model": "opus", "checked": 1, "not_checked": [],
             "findings": [{"shot": shot, "quote": quote, "claim_id": "c1",
@@ -1588,6 +1588,51 @@ class AccuracyFindings(ImproveCase):
             self.assertEqual(improve.run(args), 2)
         self.assertIsNone(cli.build_parser().parse_args(
             ["improve", "--title", "x"]).accuracy_model)
+
+    def test_an_accuracy_finding_reaches_vfx_by_its_section(self):
+        # acceptance: the finding goes to `yt vfx --sections <n>`, not to a
+        # whole-film --fresh vfx pass
+        write_json(self.root / "vfx.json", {"authored": [
+            {"n": 1, "worlds": [{"shots": ["2.1"], "start": 0.0, "seconds": 3.0}]},
+            {"n": 2, "worlds": [{"shots": ["1.1"], "start": 3.0, "seconds": 6.0}]}]})
+        rows = improve.collect(self.accurate(shot="1.1", start=3.0))
+        self.assertEqual(improve.routed_sections(self.root, rows), [2])
+        base = ["--project", str(self.root), "--model", "sonnet", "--quiet"]
+        argv = improve.stage_argvs(["vfx"], {"vfx"}, base, quality="final",
+                                   root=self.root,
+                                   sections=improve.routed_sections(self.root, rows))[0]
+        self.assertEqual(argv[0], "vfx")
+        self.assertEqual(argv[-2:], ["--sections", "2"])
+        self.assertNotIn("--fresh", argv)
+
+    def test_an_accuracy_bar_has_not_reached_the_target(self):
+        c = card(9.5)
+        self.assertTrue(improve.reached(c, 9.0))
+        c["accuracy"] = {"fact_check": [], "final": {
+            "status": qa.NOT_EVIDENCED, "why": "the accuracy check failed: x",
+            "command": "yt qa --fresh", "bar": True}}
+        self.assertFalse(improve.reached(c, 9.0))
+        c["accuracy"]["final"] = {"status": qa.NOT_EVIDENCED, "why": "the film has no "
+                                  "dossier", "command": "yt research", "bar": False}
+        self.assertTrue(improve.reached(c, 9.0))
+
+    def test_a_new_blocking_accuracy_finding_reverts(self):
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        runner = FakeRunner(self.root, [self.accurate(overall=6.0)])
+        p = self.improver(runner, max_passes=1).run()["passes"][0]
+        self.assertEqual(p["decision"], "revert")
+        self.assertIn("new blocking accuracy finding: accuracy|1.1|40%", p["reasons"])
+
+    def test_an_accuracy_model_the_cli_cannot_run_is_refused(self):
+        for value in ("sdk:google/gemini-3.6-flash", "google/gemini-3.6-flash", "pool",
+                      "zai/glm-5.3"):
+            args = cli.build_parser().parse_args(
+                ["improve", "--project", str(self.root), "--model", "sonnet",
+                 "--accuracy-model", value])
+            with patch.object(improve, "Improver", side_effect=AssertionError("ran")), \
+                    contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(improve.run(args), 2, value)
+            self.assertIn("claude or codex model", err.getvalue(), value)
 
 
 class History(ImproveCase):

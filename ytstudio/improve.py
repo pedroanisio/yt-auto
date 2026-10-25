@@ -1059,6 +1059,14 @@ def blocking_mechanical(card: dict) -> set[str]:
             for f in card.get("mechanical") or [] if f.get("severity") == "blocking"}
 
 
+def blocking_accuracy(card: dict) -> set[str]:
+    """The fingerprints of a card's blocking on-screen accuracy findings
+    (AUTO-150): a pass that draws a new wrong figure is reverted on that
+    ground, as one with a new blocking mechanical finding is."""
+    return {fingerprint(dict(f, kind=ACCURACY)) for f in accuracy_findings(card)
+            if f.get("severity") == "blocking"}
+
+
 def spread(card: dict, key: str) -> float:
     """The samples' spread (max - min) a scorecard recorded for `key`, a
     category or `overall` (AUTO-107); 0 for a card scored once."""
@@ -1147,6 +1155,8 @@ def judge(best: dict, new: dict, *, tolerance: float = TOLERANCE) -> dict:
                            "tolerance")
     for fp in sorted(blocking_mechanical(new) - blocking_mechanical(best)):
         reasons.append(f"new blocking mechanical finding: {fp}")
+    for fp in sorted(blocking_accuracy(new) - blocking_accuracy(best)):
+        reasons.append(f"new blocking accuracy finding: {fp}")
     return {"keep": not reasons, "reasons": reasons, "deltas": diff["deltas"],
             "overall_delta": diff["overall_delta"], "against": best.get("pass"),
             "side_by_side": side}
@@ -1154,8 +1164,10 @@ def judge(best: dict, new: dict, *, tolerance: float = TOLERANCE) -> dict:
 
 def reached(card: dict, target: float) -> bool:
     # A fact-check blocker standing is never reached (AUTO-133), whatever
-    # an older card's verdict said.
-    if (card.get("accuracy") or {}).get("fact_check"):
+    # an older card's verdict said; nor is a dossier film whose on-screen
+    # text was never checked (AUTO-150): its bar names no blocking item.
+    accuracy = card.get("accuracy") or {}
+    if accuracy.get("fact_check") or (accuracy.get("final") or {}).get("bar"):
         return False
     if card.get("verdict") == qa.READY:
         return True
@@ -2268,6 +2280,9 @@ def run(args) -> int:
     # The accuracy model QA is handed (AUTO-150): refused here, as `yt qa`
     # would refuse it, against the reports and against what --model makes.
     accuracy_model = getattr(args, "accuracy_model", None)
+    if said := qa.accuracy_model_refusal(accuracy_model):
+        print(said, file=sys.stderr)
+        return 2
     if accuracy_model and (said := qa.accuracy_refusal(accuracy_model, cutcompare.author_models(
             {"script": project.source("script"), "vfx": project.source("vfx")})
             + [("the pass's stages (--model)", args.model)])):
