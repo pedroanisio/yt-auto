@@ -14,6 +14,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import types
@@ -178,6 +179,98 @@ class CreditExit(Case):
         self.run_review()
         self.assertEqual([a["name"] for a in self.asked], ["sheet"])
 
+    def test_a_retry_that_drops_the_credit_says_so(self):
+        # the reviewer drops the issue instead of naming its asset: the block
+        # clears, but not without a trace
+        self.answers = [critique(issue(asset=None)),
+                        critique(issue("band", asset=None, what="a super in the stage"))]
+        self.assertEqual(self.run_review(), 0)
+        self.assertIn(f"note: [review] the retry filed no credit issue in {SECTION}, "
+                      "which the first form flagged with no asset", self.err)
+        self.assertEqual(self.review_json()["credits_dropped_on_retry"], [SECTION])
+        # a first form that names its assets records nothing dropped
+        self.answers = [critique(issue())]
+        self.run_review()
+        self.assertEqual(self.review_json()["credits_dropped_on_retry"], [])
+
+
+class Where(Case):
+    """review.json is the file QA and doctor read: it is the project's,
+    whatever --out says about the PDF."""
+
+    def test_review_json_lands_in_the_project_whatever_out_says(self):
+        pdf = self.tmp / "elsewhere" / "sheet.pdf"
+        pdf.parent.mkdir()
+        self.assertEqual(self.run_review("--out", str(pdf)), 1)
+        self.assertTrue(pdf.is_file())
+        self.assertFalse((pdf.parent / "review.json").exists())
+        written = self.review_json()
+        self.assertEqual(written["pdf"], str(pdf))
+        self.assertEqual(written["scene_sha256"], review.scene_sha256(self.scene))
+        issues, note = review.current_credits(self.root, self.scene)
+        self.assertEqual(([i["asset"] for i in issues], note), (["fig-pressure"], ""))
+        # the reader works in the project: it is told where the PDF is
+        self.assertIn(f"Read `{pdf}`", self.asked[0]["prompt"])
+
+    def test_the_default_sheet_is_named_as_before(self):
+        self.run_review()
+        self.assertIn("Read `review.pdf` (the review sheet)", self.asked[0]["prompt"])
+
+    def test_a_newer_review_elsewhere_replaces_the_older_answer(self):
+        self.run_review()
+        self.assertEqual(len(review.current_credits(self.root, self.scene)[0]), 1)
+        self.answers = [critique(issue("band", asset=None))]
+        pdf = self.tmp / "elsewhere.pdf"
+        self.assertEqual(self.run_review("--out", str(pdf)), 0)
+        self.assertEqual(review.current_credits(self.root, self.scene), ([], ""))
+
+
+class FailedRead(Case):
+    """A read that fails leaves no 'current, no credits' answer behind."""
+
+    def current_clean(self):
+        (self.root / "review.json").write_text(json.dumps({
+            "idea": {"title": "pressure"}, "critique": {"verdict": "approve"},
+            "scene_sha256": review.scene_sha256(self.scene), "credit_issues": []}))
+        self.assertEqual(review.current_credits(self.root, self.scene), ([], ""))
+
+    def test_a_harness_error_voids_the_older_answer(self):
+        self.current_clean()
+        self.answers = [HarnessError("[review] the model's sheet answer lacks verdict")]
+        self.assertEqual(self.run_review(), 1)
+        issues, note = review.current_credits(self.root, self.scene)
+        self.assertEqual((issues, note), ([], review.FAILED_REVIEW))
+        self.assertTrue(note.startswith("not_evidenced: "))
+        record = self.review_json()
+        self.assertNotIn("scene_sha256", record)
+        self.assertIn("lacks verdict", record["failed"])
+        # what the earlier read said is kept for the record
+        self.assertEqual(record["critique"], {"verdict": "approve"})
+
+    def test_an_unnamed_credit_after_the_retry_voids_the_older_answer(self):
+        self.current_clean()
+        self.answers = [critique(issue(asset="")), critique(issue(asset=""))]
+        self.assertEqual(self.run_review(), 1)
+        self.assertEqual(review.current_credits(self.root, self.scene),
+                         ([], review.FAILED_REVIEW))
+        self.assertIn("names no asset", self.review_json()["failed"])
+
+    def test_with_no_older_answer_nothing_is_written(self):
+        self.answers = [HarnessError("[review] boom")]
+        self.assertEqual(self.run_review(), 1)
+        self.assertFalse((self.root / "review.json").exists())
+
+
+class Imports(unittest.TestCase):
+    def test_qa_does_not_load_vfx_through_review(self):
+        # review needs vfx for one default only; qa imports review
+        tree = Path(__file__).resolve().parent.parent
+        code = ("import sys; import ytstudio.qa, ytstudio.review; "
+                "print('ytstudio.vfx' in sys.modules)")
+        out = subprocess.run([sys.executable, "-c", code], cwd=tree, capture_output=True,
+                             text=True, env={**os.environ, "PYTHONPATH": str(tree)})
+        self.assertEqual((out.returncode, out.stdout.strip()), (0, "False"), out.stderr)
+
 
 class Reviewer(Case):
     def test_same_family_reviewer_is_refused_before_anything_runs(self):
@@ -209,7 +302,6 @@ class Reviewer(Case):
             self.assertEqual((self.rendered, self.asked), ([], []))
 
     def test_the_reader_is_the_reviewer_model(self):
-        self.assertEqual(review.REVIEWER_MODEL, vfx.REVIEWER_MODEL)
         self.assertEqual(self.args().reviewer_model, vfx.REVIEWER_MODEL)
         self.run_review()
         self.assertEqual(self.asked[0]["model"], vfx.REVIEWER_MODEL)
@@ -284,7 +376,9 @@ class CurrentCredits(unittest.TestCase):
         self.assertEqual(review.current_credits(self.tmp, self.scene), ([], ""))
         self.write(credit_issues=self.issues)          # from before this card
         self.assertEqual(review.current_credits(self.tmp, self.scene),
-                         ([], review.STALE_REVIEW))
+                         ([], review.OLD_REVIEW))
+        self.assertTrue(review.OLD_REVIEW.startswith("not_evidenced: "))
+        self.assertIn("predates the scene digest", review.OLD_REVIEW)
         self.assertTrue(review.STALE_REVIEW.startswith("not_evidenced: "))
         self.write(credit_issues=self.issues, scene_sha256="0" * 64)
         self.assertEqual(review.current_credits(self.tmp, self.scene),
