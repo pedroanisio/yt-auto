@@ -177,7 +177,8 @@ class StoryProblem(Sealed):
             "two valid samples)"])
 
     def test_a_passing_or_absent_review_lists_nothing(self):
-        self.built(); self.rendered(); self.sealed(); self.scored()
+        # packaged: delivery needs a current, ready upload set (AUTO-147)
+        self.built(); self.rendered(); self.sealed(); self.scored(); self.packaged()
         for review in ({"verdict": "consider"}, {"verdict": "recommend"}, None):
             self.scripted(review)
             self.assertEqual(self.story_rows(), [], review)

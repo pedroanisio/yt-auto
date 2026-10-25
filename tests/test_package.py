@@ -505,5 +505,38 @@ class NoUpload(unittest.TestCase):
         self.assertNotIn("package", cli.PIPELINE)
 
 
+class InTheTail(unittest.TestCase):
+    """AUTO-164: `yt run`'s delivery tail runs `yt package` after a READY QA,
+    and every text that described it as outside `yt run` says so now."""
+
+    def test_the_docstring_says_the_tail_runs_it_and_it_is_still_no_stage(self):
+        doc = " ".join(package.__doc__.split())
+        self.assertNotIn("Not a stage `yt run` walks", doc)
+        self.assertIn("`yt run`'s delivery tail runs it after a READY QA", doc)
+        self.assertIn("not a PIPELINE stage", doc)
+
+    def test_the_manual_and_readme_say_the_tail_packages_the_film(self):
+        skill = (ROOT / "ytstudio" / "SKILL.md").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        production = (ROOT / "docs" / "production.md").read_text(encoding="utf-8")
+        for name, text in (("SKILL.md", skill), ("README.md", readme)):
+            row = next(line for line in text.splitlines()
+                       if line.startswith("| `yt package` |"))
+            self.assertNotIn("not a stage `yt run` walks", row.lower(), name)
+            self.assertIn("delivery tail", row, name)
+        tail = skill[skill.index("runs the delivery tail, `cli.deliver_tail`"):]
+        tail = tail[:tail.index("\n\n")]
+        for needle in ("`yt package`", "already ready on this render", "AUTO-164"):
+            self.assertIn(needle, tail, needle)
+        tail = readme[readme.index("After the render the run finishes the validated path"):]
+        tail = tail[:tail.index("\n\n")]
+        for needle in ("`yt package`", "already ready on this render", "AUTO-164"):
+            self.assertIn(needle, tail, needle)
+        beside = production[production.index("`yt package` writes `package/`"):]
+        self.assertIn("delivery tail", beside[:beside.index("\n\n")])
+        self.assertIn("yt package", cli.build_parser()._subparsers._group_actions[0]
+                      .choices["run"].description)
+
+
 if __name__ == "__main__":
     unittest.main()
