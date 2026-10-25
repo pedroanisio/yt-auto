@@ -94,6 +94,14 @@ class Chapters(unittest.TestCase):
         self.assertTrue(warnings)
 
 
+    def test_chapter_kind_markers_are_read_as_the_build_may_write_them(self):
+        # SceneBuilder picks "section", else "chapter", from the schema's kinds
+        doc = scene_xml([(0, "A"), (20, "B"), (40, "C")]).replace(
+            b'kind="section"', b'kind="chapter"')
+        chapters, _ = package.chapters_from_scene(doc, 60)
+        self.assertEqual([c["title"] for c in chapters], ["A", "B", "C"])
+
+
 SCRIPT = {"promise": "how a lens prints a chip", "payoff": "the light is the tool",
           "train": "can light this short be made at all?", "stakes": "no new chips",
           "sections": [
@@ -123,6 +131,20 @@ class Sources(unittest.TestCase):
         self.assertEqual(len(warnings), 1)
         self.assertIn("2.1", warnings[0])
         self.assertTrue(warnings[0].startswith("warning:"))
+
+    def test_a_url_is_matched_whole_never_as_the_prefix_of_another(self):
+        dossier = {"claims": [
+            {"claim": "x", "source_title": "Short", "source_url": "https://a.org/x"},
+            {"claim": "y", "source_title": "Long", "source_url": "https://a.org/x2"}]}
+        script = {"sections": [{"heading": "H", "shots": [
+            {"label": "1.1", "visual": "v", "narration": "n",
+             "source": "see https://a.org/x2."},
+            {"label": "1.2", "visual": "v", "narration": "n",
+             "source": "(https://a.org/x), p. 4"}]}]}
+        rows, warnings = package.sources_from_script(script, dossier)
+        self.assertEqual(rows, [{"title": "Long", "url": "https://a.org/x2"},
+                                {"title": "Short", "url": "https://a.org/x"}])
+        self.assertEqual(warnings, [])
 
     def test_no_dossier_leaves_every_source_text_only(self):
         rows, warnings = package.sources_from_script(SCRIPT, {})
@@ -238,6 +260,12 @@ class Check(unittest.TestCase):
         pkg, scene, video = self.clean()
         pkg["description"] += "\nsee <here>"
         self.one(pkg, scene, video, "angle")
+
+    def test_a_raw_angle_bracket_in_the_title(self):
+        pkg, scene, video = self.clean()
+        pkg["title"] = "Chips <and> lenses"
+        error = self.one(pkg, scene, video, "angle")
+        self.assertTrue(error.startswith("error: title:"))
 
     def test_tags_are_at_most_five_hundred_characters(self):
         pkg, scene, video = self.clean()

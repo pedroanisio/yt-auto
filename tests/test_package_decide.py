@@ -107,6 +107,16 @@ class Decide(ProjectCase):
         self.assertTrue([f for f in pkg["findings"] if f.startswith("error:")
                          and "never shows a chip printed" in f])
 
+    def test_angle_brackets_in_the_drafted_title_are_replaced_with_a_warning(self):
+        Scripted.script = [draft(title="Chips <and> lenses")]
+        code, said = self.run_package()
+        self.assertEqual(code, 0, said)
+        pkg = self.package()
+        self.assertEqual(pkg["title"], "Chips \u2039and\u203a lenses")
+        self.assertEqual(pkg["verdict"], "ready")
+        self.assertTrue([f for f in pkg["findings"] if f.startswith("warning: title:")],
+                        pkg["findings"])
+
     def test_the_reviewer_is_the_reviewer_model_and_the_author_the_model(self):
         self.run_package("--model", "sonnet")
         self.assertEqual({c["model"] for c in self.asked("draft")}, {"sonnet"})

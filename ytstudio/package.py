@@ -98,10 +98,16 @@ def credits_start(root) -> float | None:
     return min(times) if times else None
 
 
+#: The marker kinds a section start is written as: SceneBuilder picks
+#: "section", else "chapter", from the schema's kinds (build.py's
+#: pick(enum_of("marker", "kind"), "section", "chapter")).
+SECTION_KINDS = ("section", "chapter")
+
+
 def _sections(root) -> list[tuple[float, str]]:
     out = []
     for marker in root.iter("marker") if root is not None else ():
-        if marker.get("kind") == "section":
+        if marker.get("kind") in SECTION_KINDS:
             try:
                 out.append((float(marker.get("time") or 0), marker.get("label", "")))
             except ValueError:
@@ -160,6 +166,10 @@ def _shots(script: dict):
                 yield shot
 
 
+#: What may sit around a URL in a shot's source without being part of it.
+URL_EDGES = "()[]{}<>.,;:!?\"'"
+
+
 def sources_from_script(script: dict, dossier: dict) -> tuple[list[dict], list[str]]:
     """The sources the film cites, in the order its shots first cite them:
     (rows, warnings), each row {title, url}. A dossier claim is cited by a
@@ -175,9 +185,12 @@ def sources_from_script(script: dict, dossier: dict) -> tuple[list[dict], list[s
         text = " ".join(str(shot.get("source") or "").split())
         if not text:
             continue
+        # A URL is cited whole: https://a.org/x is not cited by a source
+        # that names https://a.org/x2.
+        tokens = {t.strip(URL_EDGES).rstrip("/") for t in text.split()}
         hits = [c for c in claims
                 if str(c.get("source_url") or "").strip()
-                and str(c["source_url"]).strip() in text]
+                and str(c["source_url"]).strip().rstrip("/") in tokens]
         if not hits:
             key = _key(text)
             hits = [c for c in claims if _key(str(c.get("source_title") or ""))
@@ -428,6 +441,10 @@ def check_package(pkg: dict, scene_bytes: bytes, video_bytes, duration: float, *
     title = str(pkg.get("title") or "")
     if not 1 <= len(title) <= TITLE_MAX:
         out.append(f"error: title: {len(title)} characters; YouTube takes 1 to {TITLE_MAX}")
+    if any(raw in title for raw in BRACKETS):
+        out.append("error: title: it holds a raw angle bracket (< or >), which YouTube "
+                   "refuses (TO VERIFY); yt package again rather than editing package.json "
+                   "by hand")
     description = str(pkg.get("description") or "")
     if len(description) > DESCRIPTION_MAX:
         out.append(f"error: description: {len(description)} characters; YouTube takes at "
@@ -762,8 +779,15 @@ def run(args) -> int:
         findings.append("warning: captions: no narration.vtt; the upload carries no "
                         "subtitles (yt voice writes it)")
     width, height = png_size(png) or (None, None)
+    # The model words the title; an angle bracket in it is shown as the
+    # description shows one, and said, since YouTube refuses the raw ones.
+    worded = " ".join(str(draft.get("title") or "").split())
+    title = bracketed(worded)
+    if title != worded:
+        findings.append(f"warning: title: {worded!r} held an angle bracket, replaced by "
+                        "\u2039 or \u203a as YouTube refuses < and > (TO VERIFY)")
     pkg = {
-        "title": " ".join(str(draft.get("title") or "").split()),
+        "title": title,
         "description": description,
         "chapters": titled,
         "tags": tags,
