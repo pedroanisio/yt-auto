@@ -149,6 +149,40 @@ class Estimates(unittest.TestCase):
             self.assertEqual((row["usd"], row["basis"], row["source"]),
                              (1.25, "measured", "package/package.json"))
 
+    def test_an_assumed_vfx_pass_does_not_fold_the_package_in(self):
+        # VFX_PASS_USD guesses a pass and its downstream stages; the upload
+        # set is not one of them, so on a fresh project the package keeps
+        # its own estimate and the cap can refuse it.
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "film"
+            root.mkdir()
+            rows = {r["stage"]: r for r in spend.stage_estimates(root, ["vfx", "build",
+                                                                        "package"])}
+            self.assertEqual(rows["build"]["source"], "included in the vfx default")
+            self.assertEqual((rows["package"]["usd"], rows["package"]["basis"]),
+                             (spend.DEFAULT_USD["package"], "assumed"))
+
+    def test_an_assumed_package_review_is_priced_at_the_review_budget_handed_it(self):
+        # The tail hands package the run's --review-budget-usd; until a
+        # package.json measures one, its review is priced at that cap.
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "film"
+            root.mkdir()
+            for cap in ("1.5", "4"):
+                row = spend.stage_estimates(
+                    root, ["package"], extras={"package": ["--model", "sonnet",
+                                                           "--review-budget-usd", cap]})[0]
+                self.assertEqual(row["usd"], round(spend.PACKAGE_DRAFT_USD + float(cap), 2))
+                self.assertIn(f"--review-budget-usd ${float(cap):.2f}", row["source"])
+            (root / "package").mkdir()
+            (root / "package" / "package.json").write_text(
+                json.dumps({"usage": spend.record(1.25, "sonnet", 2)}))
+            row = spend.stage_estimates(root, ["package"],
+                                        extras={"package": ["--review-budget-usd", "4"]})[0]
+            self.assertEqual((row["usd"], row["basis"]), (1.25, "measured"))
+
 
 def review_usd(argv=("--review",), root=None) -> float:
     """What --review adds to a script asked with `argv` (AUTO-92, AUTO-93)."""

@@ -212,7 +212,8 @@ VFX_PASS_USD = 10.0
 PACKAGE_DRAFT_USD = 0.5
 #: Its review, package.py's REVIEW_USD (vfx.REVIEW_USD, the cap one review
 #: may spend). package reads this module, so the figure is written out here
-#: and test_run_wiring pins the two equal.
+#: and test_run_wiring pins the two equal. A package handed
+#: --review-budget-usd is assumed to spend that cap instead (_assumed_usd).
 PACKAGE_REVIEW_USD = 2.0
 #: One scoring sample of a QA pass, assumed until a scorecard measures it. A
 #: pass asks qa.QA_SAMPLES of them (AUTO-107); qa imports this module, so
@@ -611,13 +612,38 @@ def _like(root: Path, stage: str, flags: Iterable[str] = ()) -> tuple[float, str
     return found[len(found) // 2][0], ", ".join(n for _, n in found)
 
 
+def _assumed_usd(stage: str, flags) -> tuple[float, str]:
+    """A stage's default price and its source, before any flag is added.
+    The package's review is priced at the --review-budget-usd it is handed
+    (`yt run` hands it the run's), since that, not package.REVIEW_USD, is
+    what the review may spend."""
+    flags = list(flags or ())
+    if stage == "package" and "--review-budget-usd" in flags[:-1]:
+        try:
+            cap = float(flags[flags.index("--review-budget-usd") + 1])
+        except ValueError:
+            cap = None
+        if cap is not None:
+            return (round(PACKAGE_DRAFT_USD + cap, 2),
+                    f"default, nothing reported (its review at --review-budget-usd ${cap:.2f})")
+    return (VFX_PASS_USD if stage == "vfx" else DEFAULT_USD.get(stage, 0.5),
+            "default, nothing reported")
+
+
+#: Stages an assumed vfx pass does not fold in: VFX_PASS_USD guesses the
+#: pass and the stages that rebuild and judge its output, not the upload
+#: set's wording (AUTO-164), so the package keeps its own estimate.
+UNFOLDED = frozenset({"package"})
+
+
 def stage_estimates(root: Path, stages: list[str],
                     sections: list[int] | None = None,
                     extras: dict[str, list[str]] | None = None) -> list[dict]:
     """One row per stage of a pass, gate and QA included: its cost from its
     own report (`measured`), else from like projects' (`like`), else the
     default (`assumed`). An assumed vfx pass is guessed whole, its downstream
-    included, so the stages after it add nothing then. `extras` is the argv
+    included, so the stages after it add nothing then (the package, in
+    UNFOLDED, keeps its own). `extras` is the argv
     each stage would be handed: a flag in FLAG_USD adds its increment where
     the record priced from does not already hold it, and the row names it."""
     rows = []
@@ -637,13 +663,12 @@ def stage_estimates(root: Path, stages: list[str],
             row = {"stage": stage, "usd": usd, "basis": "measured", "source": source}
         elif like is not None:
             row = {"stage": stage, "usd": like[0], "basis": "like", "source": like[1]}
-        elif folded:
+        elif folded and stage not in UNFOLDED:
             row = {"stage": stage, "usd": 0.0, "basis": "assumed",
                    "source": "included in the vfx default"}
         else:
-            usd, source = _with_flags(
-                VFX_PASS_USD if stage == "vfx" else DEFAULT_USD.get(stage, 0.5),
-                "default, nothing reported", flag_increments(None, stage, flags))
+            usd, source = _with_flags(*_assumed_usd(stage, flags),
+                                      flag_increments(None, stage, flags))
             row = {"stage": stage, "usd": usd, "basis": "assumed", "source": source}
         folded = folded or (stage == "vfx" and row["basis"] == "assumed")
         if stage == "qa" and (Path(root) / "dossier.json").is_file() \
