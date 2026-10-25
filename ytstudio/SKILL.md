@@ -1129,8 +1129,9 @@ re-measured" until a new publish and `yt retention` measure it.
   never stops it "ready"; `--target` above 9.0 also asks for that overall,
   and under 9.0 changes nothing; AUTO-163: a start or resumed best QA
   already filed READY at `--target` stops `ready` before routing, "already
-  READY TO PUBLISH at X; no pass run", exit 0, $0 spent and `improve.md`
-  written, while `--dry-run` still plans; a NOT READY best prints its
+  READY TO PUBLISH at X; no pass run" (after a resume, "pass-NN judged
+  READY TO PUBLISH at X; no further pass run"), exit 0, $0 spent and
+  `improve.md` written, while `--dry-run` still plans; a NOT READY best prints its
   verdict's bar on a `not ready:` line, and `improve.json`'s `start` and
   `best` carry it as `bar`), with `gate-evidence` (exit 1, nothing
   run) when the evidence card's `gate_evidence` is set and no finding is
