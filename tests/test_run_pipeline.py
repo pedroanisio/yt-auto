@@ -490,6 +490,23 @@ class TailPackage(RunCase):
         self.assertEqual(self.run_yt(), 0, self.err)
         self.assertEqual(self.steps(), ["gate", "qa", "improve", "package", "doctor"])
 
+    def test_no_package_when_the_qa_improve_left_does_not_score_the_film_on_disk(self):
+        # improve re-rendered after its last QA pass: qa.json says READY of
+        # a cut no longer on disk, so a package would be paid for nothing.
+        self.qa_verdict = qa.NOT_READY
+        self.delivered = False
+
+        def improved():
+            (self.root / "qa.json").write_text(json.dumps(self.qa_json(qa.READY)))
+            time.sleep(0.01)
+            (self.root / "video.mp4").write_bytes(b"re-rendered after the last QA")
+        self.hooks["improve"] = improved
+        self.assertEqual(self.run_yt(), cli.UNDELIVERED, self.err)
+        self.assertEqual(self.steps(), ["gate", "qa", "improve", "doctor"])
+        self.assertIn("== package: not run: qa.json does not score the film on disk "
+                      "after improve", self.err)
+        self.assertTrue(self.err.rstrip().endswith("yt improve --project film"), self.err)
+
     def test_the_package_gets_the_author_the_tails_reviewer_and_the_review_cap(self):
         self.assertEqual(self.run_yt("--model", "sonnet", "--reviewer-model", "gpt-5.1-codex",
                                      "--review-budget-usd", "1.5"), 0, self.err)
@@ -573,7 +590,8 @@ class TailVerdict(RunCase):
 
 class TailBudget(RunCase):
     """Under --budget-usd the tail starts no stage whose estimate does not
-    fit, and improve is handed what is left of the cap."""
+    fit, and improve is handed what is left of the cap once the package
+    is held back."""
 
     def setUp(self):
         super().setUp()
@@ -604,7 +622,41 @@ class TailBudget(RunCase):
         self.qa_verdict = qa.NOT_READY
         self.delivered = False
         self.assertEqual(self.run_yt("--budget-usd", "60"), cli.UNDELIVERED)
-        self.assertAlmostEqual(self.seen["improve"].budget_usd, 60 - 30 - 7 - 3)
+        # AUTO-164: the package's $9 is held back for after a READY QA
+        self.assertAlmostEqual(self.seen["improve"].budget_usd, 60 - 30 - 7 - 3 - 9)
+
+    def improve_spends(self, usd: float, verdict: str = qa.READY) -> None:
+        """improve leaves QA at `verdict` and records `usd` spent in
+        improve.json, the only place its spend is written."""
+        self.qa_verdict = qa.NOT_READY
+
+        def improved():
+            (self.root / "qa.json").write_text(json.dumps(self.qa_json(verdict)))
+            (self.root / "improve.json").write_text(json.dumps({"spent_usd": usd}))
+        self.hooks["improve"] = improved
+
+    def test_a_package_after_improve_fits_in_what_improve_was_not_handed(self):
+        self.costs.update(gate=7.0, qa=3.0)
+        self.improve_spends(11.0)
+        self.assertEqual(self.run_yt("--budget-usd", "60"), 0, self.err)
+        self.assertEqual(self.started("package"), ["package:start", "package:end"])
+
+    def test_improves_spend_counts_before_the_package(self):
+        # improve.json's spent_usd is what improve spent; a package that no
+        # longer fits beside it is refused, so the run never passes its cap.
+        self.costs.update(gate=7.0, qa=3.0)
+        self.improve_spends(20.0)
+        self.assertEqual(self.run_yt("--budget-usd", "60"), retime.UNSETTLED)
+        self.assertEqual(self.started("package"), [])
+        self.assertIn("== package: estimated at $9.00 (fake) and $60.00 of the $60.00 "
+                      "budget is spent", self.err)
+
+    def test_no_room_for_improve_once_the_package_is_held_back_starts_no_improve(self):
+        self.costs.update(gate=7.0, qa=3.0)
+        self.qa_verdict = qa.NOT_READY
+        self.assertEqual(self.run_yt("--budget-usd", "49"), retime.UNSETTLED)
+        self.assertEqual(self.started("improve"), [])
+        self.assertIn("the package's $9.00 held back", self.err)
 
     def test_a_package_that_does_not_fit_exits_3(self):
         # AUTO-164: priced like gate and qa, asked before it starts. 30 + 7

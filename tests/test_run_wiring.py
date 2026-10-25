@@ -767,7 +767,8 @@ class DryRunTail(Priced):
             self.assertEqual(self.run_yt("--dry-run", "--skip", "keyframe",
                                          "--budget-usd", "100"), 0)
         walked = sum(PRICES[s] for s in cli.walk_order({"keyframe"})) + 18
-        self.assertIn(f"up to ${100 - walked:.2f} assumed", self.out)
+        # AUTO-164: the package's $2.50 is held back from improve, as the run does
+        self.assertIn(f"up to ${100 - walked - 2.5:.2f} assumed", self.out)
 
     def test_no_deliver_lists_no_tail(self):
         with mock.patch.object(cli.keyframe, "approval_state", lambda root: {"state": "approved"}):

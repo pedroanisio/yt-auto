@@ -491,7 +491,8 @@ def print_plan(plan: list[str], rows: list[dict], stop: str, *, tail: bool = Fal
     """One row per stage the run would walk, the total, and where it stops.
     With `tail`, the delivery tail's rows follow: gate and qa priced like
     any stage (and in the total), improve at most what is left of the cap
-    (else its own), only spent when QA is not READY, package priced like
+    once the package is held back (else its own), only spent when QA is not
+    READY, package priced like
     any stage (and in the total; AUTO-164), only run after a READY QA, and
     doctor at $0."""
     priced = {r["stage"]: r for r in rows}
@@ -507,8 +508,10 @@ def print_plan(plan: list[str], rows: list[dict], stop: str, *, tail: bool = Fal
         row(stage, "  (beside the keyframe and vfx)" if stage == "sound" else "")
     total = spend.total(priced[s] for s in walked if s in priced)
     if tail:
-        # improve is handed what is left before the package is paid for
-        cap = max(0.0, budget - total) if budget is not None else improve.BUDGET_USD
+        # improve is handed what is left once the package is held back, as
+        # deliver_tail hands it
+        held = (priced.get("package") or {}).get("usd", 0.0)
+        cap = max(0.0, budget - total - held) if budget is not None else improve.BUDGET_USD
         print(f"  {'improve':<10} up to ${cap:.2f} assumed (improve's cap, only when QA "
               "is not READY)")
         row("package", "  (only after a READY QA)")
@@ -542,19 +545,30 @@ def qa_current(project: workspace.Project) -> bool:
 
 
 def deliver_tail(project: workspace.Project, run_stage, *, refused, paid, say,
-                 budget: float | None = None) -> int:
+                 budget: float | None = None, reserve: float = 0.0) -> int:
     """The validated path after the render (AUTO-148): yt gate unless a
     deliverable gate already holds for these bytes, yt qa unless qa.json
     scores this gate and scene, yt improve when QA is not READY TO PUBLISH
-    (handed what is left of `budget`), yt package once QA is READY
-    (AUTO-164) unless package/package.json is already current and ready
-    for these bytes (doctor.package_problem, doctor's own rule), then
-    doctor's delivery verdict, printed last. `run_stage(stage, argv)` runs
-    one with its tail flags, `refused(stage)` asks the cap, `paid()` is
-    what the run has spent.
+    (handed what is left of `budget` less `reserve`, the package's
+    estimate), yt package once QA is READY (AUTO-164) unless
+    package/package.json is already current and ready for these bytes
+    (doctor.package_problem, doctor's own rule), then doctor's delivery
+    verdict, printed last. `run_stage(stage, argv)` runs one with its tail
+    flags, `refused(stage, spent=None)` asks the cap (of `spent` when given,
+    else of what the stages that ran report), `paid()` is what the run has
+    spent.
 
-    No package is written while QA is not READY after improve: the film is
-    not deliverable anyway, and a package costs model money. A package that
+    The package is held back from improve's cap because an improve that
+    brings QA to READY is followed by one; handed the whole remainder, it
+    could leave a READY film to end on a budget stop instead of a verdict.
+    improve writes its spend only to improve.json, and rewrites the
+    manifests paid() reads, so the package is asked of what was paid
+    before improve plus improve.json's spent_usd (or paid(), if higher).
+
+    No package is written while QA is not READY after improve, nor while
+    the qa.json improve left does not score the film on disk (it rebuilt or
+    re-rendered after its last pass, or stopped partway): the film is not
+    deliverable anyway, and a package costs model money. A package that
     fails or is not ready is left to doctor's verdict, which names its fix.
 
     0 only when delivery is ready; UNDELIVERED when it is not; gate's code
@@ -591,18 +605,25 @@ def deliver_tail(project: workspace.Project, run_stage, *, refused, paid, say,
             return code or 1
     card = read_json(qa_file, warn=False) or {}
     verdict = card.get("verdict") or "not scored"
+    after_improve: float | None = None
     if verdict != qa.READY:
         argv: list[str] = []
         if budget is not None:
-            left = budget - paid()
+            left = budget - paid() - reserve
             if left <= 0:
+                held = f", the package's ${reserve:.2f} held back" if reserve else ""
                 say(f"\n== improve: QA is {verdict}, and ${paid():.2f} of the ${budget:.2f} "
-                    "budget is spent; stopping here (a higher --budget-usd, or `yt improve` "
-                    "by hand)")
+                    f"budget is spent{held}; stopping here (a higher --budget-usd, or "
+                    "`yt improve` by hand)")
                 return retime.UNSETTLED
             argv = ["--budget-usd", f"{left:.2f}"]
         say(f"\n== improve: QA is {verdict}")
+        report = project.root / improve.REPORT_JSON
+        before, stamp = paid(), _stamp(report)
         code = run_stage("improve", argv)
+        spent = (read_json(report, warn=False) or {}).get("spent_usd") \
+            if _stamp(report) != stamp else 0.0
+        after_improve = max(before + float(spent or 0.0), paid())
         if code == 2:
             # A refusal spends nothing; doctor's verdict is still the last word.
             say("\nimprove refused (exit 2); stopping here")
@@ -614,11 +635,16 @@ def deliver_tail(project: workspace.Project, run_stage, *, refused, paid, say,
             say(f"\n== package: not run: QA is {verdict} after improve, so the film is not "
                 "deliverable and an upload set would be paid for nothing")
             return 0 if delivery_verdict(project, say) else UNDELIVERED
+        if not qa_current(project):
+            say("\n== package: not run: qa.json does not score the film on disk after "
+                "improve (it changed after improve's last QA pass), so an upload set would "
+                "be paid for nothing")
+            return 0 if delivery_verdict(project, say) else UNDELIVERED
     unpacked = doctor.package_problem(project)
     if not unpacked:
         say(f"\n== package: already ready on this render ({workspace.ARTIFACTS['package']})")
     else:
-        if refused("package"):
+        if refused("package", spent=after_improve):
             return retime.UNSETTLED
         say(f"\n== package: {unpacked}")
         code = run_stage("package", [])
@@ -778,11 +804,14 @@ def _run_pipeline(args) -> int:
         rel = spend.MANIFEST.get(stage) or ("qa.json" if stage == "qa" else None)
         return (spend.cost_in(read_json(project.root / rel, warn=False)) or 0.0) if rel else 0.0
 
-    def refused(stage: str) -> bool:
+    def refused(stage: str, spent: float | None = None) -> bool:
+        # `spent` is the tail's own count after improve, whose spend no
+        # manifest holds (deliver_tail)
         nonlocal over
         if budget is None:
             return False
-        spent = sum(paid(s) for s in ran) + committed
+        if spent is None:
+            spent = sum(paid(s) for s in ran) + committed
         row = priced.get(stage) or {"usd": 0.0, "basis": "assumed"}
         if spent + row["usd"] <= budget:
             return False
@@ -871,7 +900,8 @@ def _run_pipeline(args) -> int:
         return stage_code
 
     return deliver_tail(project, run_tail, refused=refused, say=say, budget=budget,
-                        paid=lambda: sum(paid(s) for s in ran) + committed)
+                        paid=lambda: sum(paid(s) for s in ran) + committed,
+                        reserve=(priced.get("package") or {}).get("usd", 0.0))
 
 
 
