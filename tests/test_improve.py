@@ -815,8 +815,9 @@ class Loop(ImproveCase):
 
     def test_a_ready_start_stops_without_a_pass(self):
         # AUTO-163: QA already filed READY TO PUBLISH at the target, so
-        # nothing is routed, no stage runs and nothing is spent.
-        self.start_pass(card(9.4))
+        # nothing is routed, no stage runs and nothing is spent. The advisory
+        # finding is there so that, without the stop, route() would ask.
+        self.start_pass(card(9.4, mechanical=[mech(severity="advisory")]))
         runner = FakeRunner(self.root, [])
         out = []
         record = self.improver(runner, say=out.append).run()
@@ -832,6 +833,37 @@ class Loop(ImproveCase):
         self.assertTrue((self.root / "improve.md").is_file())
         self.assertIn(f"improve: ready (pass-01: already {qa.READY} at 9.4; no pass run)",
                       "\n".join(out))
+        # and `yt improve` exits 0 for that record
+        args = cli.build_parser().parse_args(["improve", "--title", "x"])
+        with patch.object(improve.workspace, "resolve",
+                          return_value=(self.idea, workspace.Project(self.root))), \
+                patch.object(improve.house, "for_args", return_value=("", None)), \
+                patch.object(improve.Improver, "run", return_value=record):
+            self.assertEqual(improve.run(args), 0)
+
+    def test_a_resumed_pass_judged_ready_says_it_was_judged(self):
+        # The resumed pass was scored (and paid for) by this run, so the stop
+        # does not say "no pass run"; it says which pass QA filed READY.
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        self.improver(FakeRunner(self.root, [], fail={"qa": "no-pass"})).run()
+        runner = FakeRunner(self.root, [card(9.4)])
+        record = self.improver(runner).run()
+        self.assertEqual(runner.stages(), ["qa"])          # only the judging ran
+        self.assertEqual(record["stop"]["reason"], "ready")
+        self.assertEqual(record["stop"]["detail"],
+                         f"pass-02: pass-01 judged {qa.READY} at 9.4; no further pass run")
+        self.assertEqual([p["name"] for p in record["passes"]], ["pass-01"])
+
+    def test_no_evidence_prints_no_bar_line(self):
+        # No QA pass at all is not a NOT READY verdict, and improve.md is not
+        # written for it, so the summary does not point at either.
+        runner = FakeRunner(self.root, [], fail={"qa": "no-pass"})
+        out = []
+        record = self.improver(runner, say=out.append).run()
+        self.assertEqual(record["stop"]["reason"], "no-evidence")
+        self.assertFalse((self.root / "improve.md").exists())
+        self.assertFalse([line for line in "\n".join(out).splitlines()
+                          if line.startswith("  not ready:")], out)
 
     def test_a_ready_start_below_a_higher_target_keeps_going(self):
         self.start_pass(card(9.2, mechanical=[mech(severity="advisory")], verdict=qa.READY))

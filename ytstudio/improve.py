@@ -1769,9 +1769,20 @@ class Improver:
             # QA already filed this film READY at the target (AUTO-163): a
             # pass could only spend, so stop before routing, which is paid.
             # A dry run still routes and prints the plan it was asked for.
-            record["stop"] = {"reason": "ready", "detail":
-                              f"{card['pass']}: already {card.get('verdict')} at "
-                              f"{card.get('overall')}; no pass run"}
+            # After a resume this run judged (and may have paid QA for) the
+            # earlier pass, so the detail names it instead of "no pass run".
+            entry = resumed["entry"] if resumed else None
+            if entry is None:
+                detail = (f"{card['pass']}: already {card.get('verdict')} at "
+                          f"{card.get('overall')}; no pass run")
+            elif entry.get("decision") == "keep":
+                detail = (f"{card['pass']}: {entry['name']} judged {card.get('verdict')} "
+                          f"at {card.get('overall')}; no further pass run")
+            else:
+                detail = (f"{card['pass']}: {card.get('verdict')} at {card.get('overall')} "
+                          f"after {entry['name']} was judged ({entry.get('decision')}); "
+                          "no further pass run")
+            record["stop"] = {"reason": "ready", "detail": detail}
             record["best"] = _summary(card)
             record["defects"] = self.defects
             return self._finish(record)
@@ -2081,9 +2092,11 @@ class Improver:
                  f"({record['stop']['detail']})")
         self.say(f"  start {start.get('pass')} {start.get('overall')}  ->  best "
                  f"{best.get('pass')} {best.get('overall')} {best.get('verdict')}")
-        if best.get("verdict") != qa.READY:
+        if best.get("verdict") and best["verdict"] != qa.READY:
             # The verdict's own reasons, the list improve.md section 6 shows,
             # so the terminal says why the film is not ready, not only that.
+            # No verdict (no QA pass was read) is not NOT READY, and then no
+            # improve.md is written to point at.
             self.say(f"  not ready: {'; '.join(best.get('bar') or []) or 'see ' + REPORT_MD}")
         for p in record["passes"]:
             self.say(f"  {p['name']}: {', '.join(p['stages'])} -> {p.get('qa_pass', '-')} "
