@@ -221,6 +221,70 @@ class Bar(unittest.TestCase):
                                                 script={"sections": script["sections"]}), [])
 
 
+class ReviewCredits(unittest.TestCase):
+    """yt review's credit issues as QA findings (AUTO-160)."""
+
+    ISSUE = {"heading": "Two", "what": "a logo typeset with no mark", "asset": "logo-acme",
+             "severity": "minor", "fix": "credit Acme on screen"}
+
+    def build(self):
+        return {"shots": [{"label": "1.1", "at": 0.0, "section": "One"},
+                          {"label": "2.1", "at": 7.5, "section": "Two"},
+                          {"label": "2.2", "at": 9.0, "section": "Two"}]}
+
+    def test_review_credit_findings_are_blocking_and_external(self):
+        found = qa.review_credit_findings(
+            [self.ISSUE, dict(self.ISSUE, heading="Nowhere", fix="", asset="fig-1")],
+            self.build())
+        self.assertEqual(found[0], {
+            "kind": "review-credit", "severity": "blocking", "owner": "external",
+            "shot": "2.1", "timestamp": 7.5, "frame": "",
+            "problem": "review: missing credit in Two: a logo typeset with no mark "
+                       "(`logo-acme`)",
+            "fix": "credit Acme on screen"})
+        # no shot in that section: no time is claimed, the section is named
+        self.assertEqual((found[1]["shot"], found[1]["timestamp"], found[1]["section"],
+                          found[1]["fix"]),
+                         ("", None, "Nowhere", "credit it at source and rebuild"))
+        self.assertEqual(qa.mechanical_line(found[1]),
+                         "mechanical: review: missing credit in Nowhere: a logo typeset "
+                         "with no mark (`fig-1`) (section Nowhere)")
+        self.assertEqual(qa.mechanical_line(found[0]),
+                         "mechanical: review: missing credit in Two: a logo typeset with "
+                         "no mark (`logo-acme`) at 7.5s (shot 2.1)")
+        self.assertEqual(qa.REVIEW_KINDS, ("review-credit",))
+
+    def test_the_heading_matches_a_section_whatever_its_numbering_or_case(self):
+        build = {"shots": [{"label": "1.1", "at": 0.0, "section": "1. The Opening"},
+                           {"label": "2.1", "at": 7.5, "section": "2. Two  Pressures"}]}
+        for heading in ("2. Two  Pressures", "two pressures", "  TWO PRESSURES ",
+                        "2) Two Pressures", "Section 2: two pressures"):
+            found = qa.review_credit_findings([dict(self.ISSUE, heading=heading)], build)
+            self.assertEqual((found[0]["shot"], found[0]["timestamp"]), ("2.1", 7.5), heading)
+
+    def test_the_readers_prose_does_not_change_the_defect(self):
+        # a `what` with its own backticks is prose, not an object name: the
+        # same credit is one defect across passes whatever the reader wrote
+        from ytstudio import improve
+        one = qa.review_credit_findings([self.ISSUE], self.build())[0]
+        two = qa.review_credit_findings(
+            [dict(self.ISSUE, what="chart `fig-3` redrawn, logo `acme` typeset")],
+            self.build())[0]
+        self.assertEqual(improve.fingerprint(one), improve.fingerprint(two))
+        self.assertEqual(improve.fingerprint(one), "review-credit|2.1|logo-acme")
+        self.assertIn("chart fig-3 redrawn", two["problem"])
+
+    def test_review_credits_do_not_cap_scores(self):
+        scores = {k: 9.0 for k in qa.CATEGORIES}
+        credit = qa.review_credit_findings([self.ISSUE], self.build())
+        out, overall, capped = qa.cap_scores(scores, 9.0, credit)
+        self.assertEqual((out, overall, capped), (scores, 9.0, []))
+        # beside a frame defect the frame defect still caps
+        frozen = {"kind": "frozen", "severity": "blocking"}
+        _, _, capped = qa.cap_scores(scores, 9.0, credit + [frozen])
+        self.assertEqual(capped, list(qa.CAPPED))
+
+
 class AccuracyRecord(unittest.TestCase):
     """AUTO-150: the bar reason, the price and the scorecard keys."""
 
@@ -890,6 +954,47 @@ class StoryStage(unittest.TestCase):
         # reviewer has no cue to file it a second time as a qa finding
         self.assertNotIn("the wind speed is not in the research", self.seen["prompt"])
         self.assertNotIn("fact-check: blocker", self.seen["prompt"])
+
+    # AUTO-160: a credit `yt review` filed against this scene.xml keeps the
+    # film off READY, owned by external; one filed against another scene is
+    # not evidence, and findings.md says so.
+
+    def review_json(self, digest):
+        from ytstudio import review
+        (self.root / "review.json").write_text(json.dumps({
+            "scene_sha256": digest, "credit_issues": [
+                {"heading": "One take", "what": "a chart redrawn from Smith 2019",
+                 "asset": "fig-pressure", "severity": "minor", "fix": ""}]}))
+        return review
+
+    def test_a_current_review_credit_keeps_qa_off_ready(self):
+        line = ("mechanical: review: missing credit in One take: a chart redrawn from "
+                "Smith 2019 (`fig-pressure`) at 0s (shot 1.1)")
+        self.run_qa()
+        base = self.scorecard(1)
+        self.review_json(qa.scene_digest((self.root / "scene.xml").read_bytes()))
+        self.run_qa()
+        card = self.scorecard(2)
+        self.assertEqual(card["verdict"], qa.NOT_READY)
+        self.assertIn(line, card["blocking"])
+        self.assertEqual(len(card["blocking"]), len(base["blocking"]) + 1)
+        credit = [f for f in card["mechanical"] if f["kind"] == "review-credit"]
+        self.assertEqual([(f["owner"], f["severity"]) for f in credit],
+                         [("external", "blocking")])
+        # a credit is not a frame defect: it caps nothing the frames measure
+        self.assertEqual(card["capped"], base["capped"])
+        self.assertNotIn("review_note", card)
+        # never briefed: the scorecard prompt is what it was
+        self.assertNotIn("fig-pressure", self.seen["prompt"])
+        # the scene rebuilt: the old review speaks for another document
+        review = self.review_json("0" * 64)
+        self.run_qa()
+        stale = self.scorecard(3)
+        self.assertNotIn(line, stale["blocking"])
+        self.assertFalse([b for b in stale["blocking"] if "review: missing credit" in b])
+        self.assertEqual(stale["review_note"], review.STALE_REVIEW)
+        md = (self.root / "qa" / "pass-03" / "findings.md").read_text()
+        self.assertIn(f"Note: {review.STALE_REVIEW}", md)
 
     # AUTO-150: with a dossier, the text vfx authored is read against it by a
     # reviewer of another family; a blocking mismatch keeps the film off READY.

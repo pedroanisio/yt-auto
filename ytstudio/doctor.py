@@ -37,6 +37,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from . import (env, gateway, house, keyframe, narrative, render, retention, rhythm, spend,
                workspace)
+from . import review as review_sheet
 from . import script as script_stage
 from .assets import kind_for, licence_tier
 from .core import read_json, timecode, write_json
@@ -1216,6 +1217,24 @@ def package_problem(project: workspace.Project) -> str:
     return rows[0][0] if rows else ""
 
 
+#: Where a credit the sheet shows nothing for is given (AUTO-160).
+REVIEW_CREDIT_FIX = ("credit it at source (dossier credit_line, sound.json, props.json, "
+                     "or on screen in the vfx document), rebuild, then ")
+
+
+def check_review_credits(project: workspace.Project, report: Report) -> None:
+    """A credit `yt review`'s reader filed against this scene.xml is a fail
+    (AUTO-160); one filed against another scene is a note, not evidence.
+    The area is "licence", which no stage owns, so `yt improve` routes none
+    of these (QA's review-credit row already goes to a human)."""
+    issues, note = review_sheet.current_credits(project.root, project.source("scene"))
+    for row in issues:
+        report.add("fail", "licence", f"review: missing credit in {row.get('heading', '')}: "
+                   f"{row.get('what', '')}", REVIEW_CREDIT_FIX + _cmd("review", project))
+    if note:
+        report.add("note", "licence", note, _cmd("review", project))
+
+
 def check_renders(project: workspace.Project, report: Report) -> None:
     """List the render jobs that did not render (AUTO-32): every render*.json and every
     kit-frame report under .cache/reports/ that carries a status. A job that timed out,
@@ -2014,6 +2033,7 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
                        f"gate deliverable, QA {qa_done.get('pass', '')} at "
                        f"{qa_done.get('overall', '?')}")
 
+    check_review_credits(project, report)
     check_renders(project, report)
     check_spend(project, report)
 

@@ -16,7 +16,8 @@ loop as code:
    `workspace.STAGES`, or to `upstream-fact` (a claim the research or the
    screenplay got wrong: production fixes pictures, not facts) or
    `external` (a policy or an approval outside this repo). The mechanical
-   kinds (`MECHANICAL_KINDS`) go to their stated owner without asking; the
+   kinds (`MECHANICAL_KINDS`) go to their stated owner without asking (a
+   credit `yt review` filed, `review-credit`, to `external`, AUTO-160); the
    prose ones, whose `owner` is free text, are routed by one harness
    decision under `ROUTE_SCHEMA`, which also merges duplicates and writes
    each stage an actionable brief: what must change, how the next pass
@@ -103,7 +104,12 @@ ACCURACY = "accuracy"
 MECHANICAL_KINDS = ("penetration", "reads-merged", "flat", "clipped", "frozen", "jump",
                     "off_camera", "proof-mismatch",
                     "hold", "metronomic", "slow-opening", "wpm",
-                    "no-build", "text-dense")
+                    "no-build", "text-dense", *qa.REVIEW_KINDS)
+#: A credit `yt review`'s reader filed against the scene QA judged
+#: (AUTO-160). It is the one mechanical kind owned by a human: only someone
+#: with the source can say what the credit is, so it goes to `external` and
+#: no stage is re-run for it.
+REVIEW_CREDIT = qa.REVIEW_KINDS[0]
 
 #: Expensive, and they change the film's facts: never re-run as a side effect.
 EXPENSIVE = ("research", "script")
@@ -600,8 +606,11 @@ def route(h: Harness, findings: list[dict], *, name: str,
     # reviewer's finding to its owner when QA named one of the routes (qa.OWNERS).
     # Doctor's scratch take (AUTO-152) is routed where collect placed it:
     # to voice, or to a human when no real engine is installed.
+    # A review credit (AUTO-160) is the one measured kind a human owns.
     fixed = {f["id"]: f["owner"] for f in findings
-             if (f.get("kind") in MECHANICAL_KINDS and f.get("owner") in ROUTABLE)
+             if (f.get("kind") in MECHANICAL_KINDS
+                 and (f.get("owner") in ROUTABLE
+                      or (f.get("kind") == REVIEW_CREDIT and f.get("owner") in HUMAN)))
              or (f.get("source") == "qa" and f.get("owner") in ROUTES)
              or (f.get("kind") == SCRATCH_TAKE and f.get("owner") in ROUTES)
              or (f.get("source") == "fact-check" and f.get("owner") in ROUTES)}
@@ -633,7 +642,10 @@ def route(h: Harness, findings: list[dict], *, name: str,
                    "doctor": (f"doctor's scratch take: {f.get('why')}" if f.get("why")
                               else "doctor's scratch take, which a real engine here redoes"),
                    "fact-check": str(f.get("why") or "a fact-check blocker stands"),
-                   "mechanical": f"measured {f.get('kind')}, owned by {fixed[f['id']]}"}[by]
+                   "mechanical": (f"yt review filed a missing credit, which only a human "
+                                  f"with the source can give ({fixed[f['id']]})"
+                                  if f.get("kind") == REVIEW_CREDIT else
+                                  f"measured {f.get('kind')}, owned by {fixed[f['id']]}")}[by]
             routes[f["id"]] = {"stage": fixed[f["id"]], "by": by, "why": why,
                                "duplicate_of": dup}
         else:

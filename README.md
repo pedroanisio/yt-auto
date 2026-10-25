@@ -359,7 +359,7 @@ Or all of it at once, for one idea:
 | `yt retime` | the screenplay's shot lengths, replaced by the measured ones | no model calls |
 | `yt pilot` | 30/60/180-second cuts of the finished film, nested, with what each proves | no model calls |
 | `yt gate` | the delivery verdict: loudness, scopes, frames, caption limits, run on a render host and naming the requirement that stopped it; plus the geometry check (a hero that penetrates the set, or reads merged into it on screen, blocks whatever the tool and the triage said) | one triage call |
-| `yt review` | the PDF review sheet: frames, captions, markers, sources, credits | no model calls |
+| `yt review` | the PDF review sheet: frames, captions, markers, sources, credits, read by a model of another family that types each issue and exits 1 on a credit the sheet shows nothing for (AUTO-160) | one inspection by `--reviewer-model` (default `opus`), plus one `sheet-retry` when a credit issue names no asset (cost TO VERIFY) |
 | `yt package` | run by `yt run`'s delivery tail after a READY QA (AUTO-164), still not a PIPELINE stage: `package/` with the title, description (chapters from the section markers, the cited sources with their URLs, every credit the end-credits card prints), tags, a 1280x720 thumbnail from a frame code offered, `captions.vtt` and `UPLOAD.md`, each checked against YouTube's limits (TO VERIFY) and judged `ready` or `not ready`; `yt doctor`'s delivery needs a current, ready one. Nothing is uploaded | one draft decision and one review decision by another family (`--reviewer-model`, default `opus`, capped at `--review-budget-usd`, 2), plus one revision and one review when the review blocks; one still render |
 | `yt qa` | the scorecard per pass: every shot sampled at its midpoint and each narrated line where it starts (`line: <first words>`, AUTO-104), up to 60 stills (`--frames N` above the shot count adds the line stills first, then evenly spaced stills; below it, or past 60 shots by default, names the shots left out; the lines left without a still are named in `lines_unsampled`), one frame window per sample (the still is its middle frame), a contact sheet, the mechanical findings (flat, clipped, frozen, jump, off-camera, `penetration`: the hero inside a set solid, and `reads-merged`: the hero over a surface on screen with no shadow, from the engine's evaluated geometry and camera; advisory and always minor, AUTO-145: `no-build`, a diagram's first shot whose ink does not grow from a still after its cut, through its line stills, to one before its end, and `text-dense`, too many words on screen counted from the rendered document), the model's review, scored as the median of three samples (an audio category no current listening review covers is null in every sample, never a median), and a side-by-side comparison with the previous kept cut at the same timestamps | `qa.QA_SAMPLES` (3) inspection calls per pass, at most one merge decision and one `<pass>-compare-pass` inspection when an earlier scored pass exists (`--recheck` adds one `<pass>-recheck` inspection, AUTO-106); one render job per sample (by default one per shot and per narrated line, at most 60; `--frames N` sets it), plus up to 12 single frames for the diagram build stills (AUTO-145), one eval job per pass; `yt improve` pays this every pass; `--listen` (gateway, opt-in, AUTO-126) adds one `listen-<audio sha>` decision on the film's audio and at most one `-again`, and on a narrated film one `transcript-<audio sha>` decision and at most one `-again` (AUTO-152), priced by its preflight and refused over `--listen-budget-usd` (0.50), none when the same mix was heard before; `--watch` (gateway, opt-in, AUTO-127) adds one `watch-sNN` decision per piece of the cut and at most one `-again` each, plus up to 12 render jobs for the moments it reports, none when the same cut was watched before |
 | `yt improve` | routes each QA finding to the stage that owns it, briefs that stage through `feedback/`, re-runs it and everything downstream, keeps the pass only if it measurably improved | one routing decision per pass, plus the stages it runs |
@@ -2017,6 +2017,41 @@ section; without one it lays out what the document says.
 The sheet is then read, not just written: the model opens the PDF and the
 frames and critiques each section against the screenplay — what a reviewer
 would circle, with the owning stage and the fix — into `review.json`.
+
+The reader is `--reviewer-model` (default `opus`), never the author's family:
+the author is build.json's `engine.model`, else `--model`, and the author's
+family, `pool` or `sdk:<id>` (the gateway engine cannot open the PDF) exit 2
+before sr-review runs or anything is paid. Each issue has a `kind`: `credit`,
+`band`, `legibility`, `placeholder`, `continuity` or `other`. A credit issue
+(AUTO-160) is what no manifest row can catch: a chart or figure redrawn from
+a paper with no "after X" or "source: X" on screen, a typeset or modelled
+logo, quoted press text or anything styled as a screenshot with no
+attribution, a credit that is a placeholder ("TBD", "[credit]"). The reader
+is handed build.json's `credits` and `credit_errors` and files neither again;
+a headline card with its "outlet, date" line is attributed. A credit issue
+names its `asset`, asked once more (`sheet-retry`) when it does not, then an
+`error:` and exit 1 with no new review.json; a retry that drops the issue
+instead is said in a `note:` and listed in `credits_dropped_on_retry`. It
+blocks whatever its severity or the verdict: review.json records
+`credit_issues` and `scene_sha256`, the digest of the scene the sheet was
+made from, and `yt review` exits 1 while there is one, 0 otherwise; no other
+kind changes the exit code. review.json is always the project's (`--out`
+moves only the PDF), and a read that fails voids the one that was there
+(its digest dropped, `failed` saying why), so no earlier answer stands for
+it.
+
+`yt qa` and `yt doctor` read `credit_issues` only while scene.xml is still
+that scene (`review.current_credits`). QA files each as a blocking
+`review-credit` mechanical row owned by `external`, which keeps the film off
+READY, caps no score (a credit is not a frame defect) and is not briefed to
+the scorecard reviewer; `yt improve` routes it to a human and dispatches no
+stage. Doctor fails it in area `licence`, with where the credit goes. After
+a rebuild changes scene.xml, both ignore the old review.json and print its
+`not_evidenced:` note (`review.STALE_REVIEW`; `review.OLD_REVIEW` for one
+written before the digest, `review.FAILED_REVIEW` after a failed read: run
+`yt review` again) instead:
+QA in findings.md under Mechanical and as the scorecard's `review_note`,
+doctor as a `licence` note. `yt run` does not call `yt review`.
 
 ### `yt qa`
 

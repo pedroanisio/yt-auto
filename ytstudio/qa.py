@@ -230,6 +230,7 @@ from pathlib import Path
 from . import geometry as geo
 from . import channel, framecheck, house, narrative, spend, workspace
 from . import listen as listen_pass
+from . import review as review_sheet
 from .proofframes import (PROOF_DIFF, PROOF_LIMIT, mismatch_text,  # noqa: F401
                           proof_diff, proof_plan, ungraded)
 from . import render as render_stage
@@ -323,6 +324,10 @@ CAPPED = ("visual_quality", "animation_vfx")
 #: hold is also a picture that does not move, so it caps both.
 RHYTHM_KINDS = rhythm.KINDS
 RHYTHM_CAPPED = ("editing_pacing",)
+#: A credit `yt review`'s reader filed against this scene.xml (AUTO-160):
+#: blocking and external, since only a human with the source can credit it,
+#: and never a cap, since a missing credit is not a frame defect.
+REVIEW_KINDS = ("review-credit",)
 CAP_RULE = (f"a blocking one caps {' and '.join(CAPPED)} at {MECHANICAL_CAP:g}; a blocking "
             f"rhythm finding ({', '.join(RHYTHM_KINDS)}) caps {' and '.join(RHYTHM_CAPPED)} "
             f"at {MECHANICAL_CAP:g} instead, and a hold caps all three; a rhythm finding "
@@ -2418,11 +2423,13 @@ def cap_scores(scores: dict, overall: float, mechanical: list[dict]
     """While a blocking mechanical finding stands the reviewer cannot award
     more than MECHANICAL_CAP in the categories the frames measure; a
     blocking rhythm finding caps RHYTHM_CAPPED instead, and a hold both
-    (CAP_RULE). The overall follows the capped mean when that is lower."""
+    (CAP_RULE). The overall follows the capped mean when that is lower.
+    A review credit (REVIEW_KINDS) blocks the verdict but caps nothing: it
+    is not something the frames measure."""
     scores, capped = dict(scores), []
     keys: list[str] = []
     for f in mechanical:
-        if f.get("severity") != "blocking":
+        if f.get("severity") != "blocking" or f.get("kind") in REVIEW_KINDS:
             continue
         kind = f.get("kind")
         hit = (RHYTHM_CAPPED + CAPPED if kind == "hold" else
@@ -2447,8 +2454,48 @@ def cap_scores(scores: dict, overall: float, mechanical: list[dict]
     return scores, round(overall, 2), capped
 
 
+_SECTION_NUMBER = re.compile(r"^(?:section\s+)?\d+(?:\.\d+)*\s*[.):\-\u2013\u2014]?\s*")
+
+
+def _section_key(heading: object) -> str:
+    """A section heading as the reader and build.json can both match it:
+    case, runs of whitespace and a leading section number aside. The reader
+    copies the heading off the PDF, which numbers and sets it its own way."""
+    text = " ".join(str(heading or "").split()).casefold()
+    return _SECTION_NUMBER.sub("", text, count=1)
+
+
+def review_credit_findings(issues: list[dict], build: dict) -> list[dict]:
+    """yt review's current credit issues (review.current_credits) as
+    mechanical findings: blocking, owned by external, at the first shot of
+    the section the reader named. When no shot is in a section of that name
+    the finding claims no time (timestamp None) and names the section.
+    Only the asset is backticked (the reader's prose has its backticks
+    taken out), so improve.fingerprint keeps it one defect across passes."""
+    shots = [s for s in (build or {}).get("shots") or [] if isinstance(s, dict)]
+    found = []
+    for row in issues:
+        heading = str(row.get("heading", "")).replace("`", "")
+        what = str(row.get("what", "")).replace("`", "")
+        key = _section_key(heading)
+        first = next((s for s in shots if _section_key(s.get("section")) == key), None)
+        where = ({"shot": str(first.get("label", "")),
+                  "timestamp": float(first.get("at") or 0.0)} if first is not None else
+                 {"shot": "", "timestamp": None, "section": heading})
+        found.append({"kind": REVIEW_KINDS[0], "severity": "blocking", "owner": "external",
+                      **where, "frame": "",
+                      "problem": f"review: missing credit in {heading}: "
+                                 f"{what} (`{row.get('asset', '')}`)",
+                      "fix": str(row.get("fix") or "") or "credit it at source and rebuild"})
+    return found
+
+
 def mechanical_line(f: dict) -> str:
-    """One blocking mechanical finding as the card's `blocking` names it."""
+    """One blocking mechanical finding as the card's `blocking` names it. A
+    finding with no time (a review credit in a section no shot matched)
+    names its section only, rather than claim 0s."""
+    if f.get("timestamp") is None and f.get("section"):
+        return f"mechanical: {f.get('problem', '')} (section {f['section']})"
     where = f"shot {f.get('shot', '')}"
     if f.get("section"):
         where += f", section {f['section']}"
@@ -4092,6 +4139,8 @@ def findings_md(name: str, card: dict, samples: list[dict], diff: dict, *,
               ""]
     if card.get("proof_note"):
         lines += [f"Note: {card['proof_note']}", ""]
+    if card.get("review_note"):
+        lines += [f"Note: {card['review_note']}", ""]
     if not card.get("mechanical"):
         lines.append("None found.")
     for row in card.get("mechanical") or []:
@@ -5864,6 +5913,18 @@ def run(args) -> int:
         print(f"note: {len(dropped_lines)} of {len(narrated)} narrated line(s) have "
               "no still where they start (scorecard: lines_unsampled)", file=sys.stderr)
     card = note_builds(card, builds, samples, reused=bool(args.reuse))
+    # The credits `yt review`'s reader filed against this very scene.xml
+    # (AUTO-160): blocking mechanical rows owned by external, filed after
+    # the scoring so the scorecard prompt stays what it was (no reviewer is
+    # cued to file them again) and before the cap, which they do not move.
+    credit_rows, review_note = review_sheet.current_credits(project.root, scene)
+    credits_found = review_credit_findings(credit_rows, build)
+    mechanical += credits_found
+    if not args.quiet:
+        for f in credits_found:
+            print(f"[qa] [blocking] {mechanical_line(f)}", file=sys.stderr)
+        if review_note:
+            print(f"note: {review_note}", file=sys.stderr)
     capped: list[str] = []
     if evidenced:
         # The unheard audio categories were left out of the medians
@@ -5929,6 +5990,10 @@ def run(args) -> int:
                          "cut": cut, "side_by_side": side,
                          "contact_sheet": sheet.name, "engine": reviewer.report(),
                          "usage": spend.from_report(reviewer.report())}
+    if review_note:
+        # Only with a review.json of another scene: a film with none keeps
+        # the scorecard's shape.
+        card["review_note"] = review_note
     if rechecked is not None:
         card["recheck"] = rechecked
     if compared is not None:

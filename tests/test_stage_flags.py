@@ -23,7 +23,7 @@ CONCEPTS = {
     "rounds": ("--rounds", {"--revisions": "vfx"}, ("keyframe", "vfx", "probe", "script",
                                                     "package")),
     "reviewer": ("--reviewer-model", {}, ("keyframe", "vfx", "probe", "run", "script", "build",
-                                          "styles", "research", "package")),
+                                          "styles", "research", "package", "review")),
     "review budget": ("--review-budget-usd", {}, ("keyframe", "vfx", "probe", "run", "script",
                                                   "build", "package")),
     "bar": ("--bar", {"--author-bar": "vfx"}, ("keyframe", "vfx", "probe")),

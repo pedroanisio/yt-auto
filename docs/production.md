@@ -570,7 +570,8 @@ yt pilot  --title <slug> --seconds 30,60,180   # nested cuts, full fidelity
 yt render --title <slug> --audio-only          # does the mix fit in memory
 yt render --title <slug>                       # the encode
 yt gate   --title <slug>                       # loudness, scopes, captions; on a host; triaged
-yt review --title <slug> --engine rs           # the PDF sheet, read by the model
+yt review --title <slug> --engine rs           # the PDF sheet, read by another family;
+                                               # exit 1 on a credit missing from screen
 yt qa     --title <slug>                       # this brief, as a pass: qa/pass-NN
 ```
 
