@@ -903,5 +903,334 @@ class MotionSummary(unittest.TestCase):
         self.assertEqual(md.count(why), 1)
 
 
+# --------------------------------------------------------------------------- #
+# AUTO-154: which of 2D, 2.5D and 3D each authored section uses
+# --------------------------------------------------------------------------- #
+
+def world_doc(*symbols: tuple[str, str]) -> str:
+    """A document holding each (symbol id, body) as one symbol."""
+    body = "\n".join(f'    <symbol id="{sid}" width="1920" height="1080">{inner}</symbol>'
+                     for sid, inner in symbols)
+    return ('<scene version="1.3"><project width="1920" height="1080" fps="30" '
+            f'duration="6"/>\n  <symbols>\n{body}\n  </symbols>\n</scene>')
+
+
+#: The symbol bodies the cases are made of.
+FLAT = ('<layer id="l" z="3"><shape id="r" shape="rect" width="10" height="10"/>'
+        '<text id="t" text="hi"/></layer>')
+PERSPECTIVE = ('<viewport3D id="v"><camera id="c" z="-500"/>'
+               '<object3D id="o" primitive="box"/></viewport3D>')
+ORTHOGRAPHIC = ('<viewport3D id="v"><camera id="c" projection="orthographic"/>'
+                '<object3D id="o" primitive="box"/></viewport3D>')
+THREED_GROUP = ('<group id="g" threeD="true" zDepth="200"><shape id="s" shape="rect"/></group>'
+                '<group id="g2" threeD="true" zDepth="100"/>')
+GLOBE = '<map id="m" projection="orthographic"/>'
+
+
+def one_world(body: str, sid: str = "fx"):
+    """usage, effects and scene for one effect authored as `sid` in section Open."""
+    usage = reach.usage_of({"vfx/a.scene.xml": world_doc((sid, body))})
+    effects = [{"id": sid, "section": "Open"}]
+    scene = {"symbols": {sid: {"file": "vfx/a.scene.xml"}}}
+    return usage, effects, scene
+
+
+def dims_of(body: str) -> list:
+    return reach.dimensions(*one_world(body))["Open"]["dims"]
+
+
+class Dimensions(unittest.TestCase):
+    def test_perspective_viewport_is_3d(self):
+        self.assertEqual(dims_of(PERSPECTIVE), ["3d"])
+        rows = reach.dimensions(*one_world(PERSPECTIVE))["Open"]["evidence"]
+        self.assertIn("viewport3D x1", rows)
+
+    def test_orthographic_viewport_is_2_5d_not_3d(self):
+        self.assertEqual(dims_of(ORTHOGRAPHIC), ["2.5d"])
+        self.assertIn("camera/@projection=orthographic x1",
+                      reach.dimensions(*one_world(ORTHOGRAPHIC))["Open"]["evidence"])
+        # one camera that is not orthographic is perspective, the engine's default
+        both = ORTHOGRAPHIC.replace("</viewport3D>", '<camera id="c2"/></viewport3D>')
+        self.assertEqual(dims_of(both), ["2.5d", "3d"])
+
+    def test_a_camera_or_light_alone_is_not_a_3d_world(self):
+        # a camera with no viewport or object (a pan or zoom rig, say) draws
+        # nothing in 3D, so the world is what its 2D stage is
+        self.assertEqual(dims_of('<camera id="c"/>' + FLAT), ["2d"])
+        self.assertEqual(dims_of('<camera id="c"/><lights><light id="k"/></lights>' + FLAT),
+                         ["2d"])
+
+    def test_a_viewport_with_no_camera_beside_an_orthographic_one_is_3d(self):
+        # the second viewport renders through the default perspective camera
+        second = '<viewport3D id="v2"><object3D id="o2" primitive="box"/></viewport3D>'
+        self.assertEqual(dims_of(ORTHOGRAPHIC + second), ["2.5d", "3d"])
+        self.assertEqual(dims_of(ORTHOGRAPHIC + ORTHOGRAPHIC.replace('"v"', '"v2"')),
+                         ["2.5d"])
+
+    def test_threeD_group_is_2_5d(self):
+        self.assertIn("2.5d", dims_of(THREED_GROUP))
+        self.assertIn("group/@threeD=true x2",
+                      reach.dimensions(*one_world(THREED_GROUP))["Open"]["evidence"])
+        self.assertNotIn("2.5d", dims_of(THREED_GROUP.replace('threeD="true"',
+                                                              'threeD="false"')))
+
+    def test_layer_z_is_not_depth(self):
+        self.assertEqual(dims_of(FLAT), ["2d"])
+
+    def test_map_orthographic_is_not_2_5d(self):
+        self.assertEqual(dims_of(GLOBE + FLAT), ["2d"])
+
+    def test_phases_share_their_world(self):
+        usage = reach.usage_of({"vfx/a.scene.xml": world_doc(("world-open", THREED_GROUP))})
+        effects = [{"id": "open-a", "section": "Open"}, {"id": "open-b", "section": "Open"}]
+        scene = {"symbols": {"world-open": {"file": "vfx/a.scene.xml"}},
+                 "phases": {"open-a": "world-open", "open-b": "world-open"}}
+        got = reach.dimensions(usage, effects, scene)
+        self.assertEqual(list(got), ["Open"])
+        self.assertIn("2.5d", got["Open"]["dims"])
+        # one world, counted once
+        self.assertIn("group/@threeD=true x2", got["Open"]["evidence"])
+
+    def test_unauthored_effect_is_skipped(self):
+        usage, effects, scene = one_world(PERSPECTIVE)
+        effects.append({"id": "lost", "section": "Close"})
+        got = reach.dimensions(usage, effects, scene)
+        self.assertEqual(list(got), ["Open"])
+
+    def test_old_usage_without_flags_falls_back_to_presence(self):
+        usage, effects, scene = one_world(THREED_GROUP)
+        del usage["flags"]
+        for per in [usage] + list(usage["symbols"].values()):
+            per["attributes"] = {k: n for k, n in per["attributes"].items()
+                                 if not k.endswith("=true")}
+        got = reach.dimensions(usage, effects, scene)["Open"]
+        self.assertIn("2.5d", got["dims"])
+        self.assertIn("group/@threeD x2 (value not recorded)", got["evidence"])
+
+    def test_threeD_true_is_recorded_and_flags_are_named(self):
+        usage = reach.usage_of({"a": world_doc(("fx", THREED_GROUP))})
+        self.assertEqual(usage["flags"], list(reach.BOOLEAN_CONSTRUCTS))
+        self.assertEqual(usage["attributes"]["group/@threeD=true"], 2)
+        flat = reach.usage_of({"a": world_doc(("fx", THREED_GROUP.replace('"true"',
+                                                                          '"false"')))})
+        self.assertNotIn("group/@threeD=false", flat["attributes"])
+        self.assertNotIn("group/@threeD=true", flat["attributes"])
+
+    def test_existing_keys_unchanged(self):
+        u = reach.construct_usage(DOC)
+        self.assertEqual(u["elements"], {
+            "scene": 1, "project": 1, "output": 1, "materials": 1, "material": 1,
+            "symbols": 1, "symbol": 2, "shape": 1, "text": 1, "camera": 1, "object3D": 2,
+            "composition": 1, "instance": 2})
+        self.assertEqual(u["attributes"], {
+            "scene/@version": 1, "project/@width": 1, "project/@height": 1,
+            "project/@fps": 1, "project/@duration": 1, "project/@background": 1,
+            "output/@path": 1, "output/@codec": 1, "output/@codec=h264": 1,
+            "material/@id": 1, "material/@baseColor": 1, "material/@unevenness": 1,
+            "symbol/@id": 2, "symbol/@width": 2, "symbol/@height": 2,
+            "shape/@id": 1, "shape/@shape": 1, "shape/@shape=rect": 1, "shape/@x": 1,
+            "shape/@y": 1, "shape/@width": 1, "shape/@height": 1, "shape/@fill": 1,
+            "shape/@pattern": 1, "shape/@pattern=dots": 1, "text/@id": 1, "text/@text": 1,
+            "text/@width": 1, "text/@height": 1, "camera/@id": 1, "camera/@renderer": 1,
+            "camera/@renderer=pathtrace": 1, "camera/@x": 1, "camera/@y": 1, "camera/@z": 1,
+            "camera/@active": 1, "object3D/@id": 2, "object3D/@primitive": 2,
+            "object3D/@primitive=box": 1, "object3D/@material": 2, "object3D/@width": 1,
+            "object3D/@height": 1, "object3D/@depth": 1, "object3D/@primitive=sphere": 1,
+            "object3D/@radius": 1, "instance/@id": 2, "instance/@symbol": 2,
+            "instance/@start": 2, "instance/@end": 2})
+
+
+def film(rows, *, styles_first="2d motion graphics", stored=True):
+    """styles, script and vfx for sections of (heading, [(label, style)], body):
+    one document and one world per section, its effects a phase of it."""
+    files, script, groups, symbols, phases, authored = {}, [], [], {}, {}, []
+    for n, (heading, shots, body) in enumerate(rows, 1):
+        file, world = f"vfx/v01/{n:02d}.scene.xml", f"world-{n}"
+        files[file] = world_doc((world, body))
+        script.append({"heading": heading,
+                       "shots": [{"label": lab, "style": st} for lab, st in shots]})
+        effect = {"id": f"fx-{n}", "section": heading, "shots": [lab for lab, _ in shots]}
+        groups.append({"section": heading, "effects": [effect]})
+        symbols[world] = {"file": file}
+        phases[effect["id"]] = world
+        authored.append({"n": n, "section": heading})
+    usage = reach.usage_of(files)
+    scene = {"symbols": symbols, "phases": phases}
+    rec = {"usage": usage, "report": {}, "audit": None, "reason": ""}
+    if stored:
+        rec["dimensions"] = reach.dimensions(
+            usage, [e for g in groups for e in g["effects"]], scene)
+    return ({"styles": [{"name": styles_first}]}, {"sections": script},
+            {"reach": rec, "sections": groups, "scene": scene, "authored": authored})
+
+
+class DimensionGap(unittest.TestCase):
+    def test_declared_3d_in_a_flat_world_is_a_section_gap_and_a_film_gap(self):
+        styles, script, doc = film(
+            [("One", [("1.1", "2d motion graphics")], FLAT),
+             ("Two", [("2.1", "3d animation"), ("2.2", "3D Animation")], FLAT)],
+            styles_first="3d animation")
+        gap = reach.dimension_gap(styles, script, doc)
+        self.assertTrue(gap["measured"])
+        [row] = gap["sections"]
+        self.assertEqual((row["n"], row["section"], row["declared"], row["realised"]),
+                         (2, "Two", "3d", ["2d"]))
+        self.assertEqual(row["shots"], ["2.1", "2.2"])
+        self.assertIn("3d animation", row["styles"])
+        self.assertTrue(row["evidence"])
+        self.assertEqual(gap["film"], [{"style": "3d animation", "dimension": "3d"}])
+        self.assertEqual(gap["shots"], 3)
+        self.assertEqual(gap["unmapped_shots"], 0)
+
+    def test_a_flat_film_of_flat_shots_has_no_gap(self):
+        styles, script, doc = film([("One", [("1.1", "2d motion graphics")], FLAT),
+                                    ("Two", [("2.1", "data visualisation")], FLAT)])
+        gap = reach.dimension_gap(styles, script, doc)
+        self.assertTrue(gap["measured"])
+        self.assertEqual((gap["sections"], gap["film"]), ([], []))
+
+    def test_isometric_shots_in_a_flat_world_are_a_2_5d_gap(self):
+        styles, script, doc = film([("One", [("1.1", "isometric diagram")], FLAT)])
+        [row] = reach.dimension_gap(styles, script, doc)["sections"]
+        self.assertEqual(row["declared"], "2.5d")
+
+    def test_isometric_shots_in_a_3d_or_2_5d_world_are_no_gap(self):
+        for body in (PERSPECTIVE, ORTHOGRAPHIC, THREED_GROUP):
+            styles, script, doc = film([("One", [("1.1", "isometric diagram")], body)],
+                                       styles_first="isometric diagram")
+            gap = reach.dimension_gap(styles, script, doc)
+            self.assertEqual((gap["sections"], gap["film"]), ([], []), body)
+
+    def test_footage_any_and_unknown_are_never_judged(self):
+        styles, script, doc = film(
+            [("One", [("1.1", "archival montage"), ("1.2", "split screen comparison"),
+                      ("1.3", "3D cutaway"), ("1.4", "")], FLAT)])
+        gap = reach.dimension_gap(styles, script, doc)
+        self.assertEqual(gap["sections"], [])
+        self.assertEqual(gap["unmapped_shots"], 1)      # an empty style names nothing
+        self.assertEqual(gap["shots"], 4)
+
+    def test_a_record_without_usage_is_not_measured(self):
+        styles, script, doc = film([("One", [("1.1", "3d animation")], FLAT)])
+        doc["reach"] = {"usage": None, "report": None, "audit": None, "reason": "nothing"}
+        gap = reach.dimension_gap(styles, script, doc)
+        self.assertFalse(gap["measured"])
+        self.assertEqual(gap["reason"], "not measured")
+        self.assertEqual((gap["sections"], gap["film"]), ([], []))
+        self.assertFalse(reach.dimension_gap({}, {}, {})["measured"])
+
+    def test_an_older_record_is_measured_from_its_usage(self):
+        rows = [("One", [("1.1", "2d motion graphics")], FLAT),
+                ("Two", [("2.1", "3d animation")], FLAT)]
+        old = reach.dimension_gap(*film(rows, stored=False))
+        self.assertNotIn("dimensions", film(rows, stored=False)[2]["reach"])
+        self.assertTrue(old["measured"])
+        self.assertEqual(old, reach.dimension_gap(*film(rows)))
+
+    def test_the_gaps_n_is_the_authored_records_n(self):
+        styles, script, doc = film([("Open", [("1.1", "2d motion graphics")], FLAT),
+                                    ("The Middle", [("2.1", "2d motion graphics")], FLAT),
+                                    ("Close", [("3.1", "3d animation")], FLAT)])
+        # the script's heading retyped still joins (by the loose key)
+        script["sections"][2]["heading"] = "close "
+        [row] = reach.dimension_gap(styles, script, doc)["sections"]
+        n = next(r["n"] for r in doc["authored"] if r["section"] == "Close")
+        self.assertEqual(row["n"], n)
+
+    def test_a_section_with_nothing_authored_is_never_a_gap(self):
+        styles, script, doc = film([("One", [("1.1", "2d motion graphics")], FLAT)])
+        script["sections"].append({"heading": "Two",
+                                   "shots": [{"label": "2.1", "style": "3d animation"}]})
+        self.assertEqual(reach.dimension_gap(styles, script, doc)["sections"], [])
+
+    def test_an_unmapped_or_missing_styles_json_gives_no_film_gap(self):
+        _, script, doc = film([("One", [("1.1", "2d motion graphics")], FLAT)])
+        for styles in ({}, {"styles": []}, {"styles": [{"name": "glossy 3D cutaway"}]}):
+            self.assertEqual(reach.dimension_gap(styles, script, doc)["film"], [])
+
+
+class DimensionsInTheStage(unittest.TestCase):
+    def test_reach_work_stores_dimensions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "vfx").mkdir()
+            (root / "vfx" / "01-open.scene.xml").write_text(DOC)
+            asked: list = []
+            p = Audit().planner(root, asked)
+            effects = [{"section": "Open", "effects": [
+                {"id": "fx-flat", "name": "Flat", "section": "Open", "type": "2d-diagram"},
+                {"id": "fx-room", "name": "Room", "section": "Open", "type": "3d-render"}]}]
+            scene = {"symbols": {"fx-flat": {"file": "vfx/01-open.scene.xml"},
+                                 "fx-room": {"file": "vfx/01-open.scene.xml"}}, "dropped": {}}
+            with mock.patch.object(reach, "manifest", return_value=[]):
+                out = p.reach(effects, scene)
+            self.assertEqual(len(asked), 1)                    # plan-reach, and nothing new
+            self.assertEqual(out["dimensions"]["Open"]["dims"], ["2d", "3d"])
+            self.assertIs(asked[0][1], reach.REACH_SCHEMA)
+
+    def test_nothing_authored_stores_no_dimensions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Audit().planner(Path(tmp), [])
+            out = p.reach([{"section": "Open", "effects": []}], {"symbols": {}, "dropped": {}})
+            self.assertIn("dimensions", out)
+            self.assertIsNone(out["dimensions"])
+
+    def render_md(self, data, script=None) -> str:
+        from ytstudio.core import Idea
+        from ytstudio.research import Dossier
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            if script is not None:
+                (root / "script.json").write_text(json.dumps(script))
+            dossier = Dossier(root, Idea(title="T", genre="g", description="d"), at=root)
+            vfx.write_vfx(dossier, data)
+            return (dossier.dir / "vfx.md").read_text(encoding="utf-8")
+
+    def test_vfx_md_has_dimensions_table(self):
+        from tests.test_vfx_picture_constraints import plain_data
+        data = plain_data()
+        usage = reach.usage_of({"vfx/v01/01-open.scene.xml": world_doc(("world-open", FLAT))})
+        data["reach"] = {"usage": usage, "report": {"families": {}, "caveats": []},
+                         "audit": Audit.AUDIT, "reason": "",
+                         "dimensions": reach.dimensions(
+                             usage, [e for s in data["sections"] for e in s["effects"]],
+                             data["scene"])}
+        script = {"sections": [{"heading": "Open", "shots": [
+            {"label": "1.2", "style": "3d animation"}]}]}
+        md = self.render_md(data, script)
+        block = md.split("## Dimensions", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("| section | declared | realised | evidence |", block)
+        row = next(line for line in block.splitlines() if line.startswith("| Open"))
+        self.assertIn("2d", row)
+        self.assertIn("3d", row)                # declared
+        self.assertIn("gap", row)
+        self.assertIn("shape x1", row)
+        # without a script beside it the table still says what was realised
+        md = self.render_md(data)
+        block = md.split("## Dimensions", 1)[1].split("\n## ", 1)[0]
+        row = next(line for line in block.splitlines() if line.startswith("| Open"))
+        self.assertNotIn("gap", row)
+        self.assertIn("2d", row)
+
+    def test_vfx_md_escapes_a_pipe_in_a_heading(self):
+        from tests.test_vfx_picture_constraints import plain_data
+        data = plain_data()
+        data["sections"][0]["section"] = "Open | Close"
+        data["sections"][0]["effects"][0]["section"] = "Open | Close"
+        usage = reach.usage_of({"vfx/v01/01-open.scene.xml": world_doc(("world-open", FLAT))})
+        data["reach"] = {"usage": usage, "report": {"families": {}, "caveats": []},
+                         "audit": Audit.AUDIT, "reason": ""}
+        md = self.render_md(data, {"sections": [{"heading": "Open | Close", "shots": [
+            {"label": "1.2", "style": "3d animation"}]}]})
+        block = md.split("## Dimensions", 1)[1].split("\n## ", 1)[0]
+        row = next(line for line in block.splitlines() if line.startswith("| Open"))
+        self.assertIn("Open \\| Close", row)
+        self.assertEqual(row.replace("\\|", "").count("|"), 5)     # four cells
+
+    def test_vfx_md_of_a_record_without_usage_has_no_table(self):
+        from tests.test_vfx_picture_constraints import plain_data
+        self.assertNotIn("## Dimensions", self.render_md(plain_data()))
+
+
 if __name__ == "__main__":
     unittest.main()

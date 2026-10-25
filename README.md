@@ -656,7 +656,10 @@ Works out what the video has to make a viewer *understand*, then ranks visual
 treatments against that — not against what looks expensive. 29 treatments have
 a hand-written brief (`--list-styles`); `--only` narrows the pool, `--add`
 extends it, `--avoid` drops from it, and a name it has never heard of is passed
-through for the model to characterise itself.
+through for the model to characterise itself. Each library treatment also has
+a dimension, 2d, 2.5d, 3d, footage or any (`styles.STYLE_DIMENSION`, AUTO-154),
+which no prompt sees: it is what `yt doctor` sets a shot's `style` against
+when it measures the authored worlds (see `yt vfx`, the dimension mix).
 
 Constraints are hard gates, not discounts: `--solo` · `--no-face` ·
 `--vertical` · `--money {shoestring,modest,funded}` · `--tools` · `--time`.
@@ -1405,6 +1408,37 @@ upgrades as work, and `yt qa` reads it so a weak-motion finding can name the
 construct left unused. The planner and the author both see the whole
 vocabulary, and `examples.scene.xml` now proves a lit 3D set with a physical
 camera and particles alongside the 2D constructs.
+
+**The dimension mix** (AUTO-154). Each treatment in the style library has a
+dimension (`styles.STYLE_DIMENSION`): `isometric diagram` is 2.5d; `3d
+animation`, `photoreal simulation`, `voxel animation`, `photogrammetry` and
+`cad exploded view` are 3d; the drawn, charted and typeset treatments are 2d;
+the filmed and found ones are footage; `split screen comparison` and `puppet /
+character host` are any. A shot declares its dimension through its `style`
+in `script.json` (`styles.dimension_of`, matched loosely; a name the library
+does not hold is unknown). The reach record measures which of 2D, 2.5D and
+3D each section's world is authored in, from its XML and with no model
+(`reach.dimensions`, `vfx.json` `reach.dimensions`): 3d is a 3D world (a
+viewport, object, mesh or scene, not a camera or lights alone) seen through
+a camera that is not orthographic, or a viewport with none (the engine's
+default perspective); 2.5d an orthographic camera or a 2D node with
+`threeD="true"`; 2d a 2D-stage element; `layer/@z` is stacking order and a
+`map`'s orthographic projection is a globe, so neither is depth. `vfx.md`
+gains a `## Dimensions` table (section, declared, realised, evidence), and a
+section whose shots are 3d or 2.5d while its world is flatter is a `yt
+doctor` vfx warning naming its shots and `yt vfx --sections N`, one per
+section, so `yt improve` re-authors those sections and not the whole film;
+a primary treatment (`styles.json`'s first) that no section realises is one
+more warning, routed to the first such section, or filed under script when
+there is none (no shot takes the treatment, so re-authoring vfx would change
+nothing). The QA reviewer gets
+the same rows as context (`dimensions` in its measurements). Being flat is
+allowed: footage, any and unknown are never judged, a 2D or footage-led film
+gets no warning, nothing fails, and READY, the gate and the QA scores do not
+move. A vfx.json from before this is measured from its stored reach usage
+without running `yt vfx` again; one with no usage is a doctor note when a
+shot declares 2.5d or 3d and the reach record gives no reason of its own
+("nothing was authored" already says it).
 
 `--budget-usd` (18, what the default rounds cost at the most) is one section's
 budget for its author sessions and its reviews together, and
@@ -2597,7 +2631,11 @@ S/10, under its bar B (budget spent)`, or whichever reason stopped it); both
 name `yt vfx --project P --sections N` as the fix, so `yt improve`
 re-authors that section alone. A blocking break QA cannot block on (no
 reviewer of another family recorded) says so on its row, and a continuity
-review that was skipped or failed is a note. None of these is a fail, so the
+review that was skipped or failed is a note. A section whose shots declare 3d
+or 2.5d and whose authored world is flatter (AUTO-154) is one `vfx` warn
+(`section N (<heading>): shots ... are 3d (...) but its authored world is
+2d`) naming `yt vfx --sections N`, and a primary treatment no section
+realises is one more. None of these is a fail, so the
 govern lane's vfx stage is never held by them.
 Exit 1 on any fail, so it works in a script.
 

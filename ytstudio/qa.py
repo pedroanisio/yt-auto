@@ -4130,14 +4130,28 @@ def evidence_rows(samples: list[dict], script: dict, voice: dict | None, *, have
     return evidence
 
 
+def dimension_context(styles: dict | None, script: dict | None,
+                      vfx_doc: dict | None) -> dict | None:
+    """reach.dimension_gap for the reviewer (AUTO-154): which sections' worlds
+    are flatter than their shots declare, and whether the primary treatment's
+    dimension is realised anywhere. None without a vfx.json, so a film that
+    has none is asked what it was asked before."""
+    from . import reach as reach_audit
+    if not isinstance(vfx_doc, dict):
+        return None
+    return reach_audit.dimension_gap(styles or {}, script or {}, vfx_doc)
+
+
 def stage_measurements(build: dict, voice: dict | None, *, sound: dict, gate: dict | None,
                        geometry: dict, styles: dict, reach: dict | None,
-                       rhythm: dict | None = None) -> dict:
+                       rhythm: dict | None = None, dimensions: dict | None = None) -> dict:
     """The measurements and decisions of the stages, as the reviewer is shown
     them: the build's frame and findings, the narration, the cue sheet and
     mix, the gate's triage, the geometry check (`geometry`, its report),
-    the treatment, and how far the authored documents reach into the engine
-    (`reach`, vfx.json's `reach`, or None without one)."""
+    the treatment, how far the authored documents reach into the engine
+    (`reach`, vfx.json's `reach`, or None without one), and where a world
+    is flatter than its shots declare (`dimensions`, dimension_context's,
+    only when given)."""
     from . import reach as reach_audit       # the parameter is the record
     voice, sound, styles = voice or {}, sound or {}, styles or {}
     cues_near = sound_cue_rows(sound, build)
@@ -4173,6 +4187,11 @@ def stage_measurements(build: dict, voice: dict | None, *, sound: dict, gate: di
     # it. Only when `yt qa` measured it, so calibrate asks what it asked.
     if rhythm is not None:
         measurements["rhythm"] = rhythm_brief(rhythm)
+    # The dimension mix (AUTO-154), measured from the authored XML against
+    # what the shots declare: context for animation_vfx and cinematography,
+    # never a score, a bar or a blocker. Flat is allowed.
+    if dimensions is not None:
+        measurements["dimensions"] = dimensions
     return measurements
 
 
@@ -5119,7 +5138,7 @@ def run(args) -> int:
     measurements = stage_measurements(
         build, voice, sound=sound, gate=gate, geometry=geometry_report, styles=styles,
         reach=(vfx_doc or {}).get("reach") if project.source("vfx") else None,
-        rhythm=rhythm_block)
+        rhythm=rhythm_block, dimensions=dimension_context(styles, script, vfx_doc))
     where = "" if project.standalone else f"--project {project.root}"
     # A scratch narration (AUTO-152) blocks the verdict but is not briefed:
     # briefed under "Blocking, already proven" it would change the scorecard

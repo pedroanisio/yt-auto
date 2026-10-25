@@ -1143,6 +1143,29 @@ class EditorialIdentity(unittest.TestCase):
                                       styles={"styles": [{"name": "Diagram"}]}, reach=None)
         self.assertNotIn("identity", plain)
 
+    def test_context_carries_dimensions(self):
+        # AUTO-154: where a section's world is flatter than its shots declare,
+        # as context beside the frames; the categories and bars do not move.
+        from tests.test_reach import FLAT, film
+        styles, script, doc = film([("One", [("1.1", "2d motion graphics")], FLAT),
+                                    ("Two", [("2.1", "3d animation")], FLAT)],
+                                   styles_first="3d animation")
+        gap = qa.dimension_context(styles, script, doc)
+        self.assertEqual([r["n"] for r in gap["sections"]], [2])
+        self.assertEqual(gap["film"], [{"style": "3d animation", "dimension": "3d"}])
+        got = qa.stage_measurements(_build(), None, sound={}, gate=None, geometry={},
+                                    styles=styles, reach=doc["reach"], dimensions=gap)
+        self.assertEqual(got["dimensions"], gap)
+        plain = qa.stage_measurements(_build(), None, sound={}, gate=None, geometry={},
+                                      styles=styles, reach=doc["reach"])
+        self.assertNotIn("dimensions", plain)
+        # no vfx.json: nothing is added, so a film without one asks as before
+        self.assertIsNone(qa.dimension_context(styles, script, None))
+        self.assertEqual(qa.CATEGORIES, (
+            "visual_quality", "animation_vfx", "cinematography", "editing_pacing",
+            "graphics_overlays", "voiceover", "sound_design", "music_score",
+            "narrative_clarity", "overall_production", "editorial_identity"))
+
     def test_the_prompt_scores_eleven(self):
         prompt = qa.review_prompt(
             title="t", pass_name="pass-01", sheet_name="s.png", has_narration=False,
@@ -1157,6 +1180,43 @@ class EditorialIdentity(unittest.TestCase):
         enum = (qa.SIDE_SCHEMA["properties"]["moments"]["items"]["properties"]["bears_on"]
                 ["items"]["enum"])
         self.assertIn("editorial_identity", enum)
+
+
+class DimensionsInTheRun(unittest.TestCase):
+    """AUTO-154 through qa.run: the vfx.json it reads once gives the reviewer
+    the dimension gap, and the verdict's bars are what they were."""
+
+    def setUp(self):
+        from tests import test_qa_samples as samples
+        samples.Samples.setUp(self)
+        self.args = lambda **kw: samples.Samples.args(self, **kw)
+        self.run_qa = lambda **kw: samples.Samples.run_qa(self, **kw)
+
+    def test_the_review_prompt_carries_the_gap(self):
+        from tests.test_reach import FLAT, film
+        styles, script, doc = film([("One", [("1.1", "3d animation")], FLAT)],
+                                   styles_first="3d animation")
+        script["sections"][0]["shots"][0]["narration"] = "A comet."
+        (self.root / "script.json").write_text(json.dumps(script))
+        (self.root / "styles.json").write_text(json.dumps(styles))
+        (self.root / "vfx.json").write_text(json.dumps(doc))
+        self.run_qa()
+        asked = "\n".join(self.seen["prompts"])
+        self.assertIn('"dimensions"', asked)
+        self.assertIn("3d animation", asked)
+        self.assertIn('"declared": "3d"', asked)
+        gapped = json.loads((self.root / "qa" / "pass-01" / "scorecard.json").read_text())
+        # the same film with no gap: the verdict, the scores and the blocking
+        # list are the same, since a gap is context and never a bar
+        styles, script, doc = film([("One", [("1.1", "2d motion graphics")], FLAT)])
+        script["sections"][0]["shots"][0]["narration"] = "A comet."
+        (self.root / "script.json").write_text(json.dumps(script))
+        (self.root / "styles.json").write_text(json.dumps(styles))
+        (self.root / "vfx.json").write_text(json.dumps(doc))
+        self.run_qa()
+        clean = json.loads((self.root / "qa" / "pass-02" / "scorecard.json").read_text())
+        for key in ("verdict", "scores", "blocking"):
+            self.assertEqual(gapped.get(key), clean.get(key), key)
 
 
 if __name__ == "__main__":

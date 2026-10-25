@@ -130,6 +130,51 @@ STYLE_LIBRARY = {
                                "timeline; A/B claims and before/after",
 }
 
+#: What `dimension_of` can answer (AUTO-154). `footage` is filmed or found
+#: material, `any` a treatment that can be built in any dimension, and
+#: `unknown` a name the library does not hold: a pass-through, an `--add`,
+#: or a shot's free-text style. It is a lookup result, never asked of a model.
+DIMENSIONS = ("2d", "2.5d", "3d", "footage", "any", "unknown")
+
+#: The dimension each library treatment is authored in, so what a shot
+#: declares (script.json `style`) can be set against what its world was
+#: authored with (reach.dimension_gap). The briefs above say "2.5D cutaway"
+#: and "an accurate 3D model" in prose; this says it once, as data, and
+#: leaves STYLE_LIBRARY's text, and so every prompt, as it was. The
+#: borderline rows (map driven 2d, stop motion and scale model footage,
+#: puppet / character host any) are editorial calls.
+STYLE_DIMENSION = {
+    "3d animation": "3d",
+    "2d motion graphics": "2d",
+    "whiteboard / hand drawn": "2d",
+    "data visualisation": "2d",
+    "archival montage": "footage",
+    "talking head + b-roll": "footage",
+    "screen recording": "footage",
+    "tabletop demonstration": "footage",
+    "scale model": "footage",
+    "lab / field demonstration": "footage",
+    "stop motion": "footage",
+    "kinetic typography": "2d",
+    "isometric diagram": "2.5d",
+    "map driven": "2d",
+    "timeline driven": "2d",
+    "comic / graphic novel": "2d",
+    "chalkboard derivation": "2d",
+    "photoreal simulation": "3d",
+    "voxel animation": "3d",
+    "satellite and GIS": "footage",
+    "photogrammetry": "3d",
+    "cad exploded view": "3d",
+    "signal / instrument readout": "2d",
+    "found footage essay": "footage",
+    "minimalist infographic": "2d",
+    "slow cinematic photography": "footage",
+    "puppet / character host": "any",
+    "reenactment": "footage",
+    "split screen comparison": "any",
+}
+
 SYSTEM = (
     "You are an art director for factual YouTube: documentary, explainer and "
     "video-essay work. You choose visual treatments by what they let a viewer "
@@ -388,6 +433,14 @@ class Style:
 #: Names are matched loosely, so "3D Animation", "3d-animation" and
 #: "3d animation" all find the same brief.
 _BY_KEY = {_key(name): (name, brief) for name, brief in STYLE_LIBRARY.items()}
+_DIMENSION_BY_KEY = {_key(name): dim for name, dim in STYLE_DIMENSION.items()}
+
+
+def dimension_of(name: str) -> str:
+    """The dimension of a treatment named loosely, as _BY_KEY matches it
+    ("Isometric Diagram " is 2.5d); `unknown` for a name the library does
+    not hold. Pure."""
+    return _DIMENSION_BY_KEY.get(_key(str(name or "")), "unknown")
 
 
 def candidates(only: list[str], avoid: list[str],
