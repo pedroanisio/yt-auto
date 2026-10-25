@@ -278,9 +278,12 @@ folds in what follows it. After the render (`--quality final`) the run
 runs the delivery tail, `cli.deliver_tail` (AUTO-148): `yt gate` unless a
 deliverable gate holds for these bytes, `yt qa` unless qa.json is newer than
 gate.json and video.mp4, of this scene.xml and with no `gate_evidence`, `yt
-improve` when QA is not READY (handed what is left of `--budget-usd`, else
-its $15; nothing left is exit 3), `yt package` once QA is READY, directly or
-after improve (AUTO-164: delivery needs a current, ready upload set), unless
+improve` when QA is not READY (handed what is left of `--budget-usd` once
+the package's estimate is held back, else its $15; nothing left is exit 3),
+`yt package` once QA is READY, directly or after improve (AUTO-164: delivery
+needs a current, ready upload set; after improve only while qa.json still
+scores the film on disk, and asked of the cap with improve.json's
+`spent_usd` counted), unless
 package/package.json is already ready for this scene.xml and video.mp4
 (`doctor.package_problem`, doctor's own rule; the run says `== package:
 already ready on this render (package/package.json)`), and doctor's

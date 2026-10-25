@@ -2902,13 +2902,18 @@ gate.json for this render (no render host: `--host` or `RS_RENDER_HOSTS`)
 stops the run with gate's exit; one that finds the film not deliverable goes
 on to QA. Under `--budget-usd` gate, qa and package are refused like any
 stage (exit 3; the package priced at `spend.PACKAGE_DRAFT_USD`, a guess TO
-VERIFY, plus its review's $2 until a package.json measures it) and improve
-is handed what is left as its `--budget-usd`, nothing left being exit 3;
-with no cap improve keeps its own $15. The exit is 0 only when
+VERIFY, plus its review's `--review-budget-usd`, else $2, until a
+package.json measures it, and never folded into an assumed vfx pass) and
+improve is handed what is left less the package's estimate as its
+`--budget-usd`, nothing left being exit 3, so an improve that brings QA to
+READY leaves room for the upload set; the package after it is asked of what
+was paid before improve plus improve.json's `spent_usd`, and is not run when
+the qa.json improve left no longer scores the film on disk. With no cap
+improve keeps its own $15. The exit is 0 only when
 doctor finds delivery ready, `cli.UNDELIVERED` (4) when the tail ran and it
 is not; a stage's failure keeps its code. The tail never passes `--listen`,
 `--watch` or `--compare-model`. `--dry-run` lists gate and qa priced like any
-stage, improve as `up to $<what is left of the cap, else 15.00>`, package
+stage, improve as `up to $<what is left of the cap less the package, else 15.00>`, package
 priced like any stage (in the total, only after a READY QA) and doctor at $0
 after the render.
 
