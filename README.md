@@ -312,7 +312,8 @@ Each stage reads what the stages before it wrote, so you never pass files
 between them by hand. Beside the chain sit the tools that keep it honest:
 `yt retime` writes the measured narration timings back into the screenplay,
 `yt pilot` cuts a short approval reel at full fidelity, `yt gate` runs the
-delivery checks, `yt review` makes the PDF review sheet, and `yt doctor` says
+delivery checks, `yt review` makes the PDF review sheet, `yt package` writes
+and checks the YouTube upload set (it uploads nothing), and `yt doctor` says
 what is missing and which command fixes it.
 
 ```bash
@@ -331,6 +332,7 @@ what is missing and which command fixes it.
 ./yt render   --title lithography --quality draft
 ./yt pilot    --title lithography --seconds 30,60,180   # nested approval cuts
 ./yt gate     --title lithography --preflight           # what delivery needs
+./yt package  --title lithography                      # the upload set, checked; nothing uploaded
 ./yt doctor                                             # health, and next steps
 ```
 
@@ -358,6 +360,7 @@ Or all of it at once, for one idea:
 | `yt pilot` | 30/60/180-second cuts of the finished film, nested, with what each proves | no model calls |
 | `yt gate` | the delivery verdict: loudness, scopes, frames, caption limits, run on a render host and naming the requirement that stopped it; plus the geometry check (a hero that penetrates the set, or reads merged into it on screen, blocks whatever the tool and the triage said) | one triage call |
 | `yt review` | the PDF review sheet: frames, captions, markers, sources, credits | no model calls |
+| `yt package` | not a stage `yt run` walks: `package/` with the title, description (chapters from the section markers, the cited sources with their URLs, every credit the end-credits card prints), tags, a 1280x720 thumbnail from a frame code offered, `captions.vtt` and `UPLOAD.md`, each checked against YouTube's limits (TO VERIFY) and judged `ready` or `not ready`; `yt doctor`'s delivery needs a current, ready one. Nothing is uploaded | one draft decision and one review decision by another family (`--reviewer-model`, default `opus`, capped at `--review-budget-usd`, 2), plus one revision and one review when the review blocks; one still render |
 | `yt qa` | the scorecard per pass: every shot sampled at its midpoint and each narrated line where it starts (`line: <first words>`, AUTO-104), up to 60 stills (`--frames N` above the shot count adds the line stills first, then evenly spaced stills; below it, or past 60 shots by default, names the shots left out; the lines left without a still are named in `lines_unsampled`), one frame window per sample (the still is its middle frame), a contact sheet, the mechanical findings (flat, clipped, frozen, jump, off-camera, `penetration`: the hero inside a set solid, and `reads-merged`: the hero over a surface on screen with no shadow, from the engine's evaluated geometry and camera; advisory and always minor, AUTO-145: `no-build`, a diagram's first shot whose ink does not grow from a still after its cut, through its line stills, to one before its end, and `text-dense`, too many words on screen counted from the rendered document), the model's review, scored as the median of three samples (an audio category no current listening review covers is null in every sample, never a median), and a side-by-side comparison with the previous kept cut at the same timestamps | `qa.QA_SAMPLES` (3) inspection calls per pass, at most one merge decision and one `<pass>-compare-pass` inspection when an earlier scored pass exists (`--recheck` adds one `<pass>-recheck` inspection, AUTO-106); one render job per sample (by default one per shot and per narrated line, at most 60; `--frames N` sets it), plus up to 12 single frames for the diagram build stills (AUTO-145), one eval job per pass; `yt improve` pays this every pass; `--listen` (gateway, opt-in, AUTO-126) adds one `listen-<audio sha>` decision on the film's audio and at most one `-again`, and on a narrated film one `transcript-<audio sha>` decision and at most one `-again` (AUTO-152), priced by its preflight and refused over `--listen-budget-usd` (0.50), none when the same mix was heard before; `--watch` (gateway, opt-in, AUTO-127) adds one `watch-sNN` decision per piece of the cut and at most one `-again` each, plus up to 12 render jobs for the moments it reports, none when the same cut was watched before |
 | `yt improve` | routes each QA finding to the stage that owns it, briefs that stage through `feedback/`, re-runs it and everything downstream, keeps the pass only if it measurably improved | one routing decision per pass, plus the stages it runs |
 | `yt doctor` | every video's state and the command that advances it | no model calls |

@@ -586,6 +586,8 @@ NORMALIZE_MODES = ("integrated", "dynamic", "none")
 CUE_BUS = {"music": "music", "sfx": "effects", "stinger": "effects",
            "transition": "effects", "ambience": "ambience"}
 NARRATION_BUS = "narration"
+#: The buses whose cue may run on under the end-credits card (AUTO-147).
+BED_BUSES = ("music", "ambience")
 def ducks(bus_id: str) -> bool:
     """Every bus but the narration sits under the voice while it speaks: a
     bed or an effect that does not duck is what makes a narration inaudible."""
@@ -750,6 +752,20 @@ def local_media(project_root: Path, dossier: dict | None) -> list[Media]:
     return out
 
 
+def props_items(project_root: Path) -> dict[str, dict]:
+    """props.json's items by every file each holds (its `file` and its
+    `files`), for the credits (AUTO-147); {} with no props.json."""
+    data = read_json(Path(project_root) / workspace.ARTIFACTS["props"], warn=False) or {}
+    out: dict[str, dict] = {}
+    for item in (data.get("items") if isinstance(data, dict) else None) or []:
+        if not isinstance(item, dict):
+            continue
+        for rel in [item.get("file")] + list(item.get("files") or []):
+            if rel:
+                out.setdefault(str(rel), item)
+    return out
+
+
 def match_media(shot: Shot, media: list[Media]) -> Media | None:
     """The downloaded file a shot's asset line names, if any."""
     wanted = _key(shot.asset)
@@ -808,6 +824,164 @@ def shots_from_scene(document: bytes) -> list[dict]:
             for n in range(EVEN_SHOTS)]
 
 
+# --------------------------------------------------------------------------- #
+# the credits the film owes (AUTO-147)
+# --------------------------------------------------------------------------- #
+
+#: How long one end-credits card stays up: the time it takes to read at
+#: script.READING_CPS, never under the minimum; a list that needs longer
+#: than the maximum is split over consecutive cards.
+CREDITS_MIN_SECONDS = 4.0
+CREDITS_MAX_SECONDS = 12.0
+#: Each card fades in over this long and out over this long. Between the
+#: fades the card holds still: whether the render's frozen-frame check or a
+#: qa burst landing mid-card reports that hold is TO VERIFY on a render.
+#: (qa never samples it today: its stills fall inside build.json's shots.)
+CREDITS_FADE_SECONDS = 0.5
+#: The id prefix of a card's text asset; `yt package` reads the card's text
+#: by it. Its layer is `credits-layer-N` and its marker `credits-N`, since
+#: an id is the document's own once.
+CREDITS_ASSET = "credits-card-"
+CREDITS_LAYER = "credits-layer-"
+CREDITS_MARKER = "credits-"
+#: The label of each card's marker, a kind="comment": no section, beat or
+#: chapter reading sees it.
+CREDITS_LABEL = "credits"
+
+
+def _assets_of(scene_root) -> list:
+    """The children of a scene's <assets>, in document order."""
+    out = []
+    for block in scene_root.iter("assets"):
+        out.extend(list(block))
+    return out
+
+
+def _third_party(element) -> bool:
+    """A placed file somebody else made: a picture the build placed or
+    hoisted from the research, or a cue's file. The narration, the text
+    cards and the pinned fonts are the film's own or the repo's."""
+    if element.tag in PICTURE_KINDS:
+        return True
+    return element.tag == "audio" and str(element.get("id", "")).startswith("cue-asset-")
+
+
+def credit_rows(scene_root, props_hits: list[dict]) -> list[dict]:
+    """The credits the film prints, read from its finished <assets> block
+    (`scene_root` is the parsed <scene>) and from the props.json items the
+    included documents name (`props_hits`, each an item with the `src` the
+    document used), which never reach the scene's own assets.
+
+    Every asset carrying a licence or a credit is read, a font aside; the
+    synthesised sound (sound.SYNTH_LICENCE) is the film's own and is not
+    credited. A row is {credit, licence, src, id, tier, required}: the tier
+    is assets.licence_verdict's with share-alike allowed (the catalogue's
+    veto is for choosing a file; a placed one is in the film), and
+    `required` is true at the attribution and share-alike tiers. One row per
+    credit line, the first that says it; ordered by tier (public domain
+    first, an unknown or vetoed licence last), then by first appearance."""
+    from .assets import TIER_ATTRIBUTION, TIER_SHARE_ALIKE, licence_verdict
+    from .sound import SYNTH_LICENCE
+    found = []
+    for element in _assets_of(scene_root):
+        if element.tag == "font":
+            continue
+        licence = str(element.get("license") or "")
+        credit = " ".join(str(element.get("credit") or "").split())
+        if not (licence or credit) or licence == SYNTH_LICENCE:
+            continue
+        found.append((credit, licence, str(element.get("src") or ""),
+                      str(element.get("id") or "")))
+    for item in props_hits:
+        found.append((" ".join(str(item.get("credit") or "").split()),
+                      str(item.get("licence") or ""), str(item.get("src") or item.get("file") or ""),
+                      str(item.get("id") or "")))
+    rows, by_credit = [], {}
+    for credit, licence, src, ident_ in found:
+        if not credit:
+            continue
+        _, tier = licence_verdict(licence, allow_sa=True)
+        row = {"credit": credit, "licence": licence, "src": src, "id": ident_,
+               "tier": tier, "required": tier in (TIER_ATTRIBUTION, TIER_SHARE_ALIKE)}
+        first = by_credit.get(credit)
+        if first is None:
+            by_credit[credit] = row
+            rows.append(row)
+        elif row["required"] and not first["required"]:
+            # One line, printed once, owes the strongest duty any of its
+            # files carries: a CC0 file earlier in the document must not
+            # make a CC BY file's credit optional.
+            first.update({k: row[k] for k in ("licence", "src", "id", "tier", "required")})
+    order = {id(r): n for n, r in enumerate(rows)}
+    return sorted(rows, key=lambda r: (99 if r["tier"] is None else r["tier"], order[id(r)]))
+
+
+def credit_problems(scene_root, props_hits: list[dict] = ()) -> list[str]:
+    """The placed third-party files the film cannot credit, as `error:
+    credit:` findings: an empty credit under an attribution or share-alike
+    licence, which must be printed, or under a licence that is unknown or
+    vetoed, which nobody can show is free of that duty. A public-domain file
+    owes no credit, and the synthesised sound is the film's own. The props
+    an include names (`props_hits`, as credit_rows takes them) are judged
+    the same way, since they never reach the scene's <assets>."""
+    from .assets import TIER_PUBLIC_DOMAIN, licence_verdict
+    from .sound import SYNTH_LICENCE
+
+    def owed(licence: str) -> str:
+        verdict, tier = licence_verdict(licence, allow_sa=True)
+        if verdict == "free" and tier == TIER_PUBLIC_DOMAIN:
+            return ""
+        return (f"its licence {licence!r} requires a credit" if verdict == "free"
+                else f"its licence is {verdict} ({licence or 'none recorded'})")
+
+    out = []
+    for element in _assets_of(scene_root):
+        if not _third_party(element):
+            continue
+        licence = str(element.get("license") or "")
+        if str(element.get("credit") or "").strip() or licence == SYNTH_LICENCE:
+            continue
+        why = owed(licence)
+        if why:
+            out.append(f"error: credit: {element.get('src')} ({element.get('id')}) is placed "
+                       f"with no credit line, and {why}; record its credit at the source (the "
+                       "dossier asset's credit_line, the cue's credit in sound.json) and build "
+                       "again")
+    for item in props_hits:
+        licence = str(item.get("licence") or "")
+        if str(item.get("credit") or "").strip():
+            continue
+        why = owed(licence)
+        if why:
+            out.append(f"error: credit: {item.get('src') or item.get('file')} (props.json item "
+                       f"{item.get('id')!r}) is used with no credit line, and {why}; record its "
+                       "credit in props.json and build again")
+    return out
+
+
+def credit_cards(lines: list[str]) -> list[tuple[list[str], float]]:
+    """The credit lines laid out on end-credits cards: (lines, seconds) per
+    card, each up for the time its text takes to read at
+    script.READING_CPS, at least CREDITS_MIN_SECONDS; a line that would
+    take a card past CREDITS_MAX_SECONDS starts the next one. A single line
+    longer than a card can hold is held for the maximum."""
+    from .script import READING_CPS
+
+    def needs(rows: list[str]) -> float:
+        return max(CREDITS_MIN_SECONDS, len("\n".join(rows)) / READING_CPS)
+
+    cards: list[list[str]] = []
+    current: list[str] = []
+    for line in lines:
+        if current and needs(current + [line]) > CREDITS_MAX_SECONDS:
+            cards.append(current)
+            current = []
+        current.append(line)
+    if current:
+        cards.append(current)
+    return [(rows, round(min(CREDITS_MAX_SECONDS, needs(rows)), 3)) for rows in cards]
+
+
 #: The file-valued attributes of what the build hoists out of an included
 #: document (xs:anyURI in the schema): a light's IES profile and environment
 #: map, a text style's font. Paints carry no file and tokens are values.
@@ -838,7 +1012,7 @@ def hoisted(path: Path, scene_dir: Path | None = None) -> dict:
     that now declares them, or the engine looks for them beside the scene.
     """
     out = {"lights": [], "tokens": [], "text_styles": [], "paints": [],
-           "downloads": [], "markers": {}, "findings": []}
+           "downloads": [], "props": [], "markers": {}, "findings": []}
     src_dir = Path(path).parent
 
     def carried(element) -> dict:
@@ -896,6 +1070,18 @@ def hoisted(path: Path, scene_dir: Path | None = None) -> dict:
                                    os.path.normpath(base))).as_posix()
         if rel.startswith("downloads/") and rel not in out["downloads"]:
             out["downloads"].append(rel)
+    # Files under props/ the document names (AUTO-147), in any attribute: an
+    # HDRI is a light's `environment`, a mesh or a texture a `src`. The
+    # include copy keeps its own <assets>, so the scene never lists them and
+    # the build credits them from props.json instead.
+    for element in root.iter():
+        for value in element.attrib.values():
+            if "props/" not in value or Path(value).is_absolute() or _URL.match(value):
+                continue
+            rel = Path(os.path.relpath(os.path.normpath(src_dir / value),
+                                       os.path.normpath(base))).as_posix()
+            if rel.startswith("props/") and rel not in out["props"]:
+                out["props"].append(rel)
     for token in root.iter("token"):
         if token.get("name") and token.get("value") is not None:
             out["tokens"].append((token.get("name"), token.get("value")))
@@ -2310,11 +2496,15 @@ class SceneBuilder:
                   "silence": 0, "unplaced": False, "findings": [], "music_rows": [],
                   "normalize": normalize, "normalize_from": normalize_from,
                   "staging": {"bed_db": None, "headroom_db": None,
-                              "shift_db": 0.0, "shifted": []}}
+                              "shift_db": 0.0, "shifted": []},
+                  # internal, never written: the placed beds and the designed
+                  # silences, which the end-credits card reads (AUTO-147)
+                  "_beds": [], "_windows": []}
         if not self.audio:
             return report
         findings = report["findings"]
         music_rows = report["music_rows"]
+        beds = report["_beds"]
         if said:
             findings.append(said)
         if self.sound_rules_kept:
@@ -2335,7 +2525,7 @@ class SceneBuilder:
 
         # (bus, track node, the gain it asks for, kind, seconds, cue id)
         routed: list[list] = []
-        windows: list[tuple[float, float]] = []
+        windows: list[tuple[float, float]] = report["_windows"]
         mix = None
 
         def mixer():
@@ -2489,6 +2679,12 @@ class SceneBuilder:
                                 f"words only ({said[:60]!r}); it is mixed at 0 dB "
                                 "trim")
             routed.append([bus, track, (level or 0.0) + trim, kind, window, cue_id])
+            if bus in BED_BUSES:
+                # What the end-credits card may run on under it (AUTO-147).
+                beds.append({"cue": cue_id, "track": track, "at": round(at, 3),
+                             "length": length, "loop": bool(cue.get("loop")),
+                             "window": window,
+                             "row": music_rows[-1] if kind in BEAT_KINDS else None})
 
         if anchored:
             report["anchors"] = anchors
@@ -2597,6 +2793,74 @@ class SceneBuilder:
             report["silence"] = len(windows)
         return report
 
+    def _credits_card(self, assets, composition, markers, design, rows: list[dict],
+                      start: float) -> tuple[float, dict]:
+        """The end-credits cards (AUTO-147) from `start`, the editor's tail
+        end: one full-frame text asset per card (`credits-card-N`, drawn as
+        the placeholder card is, with the design's ink and label size), its
+        layer fading in and out over CREDITS_FADE_SECONDS, and a
+        kind="comment" marker, never a section or a beat. (the end, record)."""
+        kind = pick(enum_of("marker", "kind"), "comment")
+        at = round(start, 3)
+        cards = credit_cards([r["credit"] for r in rows])
+        for n, (lines, seconds) in enumerate(cards, 1):
+            end = round(at + seconds, 3)
+            text = assets.add_text(id=f"{CREDITS_ASSET}{n}", text="\n".join(lines),
+                                   width=int(self.width * 0.8), height=self.height,
+                                   size=design.size("label"))
+            text.align = "center"
+            text.verticalAlign = "middle"
+            text.color = design.role("ink")
+            layer = composition.add_layer(id=f"{CREDITS_LAYER}{n}", asset=text.id)
+            layer.start = at
+            layer.end = end
+            layer.alignX = "center"
+            layer.alignY = "middle"
+            fade = layer.add_animate(property="opacity")
+            for time, value in ((at, "0"), (at + CREDITS_FADE_SECONDS, "1"),
+                                (end - CREDITS_FADE_SECONDS, "1"), (end, "0")):
+                fade.add_key(time=round(time, 3), value=value)
+            marker = markers.add_marker(time=at, label=CREDITS_LABEL)
+            marker.id = f"{CREDITS_MARKER}{n}"
+            if kind:
+                marker.kind = kind
+            at = end
+        return at, {"at": round(start, 3), "seconds": round(at - start, 3), "cards": len(cards)}
+
+    @staticmethod
+    def _run_on(sound: dict, tail: float, end: float) -> dict:
+        """Under the end-credits card, from `tail` to `end`: each music or
+        ambience cue that plays to the tail runs on to `end`, its own fade
+        out kept, when its file lasts (or loops) that long; with none, the
+        card is a silence window, recorded. A designed silence that reaches
+        the tail keeps the card silent too, since its bus comes back up
+        there. build.json's `sound`."""
+        extended = []
+        quiet = any(stop >= tail - HARD_CUT_TOLERANCE for _, stop in sound.get("_windows", []))
+        for bed in [] if quiet else sound.get("_beds", []):
+            length, window, track = bed["length"], bed["window"], bed["track"]
+            plays_to = bed["at"] + (window if (bed["loop"] or length is None or length > window)
+                                    else length)
+            if plays_to < tail - HARD_CUT_TOLERANCE:
+                continue
+            longer = round(end - bed["at"], 3)
+            if bed["loop"] and length:
+                plays = max(1, math.ceil(longer / length))
+                if plays > 1:
+                    track.loop = plays - 1
+                if bed["row"] is not None:
+                    bed["row"]["loops"] = plays - 1
+            elif length is None or length + HARD_CUT_TOLERANCE >= longer:
+                track.clipOut = longer
+                if bed["row"] is not None:
+                    bed["row"]["clip_out"] = longer
+            else:
+                continue            # its file ends before the card does
+            extended.append({"cue": bed["cue"], "end": round(end, 3)})
+        silence = [] if extended else [{"at": round(tail, 3), "end": round(end, 3),
+                                        "why": "credits card"}]
+        return {"extended": extended, "silence": silence}
+
     # -- the document ----------------------------------------------------------
 
     def _colour(self, scene) -> None:
@@ -2691,8 +2955,8 @@ class SceneBuilder:
         duration = round(max(p.at + p.seconds for p in placed) + edit["tail"], 3)
 
         scene = S.Scene(version="auto")
-        scene.add_project(width=self.width, height=self.height, fps=str(self.fps),
-                          duration=duration, background=self.background)
+        project = scene.add_project(width=self.width, height=self.height, fps=str(self.fps),
+                                    duration=duration, background=self.background)
 
         self._colour(scene)
 
@@ -2875,6 +3139,12 @@ class SceneBuilder:
         parsed: dict[str, dict] = {}
         credited: set[str] = set()
         downloads = local_media(self.root, self.dossier)
+        # What the credits owe that no scene asset says (AUTO-147): a file
+        # an include names that no manifest lists, and the props.json item
+        # of each file under props/ an include names.
+        credit_missing: list[str] = []
+        props_by_file = props_items(self.root)
+        props_hits: list[dict] = []
         lights = None
         # Paints the included content names (`url(#id)`) resolve against the
         # scene's own, so each file's are grafted in through the SDK; the
@@ -3068,6 +3338,7 @@ class SceneBuilder:
                     lifted.append(f"error: {Path(file).name} uses {rel}, which "
                                   "raw/08-downloads.json does not list, so it has "
                                   "no licence or credit")
+                    credit_missing.append(lifted[-1])
                     continue
                 if rel in placed_srcs:
                     continue
@@ -3088,6 +3359,22 @@ class SceneBuilder:
                     asset.license = hit.licence
                 if hit.credit:
                     asset.credit = hit.credit
+            for rel in info["props"]:
+                if rel in credited:
+                    continue
+                credited.add(rel)
+                item = props_by_file.get(rel)
+                if item is None:
+                    # Nobody recorded this file's licence, so nobody can say
+                    # it owes no credit: a publication error, as an unknown
+                    # licence is on a placed picture.
+                    lifted.append(f"error: credit: {Path(file).name} uses {rel}, which "
+                                  "props.json does not list, so its licence is unknown and "
+                                  "the credits cannot name it; fetch it with `yt props` or "
+                                  "add its item to props.json")
+                    credit_missing.append(lifted[-1])
+                    continue
+                props_hits.append(dict(item, src=rel))
         # Every paint an include copy names must now be the scene's own.
         for info in cleaned.values():
             for ref in sorted(info["paint_refs"] - set(paint_defs)):
@@ -3108,6 +3395,21 @@ class SceneBuilder:
                                   f"carried: {exc}")
 
         sound = self._mix(scene, assets, placed, duration)
+
+        # The credits (AUTO-147), from the assets block as it now stands: the
+        # pictures placed and hoisted, the cue files, and the props the
+        # includes named. A credit owed and not recorded is not publishable;
+        # every line recorded goes on the end-credits card after the tail,
+        # and the programme runs to the card's end.
+        written = ElementTree.fromstring(scene.to_bytes())
+        credits = credit_rows(written, props_hits)
+        credit_errors = credit_missing + credit_problems(written, props_hits)
+        runtime, credits_card, credits_sound = duration, None, None
+        if credits:
+            runtime, credits_card = self._credits_card(assets, composition, markers, design,
+                                                       credits, duration)
+            project.duration = runtime
+            credits_sound = self._run_on(sound, duration, runtime)
 
         cues = 0
         if self.captions and any(p.narration for p in placed):
@@ -3183,6 +3485,7 @@ class SceneBuilder:
         reparse += duplicate_animations(data)
         reparse += (edit["findings"] + include_findings + lifted + sound["findings"]
                     + pinner.errors)
+        reparse += [e for e in credit_errors if e not in reparse]
         reparse += [f"warning: blocking (editorial): {x}" for x in edit["blocking"]]
         reparse += self.script_findings
         if fallback_why:
@@ -3195,7 +3498,7 @@ class SceneBuilder:
             "idea": asdict(self.idea),
             "scene": {"version": version,
                       "width": self.width, "height": self.height,
-                      "fps": str(self.fps), "duration": duration,
+                      "fps": str(self.fps), "duration": runtime,
                       "background": self.background,
                       "background_from": self.background_from,
                       "codec": self.codec, "language": self.lang,
@@ -3210,7 +3513,7 @@ class SceneBuilder:
             "timeline": {"shots": len(placed),
                          "from_voice": sum(1 for p in placed if p.source == "voice"),
                          "from_script": sum(1 for p in placed if p.source == "script"),
-                         "runtime": duration},
+                         "runtime": runtime},
             "layers": {"effect": sum(1 for p in placed if p.asset == "effect"),
                        "drawn": sum(1 for p in placed if p.asset == "drawn"),
                        "image": sum(1 for p in placed if p.asset == "image"),
@@ -3220,11 +3523,18 @@ class SceneBuilder:
             # and so is anything the editor named as blocking, and so is a
             # sound design of which nothing reached the mix.
             # ... and so is a picture that ends before its narration does,
-            # and a world split into includes that restart it at each cut.
+            # and a world split into includes that restart it at each cut,
+            # and a credit the film owes and cannot print (AUTO-147).
             "publishable": (not placeholders and not edit["blocking"]
                             and not sound["unplaced"] and not timing_errors
-                            and not edit["split_worlds"]),
+                            and not edit["split_worlds"] and not credit_errors),
             "timing": timing_errors,
+            "credit_errors": credit_errors,
+            # Every credit line the end-credits card prints, and the card;
+            # `yt package` writes the description's credits from these.
+            "credits": credits,
+            **({"credits_card": credits_card, "sound": credits_sound}
+               if credits_card else {}),
             "editorial": {"applied": edit["applied"], "reasons": edit["reasons"],
                           "captions_off": sorted(edit["captions_off"]),
                           "tail_seconds": edit["tail"], "notes": edit["notes"],
@@ -3808,9 +4118,12 @@ def run(args) -> int:
 
     print_build(manifest)
     # The screenplay's own errors ride along for qa; they are fixed in `yt
-    # script`, so they do not stop the scene being written.
+    # script`, so they do not stop the scene being written. A credit error
+    # (AUTO-147) is a publication problem, like a placeholder card: the scene
+    # renders, build.json says publishable false and names it in
+    # credit_errors, and qa and doctor refuse the film on it.
     errors = [f for f in manifest["findings"] if f.startswith("error")
-              and not f.startswith("error: script: ")]
+              and not f.startswith(("error: script: ", "error: credit: "))]
     if errors and not args.force:
         print(f"\nerror: {len(errors)} check error(s); the scene was not "
               "written. Fix them, or pass --force to write it anyway.",
@@ -3829,4 +4142,9 @@ def run(args) -> int:
     if errors:
         print(f"warning: written with {len(errors)} check error(s); the engine "
               "will refuse it", file=sys.stderr)
+    owed = manifest.get("credit_errors") or []
+    if owed:
+        print(f"warning: {len(owed)} credit error(s); build.json is not publishable "
+              "until each credit is recorded at its source (see credit_errors)",
+              file=sys.stderr)
     return 0

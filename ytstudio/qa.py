@@ -235,6 +235,7 @@ from .proofframes import (PROOF_DIFF, PROOF_LIMIT, mismatch_text,  # noqa: F401
 from . import render as render_stage
 from . import script as script_stage
 from . import rhythm
+from .build import CREDITS_ASSET, CREDITS_LAYER
 from .build import EVEN_SHOTS, shots_from_scene  # noqa: F401  (standalone sampling)
 from .core import read_json, timecode, write_json
 from .harness import Harness, HarnessError, _digest, brief
@@ -306,6 +307,10 @@ SCREEN_WORDS = 12
 FORMULA_WORDS = 4
 WALL_WORDS = int(SCRIPT_BOUNDS["wall_of_text"]["value"])
 EXEMPT_TEXT = ("quote-", "headline-", "credit-")
+#: Text the build names itself and the author never writes: the end-credits
+#: cards (AUTO-147), timed like a credit, not counted. Kept apart from
+#: EXEMPT_TEXT, which the vfx author's system prompt lists by id.
+BUILD_EXEMPT_TEXT = (CREDITS_ASSET, CREDITS_LAYER)
 PLACEHOLDER_ASSET = "card-"
 #: Measured kinds filed always minor (AUTO-145): they never escalate on an
 #: edge or on more than one shot, so they cap nothing until calibrated.
@@ -1882,7 +1887,7 @@ def text_record(nodes: list[dict]) -> dict:
                    if all(math.isfinite(float(v)) for v in shown[:2]) else None)
         items.append({"id": ident, "kind": kind,
                       "words": FORMULA_WORDS if kind == "formula" else len(text.split()),
-                      "exempt": any(s.startswith(EXEMPT_TEXT)
+                      "exempt": any(s.startswith(EXEMPT_TEXT + BUILD_EXEMPT_TEXT)
                                     for s in (name, str(node.get("asset", "")))),
                       "seconds": None if seconds is None else round(seconds, 3),
                       "needs": round(len(text) / READING_CPS, 2), "text": text})

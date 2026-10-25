@@ -6,15 +6,20 @@ Each replacement is one finding in the manifest (build.json), naming the
 field, the cue or the film, and the value used.
 """
 
+import copy
+import io
+import json
 import re
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
+from unittest import mock
 from xml.etree import ElementTree
 
 from tests.test_build_audio import _idea, _sections, _wav
 from tests.test_keyframe import STYLES
-from ytstudio import build, design
+from ytstudio import build, cli, design, sound
 
 #: A treatment whose palette is words only: what a plain `yt styles` writes.
 HEXLESS = {"styles": [{"name": "x", "palette": "warm earth tones"}]}
@@ -98,8 +103,11 @@ class SoundNumbers(_Project):
         self.assertIn("'a little louder'", found[0])
 
     def test_numbers_that_parse_make_no_finding(self):
+        # the cue carries no licence or credit, which is its own finding
+        # (AUTO-147, CreditErrors below); none is about its numbers
         _, manifest = self.build(_edit(), [_cue(fade_in=1, fade_out="2", gain_db=3)])
-        self.assertFalse([f for f in manifest["findings"] if "M1" in f])
+        self.assertFalse([f for f in manifest["findings"]
+                          if "M1" in f and not f.startswith("error: credit:")])
 
     def test_a_level_in_words_only_is_a_finding_naming_the_cue(self):
         _, manifest = self.build(_edit(), [_cue(level="quiet, under the voice")])
@@ -275,3 +283,110 @@ class DesignFallback(_Project):
             with self.subTest(styles=styles):
                 self.assertEqual(build.design_fallback(
                     styles, design.Design.from_styles(styles)), why)
+
+
+#: An authored world that embeds one research download (AUTO-147).
+EMBEDS = """<?xml version="1.0"?>
+<scene version="1.1">
+  <project width="1920" height="1080" fps="30" duration="10"/>
+  <assets><image id="plate" src="../downloads/01-plate.png" width="100" height="100"/></assets>
+  <symbols><symbol id="fx-all"><shape id="s1" shape="rect" width="10" height="10"/></symbol></symbols>
+  <composition/>
+</scene>
+"""
+
+
+class CreditErrors(_Project):
+    """A credit the film owes and cannot print is a build that cannot be
+    published (AUTO-147): the error stands in build.json `credit_errors`
+    and `publishable` is false, so delivery stops at the build, not after
+    an upload."""
+
+    def setUp(self):
+        super().setUp()
+        (self.root / "vfx" / "open.scene.xml").write_text(EMBEDS)
+        (self.root / "downloads").mkdir()
+        (self.root / "downloads" / "01-plate.png").write_bytes(b"x")
+        (self.root / "raw").mkdir()
+
+    def downloads(self, licence: str, credit: str):
+        (self.root / "raw" / "08-downloads.json").write_text(json.dumps([
+            {"title": "a plate", "status": "ok", "file": "downloads/01-plate.png",
+             "licence": licence}]))
+        return {"assets": [{"title": "a plate", "kind": "image", "licence": licence,
+                            "credit_line": credit}]}
+
+    def test_the_fixture_is_publishable_with_its_credit(self):
+        _, manifest = self.build(_edit(), audio=False,
+                                 dossier=self.downloads("CC BY 4.0", "A. Author"))
+        self.assertEqual(manifest["credit_errors"], [])
+        self.assertTrue(manifest["publishable"], manifest["findings"])
+
+    def test_an_image_the_manifest_does_not_list_is_not_publishable(self):
+        (self.root / "raw" / "08-downloads.json").write_text("[]")
+        _, manifest = self.build(_edit(), audio=False, dossier={"assets": []})
+        self.assertEqual(len(manifest["credit_errors"]), 1, manifest["credit_errors"])
+        self.assertIn("no licence or credit", manifest["credit_errors"][0])
+        self.assertFalse(manifest["publishable"])
+
+    def test_a_cc_by_asset_with_no_credit_is_not_publishable(self):
+        _, manifest = self.build(_edit(), audio=False, dossier=self.downloads("CC BY 4.0", ""))
+        self.assertEqual(len(manifest["credit_errors"]), 1, manifest["credit_errors"])
+        self.assertIn("downloads/01-plate.png", manifest["credit_errors"][0])
+        self.assertIn(manifest["credit_errors"][0], manifest["findings"])
+        self.assertFalse(manifest["publishable"])
+
+    def test_an_unknown_licence_with_no_credit_is_not_publishable(self):
+        _, manifest = self.build(_edit(), audio=False, dossier=self.downloads("", ""))
+        self.assertEqual(len(manifest["credit_errors"]), 1, manifest["credit_errors"])
+        self.assertIn("unknown", manifest["credit_errors"][0])
+        self.assertFalse(manifest["publishable"])
+
+    def test_a_cc0_asset_with_no_credit_stays_publishable(self):
+        _, manifest = self.build(_edit(), audio=False, dossier=self.downloads("CC0 1.0", ""))
+        self.assertEqual(manifest["credit_errors"], [])
+        self.assertTrue(manifest["publishable"], manifest["findings"])
+
+    def test_original_sound_needs_no_credit(self):
+        cue = _cue(seconds=6, licence=sound.SYNTH_LICENCE, credit="")
+        _, manifest = self.build(_edit(), cues=[cue],
+                                 dossier=self.downloads("CC0 1.0", ""))
+        self.assertEqual(manifest["credit_errors"], [])
+
+
+class CreditErrorsDoNotStopTheBuild(unittest.TestCase):
+    """A credit error is a publication problem, as a placeholder or the
+    fallback palette is (AUTO-147): `yt build` still writes scene.xml and
+    build.json, and the refusal is build.json `publishable`, QA and doctor.
+    Stopping the write would hide the very `credit_errors` that say what to
+    fix, and stop `yt run` before it reaches them."""
+
+    def setUp(self):
+        from tests import test_build_joins as joins
+        self.joins = joins
+        case = joins._Run("run_build")
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        self.root = case.root
+        dossier = copy.deepcopy(joins.DOSSIER)
+        dossier["assets"][0].update(licence="CC BY 4.0", credit_line="")
+        (self.root / "dossier.json").write_text(json.dumps(dossier))
+        rows = json.loads((self.root / "raw" / "08-downloads.json").read_text())
+        rows[0]["licence"] = "CC BY 4.0"
+        (self.root / "raw" / "08-downloads.json").write_text(json.dumps(rows))
+
+    def test_a_cc_by_picture_with_no_credit_is_written_but_not_publishable(self):
+        args = cli.build_parser().parse_args(
+            ["build", "--project", str(self.root), "--no-audio", "--quiet", "--hard-cuts"])
+        err = io.StringIO()
+        with mock.patch.object(build, "Harness", self.joins.Scripted), \
+                mock.patch("sys.stdout", new=io.StringIO()), redirect_stderr(err):
+            code = build.run(args)
+        self.assertEqual(code, 0, err.getvalue())
+        self.assertTrue((self.root / "scene.xml").is_file())
+        manifest = json.loads((self.root / "build.json").read_text())
+        self.assertFalse(manifest["publishable"])
+        self.assertEqual(len(manifest["credit_errors"]), 1, manifest["credit_errors"])
+        self.assertIn("downloads/01-photo.png", manifest["credit_errors"][0])
+        self.assertNotIn("engine will refuse", err.getvalue())
+        self.assertIn("credit", err.getvalue())

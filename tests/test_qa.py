@@ -1351,6 +1351,15 @@ class TextDense(unittest.TestCase):
             self.assertEqual(_dense(_texted("1.2", [_node(ident, 14,
                                                           window=(5.0, 15.0))])), [])
 
+    def test_the_end_credits_card_is_timed_like_a_credit_not_counted(self):
+        # build's credits cards (AUTO-147) are named by the build, not by the
+        # author, so they are exempt by build.CREDITS_ASSET / CREDITS_LAYER
+        lines = " ".join(["word"] * 20)
+        for ident, asset in (("credits-layer-1", "credits-card-1"),
+                             ("l-x", "credits-card-2")):
+            node = dict(_node(ident, 20, text=lines, window=(5.0, 15.0)), asset=asset)
+            self.assertEqual(_dense(_texted("1.2", [node])), [], ident)
+
     def test_a_super_the_screenplay_asked_for_says_so(self):
         text = "the paint hid the rust on every joint"
         rows = _texted("1.2", [_node("l-super", 8, text=text)])

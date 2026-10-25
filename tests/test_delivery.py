@@ -76,6 +76,17 @@ class DeliveryCase(unittest.TestCase):
                                **({"accuracy": accuracy} if accuracy is not None else {})})
         self.stamp("qa.json")
 
+    def packaged(self, verdict="ready", *, scene_sha256=None, video_sha256=None) -> None:
+        """The upload set `yt package` writes (AUTO-147), judged on the
+        scene.xml and video.mp4 now on disk unless told otherwise."""
+        (self.root / "package").mkdir(exist_ok=True)
+        current = lambda name: doctor.scene_digest(self.root / name)  # noqa: E731
+        self.write("package/package.json", {
+            "verdict": verdict, "findings": [] if verdict == "ready" else ["error: x"],
+            "scene_sha256": current("scene.xml") if scene_sha256 is None else scene_sha256,
+            "video_sha256": current("video.mp4") if video_sha256 is None else video_sha256})
+        self.stamp("package/package.json")
+
     def report(self):
         return doctor.check_project(workspace.Project(self.root))
 
@@ -92,7 +103,7 @@ class Delivery(DeliveryCase):
         self.assertEqual(self.delivery(), [])
 
     def test_everything_in_place_is_ready(self):
-        self.rendered(); self.gated(); self.scored()
+        self.rendered(); self.gated(); self.scored(); self.packaged()
         self.assertEqual(self.delivery("fail"), [])
         ok = self.delivery("ok")
         self.assertEqual(len(ok), 1)
@@ -118,7 +129,7 @@ class Delivery(DeliveryCase):
 
     def test_information_findings_do_not_block(self):
         self.rendered(findings=[{"code": "PREC1", "severity": "info", "message": "x"}])
-        self.gated(); self.scored()
+        self.gated(); self.scored(); self.packaged()
         self.assertEqual(self.delivery("fail"), [])
 
     def test_a_render_of_part_of_the_programme_is_not_delivery(self):
@@ -276,7 +287,7 @@ class FallbackDesign(DeliveryCase):
 
     def test_a_styled_build_is_ready(self):
         self.styled("styles.json")
-        self.rendered(); self.gated(); self.scored()
+        self.rendered(); self.gated(); self.scored(); self.packaged()
         self.assertEqual(self.about_palette(), [])
         self.assertTrue(self.report().metrics["delivery"]["ready"])
 
@@ -300,7 +311,7 @@ class FactCheck(DeliveryCase):
         self.write("script.json", body)
 
     def ready_otherwise(self):
-        self.rendered(); self.gated(); self.scored(accuracy=CHECKED)
+        self.rendered(); self.gated(); self.scored(accuracy=CHECKED); self.packaged()
         if (self.root / "dossier.json").exists():   # the dossier that check read
             older = self.clock - 100
             os.utime(self.root / "dossier.json", (older, older))
@@ -351,7 +362,8 @@ class FactCheck(DeliveryCase):
 
 class OnScreenAccuracy(DeliveryCase):
     """AUTO-150: with a dossier, QA's on-screen accuracy check must be current
-    and find nothing blocking; a film with no dossier is judged as before."""
+    and find nothing blocking; a film with no dossier is judged as before.
+    Each film is packaged (AUTO-147), so the upload set adds no row."""
 
     def evidence(self):
         return doctor.delivery_evidence(workspace.Project(self.root), None)
@@ -362,7 +374,7 @@ class OnScreenAccuracy(DeliveryCase):
 
     def test_accuracy_blocking_row(self):
         self.dossier()
-        self.rendered(); self.gated()
+        self.rendered(); self.gated(); self.packaged()
         self.scored(accuracy=dict(CHECKED, blocking=2,
                                   first={"shot": "1.1", "problem": "number-mismatch"}))
         self.assertEqual(self.evidence(), [
@@ -372,7 +384,7 @@ class OnScreenAccuracy(DeliveryCase):
 
     def test_accuracy_missing_row(self):
         self.dossier()
-        self.rendered(); self.gated(); self.scored()
+        self.rendered(); self.gated(); self.packaged(); self.scored()
         rows = self.evidence()
         self.assertEqual(len(rows), 1, rows)
         self.assertTrue(rows[0][0].startswith(
@@ -396,7 +408,7 @@ class OnScreenAccuracy(DeliveryCase):
         self.assertIn("dossier.json is newer", rows[0][0])
 
     def test_no_dossier_no_accuracy_row(self):
-        self.rendered(); self.gated(); self.scored()
+        self.rendered(); self.gated(); self.packaged(); self.scored()
         self.assertEqual(self.evidence(), [])
         self.scored(accuracy={"status": "not_evidenced", "bar": False, "checked": 0,
                               "blocking": 0, "command": "yt research",

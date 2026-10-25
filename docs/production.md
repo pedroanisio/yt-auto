@@ -175,7 +175,12 @@ One scene-render document, `scene.xml`, built with the `sr_core.scene` SDK:
 
 - `<project>` at delivery resolution and frame rate, background from the palette
 - `<assets>` — text, images, audio; every third-party image carrying
-  `license` and `credit` from the dossier
+  `license` and `credit` from the dossier; and, when anything placed owes a
+  credit, the end-credits cards `credits-card-N`: every credit line
+  verbatim, centred in the ink at the label size, one card up for
+  max(4 s, its characters at 17 per second), split so none runs past 12 s,
+  starting at the editor's tail and fading in and out over 0.5 s; the film,
+  `scene.duration` and `timeline.runtime` end at the last card's end
 - `<composition>` — the drawing: one `<include>` per run of consecutive
   shots the same authored world draws (its clock continuous across them),
   pointing at the cleaned copy `vfx/vNN/<section>.include.scene.xml`, with
@@ -185,7 +190,9 @@ One scene-render document, `scene.xml`, built with the `sr_core.scene` SDK:
   reviewer of another family read (a cut writes nothing; never across a
   gap, inside one world's run, or beside a placeholder card)
 - `<markers>` — `kind="section"` per section, `kind="beat"` per shot;
-  everything downstream anchors to markers, never to timecodes
+  everything downstream anchors to markers, never to timecodes. A credits
+  card has a `kind="comment"` marker labelled `credits` with no duration,
+  never a section or a beat, so no shot, section or chapter reading counts it
 - `<audioMix>` — a track per take on the `narration` bus; an `<audio>`
   asset and an `<audioTrack>` per fetched cue on the bus of its role
   (`music`, `effects`, `ambience`), the transients (sfx, stingers,
@@ -193,7 +200,10 @@ One scene-render document, `scene.xml`, built with the `sr_core.scene` SDK:
   sits the master's headroom above the loudest bed, then gain staged across
   bus and track within the schema's facets, music and ambience ducked under
   the narration; a `silence` cue as a window on the music and effects buses'
-  volume (the voice and the room carry on); and a
+  volume (the voice and the room carry on); a music or ambience bed that
+  plays to the tail runs on under the credits (its loop count raised, or
+  its clip lengthened when the file lasts), else the credits are a silence
+  window recorded in build.json; and a
   `<master>` with `normalize`, `loudness`, `truePeak`, `limiter`
 - `<colorManagement>` — the film's one colour pipeline, as the colourist
   decided it: `acescg` working space, a tone mapping operator, an exposure
@@ -232,9 +242,33 @@ time order, gaps and placeholder joins included: its kind `section`,
 alignment and the narrative `why`, and its review: `accepted`, `revised`,
 `unresolved`, `fallback`, `not-asked` or `off` under `--hard-cuts`) and
 `joins_review` (the reviewer model, whether it accepted and the problems it
-named); and the `engine` report of the decisions taken, both models billed. `publishable` is false while a placeholder, a
-blocking editorial note, a picture that ends before its narration or a sound
-design of which nothing reached the mix remains.
+named); `credits` (one row per credit line the film prints: `credit`,
+`licence`, `src`, `id`, the licence's `tier` with share-alike allowed, and
+`required` at the attribution and share-alike tiers; public domain first,
+then by first appearance; a props.json item an include names is one too) and
+`credit_errors` (each placed third-party file or props.json item an include
+names with no credit line under an attribution, share-alike, unknown or
+vetoed licence, each props/ file props.json does not list, and each download
+with no licence or credit: `error:` findings, and the build is not
+publishable; an `error: credit:` one still writes scene.xml and build.json,
+as a placeholder does, and qa and doctor refuse the film on it);
+with a card, `credits_card` (`at`, `seconds`, `cards`) and `sound` (the beds
+`extended` under it, or the `silence` window it is); and the `engine` report
+of the decisions taken, both models billed. `publishable` is false while a
+placeholder, a blocking editorial note, a picture that ends before its
+narration, a sound design of which nothing reached the mix, or a credit
+error remains.
+
+And, beside the chain, `yt package` writes `package/`, the upload set an
+operator puts into YouTube Studio by hand (nothing is uploaded):
+`package.json` (title, description, chapters, tags, thumbnail, credits,
+sources, the `scene_sha256` and `video_sha256` it judged, its findings and a
+`verdict` of `ready` or `not ready`), `description.txt`, `thumbnail.png`
+(1280x720, a frame code offered), `captions.vtt` (a copy of narration.vtt)
+and `UPLOAD.md`, the checklist in Studio's order. The chapters, credits,
+sources and URLs are assembled from scene.xml, build.json and the dossier,
+never written by a model; `yt doctor` reads delivery as not ready until a
+current package says `ready`.
 
 ### The frame, in bands
 
@@ -245,6 +279,9 @@ At 1920×1080, scaling proportionally elsewhere:
 230 –  820   the stage: graphics, diagrams, footage
 820 – 1080   caption safe area; nothing else may enter it
 ```
+
+The bands hold for the film. The end-credits cards come after it, with no
+caption on screen, and take the full frame, centred.
 
 The captions are a sidecar track the viewer turns on, unless the build is run
 with `--burn-captions`; the band stays reserved either way, because burned
@@ -274,7 +311,13 @@ read at 17 characters per second. A figure appears when the voice says it, not b
 window, not an absence.
 
 **Provenance.** Third-party imagery carries its licence and credit, or is
-replaced by an original drawing until the licence exists.
+replaced by an original drawing until the licence exists. A credit is
+printed where the work is seen: every placed file under an attribution or
+share-alike licence is named, verbatim, on the end-credits cards, and a
+placed file whose credit is empty under such a licence, or under one nobody
+can read, is an `error:` the build will not publish past. The fix is at the
+source (the dossier asset's `credit_line`, the cue's `credit`), never on the
+card.
 
 **Story.** House craft defaults, from `docs/narrative/`, each a prior until
 the retention loop replaces it; the number after each is its rule there.
