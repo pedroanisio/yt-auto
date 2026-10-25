@@ -268,7 +268,9 @@ sources, the `scene_sha256` and `video_sha256` it judged, its findings and a
 and `UPLOAD.md`, the checklist in Studio's order. The chapters, credits,
 sources and URLs are assembled from scene.xml, build.json and the dossier,
 never written by a model; `yt doctor` reads delivery as not ready until a
-current package says `ready`.
+current package says `ready`. `yt run`'s delivery tail runs it after a READY
+QA, before doctor's verdict, unless a package already ready for these bytes
+is on disk (AUTO-164); it is still not a stage of the chain.
 
 ### The frame, in bands
 

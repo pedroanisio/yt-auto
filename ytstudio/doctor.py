@@ -1207,6 +1207,15 @@ def _package_rows(project: workspace.Project) -> list[tuple[str, str]]:
     return []
 
 
+def package_problem(project: workspace.Project) -> str:
+    """Why the upload set does not hold for the bytes on disk, or "" when
+    package/package.json is current and ready: the first of _package_rows,
+    which `yt run`'s delivery tail reads to decide whether to package
+    (AUTO-164), so the tail and doctor never disagree on it."""
+    rows = _package_rows(project)
+    return rows[0][0] if rows else ""
+
+
 def check_renders(project: workspace.Project, report: Report) -> None:
     """List the render jobs that did not render (AUTO-32): every render*.json and every
     kit-frame report under .cache/reports/ that carries a status. A job that timed out,

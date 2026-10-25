@@ -26,7 +26,7 @@ sys.path.insert(0, str(HERE.parent))
 from ytstudio import cli, spend, workspace  # noqa: E402
 from ytstudio import (build, keyframe, props, render, research, retime, script,  # noqa: E402
                       sound, styles, vfx, voice)
-from ytstudio import doctor, gate, improve, qa  # noqa: E402
+from ytstudio import doctor, gate, improve, package, qa  # noqa: E402
 
 MODULES = {"research": research, "styles": styles, "script": script, "props": props,
            "voice": voice, "retime": retime, "keyframe": keyframe, "vfx": vfx,
@@ -54,12 +54,15 @@ class RunCase(unittest.TestCase):
             patch.start()
             self.addCleanup(patch.stop)
         # The delivery tail (AUTO-148): gate writes a deliverable gate.json on
-        # the bytes on disk, qa a READY card, and doctor says delivery is
+        # the bytes on disk, qa a READY card, package (AUTO-164) a ready
+        # package/package.json on those bytes, and doctor says delivery is
         # ready, unless a test says otherwise.
         self.gate_writes: str | None = "deliverable"
         self.qa_verdict = qa.READY
+        self.package_writes: str | None = "ready"
         self.delivered = True
-        for stage, module in (("gate", gate), ("qa", qa), ("improve", improve)):
+        for stage, module in (("gate", gate), ("qa", qa), ("improve", improve),
+                              ("package", package)):
             patch = mock.patch.object(module, "run", self.tail_fake(stage))
             patch.start()
             self.addCleanup(patch.stop)
@@ -80,9 +83,25 @@ class RunCase(unittest.TestCase):
                 "usage": spend.record(self.costs.get("gate", 0.0), "fake", 1)}
 
     def qa_json(self, verdict: str) -> dict:
+        # A dossier film's pass carries its on-screen accuracy check
+        # (AUTO-150); this one checked and found nothing blocking.
         return {"verdict": verdict, "pass": "pass-01", "overall": 9.3,
                 "scene_sha256": self.digest("scene.xml"), "gate_evidence": "",
+                "accuracy": {"status": "done", "bar": False, "checked": 3, "blocking": 0,
+                             "command": "", "why": "", "first": None},
                 "usage": spend.record(self.costs.get("qa", 0.0), "fake", 1)}
+
+    def package_json(self, verdict: str = "ready", **over) -> dict:
+        """What `yt package` writes (AUTO-147), on the bytes now on disk."""
+        return {"verdict": verdict, "findings": [] if verdict == "ready" else ["error: x"],
+                "scene_sha256": self.digest("scene.xml"),
+                "video_sha256": self.digest("video.mp4"),
+                "usage": spend.record(self.costs.get("package", 0.0), "fake", 1), **over}
+
+    def packaged(self, verdict: str = "ready", **over) -> None:
+        (self.root / "package").mkdir(exist_ok=True)
+        (self.root / "package" / "package.json").write_text(
+            json.dumps(self.package_json(verdict, **over)))
 
     def tail_fake(self, stage):
         def run(args):
@@ -94,7 +113,11 @@ class RunCase(unittest.TestCase):
                 (self.root / "gate.json").write_text(json.dumps(self.gate_json(self.gate_writes)))
             if stage == "qa":
                 (self.root / "qa.json").write_text(json.dumps(self.qa_json(self.qa_verdict)))
+            if stage == "package" and self.package_writes:
+                self.packaged(self.package_writes)
             self.order.append(f"{stage}:end")
+            if stage == "package":
+                return self.codes.get(stage, 0 if self.package_writes in (None, "ready") else 1)
             return self.codes.get(stage, 0 if stage != "gate" or self.gate_writes
                                   in (None, "deliverable") else 1)
         return run
@@ -251,9 +274,9 @@ class SkipAndRedo(RunCase):
         self.assertEqual(self.run_yt(), 0)
         serial = [s[:-6] for s in self.order if s.endswith(":start") and s != "sound:start"]
         # the delivery tail follows the render (AUTO-148); QA is READY, so
-        # improve does not run
+        # improve does not run and the film is packaged (AUTO-164)
         self.assertEqual(serial, [s for s in cli.PIPELINE if s != "sound"]
-                         + ["gate", "qa", "doctor"])
+                         + ["gate", "qa", "package", "doctor"])
         self.assertLess(self.order.index("sound:start"), self.order.index("keyframe:end"))
 
 
@@ -266,6 +289,11 @@ class Tail(RunCase):
     def tail(self) -> list[str]:
         return [s[:-6] for s in self.order if s.endswith(":start")
                 and s[:-6] in ("gate", "qa", "improve", "doctor")]
+
+    def steps(self) -> list[str]:
+        """The tail with its package (AUTO-164)."""
+        return [s[:-6] for s in self.order if s.endswith(":start")
+                and s[:-6] in ("gate", "qa", "improve", "package", "doctor")]
 
     def rendered(self):
         for name in ("scene.xml", "video.mp4", "dossier.json", "styles.json", "script.json",
@@ -412,11 +440,99 @@ class Tail(RunCase):
         self.assertTrue(self.err.rstrip().endswith("yt improve --project film"), self.err)
 
 
+class TailPackage(RunCase):
+    """AUTO-164: delivery needs a current, ready upload set (AUTO-147), so
+    after a READY QA the tail runs `yt package` before doctor's verdict,
+    unless package/package.json is already ready for these bytes, and never
+    on a film QA has not passed."""
+
+    steps, rendered = Tail.steps, Tail.rendered
+
+    def test_package_runs_after_a_ready_qa_and_before_doctor(self):
+        self.assertEqual(self.run_yt(), 0, self.err)
+        self.assertEqual(self.steps(), ["gate", "qa", "package", "doctor"])
+        self.assertLess(self.order.index("qa:end"), self.order.index("package:start"))
+        self.assertLess(self.order.index("package:end"), self.order.index("doctor:start"))
+        self.assertIn("== package: no upload set", self.err)
+
+    def test_a_package_ready_for_these_bytes_is_reused(self):
+        self.rendered()
+        self.packaged()
+        self.assertEqual(self.run_yt(), 0, self.err)
+        self.assertEqual(self.steps(), ["gate", "qa", "doctor"])
+        self.assertIn("== package: already ready on this render (package/package.json)",
+                      self.err)
+
+    def test_a_stale_or_not_ready_package_is_run_again(self):
+        for over in ({"video_sha256": "0" * 64}, {"scene_sha256": "0" * 64},
+                     {"verdict": "not ready"}):
+            self.rendered()
+            self.packaged(**over)
+            self.order.clear()
+            self.assertEqual(self.run_yt(), 0, self.err)
+            # the gate written on the first pass holds for these bytes after it
+            self.assertEqual(self.steps()[-3:], ["qa", "package", "doctor"], over)
+
+    def test_no_package_when_improve_leaves_qa_not_ready(self):
+        self.qa_verdict = qa.NOT_READY
+        self.delivered = False
+        self.assertEqual(self.run_yt(), cli.UNDELIVERED)
+        self.assertEqual(self.steps(), ["gate", "qa", "improve", "doctor"])
+        self.assertIn(f"== package: not run: QA is {qa.NOT_READY} after improve", self.err)
+        self.assertTrue(self.err.rstrip().endswith("yt improve --project film"), self.err)
+
+    def test_a_package_follows_an_improve_that_left_qa_ready(self):
+        self.qa_verdict = qa.NOT_READY
+
+        def improved():
+            (self.root / "qa.json").write_text(json.dumps(self.qa_json(qa.READY)))
+        self.hooks["improve"] = improved
+        self.assertEqual(self.run_yt(), 0, self.err)
+        self.assertEqual(self.steps(), ["gate", "qa", "improve", "package", "doctor"])
+
+    def test_no_package_when_the_qa_improve_left_does_not_score_the_film_on_disk(self):
+        # improve re-rendered after its last QA pass: qa.json says READY of
+        # a cut no longer on disk, so a package would be paid for nothing.
+        self.qa_verdict = qa.NOT_READY
+        self.delivered = False
+
+        def improved():
+            (self.root / "qa.json").write_text(json.dumps(self.qa_json(qa.READY)))
+            time.sleep(0.01)
+            (self.root / "video.mp4").write_bytes(b"re-rendered after the last QA")
+        self.hooks["improve"] = improved
+        self.assertEqual(self.run_yt(), cli.UNDELIVERED, self.err)
+        self.assertEqual(self.steps(), ["gate", "qa", "improve", "doctor"])
+        self.assertIn("== package: not run: qa.json does not score the film on disk "
+                      "after improve", self.err)
+        self.assertTrue(self.err.rstrip().endswith("yt improve --project film"), self.err)
+
+    def test_the_package_gets_the_author_the_tails_reviewer_and_the_review_cap(self):
+        self.assertEqual(self.run_yt("--model", "sonnet", "--reviewer-model", "gpt-5.1-codex",
+                                     "--review-budget-usd", "1.5"), 0, self.err)
+        seen = self.seen["package"]
+        self.assertEqual((seen.model, seen.reviewer_model, seen.review_budget_usd),
+                         ("sonnet", "gpt-5.1-codex", 1.5))
+        self.assertEqual(seen.project, str(self.root))
+        self.order.clear()
+        (self.root / "package" / "package.json").unlink()
+        self.assertEqual(self.run_yt(), 0, self.err)
+        seen = self.seen["package"]
+        self.assertEqual((seen.model, seen.reviewer_model, seen.review_budget_usd),
+                         ("sonnet", vfx.REVIEWER_MODEL, package.REVIEW_USD))
+
+    def test_no_deliver_or_quick_runs_no_package(self):
+        for flag in ("--no-deliver", "--quick"):
+            self.order.clear()
+            self.assertEqual(self.run_yt(flag), 0, flag)
+            self.assertEqual(self.steps(), [], flag)
+
+
 class TailVerdict(RunCase):
     """The tail against doctor's real delivery_evidence (no fake doctor):
     what the fake stages write is what doctor joins."""
 
-    tail = Tail.tail
+    tail, steps = Tail.tail, Tail.steps
 
     def setUp(self):
         super().setUp()
@@ -440,9 +556,31 @@ class TailVerdict(RunCase):
             "findings": [], "unsupported": [], "evaluation_warnings": []}]}}
 
     def test_a_final_render_gated_and_ready_on_the_same_bytes_exits_0(self):
+        # Delivery needs a current, ready upload set (AUTO-147), which the
+        # tail writes after a READY QA (AUTO-164).
         self.assertEqual(self.run_yt(), 0, self.err)
-        self.assertEqual(self.tail(), ["gate", "qa", "doctor"])
+        self.assertEqual(self.steps(), ["gate", "qa", "package", "doctor"])
         self.assertIn("doctor: deliverable", self.err)
+
+    def test_a_package_that_exits_1_writing_nothing_ends_undelivered_on_its_row(self):
+        self.package_writes = None
+        self.codes["package"] = 1
+        self.assertEqual(self.run_yt(), cli.UNDELIVERED, self.err)
+        self.assertEqual(self.steps(), ["gate", "qa", "package", "doctor"])
+        self.assertIn("package exited 1", self.err)
+        last = self.err.rstrip().splitlines()[-2:]
+        self.assertIn("no upload set: package/package.json has not been written", last[0])
+        self.assertEqual(last[1].strip(), f"yt package --project {self.root}")
+
+    def test_a_package_that_is_not_ready_ends_undelivered_on_its_row(self):
+        self.package_writes = "not ready"
+        self.assertEqual(self.run_yt(), cli.UNDELIVERED, self.err)
+        self.assertEqual(self.steps(), ["gate", "qa", "package", "doctor"])
+        self.assertIn("package exited 1", self.err)
+        last = self.err.rstrip().splitlines()[-2:]
+        self.assertIn("the upload package is not ready (1 error(s) in "
+                      "package/package.json)", last[0])
+        self.assertEqual(last[1].strip(), f"yt package --project {self.root}")
 
     def test_a_render_at_another_tier_is_not_delivered(self):
         self.render_at("draft")
@@ -452,11 +590,12 @@ class TailVerdict(RunCase):
 
 class TailBudget(RunCase):
     """Under --budget-usd the tail starts no stage whose estimate does not
-    fit, and improve is handed what is left of the cap."""
+    fit, and improve is handed what is left of the cap once the package
+    is held back."""
 
     def setUp(self):
         super().setUp()
-        prices = {"vfx": 20.0, "gate": 9.0, "qa": 9.0}
+        prices = {"vfx": 20.0, "gate": 9.0, "qa": 9.0, "package": 9.0}
 
         def estimates(root, stages, sections=None, extras=None):
             return [{"stage": s, "usd": prices.get(s, 0.0), "basis": "fake", "source": "test"}
@@ -483,7 +622,52 @@ class TailBudget(RunCase):
         self.qa_verdict = qa.NOT_READY
         self.delivered = False
         self.assertEqual(self.run_yt("--budget-usd", "60"), cli.UNDELIVERED)
-        self.assertAlmostEqual(self.seen["improve"].budget_usd, 60 - 30 - 7 - 3)
+        # AUTO-164: the package's $9 is held back for after a READY QA
+        self.assertAlmostEqual(self.seen["improve"].budget_usd, 60 - 30 - 7 - 3 - 9)
+
+    def improve_spends(self, usd: float, verdict: str = qa.READY) -> None:
+        """improve leaves QA at `verdict` and records `usd` spent in
+        improve.json, the only place its spend is written."""
+        self.qa_verdict = qa.NOT_READY
+
+        def improved():
+            (self.root / "qa.json").write_text(json.dumps(self.qa_json(verdict)))
+            (self.root / "improve.json").write_text(json.dumps({"spent_usd": usd}))
+        self.hooks["improve"] = improved
+
+    def test_a_package_after_improve_fits_in_what_improve_was_not_handed(self):
+        self.costs.update(gate=7.0, qa=3.0)
+        self.improve_spends(11.0)
+        self.assertEqual(self.run_yt("--budget-usd", "60"), 0, self.err)
+        self.assertEqual(self.started("package"), ["package:start", "package:end"])
+
+    def test_improves_spend_counts_before_the_package(self):
+        # improve.json's spent_usd is what improve spent; a package that no
+        # longer fits beside it is refused, so the run never passes its cap.
+        self.costs.update(gate=7.0, qa=3.0)
+        self.improve_spends(20.0)
+        self.assertEqual(self.run_yt("--budget-usd", "60"), retime.UNSETTLED)
+        self.assertEqual(self.started("package"), [])
+        self.assertIn("== package: estimated at $9.00 (fake) and $60.00 of the $60.00 "
+                      "budget is spent", self.err)
+
+    def test_no_room_for_improve_once_the_package_is_held_back_starts_no_improve(self):
+        self.costs.update(gate=7.0, qa=3.0)
+        self.qa_verdict = qa.NOT_READY
+        self.assertEqual(self.run_yt("--budget-usd", "49"), retime.UNSETTLED)
+        self.assertEqual(self.started("improve"), [])
+        self.assertIn("the package's $9.00 held back", self.err)
+
+    def test_a_package_that_does_not_fit_exits_3(self):
+        # AUTO-164: priced like gate and qa, asked before it starts. 30 + 7
+        # spent leaves room for qa's $9; 30 + 7 + 3 none for package's.
+        self.costs.update(gate=7.0, qa=3.0)
+        self.assertEqual(self.run_yt("--budget-usd", "47"), retime.UNSETTLED)
+        self.assertIn("qa:end", self.order)
+        self.assertEqual(self.started("package"), [])
+        self.assertEqual(self.started("doctor"), [])
+        self.assertIn("== package: estimated at $9.00 (fake) and $40.00 of the $47.00 "
+                      "budget is spent", self.err)
 
     def test_no_remainder_starts_no_improve(self):
         self.costs.update(gate=5.0, qa=10.0)

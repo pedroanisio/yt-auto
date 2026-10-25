@@ -4,6 +4,7 @@ Its cost plan (`--dry-run`) and its cap (`--budget-usd`) read the stage
 estimates, which live in `spend` (AUTO-81)."""
 
 import argparse
+import json
 import sys
 import threading
 import unittest
@@ -23,7 +24,7 @@ from ytstudio import cli, env, improve, retime, spend, workspace  # noqa: E402
 #: real table does, so the plan is seen to leave them out.
 PRICES = {"research": 4.0, "styles": 5.0, "script": 3.0, "props": 0.0, "voice": 2.0,
           "retime": 0.5, "keyframe": 6.0, "vfx": 20.0, "sound": 0.5, "build": 0.1,
-          "render": 0.0}
+          "render": 0.0, "package": 2.5}
 
 
 def fake_estimates(root, stages, sections=None, extras=None):
@@ -125,6 +126,62 @@ class Estimates(unittest.TestCase):
                      "MANIFEST", "DEFAULT_USD", "VFX_PASS_USD"):
             self.assertIs(getattr(improve, name), getattr(spend, name), name)
         self.assertEqual(spend.stage_estimates.__module__, "ytstudio.spend")
+
+    def test_the_package_is_priced_as_its_draft_plus_its_review(self):
+        # AUTO-164: the tail's package is asked of the cap like any stage.
+        # Its review is package.py's REVIEW_USD (spend cannot import it:
+        # package reads spend), the draft a guess until a live run (TO VERIFY).
+        import tempfile
+        from ytstudio import package
+        self.assertEqual(spend.PACKAGE_REVIEW_USD, package.REVIEW_USD)
+        self.assertEqual(spend.DEFAULT_USD["package"],
+                         round(spend.PACKAGE_DRAFT_USD + package.REVIEW_USD, 2))
+        self.assertEqual(spend.MANIFEST["package"], workspace.ARTIFACTS["package"])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "film"
+            (root / "package").mkdir(parents=True)
+            row = spend.stage_estimates(root, ["package"])[0]
+            self.assertEqual((row["stage"], row["usd"], row["basis"]),
+                             ("package", spend.DEFAULT_USD["package"], "assumed"))
+            (root / "package" / "package.json").write_text(
+                json.dumps({"usage": spend.record(1.25, "sonnet", 2)}))
+            row = spend.stage_estimates(root, ["package"])[0]
+            self.assertEqual((row["usd"], row["basis"], row["source"]),
+                             (1.25, "measured", "package/package.json"))
+
+    def test_an_assumed_vfx_pass_does_not_fold_the_package_in(self):
+        # VFX_PASS_USD guesses a pass and its downstream stages; the upload
+        # set is not one of them, so on a fresh project the package keeps
+        # its own estimate and the cap can refuse it.
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "film"
+            root.mkdir()
+            rows = {r["stage"]: r for r in spend.stage_estimates(root, ["vfx", "build",
+                                                                        "package"])}
+            self.assertEqual(rows["build"]["source"], "included in the vfx default")
+            self.assertEqual((rows["package"]["usd"], rows["package"]["basis"]),
+                             (spend.DEFAULT_USD["package"], "assumed"))
+
+    def test_an_assumed_package_review_is_priced_at_the_review_budget_handed_it(self):
+        # The tail hands package the run's --review-budget-usd; until a
+        # package.json measures one, its review is priced at that cap.
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "film"
+            root.mkdir()
+            for cap in ("1.5", "4"):
+                row = spend.stage_estimates(
+                    root, ["package"], extras={"package": ["--model", "sonnet",
+                                                           "--review-budget-usd", cap]})[0]
+                self.assertEqual(row["usd"], round(spend.PACKAGE_DRAFT_USD + float(cap), 2))
+                self.assertIn(f"--review-budget-usd ${float(cap):.2f}", row["source"])
+            (root / "package").mkdir()
+            (root / "package" / "package.json").write_text(
+                json.dumps({"usage": spend.record(1.25, "sonnet", 2)}))
+            row = spend.stage_estimates(root, ["package"],
+                                        extras={"package": ["--review-budget-usd", "4"]})[0]
+            self.assertEqual((row["usd"], row["basis"]), (1.25, "measured"))
 
 
 def review_usd(argv=("--review",), root=None) -> float:
@@ -551,6 +608,60 @@ class DeliveryWiring(unittest.TestCase):
         ns = parser.parse_args(cli.stage_argv("improve", base, extra))
         self.assertEqual((ns.model, ns.qa_model), ("opus", "sonnet"))
 
+    def test_the_package_gets_the_author_and_the_tails_reviewer(self):
+        # AUTO-164: the author words the upload set, the tail's reviewer
+        # (never a gateway one: yt package refuses the pool) reads it, and
+        # the run's review cap is handed on when set.
+        parser = cli.build_parser()
+        base = ["--project", "work/x", "--model", "sonnet", "--quiet"]
+        for argv, want in (
+                (["--model", "sonnet", "--reviewer-model", "gpt-5.1-codex",
+                  "--review-budget-usd", "1.5"],
+                 ["--model", "sonnet", "--reviewer-model", "gpt-5.1-codex",
+                  "--review-budget-usd", "1.5"]),
+                (["--model", "sonnet"], ["--model", "sonnet", "--reviewer-model", "opus"]),
+                (["--model", "sonnet", "--reviewer-model", "sdk:zai/glm-5.3"],
+                 ["--model", "sonnet", "--reviewer-model", "opus"])):
+            extra = cli.run_extras(self.args(*argv), redo=set())
+            self.assertEqual(extra["package"], want, argv)
+            ns = parser.parse_args(cli.stage_argv("package", base, extra))
+            self.assertEqual((ns.stage, ns.model, ns.reviewer_model),
+                             ("package", "sonnet", want[3]), argv)
+        self.assertNotIn("package", cli.PIPELINE)
+
+    def test_a_pair_yt_package_would_refuse_is_refused_before_any_stage(self):
+        # AUTO-164: yt package refuses an author of its reviewer's family
+        # (exit 2); the tail's family check is the same reviewer and rule,
+        # so whatever `yt run` admits, the tail's package admits too.
+        import contextlib
+        import io
+        import tempfile
+        from ytstudio import package
+        quiet = "keyframe,vfx,script,build,styles,research"
+        refused_by_package = []
+        with tempfile.TemporaryDirectory() as tmp:
+            for model, reviewer in (("sonnet", None), ("sonnet", "haiku"),
+                                    ("sonnet", "gpt-5.1-codex"), ("gpt-5.1-codex", None),
+                                    ("haiku", "sonnet"), ("opus", "sonnet"), ("opus", None),
+                                    ("sonnet", "sonnet"), ("sonnet", "claude-sonnet-5-5"),
+                                    ("gpt-5.1-codex", "gpt-5.1-codex"),
+                                    ("sonnet", "sdk:zai/glm-5.3")):
+                asked = ["--reviewer-model", reviewer] if reviewer else []
+                admitted, said = self.walk("--model", model, *asked, "--skip", quiet)
+                extra = cli.run_extras(self.args("--model", model, *asked), redo=set())
+                ns = cli.build_parser().parse_args(cli.stage_argv(
+                    "package", ["--project", tmp, "--model", model, "--quiet"], extra))
+                with contextlib.redirect_stderr(io.StringIO()), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    refused = package.run(ns) == 2
+                if refused:
+                    refused_by_package.append((model, reviewer))
+                    self.assertEqual(admitted, 2, (model, reviewer, said))
+                    self.assertIn("yt package", said, (model, reviewer))
+        self.assertEqual(refused_by_package, [("opus", None), ("sonnet", "sonnet"),
+                                              ("sonnet", "claude-sonnet-5-5"),
+                                              ("gpt-5.1-codex", "gpt-5.1-codex")])
+
     def test_the_tail_hands_on_no_gateway_only_flag(self):
         # The tail's gate, qa and improve run on the claude and codex CLIs:
         # no --listen, --watch or --compare-model reaches them from yt run.
@@ -635,26 +746,35 @@ class DryRunTail(Priced):
             self.assertEqual(self.run_yt("--dry-run", "--skip", "keyframe"), 0)
         self.assertEqual(self.order, [])
         lines = [line.split()[0] for line in self.out.splitlines()[1:] if line.strip()]
+        # AUTO-164: the package follows improve, before doctor's verdict
         self.assertEqual(lines[lines.index("render"):],
-                         ["render", "gate", "qa", "improve", "doctor", "total"], self.out)
+                         ["render", "gate", "qa", "improve", "package", "doctor", "total"],
+                         self.out)
         rows = self.rows()
-        self.assertEqual((rows["gate"], rows["qa"], rows["doctor"]), ("$9.00", "$9.00", "$0.00"))
+        self.assertEqual((rows["gate"], rows["qa"], rows["package"], rows["doctor"]),
+                         ("$9.00", "$9.00", "$2.50", "$0.00"))
         self.assertIn("up to $15.00 assumed (improve's cap, only when QA is not READY)",
                       self.out)
+        package_row = next(line for line in self.out.splitlines()
+                           if line.split()[:1] == ["package"])
+        self.assertIn("only after a READY QA", package_row)
         walked = sum(PRICES[s] for s in cli.walk_order({"keyframe"}))
-        self.assertEqual(rows["total"], f"${walked + 18:.2f}")
+        self.assertEqual(rows["total"], f"${walked + 18 + 2.5:.2f}")
+        self.assertIn(f"would walk {len(lines) - 1} stage(s)", self.out.splitlines()[0])
 
     def test_under_a_cap_improve_is_up_to_what_is_left(self):
         with mock.patch.object(cli.keyframe, "approval_state", lambda root: {"state": "approved"}):
             self.assertEqual(self.run_yt("--dry-run", "--skip", "keyframe",
                                          "--budget-usd", "100"), 0)
         walked = sum(PRICES[s] for s in cli.walk_order({"keyframe"})) + 18
-        self.assertIn(f"up to ${100 - walked:.2f} assumed", self.out)
+        # AUTO-164: the package's $2.50 is held back from improve, as the run does
+        self.assertIn(f"up to ${100 - walked - 2.5:.2f} assumed", self.out)
 
     def test_no_deliver_lists_no_tail(self):
         with mock.patch.object(cli.keyframe, "approval_state", lambda root: {"state": "approved"}):
             self.assertEqual(self.run_yt("--dry-run", "--skip", "keyframe", "--no-deliver"), 0)
         self.assertNotIn("gate", self.rows())
+        self.assertNotIn("package", self.rows())
         self.assertNotIn("improve", self.out)
 
 
