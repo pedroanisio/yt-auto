@@ -231,6 +231,42 @@ class Routing(ImproveCase):
         self.assertEqual(routing["routes"]["F1"]["by"], "mechanical")
         self.assertEqual(set(routing["stages"]), {"vfx", "build"})
 
+    # AUTO-160: a credit yt review filed is QA's mechanical row, owned by
+    # external: a human credits it, no stage is dispatched for it.
+
+    def review_credit(self):
+        issue = {"heading": "One take", "what": "a chart redrawn from Smith 2019",
+                 "asset": "fig-pressure", "fix": ""}
+        return qa.review_credit_findings(
+            [issue], {"shots": [{"label": "1.1", "at": 0.0, "section": "One take"}]})[0]
+
+    def test_a_review_credit_goes_to_a_human(self):
+        findings = improve.collect(card(5.0, mechanical=[self.review_credit()]))
+        self.assertEqual(findings[0]["fingerprint"], "review-credit|1.1|fig-pressure")
+        FakeEngine.route = route_all_to("vfx")
+        h = harness.Harness(self.root, "improve", verbose=False)
+        routing = improve.route(h, findings, name="route-pass-01")
+        self.assertEqual(routing["stages"], {})
+        self.assertEqual([(r["id"], r["route"]) for r in routing["human"]],
+                         [("F1", improve.EXTERNAL)])
+        self.assertEqual(routing["routes"]["F1"]["by"], "mechanical")
+        self.assertIn("credit", routing["routes"]["F1"]["why"])
+        # and the loop stops on it, running nothing
+        self.start_pass(card(5.0, mechanical=[self.review_credit()]))
+        runner = FakeRunner(self.root, [])
+        record = self.improver(runner, dry_run=True).run()
+        self.assertEqual(runner.calls, [])
+        self.assertEqual([h["route"] for h in record["human"]], [improve.EXTERNAL])
+
+    def test_existing_mechanical_kinds_still_need_a_routable_owner(self):
+        findings = improve.collect(card(5.0, mechanical=[mech("flat", "1.1",
+                                                              owner="external")]))
+        FakeEngine.route = route_all_to("vfx")
+        h = harness.Harness(self.root, "improve", verbose=False)
+        routing = improve.route(h, findings, name="route-pass-01")
+        self.assertEqual(routing["routes"]["F1"]["by"], "model")
+        self.assertEqual(routing["routes"]["F1"]["stage"], "vfx")
+
     def test_every_mechanical_kind_is_known(self):
         for kind in ("penetration", "reads-merged", "flat", "clipped", "frozen", "jump",
                      "off_camera", *qa.RHYTHM_KINDS):
