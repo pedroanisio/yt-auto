@@ -2566,7 +2566,7 @@ report printing the older pass's cell empty); a change smaller than the scoring
 samples' spread is no change, so a gain inside it is not kept and a drop
 inside it is no regression. Otherwise the snapshot in `improve/pass-NN/snapshot/` is
 restored. A QA pass that is `not_evidenced` leaves the pass unjudged, and
-the next run scores it again first. QA's finding owner is one of the stages, `upstream-fact` or `external`, so routing is a lookup, and `--resume` and `--rejudge` carry the earlier passes and survivor counts forward in `improve.json`. It stops at READY TO PUBLISH (QA's verdict alone is the bar, AUTO-148), at
+the next run scores it again first. QA's finding owner is one of the stages, `upstream-fact` or `external`, so routing is a lookup, and `--resume` and `--rejudge` carry the earlier passes and survivor counts forward in `improve.json`. It stops at READY TO PUBLISH (QA's verdict alone is the bar, AUTO-148), before any pass when the QA pass it starts from already is READY at `--target` (AUTO-163: no routing, no stage, $0, exit 0; a dry run still plans), at
 `gate-evidence` when QA's `gate_evidence` names a gate reason and no stage owns a finding (run `yt gate` on the render host), at the pass or budget limit, or when
 a defect survives three briefed passes, and writes `improve.json` and an
 `improve.md` in the shape of the §11 report. The estimate is per stage, read from
