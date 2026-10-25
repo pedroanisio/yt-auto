@@ -242,9 +242,37 @@ class ReviewCredits(unittest.TestCase):
             "problem": "review: missing credit in Two: a logo typeset with no mark "
                        "(`logo-acme`)",
             "fix": "credit Acme on screen"})
-        self.assertEqual((found[1]["shot"], found[1]["timestamp"], found[1]["fix"]),
-                         ("", 0.0, "credit it at source and rebuild"))
+        # no shot in that section: no time is claimed, the section is named
+        self.assertEqual((found[1]["shot"], found[1]["timestamp"], found[1]["section"],
+                          found[1]["fix"]),
+                         ("", None, "Nowhere", "credit it at source and rebuild"))
+        self.assertEqual(qa.mechanical_line(found[1]),
+                         "mechanical: review: missing credit in Nowhere: a logo typeset "
+                         "with no mark (`fig-1`) (section Nowhere)")
+        self.assertEqual(qa.mechanical_line(found[0]),
+                         "mechanical: review: missing credit in Two: a logo typeset with "
+                         "no mark (`logo-acme`) at 7.5s (shot 2.1)")
         self.assertEqual(qa.REVIEW_KINDS, ("review-credit",))
+
+    def test_the_heading_matches_a_section_whatever_its_numbering_or_case(self):
+        build = {"shots": [{"label": "1.1", "at": 0.0, "section": "1. The Opening"},
+                           {"label": "2.1", "at": 7.5, "section": "2. Two  Pressures"}]}
+        for heading in ("2. Two  Pressures", "two pressures", "  TWO PRESSURES ",
+                        "2) Two Pressures", "Section 2: two pressures"):
+            found = qa.review_credit_findings([dict(self.ISSUE, heading=heading)], build)
+            self.assertEqual((found[0]["shot"], found[0]["timestamp"]), ("2.1", 7.5), heading)
+
+    def test_the_readers_prose_does_not_change_the_defect(self):
+        # a `what` with its own backticks is prose, not an object name: the
+        # same credit is one defect across passes whatever the reader wrote
+        from ytstudio import improve
+        one = qa.review_credit_findings([self.ISSUE], self.build())[0]
+        two = qa.review_credit_findings(
+            [dict(self.ISSUE, what="chart `fig-3` redrawn, logo `acme` typeset")],
+            self.build())[0]
+        self.assertEqual(improve.fingerprint(one), improve.fingerprint(two))
+        self.assertEqual(improve.fingerprint(one), "review-credit|2.1|logo-acme")
+        self.assertIn("chart fig-3 redrawn", two["problem"])
 
     def test_review_credits_do_not_cap_scores(self):
         scores = {k: 9.0 for k in qa.CATEGORIES}

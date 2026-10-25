@@ -2454,27 +2454,48 @@ def cap_scores(scores: dict, overall: float, mechanical: list[dict]
     return scores, round(overall, 2), capped
 
 
+_SECTION_NUMBER = re.compile(r"^(?:section\s+)?\d+(?:\.\d+)*\s*[.):\-\u2013\u2014]?\s*")
+
+
+def _section_key(heading: object) -> str:
+    """A section heading as the reader and build.json can both match it:
+    case, runs of whitespace and a leading section number aside. The reader
+    copies the heading off the PDF, which numbers and sets it its own way."""
+    text = " ".join(str(heading or "").split()).casefold()
+    return _SECTION_NUMBER.sub("", text, count=1)
+
+
 def review_credit_findings(issues: list[dict], build: dict) -> list[dict]:
     """yt review's current credit issues (review.current_credits) as
     mechanical findings: blocking, owned by external, at the first shot of
-    the section the reader named (none when no shot is in it). The asset
-    is backticked, so improve.fingerprint keeps it one defect across passes."""
+    the section the reader named. When no shot is in a section of that name
+    the finding claims no time (timestamp None) and names the section.
+    Only the asset is backticked (the reader's prose has its backticks
+    taken out), so improve.fingerprint keeps it one defect across passes."""
     shots = [s for s in (build or {}).get("shots") or [] if isinstance(s, dict)]
     found = []
     for row in issues:
-        heading = str(row.get("heading", ""))
-        first = next((s for s in shots if s.get("section") == heading), {})
+        heading = str(row.get("heading", "")).replace("`", "")
+        what = str(row.get("what", "")).replace("`", "")
+        key = _section_key(heading)
+        first = next((s for s in shots if _section_key(s.get("section")) == key), None)
+        where = ({"shot": str(first.get("label", "")),
+                  "timestamp": float(first.get("at") or 0.0)} if first is not None else
+                 {"shot": "", "timestamp": None, "section": heading})
         found.append({"kind": REVIEW_KINDS[0], "severity": "blocking", "owner": "external",
-                      "shot": str(first.get("label", "")),
-                      "timestamp": float(first.get("at") or 0.0), "frame": "",
+                      **where, "frame": "",
                       "problem": f"review: missing credit in {heading}: "
-                                 f"{row.get('what', '')} (`{row.get('asset', '')}`)",
+                                 f"{what} (`{row.get('asset', '')}`)",
                       "fix": str(row.get("fix") or "") or "credit it at source and rebuild"})
     return found
 
 
 def mechanical_line(f: dict) -> str:
-    """One blocking mechanical finding as the card's `blocking` names it."""
+    """One blocking mechanical finding as the card's `blocking` names it. A
+    finding with no time (a review credit in a section no shot matched)
+    names its section only, rather than claim 0s."""
+    if f.get("timestamp") is None and f.get("section"):
+        return f"mechanical: {f.get('problem', '')} (section {f['section']})"
     where = f"shot {f.get('shot', '')}"
     if f.get("section"):
         where += f", section {f['section']}"
@@ -5901,8 +5922,7 @@ def run(args) -> int:
     mechanical += credits_found
     if not args.quiet:
         for f in credits_found:
-            print(f"[qa] mechanical [blocking] {_stamp(f['timestamp'])} shot "
-                  f"{f['shot']}: {f['problem']}", file=sys.stderr)
+            print(f"[qa] [blocking] {mechanical_line(f)}", file=sys.stderr)
         if review_note:
             print(f"note: {review_note}", file=sys.stderr)
     capped: list[str] = []
