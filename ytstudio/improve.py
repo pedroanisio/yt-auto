@@ -54,8 +54,10 @@ loop as code:
    A pass whose stages all ran but whose QA filed nothing (a render host
    down) is `unjudged`: its outputs and snapshot stay, and the next run
    scores and judges it before anything else.
-6. **Stop** at READY TO PUBLISH (with `--target` above 9.0, at READY and that
-   overall; the bar itself is QA's verdict alone), at
+6. **Stop** at READY TO PUBLISH once overall is at least `--target`
+   (default 9.0; a higher target keeps improving a READY film; the bar
+   itself is QA's verdict alone, so a film under it keeps improving), before
+   any pass when the evidence it starts from already is, at
    `--max-passes`, when the next pass's estimate exceeds what is left of
    `--budget-usd`, when a defect survives `SURVIVOR_PASSES` passes that
    were briefed on it (the approach is wrong, not the parameters), or when
@@ -1218,9 +1220,12 @@ def cli_runner(argv: list[str]) -> int:
 def _summary(card: dict | None) -> dict | None:
     if not card:
         return None
+    # "bar" is the verdict's reasons (qa.verdict_of), copied so the terminal
+    # summary can say why a film is not ready without reading the scorecard.
     return {"pass": card.get("pass"), "overall": card.get("overall"),
             "verdict": card.get("verdict"), "scores": card.get("scores"),
-            "blocking": len(card.get("blocking") or [])}
+            "blocking": len(card.get("blocking") or []),
+            "bar": list(card.get("bar") or [])}
 
 
 class Improver:
@@ -1772,6 +1777,27 @@ class Improver:
                               "detail": "no QA pass could be read or scored"}
             return self._finish(record)
         record["start"] = record["start"] or _summary(resumed["start"] if resumed else card)
+        if not self.dry_run and reached(card, self.target):
+            # QA already filed this film READY at the target (AUTO-163): a
+            # pass could only spend, so stop before routing, which is paid.
+            # A dry run still routes and prints the plan it was asked for.
+            # After a resume this run judged (and may have paid QA for) the
+            # earlier pass, so the detail names it instead of "no pass run".
+            entry = resumed["entry"] if resumed else None
+            if entry is None:
+                detail = (f"{card['pass']}: already {card.get('verdict')} at "
+                          f"{card.get('overall')}; no pass run")
+            elif entry.get("decision") == "keep":
+                detail = (f"{card['pass']}: {entry['name']} judged {card.get('verdict')} "
+                          f"at {card.get('overall')}; no further pass run")
+            else:
+                detail = (f"{card['pass']}: {card.get('verdict')} at {card.get('overall')} "
+                          f"after {entry['name']} was judged ({entry.get('decision')}); "
+                          "no further pass run")
+            record["stop"] = {"reason": "ready", "detail": detail}
+            record["best"] = _summary(card)
+            record["defects"] = self.defects
+            return self._finish(record)
         best = evidence = card
         attempts: dict[str, list[str]] = {}
         last_cost: float | None = None
@@ -2078,6 +2104,12 @@ class Improver:
                  f"({record['stop']['detail']})")
         self.say(f"  start {start.get('pass')} {start.get('overall')}  ->  best "
                  f"{best.get('pass')} {best.get('overall')} {best.get('verdict')}")
+        if best.get("verdict") and best["verdict"] != qa.READY:
+            # The verdict's own reasons, the list improve.md section 6 shows,
+            # so the terminal says why the film is not ready, not only that.
+            # No verdict (no QA pass was read) is not NOT READY, and then no
+            # improve.md is written to point at.
+            self.say(f"  not ready: {'; '.join(best.get('bar') or []) or 'see ' + REPORT_MD}")
         for p in record["passes"]:
             self.say(f"  {p['name']}: {', '.join(p['stages'])} -> {p.get('qa_pass', '-')} "
                      f"{p.get('overall_before')} -> {p.get('overall_after', '-')} "

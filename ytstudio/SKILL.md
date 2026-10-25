@@ -1134,7 +1134,13 @@ re-measured" until a new publish and `yt retention` measure it.
 - **Stops** at READY TO PUBLISH (AUTO-148: QA's verdict is the bar, so a
   category under 8.5 or not evidenced, a blocker or a delivery-gate reason
   never stops it "ready"; `--target` above 9.0 also asks for that overall,
-  and under 9.0 changes nothing), with `gate-evidence` (exit 1, nothing
+  and under 9.0 changes nothing; AUTO-163: a start or resumed best QA
+  already filed READY at `--target` stops `ready` before routing, "already
+  READY TO PUBLISH at X; no pass run" (after a resume, "pass-NN judged
+  READY TO PUBLISH at X; no further pass run"), exit 0, $0 spent and
+  `improve.md` written, while `--dry-run` still plans; a NOT READY best prints its
+  verdict's bar on a `not ready:` line, and `improve.json`'s `start` and
+  `best` carry it as `bar`), with `gate-evidence` (exit 1, nothing
   run) when the evidence card's `gate_evidence` is set and no finding is
   routable, since no stage owns it and `yt gate` on the render host does, at
   `--max-passes` (3), when the next pass's estimate exceeds what is left of
