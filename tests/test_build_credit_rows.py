@@ -112,6 +112,77 @@ class PropReference(Fixture):
         self.assertEqual(info["props"], ["props/hdri/x/x.hdr"])
 
 
+class PropCreditErrors(Fixture):
+    """A prop an include names owes its credit as a placed picture does: an
+    attribution licence with no credit, or a file props.json does not list
+    (so nobody recorded its licence), is a credit error and the build is
+    not publishable."""
+
+    def prop(self, licence: str, credit: str):
+        (self.root / "props" / "hdri" / "x").mkdir(parents=True, exist_ok=True)
+        (self.root / "props" / "hdri" / "x" / "x.hdr").write_bytes(b"#?RADIANCE")
+        (self.root / "props.json").write_text(json.dumps({"items": [{
+            "id": "x", "kind": "hdri", "file": "props/hdri/x/x.hdr",
+            "files": ["props/hdri/x/x.hdr"], "licence": licence, "credit": credit}]}))
+
+    def run_build(self):
+        self.write_authored(Fixture_AUTHORED_WITH_HDRI)
+        self.manifest([{"title": "a micrograph", "status": "ok",
+                        "file": "downloads/01-plate.png", "licence": "CC BY 4.0"}])
+        dossier = {"assets": [{"title": "a micrograph", "kind": "image",
+                               "licence": "CC BY 4.0", "credit_line": "A. Author"}]}
+        _, manifest = self.build(dossier=dossier)
+        return manifest
+
+    def test_a_cc_by_prop_with_no_credit_is_not_publishable(self):
+        self.prop("CC BY 4.0", "")
+        manifest = self.run_build()
+        self.assertEqual(len(manifest["credit_errors"]), 1, manifest["credit_errors"])
+        self.assertTrue(manifest["credit_errors"][0].startswith("error: credit: "))
+        self.assertIn("props/hdri/x/x.hdr", manifest["credit_errors"][0])
+        self.assertIn("props.json", manifest["credit_errors"][0])
+        self.assertIn(manifest["credit_errors"][0], manifest["findings"])
+        self.assertFalse(manifest["publishable"])
+
+    def test_an_unknown_licence_prop_with_no_credit_is_not_publishable(self):
+        self.prop("", "")
+        manifest = self.run_build()
+        self.assertEqual(len(manifest["credit_errors"]), 1, manifest["credit_errors"])
+        self.assertIn("unknown", manifest["credit_errors"][0])
+        self.assertFalse(manifest["publishable"])
+
+    def test_a_cc0_prop_with_no_credit_stays_publishable(self):
+        self.prop("CC0 1.0 (Poly Haven)", "")
+        manifest = self.run_build()
+        self.assertEqual(manifest["credit_errors"], [])
+
+    def test_a_prop_props_json_does_not_list_is_not_publishable(self):
+        (self.root / "props" / "hdri" / "x").mkdir(parents=True)
+        (self.root / "props" / "hdri" / "x" / "x.hdr").write_bytes(b"#?RADIANCE")
+        manifest = self.run_build()
+        self.assertEqual(len(manifest["credit_errors"]), 1, manifest["credit_errors"])
+        self.assertTrue(manifest["credit_errors"][0].startswith("error: credit: "))
+        self.assertIn("does not list", manifest["credit_errors"][0])
+        self.assertFalse(manifest["publishable"])
+
+
+class MergedDuty(unittest.TestCase):
+    """Two assets under one credit line print it once, and the merged row
+    keeps the stronger duty: a CC0 file first in the document must not
+    hide that a CC BY file under the same line requires it."""
+
+    def test_a_required_row_survives_a_free_one_with_the_same_line(self):
+        text = """<scene><assets>
+          <image id="a" src="downloads/a.png" license="CC0 1.0" credit="An Archive"/>
+          <image id="b" src="downloads/b.png" license="CC BY 4.0" credit="An Archive"/>
+        </assets></scene>"""
+        rows = build.credit_rows(ElementTree.fromstring(text), [])
+        self.assertEqual(len(rows), 1, rows)
+        self.assertTrue(rows[0]["required"])
+        self.assertEqual(rows[0]["licence"], "CC BY 4.0")
+        self.assertEqual(rows[0]["tier"], assets.TIER_ATTRIBUTION)
+
+
 Fixture_AUTHORED_WITH_HDRI = """<?xml version="1.0"?>
 <scene version="1.1">
   <project width="1920" height="1080" fps="30" duration="4"/>

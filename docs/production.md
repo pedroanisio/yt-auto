@@ -240,9 +240,12 @@ named); `credits` (one row per credit line the film prints: `credit`,
 `licence`, `src`, `id`, the licence's `tier` with share-alike allowed, and
 `required` at the attribution and share-alike tiers; public domain first,
 then by first appearance; a props.json item an include names is one too) and
-`credit_errors` (each placed third-party file with no credit line under an
-attribution, share-alike, unknown or vetoed licence, and each download with
-no licence or credit: `error:` findings, and the build is not publishable);
+`credit_errors` (each placed third-party file or props.json item an include
+names with no credit line under an attribution, share-alike, unknown or
+vetoed licence, each props/ file props.json does not list, and each download
+with no licence or credit: `error:` findings, and the build is not
+publishable; an `error: credit:` one still writes scene.xml and build.json,
+as a placeholder does, and qa and doctor refuse the film on it);
 with a card, `credits_card` (`at`, `seconds`, `cards`) and `sound` (the beds
 `extended` under it, or the `silence` window it is); and the `engine` report
 of the decisions taken, both models billed. `publishable` is false while a

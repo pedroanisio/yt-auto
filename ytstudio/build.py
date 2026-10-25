@@ -893,26 +893,44 @@ def credit_rows(scene_root, props_hits: list[dict]) -> list[dict]:
         found.append((" ".join(str(item.get("credit") or "").split()),
                       str(item.get("licence") or ""), str(item.get("src") or item.get("file") or ""),
                       str(item.get("id") or "")))
-    rows, seen = [], set()
+    rows, by_credit = [], {}
     for credit, licence, src, ident_ in found:
-        if not credit or credit in seen:
+        if not credit:
             continue
-        seen.add(credit)
         _, tier = licence_verdict(licence, allow_sa=True)
-        rows.append({"credit": credit, "licence": licence, "src": src, "id": ident_,
-                     "tier": tier, "required": tier in (TIER_ATTRIBUTION, TIER_SHARE_ALIKE)})
+        row = {"credit": credit, "licence": licence, "src": src, "id": ident_,
+               "tier": tier, "required": tier in (TIER_ATTRIBUTION, TIER_SHARE_ALIKE)}
+        first = by_credit.get(credit)
+        if first is None:
+            by_credit[credit] = row
+            rows.append(row)
+        elif row["required"] and not first["required"]:
+            # One line, printed once, owes the strongest duty any of its
+            # files carries: a CC0 file earlier in the document must not
+            # make a CC BY file's credit optional.
+            first.update({k: row[k] for k in ("licence", "src", "id", "tier", "required")})
     order = {id(r): n for n, r in enumerate(rows)}
     return sorted(rows, key=lambda r: (99 if r["tier"] is None else r["tier"], order[id(r)]))
 
 
-def credit_problems(scene_root) -> list[str]:
-    """The placed third-party files the film cannot credit, as `error:`
-    findings: an empty credit under an attribution or share-alike licence,
-    which must be printed, or under a licence that is unknown or vetoed,
-    which nobody can show is free of that duty. A public-domain file owes
-    no credit, and the synthesised sound is the film's own."""
+def credit_problems(scene_root, props_hits: list[dict] = ()) -> list[str]:
+    """The placed third-party files the film cannot credit, as `error:
+    credit:` findings: an empty credit under an attribution or share-alike
+    licence, which must be printed, or under a licence that is unknown or
+    vetoed, which nobody can show is free of that duty. A public-domain file
+    owes no credit, and the synthesised sound is the film's own. The props
+    an include names (`props_hits`, as credit_rows takes them) are judged
+    the same way, since they never reach the scene's <assets>."""
     from .assets import TIER_PUBLIC_DOMAIN, licence_verdict
     from .sound import SYNTH_LICENCE
+
+    def owed(licence: str) -> str:
+        verdict, tier = licence_verdict(licence, allow_sa=True)
+        if verdict == "free" and tier == TIER_PUBLIC_DOMAIN:
+            return ""
+        return (f"its licence {licence!r} requires a credit" if verdict == "free"
+                else f"its licence is {verdict} ({licence or 'none recorded'})")
+
     out = []
     for element in _assets_of(scene_root):
         if not _third_party(element):
@@ -920,14 +938,21 @@ def credit_problems(scene_root) -> list[str]:
         licence = str(element.get("license") or "")
         if str(element.get("credit") or "").strip() or licence == SYNTH_LICENCE:
             continue
-        verdict, tier = licence_verdict(licence, allow_sa=True)
-        if verdict == "free" and tier == TIER_PUBLIC_DOMAIN:
+        why = owed(licence)
+        if why:
+            out.append(f"error: credit: {element.get('src')} ({element.get('id')}) is placed "
+                       f"with no credit line, and {why}; record its credit at the source (the "
+                       "dossier asset's credit_line, the cue's credit in sound.json) and build "
+                       "again")
+    for item in props_hits:
+        licence = str(item.get("licence") or "")
+        if str(item.get("credit") or "").strip():
             continue
-        why = (f"its licence {licence!r} requires a credit" if verdict == "free"
-               else f"its licence is {verdict} ({licence or 'none recorded'})")
-        out.append(f"error: credit: {element.get('src')} ({element.get('id')}) is placed with "
-                   f"no credit line, and {why}; record its credit at the source (the "
-                   "dossier asset's credit_line, the cue's credit in sound.json) and build again")
+        why = owed(licence)
+        if why:
+            out.append(f"error: credit: {item.get('src') or item.get('file')} (props.json item "
+                       f"{item.get('id')!r}) is used with no credit line, and {why}; record its "
+                       "credit in props.json and build again")
     return out
 
 
@@ -3337,8 +3362,14 @@ class SceneBuilder:
                 credited.add(rel)
                 item = props_by_file.get(rel)
                 if item is None:
-                    lifted.append(f"warning: {Path(file).name} uses {rel}, which props.json "
-                                  "does not list, so the credits do not name it")
+                    # Nobody recorded this file's licence, so nobody can say
+                    # it owes no credit: a publication error, as an unknown
+                    # licence is on a placed picture.
+                    lifted.append(f"error: credit: {Path(file).name} uses {rel}, which "
+                                  "props.json does not list, so its licence is unknown and "
+                                  "the credits cannot name it; fetch it with `yt props` or "
+                                  "add its item to props.json")
+                    credit_missing.append(lifted[-1])
                     continue
                 props_hits.append(dict(item, src=rel))
         # Every paint an include copy names must now be the scene's own.
@@ -3369,7 +3400,7 @@ class SceneBuilder:
         # and the programme runs to the card's end.
         written = ElementTree.fromstring(scene.to_bytes())
         credits = credit_rows(written, props_hits)
-        credit_errors = credit_missing + credit_problems(written)
+        credit_errors = credit_missing + credit_problems(written, props_hits)
         runtime, credits_card, credits_sound = duration, None, None
         if credits:
             runtime, credits_card = self._credits_card(assets, composition, markers, design,
