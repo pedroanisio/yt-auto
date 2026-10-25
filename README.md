@@ -668,7 +668,10 @@ dossier gains a `crosscheck` list and each checked claim an `independent` status
 the claim in `dossier.md`; a wordless scope records `crosscheck_skipped`
 instead. It is off by default and costs about $0.40 a claim (TO VERIFY: an
 assumption until a film measures it); `yt run` passes `--crosscheck 8`
-unless `--quick`.
+unless `--quick` or the idea is wordless (its scope speaks no claim), so a
+wordless film's dry run prices none. The estimate reads dossier.json: a
+record that checked the same claims adds nothing, and one that checked
+fewer adds only the claims beyond them.
 
 Downloaded assets are untrusted bytes from the open web: they are written to
 `downloads/` and never opened or executed.

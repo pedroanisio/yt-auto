@@ -180,12 +180,14 @@ MODEL_FLAGS = ("--model", "--effort", "--fallback-model")
 CROSSCHECK_CLAIMS = 8
 
 
-def run_extras(args, *, redo: set) -> dict[str, list[str]]:
+def run_extras(args, *, redo: set, spoken: bool = True) -> dict[str, list[str]]:
     """The flags `yt run` adds to each stage: the quality passes unless
     --quick, a fresh research when it is redone, and the fetches that turn a
     design into files (props, the sound cues). The plan review (script
     --review) is a quality pass, so --quick drops it with the others, and
-    turns off the fact-check a dossier would otherwise switch on."""
+    turns off the fact-check a dossier would otherwise switch on. An idea
+    that speaks no claim (`spoken` False: research.scope_for) is handed no
+    --crosscheck, which it would skip, so the estimate does not price it."""
     quick = getattr(args, "quick", False)
     # The reviewer flags go to the stages that review; unset, each keeps its default.
     # A pool reviewer (`pool`, `sdk:<id>`, AUTO-125) reads text only, so it goes
@@ -215,7 +217,8 @@ def run_extras(args, *, redo: set) -> dict[str, list[str]]:
         "research": ["--download"]
                     + (["--fresh"] if redo & {"research", "all"} and not quick else [])
                     + paper
-                    + ([] if quick else ["--crosscheck", str(CROSSCHECK_CLAIMS)] + named_cli),
+                    + ([] if quick or not spoken
+                       else ["--crosscheck", str(CROSSCHECK_CLAIMS)] + named_cli),
         # The critique swap-tests the identity with the run's reviewer
         # (AUTO-146); styles takes no review budget, and --quick runs no review.
         "styles": ["--rich"] + ([] if quick else ["--deliberate", "critique"] + named_cli),
@@ -495,7 +498,7 @@ def _run_pipeline(args) -> int:
     if args.quiet:
         base.append("--quiet")
 
-    extra = run_extras(args, redo=redo)
+    extra = run_extras(args, redo=redo, spoken=bool(research.scope_for(idea)["spoken"]))
     artifacts = dict(workspace.STAGES)
     say = lambda msg: print(msg, file=sys.stderr)  # noqa: E731
     say(f"{idea.title}\n  -> {project.root}")

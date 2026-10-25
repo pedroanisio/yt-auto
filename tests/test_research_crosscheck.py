@@ -712,18 +712,36 @@ class Spend(unittest.TestCase):
         self.assertEqual(spend.flag_increments(None, "research", ["--crosscheck", "3"]),
                          [("--crosscheck", round(3 * spend.CROSSCHECK_CLAIM_USD, 2))])
 
+    def write(self, **doc):
+        base = {"usage": {"cost_usd": 6.0, "model": "sonnet", "calls": 9},
+                "engine": {"model": "sonnet", "decisions": [{"name": "03-claims"}]},
+                "scope": "explainer", "claims": CLAIMS, "outline": OUTLINE}
+        base.update(doc)
+        (self.root / "dossier.json").write_text(json.dumps(base))
+
+    def checked(self, *claims):
+        return [{"claim": c["claim"], "status": "corroborated"} for c in claims]
+
     def test_a_record_holding_the_check_adds_none(self):
-        engine = {"model": "sonnet", "decisions": [{"name": "03-claims"}],
-                  "crosscheck": {"model": "opus",
-                                 "decisions": [{"name": "09-crosscheck-1"}]}}
-        (self.root / "dossier.json").write_text(json.dumps(
-            {"usage": {"cost_usd": 6.0, "model": "sonnet", "calls": 9}, "engine": engine}))
+        # --crosscheck 8 picks four claims here (CLAIMS 1, 2, 5, 3)
+        self.write(crosscheck=self.checked(CLAIMS[0], CLAIMS[1], CLAIMS[4], CLAIMS[2]))
         self.assertEqual(spend.flag_increments(self.root, "research", ["--crosscheck", "8"]), [])
-        engine.pop("crosscheck")
-        (self.root / "dossier.json").write_text(json.dumps(
-            {"usage": {"cost_usd": 6.0, "model": "sonnet", "calls": 9}, "engine": engine}))
+        self.write()
         self.assertEqual(spend.flag_increments(self.root, "research", ["--crosscheck", "8"]),
                          [("--crosscheck", round(8 * spend.CROSSCHECK_CLAIM_USD, 2))])
+
+    def test_a_smaller_check_prices_only_the_claims_beyond_it(self):
+        # checked with --crosscheck 2, asked with 8: the record's cost holds
+        # two claims, so the estimate adds the other two of the four
+        self.write(crosscheck=self.checked(CLAIMS[0], CLAIMS[1]))
+        self.assertEqual(spend.flag_increments(self.root, "research", ["--crosscheck", "8"]),
+                         [("--crosscheck", round(2 * spend.CROSSCHECK_CLAIM_USD, 2))])
+
+    def test_a_wordless_record_adds_none(self):
+        self.write(scope="cinematic", crosscheck_skipped="cinematic scope")
+        self.assertEqual(spend.flag_increments(self.root, "research", ["--crosscheck", "8"]), [])
+        self.write(scope="cinematic")
+        self.assertEqual(spend.flag_increments(self.root, "research", ["--crosscheck", "8"]), [])
 
     def test_without_the_flag_the_estimate_is_todays(self):
         row = self.research_row(["--download"])
@@ -752,6 +770,22 @@ class Run(unittest.TestCase):
         self.assertEqual(extra["research"], ["--download", "--crosscheck", "8"])
         quick = cli.run_extras(self.args("--quick"), redo=set())
         self.assertEqual(quick["research"], ["--download"])
+
+    def test_a_wordless_film_is_not_handed_the_cross_check(self):
+        quick = cli.run_extras(self.args(), redo=set(), spoken=False)
+        self.assertEqual(quick["research"], ["--download"])
+        with tempfile.TemporaryDirectory() as tmp:
+            # nested, so the like-project scan reads only this tree
+            (Path(tmp) / "work" / "film").mkdir(parents=True)
+            project = cli.workspace.Project(Path(tmp) / "work" / "film")
+            for genre, priced in (("cinematic", False), ("explainer", True)):
+                idea = Idea(title="T", genre=genre, description="d")
+                with mock.patch.object(cli.workspace, "resolve", return_value=(idea, project)), \
+                        redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()) as out:
+                    self.assertEqual(cli._run_pipeline(self.args("--dry-run")), 0)
+                research_line = next(line for line in out.getvalue().splitlines()
+                                     if line.split()[:1] == ["research"])
+                self.assertEqual("--crosscheck" in research_line, priced, research_line)
 
     def test_the_reviewer_reaches_research_but_never_a_gateway_one(self):
         extra = cli.run_extras(self.args("--reviewer-model", "sonnet", "--review-budget-usd",
