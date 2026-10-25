@@ -130,6 +130,13 @@ class ProductionDoc(unittest.TestCase):
         for key in ("`who`", "`what_happened`", "`consequence`", "`source`", "`claim`"):
             self.assertIn(key, row.split("`human_stories`", 1)[1], key)
 
+    def test_the_dossier_row_names_the_cross_check(self):
+        # AUTO-134
+        row = next(l for l in DOC.read_text().splitlines() if l.startswith("| `dossier.json`"))
+        for key in ("`crosscheck`", "`crosscheck_skipped`", "`claims[].independent`",
+                    "`unverified`"):
+            self.assertIn(key, row, key)
+
     def test_the_dossier_row_names_the_parallels(self):
         # AUTO-151
         row = next(l for l in DOC.read_text().splitlines() if l.startswith("| `dossier.json`"))

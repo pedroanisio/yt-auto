@@ -594,7 +594,7 @@ forces the work again.
 
 `--depth` questions · `--jobs` · `--shots` / `--per-shot` · `--asset-sources` ·
 `--allow-sa` · `--agentic-assets` · `--download` · `--budget-usd` · `--fresh` ·
-`--paper`
+`--paper` · `--crosscheck N` · `--reviewer-model`
 
 The plan depends on the genre. A narrated explainer gets the full scope; a
 wordless piece -- a genre or premise that says cinematic, music video,
@@ -646,6 +646,32 @@ the problem, significance and implications before the mechanism, with a
 misplaced item recorded as a `warning: paper framing:` finding that
 `yt doctor` reports. Under `YT_ENGINE=codex`, `--paper` is refused with exit
 2: codex reports no WebFetch or Read events, so the read cannot be evidenced.
+
+Independent check (AUTO-134). `--crosscheck N` sends the N key claims -- the
+ones the outline uses first, then the weakly sourced ones, then the numbers
+-- each to a fresh web pass told to find sources independent of the cited
+host, and has a model of another family (`--reviewer-model`, refused when it
+shares the author's family) judge what the pass read. It runs after the
+outline as stage `09-crosscheck`, cached like the others. A verdict must
+name pages the pass opened and quote words found under that page's URL
+(another page's words, or the notes under no fetched URL, are not that
+page's); a source on the cited host does not count. Anything else is asked
+once more, then recorded as `unverified`, never as confirmed. A pass or a
+verdict whose call fails is `unverified` too, the other claims finish and
+the dossier is written; the next run asks again only what failed (a failed
+verdict on the pass it kept), while a verdict rejected twice stays until
+`raw/09-crosscheck.json` is removed, which redoes the cross-check alone
+(`--fresh` redoes the entire research). `--budget-usd` caps each of the
+check's calls, passes and verdicts, as it caps every research call. The
+dossier gains a `crosscheck` list and each checked claim an `independent` status
+(corroborated, contradicted, disputed, not found, unverified), printed under
+the claim in `dossier.md`; a wordless scope records `crosscheck_skipped`
+instead. It is off by default and costs about $0.40 a claim (TO VERIFY: an
+assumption until a film measures it); `yt run` passes `--crosscheck 8`
+unless `--quick` or the idea is wordless (its scope speaks no claim), so a
+wordless film's dry run prices none. The estimate reads dossier.json: a
+record that checked the same claims adds nothing, and one that checked
+fewer adds only the claims beyond them.
 
 Downloaded assets are untrusted bytes from the open web: they are written to
 `downloads/` and never opened or executed.
@@ -759,6 +785,29 @@ speculation), and `script.md` prints it as `**STATUS**`. With `--review`,
 sure as its research (`verify-status`), and the fact-check's revise may
 weaken a status, never raise it; without `--review` that check is recorded
 as not evidenced, never as passed.
+On a dossier from `yt research --crosscheck N` (AUTO-134), each checked
+claim's line in the research block carries its `INDEPENDENT CHECK:` verdict,
+so the writer and the fact-check both see it, and every screenplay decision
+is asked once more on such a dossier. The claims the independent sources
+contradict or dispute are numbered X1, X2 .. (`script.disagreements_of`),
+and the first full `--verify` must account for each: flag the lines stating
+it with the id in the flag's `crosscheck` (a contradicted claim told as fact
+is a blocker, a disputed one told as settled important), or list it in
+`crosscheck_clear` with why (the script does not state it, or the line
+already frames it as disputed). An answer that leaves one out, names an id
+that does not exist, or calls a contradicted claim minor is asked once more
+(`verify-again`); what is still unaccounted stands as a blocker
+(contradicted) or important (disputed) flag on each shot whose source cites
+the claim's URL, or script-wide when none does, and a failed check records
+them all rather than nothing. The rounds' re-checks make no such demand;
+after them, `verify-account` re-reads the revised lines whose X flags
+waited (and every shot for a script-wide one, once a round changed a line),
+so a line the revise fixed can retire its flag. A flag on a line no round
+changed, a kept one included, stands as the first check gave it, and with
+no line changed nothing is asked again. `script.md`'s Fact-check section names the independent check
+behind each flag, `(independent check X2: <url>)`, and lists every
+`crosscheck_clear` with its reason. A dossier with no `crosscheck` is
+checked, cached and priced exactly as before.
 `--polish` reads the narration end to end and rewrites only what repeats,
 stumbles or buries its point.
 

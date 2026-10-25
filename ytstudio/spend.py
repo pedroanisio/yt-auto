@@ -263,6 +263,45 @@ JOINS_REVIEW_USD = 0.5
 #: `06b-paper-again`). A guess until one real paper measures it (TO VERIFY).
 PAPER_USD = 1.0
 
+#: What `yt research --crosscheck N` adds per claim (AUTO-134): one web pass
+#: looking for independent sources at the research model and one verdict by
+#: the reviewer (`09-crosscheck-<i>`, at most one `-again`). Assumed, TO
+#: VERIFY: measure on one real film before the README states a price.
+CROSSCHECK_CLAIM_USD = 0.40
+
+
+def crosscheck_usd(root: Path | None, argv: Iterable[str] = ()) -> float:
+    """What `--crosscheck N` adds: N claims at CROSSCHECK_CLAIM_USD; 0 for
+    a value that is no number or not above 0, which checks nothing.
+
+    A dossier.json under `root` is the record. A wordless one (its scope
+    speaks no claim, or it says crosscheck_skipped) adds nothing, since the
+    stage is skipped. One with a `crosscheck` list is priced from it: its
+    cost already holds the claims it checked, so the same targets add
+    nothing and other targets add only the claims beyond the ones it
+    holds (research.crosscheck_targets picks them as the stage would)."""
+    try:
+        claims = max(0, int(_argv_value(argv, "--crosscheck", 0)))
+    except (TypeError, ValueError):
+        return 0.0
+    doc = read_json(Path(root) / MANIFEST["research"], warn=False) if root and claims else None
+    if isinstance(doc, dict):
+        from .research import SCOPES, claim_key, crosscheck_targets  # research reads this module
+        if doc.get("crosscheck_skipped") or (
+                doc.get("scope") in SCOPES and not SCOPES[doc["scope"]].get("spoken")):
+            return 0.0
+        checked = doc.get("crosscheck")
+        if isinstance(checked, list):
+            rows = [c for c in doc.get("claims") or [] if isinstance(c, dict)]
+            outline = doc.get("outline") if isinstance(doc.get("outline"), dict) else None
+            targets = crosscheck_targets(rows, outline, None, claims)
+            held = sorted(claim_key(e.get("claim", "")) for e in checked if isinstance(e, dict))
+            if sorted(claim_key(c.get("claim", "")) for c in targets) == held:
+                return 0.0
+            claims = max(0, len(targets) - len(held))
+    return round(CROSSCHECK_CLAIM_USD * claims, 2)
+
+
 #: What the picture-check adds under the same flag (AUTO-98), assumed until
 #: a record measures it: the reviewer's reading of every shot's picture (and
 #: at most one `picture-check-again`) plus the author's one `revise-picture`.
@@ -384,7 +423,11 @@ def watch_usd(root: Path | None, argv: Iterable[str] = ()) -> float:
 #: the plan review (AUTO-92), the story review (AUTO-93) and the
 #: picture-check (AUTO-98), so a record written before one of them gains
 #: only what it lacks.
-FLAG_USD = {"research": {"--paper": ((PAPER_USD, "06b-paper"),)},
+FLAG_USD = {"research": {"--paper": ((PAPER_USD, "06b-paper"),),
+                         # crosscheck_usd reads dossier.json's `crosscheck`
+                         # list itself (AUTO-134): a record that checked
+                         # fewer claims than asked holds only those
+                         "--crosscheck": ((crosscheck_usd, None),)},
             "script": {"--review": ((PLAN_REVIEW_USD, "plan-review"),
                                     (story_review_usd, "review-r1"),
                                     (PICTURE_CHECK_USD, "picture-check"))},

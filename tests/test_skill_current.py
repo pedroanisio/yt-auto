@@ -126,6 +126,16 @@ class Missing(unittest.TestCase):
                       qa_row)
         self.assertIn(f"`TRANSCRIPT_OUTPUT_TOKENS` {listen.TRANSCRIPT_OUTPUT_TOKENS}", qa_row)
 
+    def test_the_independent_cross_check_is_documented(self):
+        # AUTO-134
+        line = row("| `yt research`")
+        for needle in ("`--crosscheck N`", "`09-crosscheck`", "`crosscheck`",
+                       "`independent`", "unverified", "TO VERIFY", "another family"):
+            self.assertIn(needle, line, needle)
+        reviewer = next(l for l in TEXT.splitlines()
+                        if l.startswith("| the model that reviews"))
+        self.assertIn("`research` (the cross-check", reviewer)
+
     def test_historical_parallels_are_documented(self):
         # AUTO-151
         for needle in ("`PL1`", "`parallels`", "`research.parallels_of`",

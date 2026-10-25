@@ -104,6 +104,25 @@ class Missing(unittest.TestCase):
                        "Stakes:"):
             self.assertIn(needle, text, needle)
 
+    def test_research_cross_checks_key_claims(self):
+        # AUTO-134: off by default, judged by another family, after the
+        # outline; its price an assumption until a film measures it
+        from ytstudio import spend
+        text = flat(section("research"))
+        for needle in ("`--crosscheck N`", "`--reviewer-model`", "`09-crosscheck`",
+                       "after the outline", "`crosscheck`", "`independent`",
+                       "`unverified`", "`crosscheck_skipped`", "TO VERIFY",
+                       f"${spend.CROSSCHECK_CLAIM_USD:.2f}", "`yt run`", "--quick"):
+            self.assertIn(needle, text, needle)
+
+    def test_script_verify_accounts_for_the_independent_check(self):
+        # AUTO-134 step B: every disagreement flagged or cleared with why
+        text = flat(section("script"))
+        for needle in ("INDEPENDENT CHECK:", "`script.disagreements_of`", "`crosscheck`",
+                       "`crosscheck_clear`", "`verify-again`", "`verify-account`",
+                       "(independent check X2: <url>)", "script-wide"):
+            self.assertIn(needle, text, needle)
+
     def test_voice_retakes_and_redo(self):
         text = flat(section("voice"))
         self.assertIn("speed", text)

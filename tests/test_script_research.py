@@ -801,6 +801,186 @@ class FactCheckReadsTheSupers(unittest.TestCase):
             self.assertEqual(shots[0].on_screen_text, ["40%"], name)
             self.assertIsNot(self.calls[-1]["schema"], script.FACT_REVISE_SCHEMA, name)
 
+# --------------------------------------------------------------------------- #
+# AUTO-134: the independent check, as the writer and the fact-check see it
+# --------------------------------------------------------------------------- #
+
+CHECKED = {"premise": "p", "verdict": "holds",
+           "claims": [{"claim": "The span was 300 m", "number": "300 m", "detail": "d1",
+                       "source_title": "Report", "source_url": "https://www.report.example/a",
+                       "source_kind": "primary", "confidence": "high"},
+                      {"claim": "A bolt failed", "detail": "d2", "source_title": "News",
+                       "source_url": "https://news.example/b", "source_kind": "secondary",
+                       "confidence": "medium", "caveat": "one witness"}],
+           "outline": {"sections": [{"claims_used": ["A bolt failed"]}]},
+           "gaps": [{"severity": "important", "issue": "no inspection log"}]}
+
+#: research_block on CHECKED before AUTO-134, with and without ids: a
+#: dossier with no `crosscheck` must still read exactly so, or every cached
+#: screenplay decision is asked again.
+CHECKED_BLOCK = (
+    "Researched premise: p\n\nDoes it hold up: holds\n\nEvery claim you may put on camera, "
+    "with the source to cite for it and its id:\n- c2: A bolt failed -- d2 (source: News, "
+    "https://news.example/b; secondary, medium confidence) CAVEAT: one witness\n- c1: The "
+    "span was 300 m [300 m] -- d1 (source: Report, https://www.report.example/a; primary, "
+    "high confidence)\n\nKnown weaknesses -- do not write a line that depends on these being "
+    "resolved:\n- important: no inspection log")
+CHECKED_BLOCK_NO_IDS = (
+    "Researched premise: p\n\nDoes it hold up: holds\n\nEvery claim you may put on camera, "
+    "with the source to cite for it:\n- A bolt failed -- d2 (source: News, "
+    "https://news.example/b; secondary, medium confidence) CAVEAT: one witness\n- The span "
+    "was 300 m [300 m] -- d1 (source: Report, https://www.report.example/a; primary, high "
+    "confidence)\n\nKnown weaknesses -- do not write a line that depends on these being "
+    "resolved:\n- important: no inspection log")
+
+
+def entry(text, status, sources=(), correction="", source_url=None):
+    cited = source_url if source_url is not None else next(
+        c["source_url"] for c in CHECKED["claims"] if c["claim"] == text)
+    return {"claim": text, "source_url": cited, "status": status,
+            "sources": [{"url": u, "says": "s", "agrees": a} for u, a in sources],
+            "correction": correction, "note": "", "visited": [u for u, _ in sources],
+            "problems": []}
+
+
+class IndependentCheck(unittest.TestCase):
+    def block(self, data, **kw):
+        with contextlib.redirect_stderr(io.StringIO()):
+            return script.research_block(data, **kw)
+
+    def line(self, text, starts):
+        return next(ln for ln in text.splitlines() if ln.startswith(starts))
+
+    def test_a_dossier_without_a_crosscheck_reads_as_before(self):
+        self.assertEqual(self.block(CHECKED), CHECKED_BLOCK)
+        self.assertEqual(self.block(CHECKED, ids=False), CHECKED_BLOCK_NO_IDS)
+        # a wordless scope's skip is not a check
+        self.assertEqual(self.block(dict(CHECKED, crosscheck_skipped="cinematic scope")),
+                         CHECKED_BLOCK)
+
+    def test_each_checked_claim_line_carries_its_independent_status(self):
+        data = dict(CHECKED, crosscheck=[
+            entry("The span was 300 m", "contradicted",
+                  [("https://other.example/s", "no"), ("https://report.example/z", "yes")],
+                  correction="the span was 280 m"),
+            entry("A bolt failed", "corroborated", [("https://www.third.example/t", "yes")])])
+        text = self.block(data)
+        self.assertTrue(self.line(text, "- c1: ").endswith(
+            "(source: Report, https://www.report.example/a; primary, high confidence) "
+            "INDEPENDENT CHECK: contradicted by https://other.example/s: the span was 280 m"),
+            text)
+        self.assertTrue(self.line(text, "- c2: ").endswith(
+            "CAVEAT: one witness INDEPENDENT CHECK: corroborated by third.example"), text)
+        # the writer revising an older screenplay sees it too
+        self.assertIn("INDEPENDENT CHECK: corroborated by third.example",
+                      self.block(data, ids=False))
+
+    def test_the_other_statuses_in_words(self):
+        for status, sources, words in (
+                ("disputed", [("https://x.example/1", "yes"), ("https://y.example/2", "no")],
+                 "INDEPENDENT CHECK: disputed (x.example, y.example)"),
+                ("not_found", [], "INDEPENDENT CHECK: not found independently"),
+                ("unverified", [], "INDEPENDENT CHECK: unverified")):
+            data = dict(CHECKED, crosscheck=[entry("A bolt failed", status, sources)])
+            text = self.block(data)
+            self.assertTrue(self.line(text, "- c2: ").endswith(words), (status, text))
+            # a claim the check did not take is listed as before
+            self.assertNotIn("INDEPENDENT", self.line(text, "- c1: "))
+
+    def test_disagreements_are_the_contradicted_and_disputed_numbered(self):
+        data = dict(CHECKED, crosscheck=[
+            entry("A bolt failed", "corroborated", [("https://t.example/1", "yes")]),
+            entry("The span was 300 m", "contradicted",
+                  [("https://report.example/own", "no"), ("https://other.example/s", "no")],
+                  correction="the span was 280 m"),
+            entry("A bolt failed", "disputed",
+                  [("https://x.example/1", "yes"), ("https://y.example/2", "no")]),
+            entry("A bolt failed", "unverified")])
+        got = script.disagreements_of(data)
+        self.assertEqual([d["id"] for d in got], ["X1", "X2"])
+        x1, x2 = got
+        self.assertEqual((x1["status"], x1["claim"], x1["source_url"], x1["correction"]),
+                         ("contradicted", "The span was 300 m",
+                          "https://www.report.example/a", "the span was 280 m"))
+        # the cited host's own pages are not the independent sources
+        self.assertEqual(x1["urls"], ["https://other.example/s"])
+        self.assertEqual(x1["url"], "https://other.example/s")
+        self.assertEqual((x2["status"], x2["source_url"]), ("disputed", "https://news.example/b"))
+        self.assertEqual(x2["urls"], ["https://x.example/1", "https://y.example/2"])
+        self.assertEqual(x2["url"], "https://y.example/2")
+
+    def test_the_source_url_falls_back_to_the_claims(self):
+        row = entry("A bolt failed", "disputed",
+                    [("https://x.example/1", "yes"), ("https://y.example/2", "no")])
+        del row["source_url"]
+        got = script.disagreements_of(dict(CHECKED, crosscheck=[row]))
+        self.assertEqual(got[0]["source_url"], "https://news.example/b")
+
+    def test_no_crosscheck_no_disagreements(self):
+        self.assertEqual(script.disagreements_of(CHECKED), [])
+        self.assertEqual(script.disagreements_of(None), [])
+        self.assertEqual(script.disagreements_of({"crosscheck": "junk"}), [])
+
+
+class CrosscheckInTheStage(unittest.TestCase):
+    """`yt script` on a cross-checked dossier: the main run hands the
+    disagreements to the fact-check, and script.md says where a flag came
+    from. FactCheckByDefault's fake harness, not its tests."""
+
+    setUp = FactCheckByDefault.setUp
+    who = FactCheckByDefault.who
+    run_stage = FactCheckByDefault.run_stage
+    names = FactCheckByDefault.names
+
+    def dossier(self):
+        data = dict(DOSSIER, crosscheck=[{
+            "claim": "the bolt was painted over", "source_url": "https://h.example/over",
+            "status": "contradicted", "correction": "the bolt was never painted",
+            "sources": [{"url": "https://other.example/p", "says": "s", "agrees": "no"}],
+            "note": "", "visited": ["https://other.example/p"], "problems": []}])
+        (self.film / "dossier.json").write_text(json.dumps(data))
+
+    def test_an_unaccounted_disagreement_stands_as_a_flag_in_the_record(self):
+        self.dossier()
+        code, said = self.run_stage("--model", "sonnet")
+        names = self.names()
+        self.assertIn("verify-again", names, said)
+        # no round changed a line, so the account re-asks nothing
+        self.assertNotIn("verify-account", names, said)
+        record = json.loads((self.film / "script.json").read_text())
+        tied = [f for f in record["check"]["flags"] if f.get("crosscheck") == "X1"]
+        self.assertTrue(tied, record["check"])
+        self.assertEqual(tied[0]["severity"], "blocker")
+        self.assertIn("X1", [f["crosscheck"] for f in record["check"]["unresolved"]])
+        md = (self.film / "script.md").read_text()
+        self.assertIn("(independent check X1: https://other.example/p)", md)
+        # the checks of another family read it, as every verify* does
+        by_name = {name: who for name, who, _ in self.asked}
+        for name in ("verify", "verify-again"):
+            self.assertEqual(by_name.get(name), "fact", name)
+
+    def test_a_cleared_disagreement_is_listed_with_its_reason(self):
+        self.dossier()
+        cleared = [{"id": "X1", "why": "the script never says it was painted"}]
+        real = script.Screenwriter._ask
+
+        def ask(w, name, prompt, schema):
+            answer = real(w, name, prompt, schema)
+            if name == "verify":
+                return dict(answer, crosscheck_clear=cleared)
+            return answer
+        with mock.patch.object(script.Screenwriter, "_ask", ask):
+            code, said = self.run_stage("--model", "sonnet")
+        self.assertEqual(code, 0, said)
+        self.assertNotIn("verify-again", self.names())
+        self.assertNotIn("verify-account", self.names())
+        record = json.loads((self.film / "script.json").read_text())
+        self.assertEqual(record["check"]["crosscheck_clear"], cleared)
+        self.assertFalse([f for f in record["check"]["flags"] if f.get("crosscheck")])
+        md = (self.film / "script.md").read_text()
+        self.assertIn("X1", md)
+        self.assertIn("the script never says it was painted", md)
+
 
 if __name__ == "__main__":
     unittest.main()
