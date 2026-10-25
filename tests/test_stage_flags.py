@@ -25,7 +25,7 @@ CONCEPTS = {
     "reviewer": ("--reviewer-model", {}, ("keyframe", "vfx", "probe", "run", "script", "build",
                                           "styles", "package")),
     "review budget": ("--review-budget-usd", {}, ("keyframe", "vfx", "probe", "run", "script",
-                                                  "build")),
+                                                  "build", "package")),
     "bar": ("--bar", {"--author-bar": "vfx"}, ("keyframe", "vfx", "probe")),
     "budget": ("--budget-usd", {"--budget": "research"},
                ("keyframe", "vfx", "probe", "research", "assess", "improve", "run")),
@@ -189,6 +189,19 @@ class Manual(unittest.TestCase):
                 self.assertIn(f"`{spelling}`", table, spelling)
         for flag in ("--model", "--effort", "--fallback-model"):
             self.assertIn(f"`{flag}`", table)
+
+    def test_each_concepts_row_names_every_stage_that_has_its_flag(self):
+        # A new stage given a concept's flag (yt package's --rounds, AUTO-147)
+        # must be named in that flag's row, or the manual's table drifts.
+        text = SKILL.read_text(encoding="utf-8")
+        table = text.split("One word per concept", 1)[1].split("\n## ", 1)[0]
+        rows = [[c.strip() for c in line.strip().strip("|").split("|")]
+                for line in table.splitlines() if line.startswith("| ")]
+        for concept, (flag, _old, where) in CONCEPTS.items():
+            cells = " ".join(r[2] for r in rows if len(r) > 2 and f"`{flag}`" in r[1])
+            self.assertTrue(cells, f"{concept}: no row for {flag}")
+            for stage in where:
+                self.assertIn(f"`{stage}`", cells, f"{concept}: the {flag} row omits {stage}")
 
 
 class OwnReviewer(unittest.TestCase):
