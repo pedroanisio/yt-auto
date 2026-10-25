@@ -60,7 +60,8 @@ ARTIFACTS = {
     "review": "review.json",
     "qa": "qa.json",
     "retention": "retention.json",
-    # the upload set `yt package` writes (AUTO-147); not a stage `yt run` walks
+    # the upload set `yt package` writes (AUTO-147); `yt run`'s delivery tail
+    # runs it after a READY QA (AUTO-164), but it is not one of STAGES
     "package": "package/package.json",
 }
 

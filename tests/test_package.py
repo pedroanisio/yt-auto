@@ -524,14 +524,14 @@ class InTheTail(unittest.TestCase):
                        if line.startswith("| `yt package` |"))
             self.assertNotIn("not a stage `yt run` walks", row.lower(), name)
             self.assertIn("delivery tail", row, name)
-        tail = skill[skill.index("runs the delivery tail, `cli.deliver_tail`"):]
-        tail = tail[:tail.index("\n\n")]
-        for needle in ("`yt package`", "already ready on this render", "AUTO-164"):
-            self.assertIn(needle, tail, needle)
-        tail = readme[readme.index("After the render the run finishes the validated path"):]
-        tail = tail[:tail.index("\n\n")]
-        for needle in ("`yt package`", "already ready on this render", "AUTO-164"):
-            self.assertIn(needle, tail, needle)
+        for name, text, start in (
+                ("SKILL.md", skill, "runs the delivery tail, `cli.deliver_tail`"),
+                ("README.md", readme, "After the render the run finishes the validated path")):
+            tail = text[text.index(start):]
+            tail = " ".join(tail[:tail.index("\n\n")].split())
+            for needle in ("`yt package`", "already ready on this render", "AUTO-164",
+                           "`--reviewer-model`", "not READY after improve"):
+                self.assertIn(needle, tail, (name, needle))
         beside = production[production.index("`yt package` writes `package/`"):]
         self.assertIn("delivery tail", beside[:beside.index("\n\n")])
         self.assertIn("yt package", cli.build_parser()._subparsers._group_actions[0]

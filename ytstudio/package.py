@@ -25,7 +25,10 @@ per chapter and the tags, and picks one of those frames ("package-draft",
 "not ready", and the command exits non-zero.
 
 Nothing is uploaded, scheduled or sent anywhere: the upload is the
-operator's, in YouTube Studio, from UPLOAD.md. Not a stage `yt run` walks.
+operator's, in YouTube Studio, from UPLOAD.md. `yt run`'s delivery tail
+runs it after a READY QA (AUTO-164), with the author's --model and the
+tail's reviewer, since doctor's delivery needs a current, ready upload set;
+it is still not a PIPELINE stage, nor a name --skip or --redo takes.
 """
 
 from __future__ import annotations
