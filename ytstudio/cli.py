@@ -138,9 +138,10 @@ def _register_run(sub, parents: list) -> None:
                     "stage whose output is already in the project is skipped "
                     "unless named in --redo. After the render (rendered at "
                     "--quality final) the delivery tail runs: yt gate, yt qa, yt "
-                    "improve when QA is not READY TO PUBLISH, and doctor's delivery "
-                    "verdict, printed last. The tail's gate triage and QA are scored "
-                    "by --reviewer-model (a claude or codex model; else "
+                    "improve when QA is not READY TO PUBLISH, yt package once QA is "
+                    "READY (the upload set; nothing is uploaded), and doctor's delivery "
+                    "verdict, printed last. The tail's gate triage, QA and package "
+                    "review are scored by --reviewer-model (a claude or codex model; else "
                     f"{vfx.REVIEWER_MODEL}), never the author's family. Exit 0 only "
                     f"when delivery is ready, {UNDELIVERED} when the tail ran and it is not, "
                     f"{retime.UNSETTLED} when the budget stops a stage.",
@@ -158,8 +159,8 @@ def _register_run(sub, parents: list) -> None:
                         "implies --no-deliver, since a draft render can never be "
                         "delivered")
     p.add_argument("--no-deliver", action="store_true", dest="no_deliver",
-                   help="stop at the render: no gate, qa, improve or delivery verdict "
-                        "after it, and the render keeps the engine's own tier")
+                   help="stop at the render: no gate, qa, improve, package or delivery "
+                        "verdict after it, and the render keeps the engine's own tier")
     p.add_argument("--dry-run", action="store_true", dest="dry_run",
                    help="print the stages this run would walk, each with its "
                         "estimated cost (measured, like or assumed) and the "
@@ -173,8 +174,8 @@ def _register_run(sub, parents: list) -> None:
     flags.reviewer_model(p, default=None,
                          help="the model that reviews the script's plan, keyframe and "
                               "vfx, judges research's cross-check and scores the delivery "
-                              "tail (yt gate's triage, yt qa); never the author's own "
-                              f"(default {vfx.REVIEWER_MODEL}; --quick drops the plan review "
+                              "tail (yt gate's triage, yt qa, yt package's review); never "
+                              f"the author's own (default {vfx.REVIEWER_MODEL}; --quick drops the plan review "
                               "and the cross-check). "
                               "`pool` or sdk:<id>, a reviewer from another maker on the "
                               "gateway engine, reaches the script's review only")
@@ -231,8 +232,9 @@ def run_extras(args, *, redo: set, spoken: bool = True,
     (--gate) is turned on once narrative.gate_ready holds for the run's
     reviewer, and the run says why not otherwise (AUTO-148). The delivery
     tail's gate and qa are handed the tail's reviewer as --model, improve
-    the author's model with that reviewer as --qa-model, and the render
-    --quality final, which delivery requires."""
+    the author's model with that reviewer as --qa-model, the render
+    --quality final, which delivery requires, and package (AUTO-164) the
+    author's model with that reviewer as --reviewer-model."""
     quick = getattr(args, "quick", False)
     # The reviewer flags go to the stages that review; unset, each keeps its default.
     # A pool reviewer (`pool`, `sdk:<id>`, AUTO-125) reads text only, so it goes
@@ -257,6 +259,7 @@ def run_extras(args, *, redo: set, spoken: bool = True,
         else:
             print(f"story gate off: {why}", file=sys.stderr)
     judge = ["--model", tail_reviewer(args)]
+    author = [] if getattr(args, "model", None) is None else ["--model", str(args.model)]
     deliver = delivers(args)
     reviewer = named_cli + cap
     # The paper (AUTO-131) is planted in idea.json too; handed to research,
@@ -310,8 +313,11 @@ def run_extras(args, *, redo: set, spoken: bool = True,
         # family; improve's passes are the author's.
         "gate": judge,
         "qa": judge,
-        "improve": ([] if getattr(args, "model", None) is None else ["--model", str(args.model)])
-                   + ["--qa-model", judge[1]],
+        "improve": author + ["--qa-model", judge[1]],
+        # The upload set (AUTO-164), after a READY QA: the author words it,
+        # the tail's reviewer reads it (yt package refuses the gateway
+        # pool), capped by the run's review budget when one is set.
+        "package": author + ["--reviewer-model", judge[1]] + cap,
     }
 
 
@@ -485,20 +491,28 @@ def print_plan(plan: list[str], rows: list[dict], stop: str, *, tail: bool = Fal
     """One row per stage the run would walk, the total, and where it stops.
     With `tail`, the delivery tail's rows follow: gate and qa priced like
     any stage (and in the total), improve at most what is left of the cap
-    (else its own), only spent when QA is not READY, and doctor at $0."""
+    (else its own), only spent when QA is not READY, package priced like
+    any stage (and in the total; AUTO-164), only run after a READY QA, and
+    doctor at $0."""
     priced = {r["stage"]: r for r in rows}
     walked = list(plan) + (["gate", "qa"] if tail else [])
-    print(f"yt run would walk {len(walked) + (2 if tail else 0)} stage(s); nothing run:")
-    for stage in walked:
+
+    def row(stage: str, note: str = "") -> None:
         r = priced.get(stage) or {"usd": 0.0, "basis": "assumed", "source": "no estimate"}
-        beside = "  (beside the keyframe and vfx)" if stage == "sound" else ""
         print(f"  {stage:<10} {'$' + format(r['usd'], '.2f'):>8}  {r['basis']:<9} "
-              f"{r['source']}{beside}")
+              f"{r['source']}{note}")
+
+    print(f"yt run would walk {len(walked) + (3 if tail else 0)} stage(s); nothing run:")
+    for stage in walked:
+        row(stage, "  (beside the keyframe and vfx)" if stage == "sound" else "")
     total = spend.total(priced[s] for s in walked if s in priced)
     if tail:
+        # improve is handed what is left before the package is paid for
         cap = max(0.0, budget - total) if budget is not None else improve.BUDGET_USD
         print(f"  {'improve':<10} up to ${cap:.2f} assumed (improve's cap, only when QA "
               "is not READY)")
+        row("package", "  (only after a READY QA)")
+        total = spend.total(priced[s] for s in [*walked, "package"] if s in priced)
         print(f"  {'doctor':<10} {'$0.00':>8}  {'assumed':<9} the delivery verdict, no model")
     print(f"  {'total':<10} {'$' + format(total, '.2f'):>8}")
     if stop:
@@ -532,9 +546,16 @@ def deliver_tail(project: workspace.Project, run_stage, *, refused, paid, say,
     """The validated path after the render (AUTO-148): yt gate unless a
     deliverable gate already holds for these bytes, yt qa unless qa.json
     scores this gate and scene, yt improve when QA is not READY TO PUBLISH
-    (handed what is left of `budget`), then doctor's delivery verdict,
-    printed last. `run_stage(stage, argv)` runs one with its tail flags,
-    `refused(stage)` asks the cap, `paid()` is what the run has spent.
+    (handed what is left of `budget`), yt package once QA is READY
+    (AUTO-164) unless package/package.json is already current and ready
+    for these bytes (doctor.package_problem, doctor's own rule), then
+    doctor's delivery verdict, printed last. `run_stage(stage, argv)` runs
+    one with its tail flags, `refused(stage)` asks the cap, `paid()` is
+    what the run has spent.
+
+    No package is written while QA is not READY after improve: the film is
+    not deliverable anyway, and a package costs model money. A package that
+    fails or is not ready is left to doctor's verdict, which names its fix.
 
     0 only when delivery is ready; UNDELIVERED when it is not; gate's code
     when it did not run on this render; improve's refusal (2) as is, after
@@ -587,6 +608,23 @@ def deliver_tail(project: workspace.Project, run_stage, *, refused, paid, say,
             say("\nimprove refused (exit 2); stopping here")
             delivery_verdict(project, say)
             return code
+        # improve scores its own passes; what it left in qa.json decides
+        verdict = (read_json(qa_file, warn=False) or {}).get("verdict") or "not scored"
+        if verdict != qa.READY:
+            say(f"\n== package: not run: QA is {verdict} after improve, so the film is not "
+                "deliverable and an upload set would be paid for nothing")
+            return 0 if delivery_verdict(project, say) else UNDELIVERED
+    unpacked = doctor.package_problem(project)
+    if not unpacked:
+        say(f"\n== package: already ready on this render ({workspace.ARTIFACTS['package']})")
+    else:
+        if refused("package"):
+            return retime.UNSETTLED
+        say(f"\n== package: {unpacked}")
+        code = run_stage("package", [])
+        if code:
+            # Its findings are in package.json; doctor's row names the fix.
+            say(f"\npackage exited {code}")
     return 0 if delivery_verdict(project, say) else UNDELIVERED
 
 
@@ -657,12 +695,14 @@ def _run_pipeline(args) -> int:
     elif reviews and (own := flags.own_reviewer(args.model, asked or vfx.REVIEWER_MODEL)):
         print(own, file=sys.stderr)
         return 2
-    # The delivery tail's gate triage and QA score the film (AUTO-148), so
-    # they are never the author's family either, even when no stage before
-    # them reviews (--skip keyframe,vfx,script,...).
+    # The delivery tail's gate triage and QA score the film (AUTO-148), and
+    # its package review reads the upload set's wording (AUTO-164; yt
+    # package refuses its reviewer's family with exit 2 itself), so they
+    # are never the author's family either, even when no stage before them
+    # reviews (--skip keyframe,vfx,script,...). One reviewer, one rule.
     deliver = delivers(args, skip)
     if deliver and (own := flags.own_reviewer(args.model, tail_reviewer(args))):
-        print(f"{own}\n  the delivery tail (yt gate, yt qa) scores the film with "
+        print(f"{own}\n  the delivery tail (yt gate, yt qa, yt package) judges the film with "
               f"{tail_reviewer(args)}: pass --reviewer-model of another family, or "
               "--no-deliver to stop at the render", file=sys.stderr)
         return 2
@@ -706,10 +746,15 @@ def _run_pipeline(args) -> int:
     say = lambda msg: print(msg, file=sys.stderr)  # noqa: E731
     say(f"{idea.title}\n  -> {project.root}")
 
+    # The tail's package (AUTO-164) is priced after the walk, as gate and qa
+    # are, so an assumed vfx pass folds it in like them.
+    packaged = ["package"] if deliver else []
     if args.dry_run:
         plan, stop = run_plan(project, skip, redo, say=say)
-        print_plan(plan, spend.stage_estimates(project.root, plan, extras=extra), stop,
-                   tail=deliver and not stop, budget=args.budget_usd)
+        tail = deliver and not stop
+        print_plan(plan, spend.stage_estimates(project.root, plan + (packaged if tail else []),
+                                               extras=extra), stop,
+                   tail=tail, budget=args.budget_usd)
         return 0
 
     def run_stage(stage: str, argv_extra: dict[str, list[str]]) -> int:
@@ -723,8 +768,8 @@ def _run_pipeline(args) -> int:
     budget = args.budget_usd
     priced: dict[str, dict] = {}
     if budget is not None:
-        priced = {r["stage"]: r for r in spend.stage_estimates(project.root, walk_order(skip),
-                                                               extras=extra)}
+        priced = {r["stage"]: r for r in spend.stage_estimates(
+            project.root, walk_order(skip) + packaged, extras=extra)}
     ran: set[str] = set()
     committed, over = 0.0, False
 

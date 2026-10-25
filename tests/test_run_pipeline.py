@@ -274,9 +274,9 @@ class SkipAndRedo(RunCase):
         self.assertEqual(self.run_yt(), 0)
         serial = [s[:-6] for s in self.order if s.endswith(":start") and s != "sound:start"]
         # the delivery tail follows the render (AUTO-148); QA is READY, so
-        # improve does not run
+        # improve does not run and the film is packaged (AUTO-164)
         self.assertEqual(serial, [s for s in cli.PIPELINE if s != "sound"]
-                         + ["gate", "qa", "doctor"])
+                         + ["gate", "qa", "package", "doctor"])
         self.assertLess(self.order.index("sound:start"), self.order.index("keyframe:end"))
 
 
@@ -470,7 +470,8 @@ class TailPackage(RunCase):
             self.packaged(**over)
             self.order.clear()
             self.assertEqual(self.run_yt(), 0, self.err)
-            self.assertEqual(self.steps(), ["gate", "qa", "package", "doctor"], over)
+            # the gate written on the first pass holds for these bytes after it
+            self.assertEqual(self.steps()[-3:], ["qa", "package", "doctor"], over)
 
     def test_no_package_when_improve_leaves_qa_not_ready(self):
         self.qa_verdict = qa.NOT_READY
