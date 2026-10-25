@@ -76,6 +76,10 @@ class FakeHarness:
     def __init__(self, *answers):
         self.answers = list(answers)
         self.calls: list[dict] = []
+        self.forgotten: list[str] = []
+
+    def forget(self, name):
+        self.forgotten.append(name)
 
     def decide(self, name, prompt, schema, *, media=()):
         self.calls.append({"name": name, "prompt": prompt, "schema": schema,
@@ -153,6 +157,31 @@ class SceneText(Case):
         self.assertEqual(qa.scene_text(broken, BUILD)[0], [])
         self.assertEqual(qa.scene_text(self.tmp / "absent.xml", BUILD)[0], [])
 
+    def test_a_shotless_include_is_not_checked(self):
+        # An include no build.json shot carries (an overlay, an older
+        # build.json, a standalone run) still draws words: they are named
+        # under not_checked, never dropped in silence.
+        path = self.scene()
+        path.write_text(SCENE.format(symbol="world-a").replace(
+            "</composition>", '<include id="title-x" start="0" end="3" '
+            'src="vfx/v01/a.scene.xml" symbol="world-a"/></composition>'))
+        rows, not_checked = qa.scene_text(path, BUILD)
+        self.assertEqual(qa.shot_screen(rows), {"1.1": "40% E=mc^2 a,b | s | 1 2"})
+        self.assertEqual(not_checked, [
+            {"include": "title-x", "element_id": ident, "kind": "no-shot"}
+            for ident in ("t-pct", "f-law", "c-bars")])
+        # with no shot at all, the check is done on nothing, and says so
+        rows, not_checked = qa.scene_text(path, {"shots": []})
+        record = qa.accuracy(FakeHarness({}), self.tmp / "pass-01", rows=rows, script={},
+                             dossier=DOSSIER, voice={}, not_checked=not_checked)
+        self.assertEqual((record["status"], record["checked"]), ("done", 0))
+        self.assertEqual(len(record["not_checked"]), 6)
+        md = "\n".join(qa.accuracy_md({"final": record}))
+        self.assertNotIn("Nothing found.", md)
+        self.assertIn("No on-screen text placed on a shot was read", md)
+        self.assertIn("Not checked (6)", md)
+        self.assertIn("title-x", md)
+
 
 class Validation(Case):
     def test_quote_split_across_nodes(self):
@@ -217,7 +246,10 @@ class Decision(Case):
         self.assertIn("41%", h.calls[1]["prompt"].split("\n\n")[-1])
         self.assertEqual(record["status"], qa.NOT_EVIDENCED)
         self.assertIs(record["bar"], True)
-        self.assertEqual(record["command"], "yt qa --fresh")
+        # the refused answers are not kept, so `yt qa --reuse` asks only them
+        self.assertEqual(h.forgotten, ["pass-01-accuracy", "pass-01-accuracy-retry"])
+        self.assertEqual(record["command"], "yt qa --reuse pass-01")
+        self.assertIn("only the accuracy decisions are asked again", record["why"])
         self.assertTrue(record["why"].startswith("the accuracy check failed"))
         # a retry that answers well stands
         h = FakeHarness(bad, {"findings": [], "checked": 1, "verdict": "fine"})

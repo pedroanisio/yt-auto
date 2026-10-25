@@ -1012,6 +1012,34 @@ class StoryStage(unittest.TestCase):
         self.assertNotEqual(self.run_qa(accuracy_model="opus"), 2)
         self.assertEqual(len(rendered), 1)
 
+    def test_nothing_on_screen_is_done_whatever_the_clash(self):
+        # A dossier film whose documents draw no readable text has nothing
+        # to check: no bar, no exit 2, and no accuracy decision asked.
+        self.on_screen(vfx_model="opus")
+        (self.root / "scene.xml").write_text(
+            '<scene version="1.3"><composition></composition></scene>')
+        self.accuracy_answers(self.MISMATCH)
+        self.run_qa()
+        card = self.scorecard(1)
+        self.assertEqual(self.asked, [])
+        self.assertEqual(card["accuracy"]["final"], {
+            "status": "done", "checked": 0, "findings": [], "not_checked": []})
+        self.assertFalse(any("on-screen accuracy" in r for r in card["bar"]), card["bar"])
+        self.assertNotEqual(self.run_qa(accuracy_model="opus"), 2)
+
+    def test_an_accuracy_model_the_cli_cannot_run_exits_2(self):
+        self.on_screen()
+        rendered, render = [], qa.RENDERER
+        qa.RENDERER = lambda args, scene: rendered.append(scene) or render(args, scene)
+        for value in ("google/gemini-3.6-flash", "sdk:google/gemini-3.6-flash", "pool"):
+            err = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                code = qa.run(self.args(accuracy_model=value))
+            self.assertEqual(code, 2, value)
+            self.assertIn("claude or codex model", err.getvalue(), value)
+        self.assertEqual(rendered, [])
+        self.assertFalse((self.root / "qa").exists())
+
     # AUTO-156: qa.json says whether the judge is the one the QA fixtures
     # passed, and a line under the verdict says so; nothing reads it to gate.
 

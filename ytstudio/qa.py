@@ -3153,7 +3153,9 @@ def scene_text(scene_xml, build: dict | None) -> tuple[list[dict], list[dict]]:
     never reaches the screen and is skipped. Any other kind drawn (an image,
     a video), an asset that is not defined, a chart with no labels or series,
     and a missing or unparsable document are `not_checked` entries
-    ({include, element_id, kind}), never an exception."""
+    ({include, element_id, kind}), never an exception; so is each row of
+    an include no build.json shot carries (kind "no-shot"), which stays a
+    row with no shots and is never read against the dossier."""
     rows: list[dict] = []
     unread: list[dict] = []
     scene_xml = Path(scene_xml)
@@ -3171,6 +3173,11 @@ def scene_text(scene_xml, build: dict | None) -> tuple[list[dict], list[dict]]:
         head = {"include": iid, "shots": list(labels.get(iid, [])),
                 "start": _number(inc.get("start")), "end": _number(inc.get("end"))}
         _include_text(inc, scene_xml.parent, head, 0, set(), scene_xml.parent, rows, unread)
+    # Words an include draws that no build.json shot carries (an overlay,
+    # an older build.json, a standalone run) have no shot to be checked
+    # against, so shot_screen drops them: they are named, not lost.
+    unread += [{"include": r["include"], "element_id": r["element_id"], "kind": "no-shot"}
+               for r in rows if not r["shots"]]
     return rows, unread
 
 
@@ -3338,10 +3345,19 @@ def accuracy(harness, pass_dir, *, rows: list[dict], script: dict | None, dossie
                 "answer again.", ACCURACY_SCHEMA)
             problems = accuracy_problems(answer, screen, claims)
             if problems:
+                # Kept, the refused answers would be served on every rerun
+                # and fail the same way (Harness.forget).
+                harness.forget(name)
+                harness.forget(f"{name}-retry")
                 raise HarnessError(f"[qa] {name}-retry: " + "; ".join(problems[:3]))
     except HarnessError as exc:
-        return {"status": NOT_EVIDENCED, "why": f"the accuracy check failed: {exc}",
-                "command": "yt qa --fresh", "bar": True, "not_checked": unread}
+        # The pass's scoring is kept under its own names, so reusing the
+        # pass renders nothing and asks only the accuracy check again.
+        return {"status": NOT_EVIDENCED,
+                "why": f"the accuracy check failed: {exc}; reusing the pass, only the "
+                       "accuracy decisions are asked again",
+                "command": f"yt qa --reuse {Path(pass_dir).name}", "bar": True,
+                "not_checked": unread}
     starts: dict[str, float] = {}
     for row in rows:
         for label in row.get("shots") or []:
@@ -3392,20 +3408,26 @@ def accuracy_md(accuracy_record: dict | None) -> list[str]:
         lines += [f"Not evidenced: {final.get('why', '')}. Run `{final.get('command', '')}`.",
                   ""]
         return lines
-    lines.append(f"Read by {final.get('model', '?')}: {final.get('checked', 0)} shot(s) "
-                 "against the dossier.")
-    blocking = accuracy_lines(final)
-    lines += [f"- {line}" for line in blocking]
-    for f in final.get("findings") or []:
-        if isinstance(f, dict) and f.get("severity") != "blocking":
-            lines.append(f'- minor: {f.get("problem")} at shot {f.get("shot")}: '
-                         f'"{f.get("quote")}" -> {f.get("owner")} ({f.get("fix", "")})')
-    if not final.get("findings"):
-        lines.append("Nothing found.")
     unread = final.get("not_checked") or []
+    if not final.get("checked"):
+        # Nothing was read: say so rather than "Nothing found", which would
+        # read as a check that passed.
+        lines.append("No on-screen text placed on a shot was read against the dossier"
+                     + (": everything drawn is listed below." if unread else "."))
+    else:
+        lines.append(f"Read by {final.get('model', '?')}: {final.get('checked', 0)} "
+                     "shot(s) against the dossier.")
+        lines += [f"- {line}" for line in accuracy_lines(final)]
+        for f in final.get("findings") or []:
+            if isinstance(f, dict) and f.get("severity") != "blocking":
+                lines.append(f'- minor: {f.get("problem")} at shot {f.get("shot")}: '
+                             f'"{f.get("quote")}" -> {f.get("owner")} ({f.get("fix", "")})')
+        if not final.get("findings"):
+            lines.append("Nothing found.")
     if unread:
         lines.append(f"Not checked ({len(unread)}): " + ", ".join(
-            f"{u.get('element_id')} ({u.get('kind')})" for u in unread[:12]))
+            f"{u.get('element_id')} ({u.get('kind')}, include {u.get('include')})"
+            for u in unread[:12]))
     return lines + [""]
 
 
@@ -5433,9 +5455,17 @@ def run(args) -> int:
     dossier = read_json(dossier_file, warn=False) if dossier_file else None
     dossier = dossier if isinstance(dossier, dict) and dossier else None
     accuracy_flag = getattr(args, "accuracy_model", None)
+    if said := accuracy_model_refusal(accuracy_flag):
+        print(said, file=sys.stderr)
+        return 2
     accuracy_model = accuracy_flag or ACCURACY_MODEL
+    # The documents' words are read first (XML only, nothing renders): a
+    # film that draws none has nothing to check, so no family clash bars
+    # it or stops it.
+    shown, unread = scene_text(Path(scene), build) if dossier else ([], [])
     clash = accuracy_refusal(accuracy_model, cutcompare.author_models(
-        {"script": src("script"), "vfx": project.source("vfx")})) if dossier else ""
+        {"script": src("script"), "vfx": project.source("vfx")})) \
+        if dossier and shot_screen(shown) else ""
     if clash and accuracy_flag:
         print(clash, file=sys.stderr)
         return 2
@@ -5749,11 +5779,12 @@ def run(args) -> int:
     if dossier is None:
         final = {"status": NOT_EVIDENCED, "why": "the film has no dossier",
                  "command": "yt research", "bar": False}
+    elif not shot_screen(shown):
+        final = {"status": "done", "checked": 0, "findings": [], "not_checked": unread}
     elif clash:
         final = {"status": NOT_EVIDENCED, "why": clash.removeprefix("error: "),
                  "command": ACCURACY_ANOTHER, "bar": True}
     else:
-        shown, unread = scene_text(Path(scene), build)
         checker = accuracy_harness(project.root, accuracy_model, house=rules,
                                    house_digest=digest, fresh=getattr(args, "fresh", False),
                                    verbose=not args.quiet)
@@ -5762,7 +5793,9 @@ def run(args) -> int:
     if not args.quiet and dossier is not None:
         print(f"[qa] on-screen accuracy: {final['status']}"
               + (f" ({final.get('why')})" if final.get("why") else
-                 f", {len(accuracy_lines(final))} blocking"), file=sys.stderr)
+                 f", {final.get('checked', 0)} shot(s) read, "
+                 f"{len(accuracy_lines(final))} blocking, "
+                 f"{len(final.get('not_checked') or [])} not checked"), file=sys.stderr)
 
     # -- the bar, applied; the pass, kept ----------------------------------------
     # What the measurements proved overrides what the reviewer awarded: a
