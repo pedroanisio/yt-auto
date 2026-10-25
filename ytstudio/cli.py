@@ -175,8 +175,8 @@ def _register_run(sub, parents: list) -> None:
                          help="the model that reviews the script's plan, keyframe and "
                               "vfx, judges research's cross-check and scores the delivery "
                               "tail (yt gate's triage, yt qa, yt package's review); never "
-                              f"the author's own (default {vfx.REVIEWER_MODEL}; --quick drops the plan review "
-                              "and the cross-check). "
+                              f"the author's own (default {vfx.REVIEWER_MODEL}; --quick drops "
+                              "the plan review and the cross-check). "
                               "`pool` or sdk:<id>, a reviewer from another maker on the "
                               "gateway engine, reaches the script's review only")
     flags.review_budget(p, default=None,
