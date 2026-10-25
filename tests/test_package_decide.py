@@ -134,6 +134,32 @@ class Refusal(ProjectCase):
         self.assertTrue(FakeEngine.json_calls)
 
 
+class ReviewBudget(ProjectCase):
+    """The review is capped as build's joins review and the vfx review are:
+    --review-budget-usd, default vfx.REVIEW_USD; the author is not."""
+
+    def built(self, *extra):
+        harness.ENGINE = Scripted
+        Scripted.script = [answer_for]
+        made = []
+
+        class Recording(package.Harness):
+            def __post_init__(self_):
+                super().__post_init__()
+                made.append(self_)
+        with mock.patch.object(package, "Harness", Recording):
+            code, said = self.run_package("--model", "sonnet", *extra)
+        self.assertEqual(code, 0, said)
+        return {m.role: m.budget_usd for m in made}
+
+    def test_the_reviewer_is_capped_at_the_review_budget(self):
+        from ytstudio import vfx
+        caps = self.built()
+        self.assertEqual(caps[package.REVIEW_ROLE], vfx.REVIEW_USD)
+        self.assertIsNone(caps[package.DRAFT_ROLE])
+        self.assertEqual(self.built("--review-budget-usd", "0.7")[package.REVIEW_ROLE], 0.7)
+
+
 class GatewayUnset(ProjectCase):
     def test_only_cli_engines_are_built_and_their_config_is_todays(self):
         built = []
@@ -153,7 +179,8 @@ class GatewayUnset(ProjectCase):
             for made in built:
                 self.assertEqual((made.engine, made.gateway), (None, None))
                 plain = harness.Harness(made.root, "package", model=made.model,
-                                        role=made.role, verbose=False)
+                                        role=made.role, budget_usd=made.budget_usd,
+                                        verbose=False)
                 got = made._engine(tools=())
                 self.assertIsInstance(got, claude_engine.ClaudeEngine)
                 self.assertEqual(got.config, plain._engine(tools=()).config)

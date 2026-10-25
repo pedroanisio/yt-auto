@@ -44,7 +44,7 @@ from . import build as build_stage
 from . import doctor, flags, house, render, reviewers, spend, workspace
 from .core import _key, read_json, write_json
 from .harness import Harness, HarnessError, brief
-from .vfx import REVIEWER_MODEL
+from .vfx import REVIEW_USD, REVIEWER_MODEL
 
 #: Where the upload set lives, inside the project.
 PACKAGE_DIR = "package"
@@ -636,6 +636,8 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
     flags.reviewer_model(p, default=None, help=(
         f"the model that reads the wording against the narration (default "
         f"{REVIEWER_MODEL}; never --model's own family)"))
+    flags.review_budget(p, default=REVIEW_USD,
+                        help=f"what the package review may cost (default {REVIEW_USD:g})")
     flags.rounds(p, default=1, help="revisions a blocking review flag earns (default 1)")
     flags.fresh(p, help="ask the model again even if the questions did not change")
     p.set_defaults(run=run)
@@ -723,7 +725,8 @@ def run(args) -> int:
     author = Harness(project.root, "package", model=args.model, role=DRAFT_ROLE,
                      house=rules, house_digest=digest, fresh=args.fresh, verbose=verbose)
     reader = Harness(project.root, "package", model=reviewer_model, role=REVIEW_ROLE,
-                     house=rules, house_digest=digest, usage=author.usage,
+                     house=rules, house_digest=digest, budget_usd=args.review_budget_usd,
+                     usage=author.usage,
                      decisions=author.decisions, lock=author.lock, fresh=args.fresh,
                      verbose=verbose)
     try:
