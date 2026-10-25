@@ -98,14 +98,20 @@ def prose(problem, *, t=5.0, owner="vfx", severity="blocking"):
 
 
 def card(overall, *, scores=None, mechanical=(), findings=(), verdict=None, cost=0.1):
+    """A scorecard as `yt qa` files it: the verdict and its bar are
+    qa.verdict_of's over these scores and blockers (AUTO-163), so a 9.2 with
+    a category at 8.0 is NOT READY here as it is in QA. `verdict=` overrides
+    the label for a test about a card QA would not file."""
     s = {k: overall for k in qa.CATEGORIES}
     s.update(scores or {})
-    return {"scores": s, "overall": overall,
-            "verdict": verdict or (qa.READY if overall >= 9.0 else qa.NOT_READY),
+    blocking = [f["problem"] for f in list(findings) + list(mechanical)
+                if f.get("severity") == "blocking"]
+    filed, bar = qa.verdict_of(s, overall, blocking=blocking)
+    if verdict is not None:
+        filed, bar = verdict, ([] if verdict == qa.READY else bar)
+    return {"scores": s, "overall": overall, "verdict": filed,
             "findings": list(findings), "mechanical": list(mechanical),
-            "blocking": [f["problem"] for f in list(findings) + list(mechanical)
-                         if f.get("severity") == "blocking"],
-            "bar": [] if overall >= 9.0 else [f"overall {overall} is under 9.0"],
+            "blocking": blocking, "bar": bar,
             "rationale": "because", "engine": {"cost_usd": cost}}
 
 
@@ -782,6 +788,88 @@ class Loop(ImproveCase):
         self.assertEqual(record["stop"]["reason"], "ready")
         self.assertEqual(record["best"]["verdict"], qa.READY)
 
+    def test_a_category_under_the_bar_is_not_ready_at_the_default_target(self):
+        # AUTO-163: 9.2 overall with nothing blocking but animation_vfx at
+        # 8.0 is NOT READY in QA, so the loop does not stop "ready" on it.
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        runner = FakeRunner(self.root, [card(9.2, scores={"animation_vfx": 8.0})])
+        record = self.improver(runner, max_passes=1).run()
+        self.assertEqual(record["passes"][0]["decision"], "keep")
+        self.assertEqual(record["stop"]["reason"], "max-passes")
+        self.assertEqual(record["best"]["verdict"], qa.NOT_READY)
+
+    def test_a_not_evidenced_category_is_not_ready(self):
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        runner = FakeRunner(self.root, [card(9.2, scores={"voiceover": None})])
+        record = self.improver(runner, max_passes=1).run()
+        self.assertEqual(record["passes"][0]["decision"], "keep")
+        self.assertNotEqual(record["stop"]["reason"], "ready")
+        self.assertEqual(record["best"]["verdict"], qa.NOT_READY)
+        # and `yt improve` exits 1 for that record, not 0
+        args = cli.build_parser().parse_args(["improve", "--title", "x"])
+        with patch.object(improve.workspace, "resolve",
+                          return_value=(self.idea, workspace.Project(self.root))), \
+                patch.object(improve.house, "for_args", return_value=("", None)), \
+                patch.object(improve.Improver, "run", return_value=record):
+            self.assertEqual(improve.run(args), 1)
+
+    def test_a_ready_start_stops_without_a_pass(self):
+        # AUTO-163: QA already filed READY TO PUBLISH at the target, so
+        # nothing is routed, no stage runs and nothing is spent.
+        self.start_pass(card(9.4))
+        runner = FakeRunner(self.root, [])
+        out = []
+        record = self.improver(runner, say=out.append).run()
+        self.assertEqual(record["stop"]["reason"], "ready")
+        self.assertEqual(record["stop"]["detail"],
+                         f"pass-01: already {qa.READY} at 9.4; no pass run")
+        self.assertEqual(record["passes"], [])
+        self.assertEqual(runner.calls, [])
+        self.assertFalse([c for c in FakeEngine.json_calls
+                          if "routes" in (c.get("schema") or {}).get("properties", {})])
+        self.assertEqual(record["spent_usd"], 0.0)
+        self.assertEqual(record["best"]["pass"], "pass-01")
+        self.assertTrue((self.root / "improve.md").is_file())
+        self.assertIn(f"improve: ready (pass-01: already {qa.READY} at 9.4; no pass run)",
+                      "\n".join(out))
+
+    def test_a_ready_start_below_a_higher_target_keeps_going(self):
+        self.start_pass(card(9.2, mechanical=[mech(severity="advisory")], verdict=qa.READY))
+        runner = FakeRunner(self.root, [card(9.3)])
+        record = self.improver(runner, target=9.5, max_passes=1).run()
+        self.assertEqual(len(record["passes"]), 1)
+        self.assertNotEqual(record["stop"]["reason"], "ready")
+
+    def test_summary_names_the_bar_when_not_ready(self):
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        runner = FakeRunner(self.root, [card(9.2, scores={"animation_vfx": 8.0})])
+        out = []
+        self.improver(runner, max_passes=1, say=out.append).run()
+        lines = [line for line in "\n".join(out).splitlines()
+                 if line.startswith("  not ready:")]
+        self.assertEqual(len(lines), 1, out)
+        self.assertIn("animation_vfx 8.0 is under 8.5", lines[0])
+
+    def test_a_ready_best_prints_no_bar_line(self):
+        self.start_pass(card(5.0, mechanical=[mech()]))
+        runner = FakeRunner(self.root, [card(9.2)])
+        out = []
+        record = self.improver(runner, max_passes=3, say=out.append).run()
+        self.assertEqual(record["stop"]["reason"], "ready")
+        self.assertFalse([line for line in "\n".join(out).splitlines()
+                          if line.startswith("  not ready:")])
+
+    def test_a_not_ready_best_with_no_bar_points_at_the_report(self):
+        out = []
+        imp = self.improver(FakeRunner(self.root, []), say=out.append)
+        imp._print_summary({"start": {"pass": "pass-01", "overall": 5.0},
+                            "best": {"pass": "pass-01", "overall": 5.0,
+                                     "verdict": qa.NOT_READY, "bar": []},
+                            "stop": {"reason": "max-passes", "detail": "1 pass(es) run"},
+                            "passes": [], "human": [], "spent_usd": 0.0,
+                            "budget_usd": 15.0})
+        self.assertIn("  not ready: see improve.md", out)
+
     def test_stop_on_max_passes(self):
         self.start_pass(card(5.0, mechanical=[mech()]))
         runner = FakeRunner(self.root, [card(6.0, mechanical=[mech("flat", "1.2")]),
@@ -1111,6 +1199,16 @@ class DryRun(ImproveCase):
         self.assertIn("yt keyframe --approve", prompt)
         self.assertIn("authored without an approved keyframe", prompt)
 
+    def test_a_ready_start_still_plans(self):
+        # AUTO-163: the ready-start stop is for a real run; --dry-run still
+        # routes and prints the plan it would run.
+        self.start_pass(card(9.4, mechanical=[mech(severity="advisory")]))
+        runner = FakeRunner(self.root, [])
+        record = self.improver(runner, dry_run=True).run()
+        self.assertEqual(record["start"]["verdict"], qa.READY)
+        self.assertEqual(record["stop"]["reason"], "dry-run")
+        self.assertEqual(runner.calls, [])
+
     def test_dry_run_does_not_rescore_a_stale_pass(self):
         pdir = self.start_pass(card(5.0, mechanical=[mech()]))
         os.utime(pdir / "scorecard.json", (900_000_000, 900_000_000))
@@ -1146,6 +1244,18 @@ class Report(ImproveCase):
         # The fixed defect reads timestamp -> problem -> root cause -> correction -> result.
         self.assertIn("0:13", md)
         self.assertTrue((self.root / "improve" / "pass-01" / "pass.json").is_file())
+
+    def test_summary_keeps_the_bar(self):
+        # AUTO-163: improve.json's start and best carry the verdict's bar,
+        # the reasons the terminal summary and improve.md §6 name.
+        start = card(5.0, mechanical=[mech()])
+        best = card(9.2, scores={"animation_vfx": 8.0})
+        self.start_pass(start)
+        self.improver(FakeRunner(self.root, [best]), max_passes=1).run()
+        record = read_json(self.root / "improve.json")
+        self.assertEqual(record["best"]["bar"], best["bar"])
+        self.assertEqual(record["start"]["bar"], start["bar"])
+        self.assertIn("animation_vfx 8.0 is under 8.5", record["best"]["bar"])
 
 
 class Contradicted(ImproveCase):
@@ -1450,6 +1560,13 @@ class Cli(unittest.TestCase):
                 contextlib.redirect_stderr(io.StringIO()) as err:
             self.assertEqual(improve.run(args), 2)
         self.assertIn("does not grade its own work", err.getvalue())
+
+    def test_help_states_the_stop_rule(self):
+        # AUTO-163: `yt improve --help` prints the module docstring.
+        doc = " ".join(improve.__doc__.split())
+        self.assertIn("once overall is at least `--target`", doc)
+        self.assertNotIn("with nothing blocking", doc)
+        self.assertIn("a higher target keeps improving a READY film", doc)
 
     def test_improve_is_not_a_pipeline_stage(self):
         self.assertNotIn("improve", [s for s, _ in workspace.STAGES])
