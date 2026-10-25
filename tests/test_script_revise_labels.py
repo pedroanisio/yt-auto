@@ -105,6 +105,8 @@ class ReviseLabels(unittest.TestCase):
         self.supers: dict[int, list[str]] = {}
         #: n -> the fact-check revision's fix (revise-labels-facts-N)
         self.fact_fixes: dict[int, str] = {}
+        #: n -> the on-screen strings the fact-check revision hands back
+        self.fact_supers: dict[int, list[str]] = {}
         #: what each fact-check answers, in order; [] once they run out
         self.checks: list[list[dict]] = []
         #: numbers the fake answers for although nobody asked
@@ -118,16 +120,17 @@ class ReviseLabels(unittest.TestCase):
             if self.down:
                 raise script.ClaudeError("the model is down")
             fixes = self.fixes if name == "revise-labels" else self.fact_fixes
+            supers = self.supers if name == "revise-labels" else self.fact_supers
             out = []
             for n in sent_back(prompt):
-                if n not in fixes and n not in self.supers:
+                if n not in fixes and n not in supers:
                     out.append({"n": n, "action": "keep", "narration": "",
                                 "why": "the inspector is the point"})
                     continue
                 row = {"n": n, "action": "fix", "narration": fixes.get(n, ""),
                        "why": "one breath"}
-                if n in self.supers:
-                    row["on_screen_text"] = self.supers[n]
+                if n in supers:
+                    row["on_screen_text"] = supers[n]
                 out.append(row)
             out += [{"n": n, "action": "fix", "narration": line, "why": "unasked"}
                     for n, line in self.rogue.items()]
@@ -473,6 +476,57 @@ class ReviseLabels(unittest.TestCase):
         prompt = self.calls[0][1]
         self.assertNotIn("cut the bridge's age", prompt)
         self.assertIn("the change the reason asks for", prompt)
+
+    # AUTO-150: a super is a claim the fact-check reads, and fixes
+
+    def with_super(self, label="2.1", text=("Four lanes",)) -> None:
+        data = screenplay()
+        for sec in data["sections"]:
+            for shot in sec["shots"]:
+                if shot["label"] == label:
+                    shot["on_screen_text"] = list(text)
+        write_json(self.film / "script.json", data)
+        self.before = (self.film / "script.json").read_bytes()
+
+    def test_super_only_change_is_fact_checked(self):
+        self.with_super()
+        self.research()
+        # 1.3's line is rewritten (its long sentence is a rule error); 2.1
+        # changes only its super, which the fact-check reads all the same
+        self.supers = {4: ["Forty lanes"]}
+        self.assertEqual(self.run_stage("--revise", "1.3,2.1"), 0, self.said)
+        self.assertEqual([c[0] for c in self.calls], ["revise-labels", "verify-labels"])
+        self.assertIn("[on screen: Forty lanes]", self.calls[1][1])
+        self.assertIn(FIXED, self.calls[1][1])
+        self.assertEqual(shots_of(self.record())["2.1"]["on_screen_text"], ["Forty lanes"])
+        # 2.1's line was not rewritten, so its take still holds
+        self.assertIn("yt voice --redo 1.3 ", self.said)
+
+    def test_labels_fact_fix_of_super_written(self):
+        # The wrong super is already in script.json and the first revise
+        # rewrites only 2.1's line, so only the fact revise's own row can
+        # carry the corrected super back into the record.
+        self.with_super(text=("Forty lanes",))
+        self.research()
+        before = shots_of(json.loads(self.before))
+        self.fixes = {3: FIXED, 4: "The paint hid the rust from the four lanes of inspectors."}
+        self.checks = [[{"n": 4, "severity": "blocker", "fix": "show four lanes",
+                         "problem": "the on-screen text says forty lanes; the research "
+                                    "says four"}],
+                       []]
+        self.fact_supers = {4: ["Four lanes"]}
+        self.assertEqual(self.run_stage("--revise", "1.3,2.1"), 0, self.said)
+        self.assertEqual([c[0] for c in self.calls], [
+            "revise-labels", "verify-labels", "revise-labels-facts-1", "verify-labels-1"])
+        self.assertEqual(sent_back(self.calls[2][1]), [4])
+        self.assertIn("[on screen: Four lanes]", self.calls[3][1])
+        after = shots_of(self.record())
+        self.assertEqual(after["2.1"]["on_screen_text"], ["Four lanes"])
+        self.assertEqual(after["2.1"]["narration"], self.fixes[4])
+        for label, shot in before.items():
+            if label not in ("1.3", "2.1"):
+                self.assertEqual(after[label], shot, label)
+        self.assertEqual(self.record()["check"]["unresolved"], [])
 
     def test_feedback_without_its_json_twin_is_refused(self):
         (self.film / "feedback").mkdir()

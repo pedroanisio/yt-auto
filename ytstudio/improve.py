@@ -95,6 +95,10 @@ ROUTES = ROUTABLE + HUMAN
 #: The last four are the film's rhythm (AUTO-141, rhythm.KINDS): a hold or a
 #: slow opening goes to vfx (or the build), a metronomic film to script or
 #: vfx, a section read too fast or slow to voice.
+#: The kind of an on-screen accuracy finding (AUTO-150): QA's, routed to
+#: its owner and tracked across passes by its shot and quote.
+ACCURACY = "accuracy"
+
 MECHANICAL_KINDS = ("penetration", "reads-merged", "flat", "clipped", "frozen", "jump",
                     "off_camera", "proof-mismatch",
                     "hold", "metronomic", "slow-opening", "wpm",
@@ -210,10 +214,15 @@ _TICKED = re.compile(r"`([^`]+)`")
 def fingerprint(finding: dict) -> str | None:
     """A mechanical finding's identity across passes: kind, shot and the
     objects it names; a retention finding's, its shot and tag (the same dip
-    read twice is one defect). A prose finding has none; the model judges it."""
+    read twice is one defect); an on-screen accuracy finding's (AUTO-150),
+    its shot and its quote, whitespace and case aside. A prose finding has
+    none; the model judges it."""
     if finding.get("source") == "retention":
         return f"retention|{finding.get('shot') or ''}|{finding.get('tag') or ''}"
     kind = finding.get("kind")
+    if kind == ACCURACY:
+        quote = " ".join(str(finding.get("quote") or "").split()).lower()
+        return f"{ACCURACY}|{finding.get('shot') or ''}|{quote}"
     if kind not in MECHANICAL_KINDS:
         return None
     names = sorted({n.rsplit("/", 1)[-1] for n in _TICKED.findall(str(finding.get("problem", "")))})
@@ -267,7 +276,7 @@ def collect(card: dict, *, gate: dict | None = None,
                "fix": str(f.get("fix", ""))}
         row.update(over)
         row["fingerprint"] = (fingerprint(row) if source in ("mechanical", "retention")
-                              else None)
+                              or row.get("kind") == ACCURACY else None)
         rows.append(row)
 
     for f in card.get("mechanical") or []:
@@ -277,6 +286,8 @@ def collect(card: dict, *, gate: dict | None = None,
     for f in (card.get("accuracy") or {}).get("fact_check") or []:
         if isinstance(f, dict):
             add("fact-check", fact_row(f), kind=None)
+    for f in accuracy_findings(card):
+        add("qa", accuracy_row(f), kind=ACCURACY, quote=str(f.get("quote") or ""))
     if gate and gate.get("exit"):
         for b in (gate.get("triage") or {}).get("blocking") or []:
             add("gate", {"owner": b.get("owner", ""), "problem": b.get("what", ""),
@@ -301,6 +312,27 @@ def collect(card: dict, *, gate: dict | None = None,
     for n, row in enumerate(rows, 1):
         row["id"] = f"F{n}"
     return rows
+
+
+def accuracy_findings(card: dict | None) -> list[dict]:
+    """The on-screen accuracy findings a scorecard filed (AUTO-150,
+    `accuracy.final`); none for a card from before it, or one not checked."""
+    final = ((card or {}).get("accuracy") or {}).get("final")
+    return [f for f in (final or {}).get("findings") or [] if isinstance(f, dict)] \
+        if isinstance(final, dict) else []
+
+
+def accuracy_row(f: dict) -> dict:
+    """One finding for an on-screen accuracy finding: its owner is QA's
+    (vfx, script or upstream-fact), so route() looks it up."""
+    return {"shot": f.get("shot"), "timestamp": f.get("start"),
+            "severity": f.get("severity", "minor"), "owner": str(f.get("owner") or ""),
+            "problem": (f'on-screen {f.get("problem")}: "{f.get("quote")}" at shot '
+                        f'{f.get("shot")}' + (f" (dossier {f['claim_id']})"
+                                              if f.get("claim_id") not in (None, "", "none")
+                                              else "")),
+            "why": "the screen shows what the dossier does not hold",
+            "fix": str(f.get("fix") or "")}
 
 
 def fact_row(row: dict) -> dict:
@@ -1027,6 +1059,14 @@ def blocking_mechanical(card: dict) -> set[str]:
             for f in card.get("mechanical") or [] if f.get("severity") == "blocking"}
 
 
+def blocking_accuracy(card: dict) -> set[str]:
+    """The fingerprints of a card's blocking on-screen accuracy findings
+    (AUTO-150): a pass that draws a new wrong figure is reverted on that
+    ground, as one with a new blocking mechanical finding is."""
+    return {fingerprint(dict(f, kind=ACCURACY)) for f in accuracy_findings(card)
+            if f.get("severity") == "blocking"}
+
+
 def spread(card: dict, key: str) -> float:
     """The samples' spread (max - min) a scorecard recorded for `key`, a
     category or `overall` (AUTO-107); 0 for a card scored once."""
@@ -1115,6 +1155,8 @@ def judge(best: dict, new: dict, *, tolerance: float = TOLERANCE) -> dict:
                            "tolerance")
     for fp in sorted(blocking_mechanical(new) - blocking_mechanical(best)):
         reasons.append(f"new blocking mechanical finding: {fp}")
+    for fp in sorted(blocking_accuracy(new) - blocking_accuracy(best)):
+        reasons.append(f"new blocking accuracy finding: {fp}")
     return {"keep": not reasons, "reasons": reasons, "deltas": diff["deltas"],
             "overall_delta": diff["overall_delta"], "against": best.get("pass"),
             "side_by_side": side}
@@ -1122,8 +1164,10 @@ def judge(best: dict, new: dict, *, tolerance: float = TOLERANCE) -> dict:
 
 def reached(card: dict, target: float) -> bool:
     # A fact-check blocker standing is never reached (AUTO-133), whatever
-    # an older card's verdict said.
-    if (card.get("accuracy") or {}).get("fact_check"):
+    # an older card's verdict said; nor is a dossier film whose on-screen
+    # text was never checked (AUTO-150): its bar names no blocking item.
+    accuracy = card.get("accuracy") or {}
+    if accuracy.get("fact_check") or (accuracy.get("final") or {}).get("bar"):
         return False
     if card.get("verdict") == qa.READY:
         return True
@@ -1165,7 +1209,8 @@ class Improver:
                  doctor: Callable[[workspace.Project], list[tuple]] | None = None,
                  house_rules: str = "", house_digest: dict | None = None,
                  say: Callable[[str], None] | None = None,
-                 compare_model: str | None = None) -> None:
+                 compare_model: str | None = None,
+                 accuracy_model: str | None = None) -> None:
         self.project = project
         self.root = Path(project.root)
         self.idea = idea
@@ -1187,6 +1232,9 @@ class Improver:
         #: The gateway video model QA compares the kept cut with the new one
         #: through (`yt qa --against`, AUTO-128); None: no video comparison.
         self.compare_model = compare_model
+        #: The model QA reads the on-screen text against the dossier with
+        #: (`yt qa --accuracy-model`, AUTO-150); None: QA's default.
+        self.accuracy_model = accuracy_model
         self.h = Harness(self.root, "improve", model=model, effort=effort,
                          fallback_model=fallback_model, role=ROLE, house=house_rules,
                          house_digest=house_digest or {}, verbose=not quiet)
@@ -1247,7 +1295,9 @@ class Improver:
         With a compare model and `snap`, the snapshot taken before the pass
         changed anything, it hands QA the kept cut that snapshot holds
         (`--against <snap>/video.mp4 --compare-model M`, AUTO-128); a
-        snapshot without one is noted on `entry` and QA compares stills."""
+        snapshot without one is noted on `entry` and QA compares stills.
+        An --accuracy-model given to improve is handed on (AUTO-150); none
+        is, otherwise, so QA's default applies."""
         argv = ["qa", *self.base]
         if best and best.get("pass") and best.get("verdict") != qa.NOT_EVIDENCED:
             argv += ["--previous", str(best["pass"])]
@@ -1257,6 +1307,8 @@ class Improver:
                 argv += ["--against", str(cut), "--compare-model", self.compare_model]
             elif entry is not None:
                 entry["compare"] = NO_PREVIOUS_CUT
+        if self.accuracy_model:
+            argv += ["--accuracy-model", self.accuracy_model]
         return argv
 
     def _qa(self, argv: list[str] | None = None) -> dict | None:
@@ -2069,7 +2121,8 @@ def report_md(record: dict, root: Path) -> str:
             # mechanical ones against the new pass's own mechanical findings.
             after = read_json(root / qa.QA_DIR / str(p["qa_pass"]) / "scorecard.json",
                               warn=False) or {}
-            after_fps = {fingerprint(m) for m in after.get("mechanical") or []}
+            after_fps = {fingerprint(m) for m in after.get("mechanical") or []} | {
+                fingerprint(dict(f, kind=ACCURACY)) for f in accuracy_findings(after)}
         for stage, e in (p.get("routed") or {}).items():
             correction = "; ".join(e.get("must_change") or []) or "-"
             for f in e.get("findings") or []:
@@ -2191,6 +2244,10 @@ def register(sub, parents=()) -> argparse.ArgumentParser:
                         "snapshot's kept cut and each pass's new one whole, wherever "
                         "the loop runs QA (yt qa --against); default "
                         f"${cutcompare.MODEL_ENV}, else no video comparison (AUTO-128)")
+    p.add_argument("--accuracy-model", metavar="MODEL", dest="accuracy_model",
+                   help="with a dossier, the model each `yt qa` reads the on-screen text "
+                        "against it with (yt qa --accuracy-model; default QA's own), never "
+                        "of an author's family or --model's (AUTO-150)")
     p.set_defaults(run=run)
     return p
 
@@ -2220,6 +2277,17 @@ def run(args) -> int:
                 {stage: project.source(stage) for stage in cutcompare.AUTHORS}))):
         print(said, file=sys.stderr)
         return 2
+    # The accuracy model QA is handed (AUTO-150): refused here, as `yt qa`
+    # would refuse it, against the reports and against what --model makes.
+    accuracy_model = getattr(args, "accuracy_model", None)
+    if said := qa.accuracy_model_refusal(accuracy_model):
+        print(said, file=sys.stderr)
+        return 2
+    if accuracy_model and (said := qa.accuracy_refusal(accuracy_model, cutcompare.author_models(
+            {"script": project.source("script"), "vfx": project.source("vfx")})
+            + [("the pass's stages (--model)", args.model)])):
+        print(said, file=sys.stderr)
+        return 2
     rules, digest = house.for_args(args, project, "improve")
     improver = Improver(project, idea, model=args.model,
                         effort=getattr(args, "effort", None),
@@ -2228,7 +2296,8 @@ def run(args) -> int:
                         target=args.target, dry_run=args.dry_run, from_pass=args.from_pass,
                         resume=args.resume, rejudge=args.rejudge,
                         quality=args.quality, quiet=args.quiet, house_rules=rules,
-                        house_digest=digest, compare_model=compare_model)
+                        house_digest=digest, compare_model=compare_model,
+                        accuracy_model=accuracy_model)
     try:
         record = improver.run()
     except HarnessError as exc:

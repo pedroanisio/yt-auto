@@ -447,6 +447,7 @@ import tempfile  # noqa: E402
 from unittest import mock  # noqa: E402
 
 from ytstudio import cli, harness  # noqa: E402
+from ytstudio.core import Idea  # noqa: E402
 from tests.test_script_plan import PLAN, kind, shots_for  # noqa: E402
 
 DOSSIER = {"claims": [claim("the bolt was painted over")]}
@@ -674,6 +675,131 @@ class FactCheckByDefault(unittest.TestCase):
         self.assertEqual(code, 2, said)
         self.assertEqual(self.asked, [])
         self.assertIn("--reviewer-model", said)
+
+
+
+# --------------------------------------------------------------------------- #
+# AUTO-150: the fact-check reads the supers, and its revise may fix one
+# --------------------------------------------------------------------------- #
+
+class FactCheckReadsTheSupers(unittest.TestCase):
+    """The script fact-check is the only reader of the screenplay's supers
+    against the research: a wrong figure on screen is a claim like a wrong
+    figure said aloud, and its revise may correct the super itself."""
+
+    def shots(self):
+        return [script.Shot(narration="Rust took a share of the steel.", n=1,
+                            label="1.1", seconds=5, on_screen_text=["40%"]),
+                script.Shot(narration="Nobody saw it.", n=2, label="1.2", seconds=5)]
+
+    def writer(self, answers):
+        """A writer whose decisions are answered from `answers` (name ->
+        answer; a verify not named answers no flags) and recorded."""
+        w = script.Screenwriter(Idea(title="T", description="d", genre="g"),
+                                research="RESEARCH: rust took 14% of the steel.",
+                                verbose=False)
+        self.calls = []
+
+        def ask(name, prompt, schema):
+            self.calls.append({"name": name, "prompt": prompt, "schema": schema})
+            if name in answers:
+                return copy.deepcopy(answers[name])
+            return {"flags": [], "verdict": "defensible"}
+        w._ask = ask
+        return w
+
+    FLAG = {"n": 1, "severity": "blocker", "fix": "show 14%",
+            "problem": "the on-screen text says 40%; the research says 14%"}
+
+    def test_verify_lists_the_supers(self):
+        w = self.writer({})
+        w.verify(self.shots())
+        prompt = self.calls[0]["prompt"]
+        self.assertIn("[on screen: 40%]", prompt)
+        self.assertIn("A number or label on screen is a claim too: flag it as you "
+                      "would the line, and say in the problem that it is the on-screen "
+                      "text.", prompt)
+
+    def test_fact_revise_may_fix_a_super(self):
+        shots = self.shots()
+        line = shots[0].narration
+        w = self.writer({
+            "verify": {"flags": [self.FLAG], "verdict": "no"},
+            "revise-1": {"fixes": [{"n": 1, "action": "fix", "narration": line,
+                                    "on_screen_text": ["14%"], "why": "the research"}]}})
+        check = w.verify_and_revise(shots)
+        self.assertEqual(shots[0].on_screen_text, ["14%"])
+        self.assertEqual(shots[0].narration, line)
+        self.assertEqual(check["revisions"][0]["on_screen_before"], ["40%"])
+        self.assertEqual(check["revisions"][0]["on_screen_after"], ["14%"])
+        names = [c["name"] for c in self.calls]
+        self.assertEqual(names, ["verify", "revise-1", "verify-1"])
+        revise = self.calls[1]
+        self.assertIs(revise["schema"], script.FACT_REVISE_SCHEMA)
+        self.assertIn("[on screen: 40%]", revise["prompt"])
+        self.assertIn("or to its on-screen text when the flag is about what the screen "
+                      "shows", revise["prompt"])
+        # the changed shot is read again, with its new super, and it alone
+        self.assertIn("[on screen: 14%]", self.calls[2]["prompt"])
+        self.assertNotIn("Nobody saw it.", self.calls[2]["prompt"])
+        self.assertEqual(check["unresolved"], [])
+
+    def test_fact_revise_empty_screen_leaves_supers(self):
+        for given in ({}, {"on_screen_text": []}, {"on_screen_text": ["  "]}):
+            shots = self.shots()
+            w = self.writer({
+                "verify": {"flags": [self.FLAG], "verdict": "no"},
+                "revise-1": {"fixes": [dict({"n": 1, "action": "fix",
+                                             "narration": "Rust took some of the steel.",
+                                             "why": "w"}, **given)]}})
+            check = w.verify_and_revise(shots)
+            self.assertEqual(shots[0].on_screen_text, ["40%"], given)
+            self.assertNotIn("on_screen_before", check["revisions"][0], given)
+
+    def test_a_silent_shot_super_is_checked_and_fixed_alone(self):
+        # A title or data card with no narration is where a figure most often
+        # sits: verify must not tell the reviewer to skip it, and the fact
+        # revise may fix its super but never give it a line to say.
+        shots = [script.Shot(narration="", n=1, label="1.1", seconds=4,
+                             on_screen_text=["40%"]),
+                 script.Shot(narration="Nobody saw it.", n=2, label="1.2", seconds=5)]
+        w = self.writer({
+            "verify": {"flags": [self.FLAG], "verdict": "no"},
+            "revise-1": {"fixes": [{"n": 1, "action": "fix",
+                                    "narration": "Rust took fourteen percent.",
+                                    "on_screen_text": ["14%"], "why": "the research"}]}})
+        check = w.verify_and_revise(shots)
+        prompt = self.calls[0]["prompt"]
+        self.assertIn("[on screen: 40%]", prompt)
+        self.assertNotIn("carry no claim, so skip them", prompt)
+        self.assertIn("Shots marked picture-only carry no spoken claim, but their "
+                      "on-screen text is still a claim: check it.", prompt)
+        self.assertEqual(shots[0].on_screen_text, ["14%"])
+        self.assertEqual(shots[0].narration, "")
+        row = check["revisions"][0]
+        self.assertNotIn("before", row)
+        self.assertEqual(row["on_screen_after"], ["14%"])
+
+    def test_the_fact_revise_schema_adds_only_an_optional_super(self):
+        fact = copy.deepcopy(script.FACT_REVISE_SCHEMA)
+        item = fact["properties"]["fixes"]["items"]
+        self.assertNotIn("on_screen_text", item["required"])
+        screen = item["properties"].pop("on_screen_text")
+        self.assertEqual(screen["type"], "array")
+        self.assertIn("only when the flag is about them", screen["description"])
+        self.assertEqual(fact, script.REVISE_SCHEMA)
+
+    def test_no_other_revise_reaches_the_new_screen_path(self):
+        # a story or ledger revise with supers in its answer changes no super
+        for name, by in (("revise-story-1", "the story review"),
+                         ("revise-ledger-2", "the cold read")):
+            shots = self.shots()
+            w = self.writer({name: {"fixes": [{
+                "n": 1, "action": "fix", "narration": "Rust took a share of it.",
+                "on_screen_text": ["14%"], "why": "w"}]}})
+            w.revise(shots, [self.FLAG], name=name, flagged_by=by)
+            self.assertEqual(shots[0].on_screen_text, ["40%"], name)
+            self.assertIsNot(self.calls[-1]["schema"], script.FACT_REVISE_SCHEMA, name)
 
 
 if __name__ == "__main__":

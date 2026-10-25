@@ -85,7 +85,10 @@ OFF = {
                   "scores",
                   "scoring", "side_by_side", "spread", "story", "unsampled", "usage",
                   "verdict"],
-    "qa_keys": ["audio_basis", "audio_not_evidenced", "blocking", "capped", "findings", "house", "idea",
+    # `accuracy` (AUTO-150): the on-screen accuracy summary; a film with no
+    # dossier records it not evidenced with the bar off, and its card's
+    # `accuracy` gains `final`, the prompt and the role as before
+    "qa_keys": ["accuracy", "audio_basis", "audio_not_evidenced", "blocking", "capped", "findings", "house", "idea",
                 "judge_calibration", "low_confidence", "mechanical", "overall", "pass", "reasons", "regressions",
                 "scene_sha256", "scorecard", "scores", "scoring", "side_by_side", "spread",
                 "usage", "verdict"],

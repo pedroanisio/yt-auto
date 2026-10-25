@@ -13,6 +13,7 @@ import json
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from ytstudio import doctor, harness, narrative, qa, workspace
@@ -197,6 +198,58 @@ class Bar(unittest.TestCase):
             "fact-check: blocker at script-wide: the title overclaims"])
         self.assertEqual(qa.mechanical_blockers(empty, gate=None,
                                                 script={"sections": script["sections"]}), [])
+
+
+class AccuracyRecord(unittest.TestCase):
+    """AUTO-150: the bar reason, the price and the scorecard keys."""
+
+    def test_verdict_of_accuracy_keyword(self):
+        scores = {k: 9.2 for k in qa.CATEGORIES}
+        old = qa.verdict_of(scores, 9.2, blocking=[])
+        self.assertEqual(old, (qa.READY, []))
+        self.assertEqual(qa.verdict_of(scores, 9.2, blocking=[], accuracy=None), old)
+        self.assertEqual(qa.verdict_of(scores, 9.2, blocking=[], accuracy={
+            "status": "done", "bar": False}), old)
+        verdict, reasons = qa.verdict_of(scores, 9.2, blocking=[], accuracy={
+            "status": qa.NOT_EVIDENCED, "bar": True, "why": "vfx.json names no model",
+            "command": "yt qa --accuracy-model <another family>"})
+        self.assertEqual(verdict, qa.NOT_READY)
+        self.assertEqual(reasons, [
+            "on-screen accuracy is not evidenced: vfx.json names no model; READY cannot "
+            "be judged until `yt qa --accuracy-model <another family>`"])
+
+    def test_pass_usd_counts_accuracy_once(self):
+        # one scoring sample asked: the reviewer's part is priced for three,
+        # the accuracy check once
+        card = {"usage": {"cost_usd": 1.1}, "scoring": {"asked": 1, "valid": 1},
+                "engine": {"decisions": []}, "accuracy_engine": {"cost_usd": 0.5}}
+        self.assertEqual(qa.pass_usd(card), round(0.6 * qa.QA_SAMPLES + 0.5, 2))
+        del card["accuracy_engine"]
+        self.assertEqual(qa.pass_usd(card), round(1.1 * qa.QA_SAMPLES, 2))
+
+    def test_fact_check_key_kept(self):
+        from ytstudio import improve
+        from ytstudio.core import read_json, write_json
+        fact = [{"n": 2, "label": "1.2", "problem": "no source", "fix": "cut it",
+                 "kept": False}]
+        final = {"status": "done", "model": "opus", "checked": 1, "not_checked": [],
+                 "findings": [{"shot": "1.1", "quote": "40%", "claim_id": "c1",
+                               "problem": "number-mismatch", "severity": "blocking",
+                               "fix": "draw 14%", "owner": "vfx", "start": 3.0,
+                               "in_screenplay": False}], "cost": 0.2}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "scorecard.json"
+            write_json(path, {"accuracy": {"fact_check": fact, "final": final}})
+            card = read_json(path)
+        self.assertEqual(card["accuracy"]["fact_check"], fact)
+        rows = improve.collect(card)
+        facts = [r for r in rows if r["source"] == "fact-check"]
+        self.assertEqual(len(facts), 1)
+        self.assertEqual(facts[0]["problem"], "fact-check blocker at 1.2: no source")
+        shown = [r for r in rows if r.get("kind") == "accuracy"]
+        self.assertEqual(len(shown), 1)
+        self.assertEqual((shown[0]["source"], shown[0]["owner"], shown[0]["shot"],
+                          shown[0]["timestamp"]), ("qa", "vfx", "1.1", 3.0))
 
 
 class ScratchTake(unittest.TestCase):
@@ -793,7 +846,7 @@ class StoryStage(unittest.TestCase):
         line = "fact-check: blocker at 1.2: the wind speed is not in the research"
         self.run_qa()
         base = self.scorecard(1)
-        self.assertEqual(base["accuracy"], {"fact_check": []})
+        self.assertEqual(base["accuracy"]["fact_check"], [])
         path = self.root / "script.json"
         script = json.loads(path.read_text())
         for n, shot in enumerate(script["sections"][0]["shots"], 1):
@@ -808,14 +861,184 @@ class StoryStage(unittest.TestCase):
         self.assertEqual(card["verdict"], qa.NOT_READY)
         self.assertIn(line, card["blocking"])
         self.assertEqual(len(card["blocking"]), len(base["blocking"]) + 1)
-        self.assertEqual(card["accuracy"], {"fact_check": [
+        self.assertEqual(card["accuracy"]["fact_check"], [
             {"n": 2, "label": "1.2", "problem": "the wind speed is not in the research",
-             "fix": "drop the number", "kept": False}]})
+             "fix": "drop the number", "kept": False}])
         # never briefed under "Blocking, already proven": the scorecard prompt
         # stays what it was, so its cached pass is not asked again, and the
         # reviewer has no cue to file it a second time as a qa finding
         self.assertNotIn("the wind speed is not in the research", self.seen["prompt"])
         self.assertNotIn("fact-check: blocker", self.seen["prompt"])
+
+    # AUTO-150: with a dossier, the text vfx authored is read against it by a
+    # reviewer of another family; a blocking mismatch keeps the film off READY.
+
+    ACCURATE_WORLD = """<scene version="1.3">
+  <assets><chart id="c-share" labels="share"><series name="rose" values="40%"/></chart>
+    <text id="t-pct" text="40%"/></assets>
+  <symbols><symbol id="world-a" width="1920" height="1080">
+    <layer id="l-pct" asset="t-pct"/></symbol></symbols>
+</scene>
+"""
+
+    def on_screen(self, *, dossier=True, vfx_model=None, script_model="sonnet"):
+        """Shot 1.1 includes a vfx world that draws "40%"; the dossier says 14%."""
+        doc = self.root / "vfx" / "v01" / "a.scene.xml"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text(self.ACCURATE_WORLD)
+        (self.root / "scene.xml").write_text(
+            '<scene version="1.3"><composition><include id="shot-1.1" start="0" end="3" '
+            'src="vfx/v01/a.scene.xml" symbol="world-a"/></composition></scene>')
+        built = json.loads((self.root / "build.json").read_text())
+        built["shots"][0]["include"] = "shot-1.1"
+        (self.root / "build.json").write_text(json.dumps(built))
+        path = self.root / "script.json"
+        data = json.loads(path.read_text())
+        data["usage"] = {"model": script_model}
+        path.write_text(json.dumps(data))
+        if vfx_model:
+            (self.root / "vfx.json").write_text(json.dumps({"usage": {"model": vfx_model}}))
+        if dossier:
+            (self.root / "dossier.json").write_text(json.dumps({"claims": [
+                {"claim": "the share rose 14%", "confidence": "high", "source": "S1"}]}))
+
+    def accuracy_answers(self, answer):
+        """The accuracy decision answers `answer`; every prompt it is asked is kept."""
+        asked = self.asked = []
+        base = harness.ENGINE
+
+        class Checker(base):
+            def ask_json(self_, prompt, schema, system=None):
+                if system and qa.ACCURACY_ROLE in system:
+                    asked.append(prompt)
+                    return answer
+                return super().ask_json(prompt, schema, system)
+        harness.ENGINE = Checker
+
+    MISMATCH = {"findings": [{"shot": "1.1", "quote": "40%", "claim_id": "c1",
+                              "problem": "number-mismatch", "severity": "blocking",
+                              "fix": "draw 14%", "owner": "vfx"}],
+                "checked": 1, "verdict": "one figure is wrong"}
+
+    def test_accuracy_blocking_number_mismatch(self):
+        self.on_screen(dossier=False)
+        self.run_qa()
+        base = self.scorecard(1)
+        self.on_screen()
+        self.accuracy_answers(self.MISMATCH)
+        self.run_qa()
+        card = self.scorecard(2)
+        self.assertEqual(len(self.asked), 1)
+        self.assertIn("40%", self.asked[0])
+        self.assertEqual(card["verdict"], qa.NOT_READY)
+        line = 'accuracy: number-mismatch at 0s (shot 1.1): "40%" -> vfx'
+        self.assertIn(line, card["blocking"])
+        self.assertEqual(len(card["blocking"]), len(base["blocking"]) + 1)
+        final = card["accuracy"]["final"]
+        self.assertEqual(final["status"], "done")
+        self.assertEqual(final["findings"][0]["quote"], "40%")
+        self.assertEqual(final["findings"][0]["owner"], "vfx")
+        self.assertEqual(final["findings"][0]["start"], 0.0)
+        self.assertEqual(card["accuracy"]["fact_check"], [])
+        self.assertIn("accuracy_engine", card)
+        self.assertEqual(card["accuracy_engine"]["model"], qa.ACCURACY_MODEL)
+        record = json.loads((self.root / "qa.json").read_text())
+        self.assertEqual(record["verdict"], qa.NOT_READY)
+        self.assertEqual(record["accuracy"]["blocking"], 1)
+        self.assertEqual(record["accuracy"]["status"], "done")
+        self.assertIs(record["accuracy"]["bar"], False)
+        findings = (self.root / "qa" / "pass-02" / "findings.md").read_text()
+        self.assertIn("## On-screen accuracy", findings)
+        self.assertIn(line, findings)
+        # the scoring prompt is what it was: the accuracy pass is not briefed
+        self.assertNotIn("number-mismatch", self.seen["prompt"])
+
+    def test_no_dossier_unchanged(self):
+        self.on_screen(dossier=False)
+        self.accuracy_answers(self.MISMATCH)
+        self.run_qa()
+        card = self.scorecard(1)
+        self.assertEqual(self.asked, [])
+        self.assertEqual(card["accuracy"]["final"], {
+            "status": qa.NOT_EVIDENCED, "why": "the film has no dossier",
+            "command": "yt research", "bar": False})
+        self.assertNotIn("accuracy_engine", card)
+        self.assertFalse(any("accuracy" in str(b) for b in card["blocking"]))
+        self.assertFalse(any("accuracy" in r for r in card["bar"]), card["bar"])
+        # the same run with the accuracy code bypassed: none of it is reached,
+        # and the verdict, the bar and the blocking list are the same
+        never = mock.Mock(side_effect=AssertionError("reached without a dossier"))
+        with mock.patch.object(qa, "scene_text", never), \
+                mock.patch.object(qa, "accuracy_refusal", never), \
+                mock.patch.object(qa, "accuracy", never):
+            self.run_qa(fresh=True)
+        again = self.scorecard(2)
+        self.assertEqual((again["verdict"], again["bar"], again["blocking"]),
+                         (card["verdict"], card["bar"], card["blocking"]))
+        record = json.loads((self.root / "qa.json").read_text())
+        self.assertEqual(record["accuracy"], {"status": qa.NOT_EVIDENCED, "bar": False,
+                                              "checked": 0, "blocking": 0,
+                                              "command": "yt research",
+                                              "why": "the film has no dossier"})
+
+    def test_defaulted_clash_is_a_bar_reason(self):
+        self.on_screen(vfx_model="opus")
+        self.accuracy_answers(self.MISMATCH)
+        self.assertIn(self.run_qa(), (0, 1))
+        card = self.scorecard(1)
+        self.assertEqual(self.asked, [])
+        self.assertEqual(card["verdict"], qa.NOT_READY)
+        final = card["accuracy"]["final"]
+        self.assertEqual((final["status"], final["bar"]), (qa.NOT_EVIDENCED, True))
+        self.assertEqual(final["command"], "yt qa --accuracy-model <another family>")
+        reason = next(r for r in card["bar"] if "on-screen accuracy is not evidenced" in r)
+        self.assertIn("--accuracy-model <another family>", reason)
+        record = json.loads((self.root / "qa.json").read_text())
+        self.assertIs(record["accuracy"]["bar"], True)
+
+    def test_explicit_clash_exits_2(self):
+        self.on_screen(vfx_model="opus")
+        rendered, render = [], qa.RENDERER
+        qa.RENDERER = lambda args, scene: rendered.append(scene) or render(args, scene)
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            code = qa.run(self.args(accuracy_model="opus"))
+        self.assertEqual(code, 2)
+        self.assertEqual(rendered, [])
+        self.assertFalse((self.root / "qa").exists())
+        self.assertIn("opus", err.getvalue())
+        # with no dossier there is nothing to check, so nothing is refused
+        (self.root / "dossier.json").unlink()
+        self.assertNotEqual(self.run_qa(accuracy_model="opus"), 2)
+        self.assertEqual(len(rendered), 1)
+
+    def test_nothing_on_screen_is_done_whatever_the_clash(self):
+        # A dossier film whose documents draw no readable text has nothing
+        # to check: no bar, no exit 2, and no accuracy decision asked.
+        self.on_screen(vfx_model="opus")
+        (self.root / "scene.xml").write_text(
+            '<scene version="1.3"><composition></composition></scene>')
+        self.accuracy_answers(self.MISMATCH)
+        self.run_qa()
+        card = self.scorecard(1)
+        self.assertEqual(self.asked, [])
+        self.assertEqual(card["accuracy"]["final"], {
+            "status": "done", "checked": 0, "findings": [], "not_checked": []})
+        self.assertFalse(any("on-screen accuracy" in r for r in card["bar"]), card["bar"])
+        self.assertNotEqual(self.run_qa(accuracy_model="opus"), 2)
+
+    def test_an_accuracy_model_the_cli_cannot_run_exits_2(self):
+        self.on_screen()
+        rendered, render = [], qa.RENDERER
+        qa.RENDERER = lambda args, scene: rendered.append(scene) or render(args, scene)
+        for value in ("google/gemini-3.6-flash", "sdk:google/gemini-3.6-flash", "pool"):
+            err = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                code = qa.run(self.args(accuracy_model=value))
+            self.assertEqual(code, 2, value)
+            self.assertIn("claude or codex model", err.getvalue(), value)
+        self.assertEqual(rendered, [])
+        self.assertFalse((self.root / "qa").exists())
 
     # AUTO-156: qa.json says whether the judge is the one the QA fixtures
     # passed, and a line under the verdict says so; nothing reads it to gate.

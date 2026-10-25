@@ -493,12 +493,16 @@ class OnlyThePictureRevisionChangesThePicture(unittest.TestCase):
         w.revise(shots, flags, name=name)
         return shots[0]
 
-    def test_the_fact_checks_revise_rewrites_the_narration_only(self):
-        for name in ("revise-1", "revise-2", "revise-ledger"):
+    def test_the_fact_checks_revise_never_changes_the_picture(self):
+        # The fact-check reads the supers and its revise may correct one
+        # (AUTO-150), but never what the shot shows; the ledger's revise
+        # rewrites the narration only.
+        for name, supers in (("revise-1", ["sheared"]), ("revise-2", ["sheared"]),
+                             ("revise-ledger", ["bolt"])):
             s = self.revise(name)
             self.assertEqual(s.narration, "The bolt sheared at dawn.")
             self.assertEqual((s.visual, s.shows, s.on_screen_text),
-                             ("a still bolt", "the bolt shears", ["bolt"]), name)
+                             ("a still bolt", "the bolt shears", supers), name)
 
     def test_revise_picture_changes_the_picture(self):
         s = self.revise("revise-picture")

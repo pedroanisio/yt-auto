@@ -1484,12 +1484,14 @@ class StatusSchema(unittest.TestCase):
         for name in ("REVISE_SCHEMA", "RULE_REVISE_SCHEMA", "BACK_REVISE_SCHEMA"):
             self.assertEqual(_sha(getattr(script, name)), FROZEN[name], name)
 
-    def test_the_fact_revise_schema_adds_only_an_optional_status(self):
-        fact = copy.deepcopy(script.FACT_REVISE_SCHEMA)
+    def test_the_status_revise_schema_adds_only_an_optional_status(self):
+        # AUTO-150 named the fact-check's revise schema FACT_REVISE_SCHEMA (with
+        # an optional on_screen_text); the statused one adds the status to it.
+        fact = copy.deepcopy(script.STATUS_REVISE_SCHEMA)
         item = fact["properties"]["fixes"]["items"]
         self.assertNotIn("status", item["required"])
         self.assertEqual(item["properties"].pop("status")["enum"], list(script.STATUSES))
-        self.assertEqual(fact, script.REVISE_SCHEMA)
+        self.assertEqual(fact, script.FACT_REVISE_SCHEMA)
 
     def test_the_sourced_prompt_asks_for_the_weakest_claim_and_the_status(self):
         prompt = self.write_prompt(True)

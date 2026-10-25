@@ -1005,7 +1005,9 @@ def delivery_evidence(project: workspace.Project, build: dict | None
     `--strict` guarantees, read from the report rather than from a flag), a
     technical gate that found it deliverable and a QA pass at the bar, both
     judged after that render, and no fact-check blocker standing on the
-    narration (fact_evidence, AUTO-133).
+    narration (fact_evidence, AUTO-133). For a film with a dossier, that QA
+    pass also carries a current on-screen accuracy check with no blocking
+    finding (accuracy_evidence, AUTO-150).
     """
     missing: list[tuple[str, str]] = []
     final = _cmd("render", project, "--quality", "final", "--strict")
@@ -1085,13 +1087,46 @@ def delivery_evidence(project: workspace.Project, build: dict | None
     elif _mtime(qa_file) < (rendered_at if qa.get("scene_sha256") else judged_after):
         missing.append((f"QA {qa.get('pass', '')} predates the render it should judge",
                         _cmd("qa", project)))
-    elif qa.get("verdict") == QA_NOT_EVIDENCED:
-        missing.append((f"QA {qa.get('pass', '')} is not evidenced (fewer than two "
-                        "scoring samples answered)", _cmd("qa", project)))
-    elif qa.get("verdict") != READY_TO_PUBLISH:
-        missing.append((f"QA {qa.get('pass', '')} says {qa.get('verdict')} at "
-                        f"{qa.get('overall', '?')}", _cmd("qa", project)))
+    else:
+        if qa.get("verdict") == QA_NOT_EVIDENCED:
+            missing.append((f"QA {qa.get('pass', '')} is not evidenced (fewer than two "
+                            "scoring samples answered)", _cmd("qa", project)))
+        elif qa.get("verdict") != READY_TO_PUBLISH:
+            missing.append((f"QA {qa.get('pass', '')} says {qa.get('verdict')} at "
+                            f"{qa.get('overall', '?')}", _cmd("qa", project)))
+        missing += accuracy_evidence(project, qa, qa_file)
     return missing
+
+
+def accuracy_evidence(project: workspace.Project, qa: dict, qa_file: Path
+                      ) -> list[tuple[str, str]]:
+    """The on-screen accuracy rows of a current qa.json (AUTO-150), for a
+    film with a dossier only: its blocking findings, and a check that is
+    missing (a pass from before it), not evidenced with the bar set, or
+    older than dossier.json. A film with no dossier adds nothing."""
+    dossier = project.path("dossier")
+    if not dossier.is_file():
+        return []
+    name = qa.get("pass", "")
+    record = qa.get("accuracy")
+    if not isinstance(record, dict):
+        return [(f"QA {name} has no current on-screen accuracy check: it was scored "
+                 "before the check existed", _cmd("qa", project))]
+    if record.get("bar"):
+        command = str(record.get("command") or "")
+        extra = command[len("yt qa"):].split() if command.startswith("yt qa") else []
+        return [(f"QA {name} has no current on-screen accuracy check: "
+                 f"{record.get('why') or record.get('status')}", _cmd("qa", project, *extra))]
+    if _mtime(dossier) > _mtime(qa_file):
+        return [(f"QA {name} has no current on-screen accuracy check: dossier.json is "
+                 "newer than the pass that read it", _cmd("qa", project))]
+    if int(record.get("blocking") or 0) > 0:
+        first = record.get("first") or {}
+        where = (f", first at shot {first.get('shot')}: {first.get('problem')}"
+                 if first.get("shot") else "")
+        return [(f"on-screen accuracy: {record['blocking']} blocking finding(s) in QA "
+                 f"{name}{where}", _cmd("qa", project))]
+    return []
 
 
 def check_renders(project: workspace.Project, report: Report) -> None:

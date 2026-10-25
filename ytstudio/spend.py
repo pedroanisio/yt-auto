@@ -592,6 +592,14 @@ def stage_estimates(root: Path, stages: list[str],
                 "default, nothing reported", flag_increments(None, stage, flags))
             row = {"stage": stage, "usd": usd, "basis": "assumed", "source": source}
         folded = folded or (stage == "vfx" and row["basis"] == "assumed")
+        if stage == "qa" and (Path(root) / "dossier.json").is_file() \
+                and not isinstance(_qa_card(root).get("accuracy_engine"), dict):
+            # AUTO-150: a dossier film's QA asks the on-screen accuracy check
+            # too; a pass that measured it holds it, any other is assumed.
+            from . import qa
+            row = dict(row, usd=round(row["usd"] + qa.ACCURACY_USD, 2),
+                       source=f"{row['source']} + on-screen accuracy "
+                              f"${qa.ACCURACY_USD:.2f} (assumed)")
         rows.append(row)
     return rows
 

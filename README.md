@@ -734,7 +734,10 @@ rounds. `--report-only` keeps the old report-without-fixing behaviour.
 `--reviewer-model` (default `opus`), never by the author, so `--model opus`
 with a dossier needs a reviewer of another family (`--reviewer-model
 <other family>`) or `--no-verify`, and is refused with exit 2 before
-anything is paid; the fact-check's revisions stay the author's. Verify
+anything is paid; the fact-check's revisions stay the author's. It reads
+each shot's supers beside its line, since a number on screen is a claim too,
+a picture-only shot's as well, and its revise may change a super when the
+flag is about it (never giving a silent shot a line). Verify
 decisions cached before this change are asked once more, by the new reader.
 A blocker still standing after the revisions leaves `narration.txt`
 unwritten and exits 1, naming the shot and the `yt script --revise <label>
@@ -966,7 +969,8 @@ arrangement, path or interior given only in words or a flat label, with no
 human-scale comparison, cutaway or camera move through it
 (`picture:spatial`, AUTO-145). Each is a flag for one `revise-picture`
 decision, the only revision allowed to change a shot's picture (the
-fact-check's revise still rewrites only the narration). A flag the writer
+fact-check's revise rewrites the narration, and a super only when its flag
+is about what the screen shows, AUTO-150). A flag the writer
 keeps, with its reason, binds nothing: the reviewer never heard the line,
 so a number compared aloud or a claim the line carries reads as a fault to
 it, and the writer, who sees both, has answered. It goes to `picture.kept`
@@ -2092,6 +2096,36 @@ its cached pass again. `yt doctor` warns on the same takes by the same rule
 (`doctor.scratch_reads`), so a kokoro voice.json that kept stub takes is a
 doctor warning too, and `yt improve` has it to route.
 
+With a dossier, QA also reads the words the film's documents put on
+screen against it (AUTO-150, `qa.scene_text`): every text, formula and
+chart asset each shot's include draws, through instances and nested
+includes, in document order; an image, a video or another kind it cannot
+read is listed as not checked. One decision on a harness of its own
+(`<pass>-accuracy`, `--accuracy-model`, default `opus`, a claude CLI call;
+no still and no media is sent) checks each number, label, formula and
+chart value against the dossier and the shot's narration, quoting the exact
+words the screen shows; a quote the shot does not show, or a claim id the
+dossier lacks, is asked once more (`<pass>-accuracy-retry`), then recorded
+as failed, with `yt qa --reuse <pass>` to ask the accuracy check alone
+again. Words an include draws that no build.json shot carries are listed
+as not checked (`no-shot`), and a film whose documents draw no text on a
+shot is done with nothing checked, whatever the reviewer's family. Each blocking finding (`contradicts`, `overstates`,
+`unsupported`, `number-mismatch` or `unframed-speculation`, owned by vfx,
+the script or `upstream-fact`) is one blocking item, `accuracy:
+number-mismatch at 12s (shot 2.1): "40%" -> vfx`, so the film is NOT READY
+without a new category or a moved bar; the scorecard keeps it under
+`accuracy.final`, beside the fact-check's `accuracy.fact_check`, and
+findings.md under "On-screen accuracy". The reviewer must not be of an
+author's family (script.json's and vfx.json's models, by
+`flags.own_reviewer`; a report that names no model refuses a claude or
+OpenAI model): `--accuracy-model` of such a family exits 2 before anything
+renders, and the default one is recorded not evidenced, a bar reason naming
+`yt qa --accuracy-model <another family>`. An `--accuracy-model` the
+claude or codex CLI cannot run (the gateway pool, `sdk:`, a provider/model
+id) exits 2 too. A film with no dossier is judged
+as before. The narration is not checked again here: the script's
+fact-check owns it, and now reads each shot's supers too.
+
 `--listen` (AUTO-126, `ytstudio/listen.py`) is the review that hears the
 film itself. It is off by default, and `YT_GATEWAY` never turns it on.
 Before a frame renders or a pass directory is made, it checks every piece
@@ -2515,7 +2549,13 @@ when it names a shot and the whole screenplay when it is script-wide; one
 the writer kept with a reason goes to a human (`upstream-fact`: correct the
 dossier, or set `resolved` on the flag in script.json by hand); a script
 that still leaves one standing exits 1 and stops the pass (`fact-check`,
-with the labels), the snapshot restored. The published film's retention findings (`yt
+with the labels), the snapshot restored. An on-screen accuracy finding
+(AUTO-150, `accuracy.final`) goes to its owner by lookup, vfx, the script
+or a human for `upstream-fact`, and is tracked across passes by its shot
+and quote; `--accuracy-model` is handed to each `yt qa`, and refused up
+front when it is of an author's family or `--model`'s; the target is not
+reached while its bar stands, and a pass that adds a blocking one is
+reverted. The published film's retention findings (`yt
 retention`, below) are routed beside QA's while `scene.xml` is the cut they
 measured. A pass that rebuilds the film cannot say whether a dip it was
 briefed on is gone, since no audience has watched the new cut: `improve.md`
