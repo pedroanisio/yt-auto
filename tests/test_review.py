@@ -12,6 +12,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -218,6 +219,18 @@ class Reviewer(Case):
         self.asked.clear()
         self.run_review("--reviewer-model", "gpt-5.1-codex")
         self.assertEqual(self.asked[0]["model"], "gpt-5.1-codex")
+
+    def test_the_gateway_switch_changes_nothing_the_reader_is_asked(self):
+        # the reviewer stays a CLI model: YT_GATEWAY on, its key set, the
+        # reader is asked the same question by the same model on no gateway
+        self.run_review()
+        plain = [(a["name"], a["prompt"], a["model"], a["engine"]) for a in self.asked]
+        self.asked.clear()
+        with mock.patch.dict(os.environ, {"YT_GATEWAY": "vercel",
+                                          "AI_GATEWAY_API_KEY": "vck_test"}):
+            self.run_review()
+        self.assertEqual([(a["name"], a["prompt"], a["model"], a["engine"])
+                          for a in self.asked], plain)
 
     def test_the_brief_carries_build_credits(self):
         self.write_build({"engine": {"model": "sonnet"}, "credits": CREDITS,

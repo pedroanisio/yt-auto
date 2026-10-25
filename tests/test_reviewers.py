@@ -6,7 +6,7 @@ is not the author's, checks the gateway engine is ready, narrows the row's
 providers to the ones live now, and builds the plan review, the picture
 check and the story review's readers with `engine="gateway"`. Every other
 value takes today's path unchanged, and the roles that open images through
-an agent (keyframe, vfx, probe) refuse the pool.
+an agent (keyframe, vfx, probe, review) refuse the pool.
 
 No test touches the network: `fetch` is injected, `urllib.request.urlopen`
 raises, the gateway engine is a fake class, and its readiness check is
@@ -709,7 +709,7 @@ class Command(Offline):
         self.assertFalse((self.film / "script.json").exists())
 
     def test_inspect_roles_refuse_pool(self):
-        for stage in ("keyframe", "vfx"):
+        for stage in ("keyframe", "vfx", "review"):
             for value in ("pool", "sdk:zai/glm-5.3"):
                 code, said = self.stage(stage, "--model", "opus", "--reviewer-model", value)
                 self.assertEqual(code, 2, (stage, value, said))
