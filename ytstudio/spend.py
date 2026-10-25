@@ -199,10 +199,21 @@ def cost_in(doc: Any) -> float | None:
 MANIFEST = {"research": "dossier.json", "styles": "styles.json", "script": "script.json",
             "props": "props.json", "keyframe": "keyframe.json", "voice": "voice.json",
             "retime": "retime.json", "vfx": "vfx.json", "sound": "sound.json",
-            "build": "build.json", "render": "render.json", "gate": "gate.json"}
+            "build": "build.json", "render": "render.json", "gate": "gate.json",
+            # the upload set (AUTO-147), which `yt run`'s delivery tail
+            # writes after a READY QA (AUTO-164); not a PIPELINE stage
+            "package": "package/package.json"}
 
 #: What a pass is guessed to cost before one has been measured.
 VFX_PASS_USD = 10.0
+#: `yt package`'s wording draft (AUTO-164), assumed until a package.json
+#: measures it: one short structured answer from the author. A guess until
+#: a live run prices one (TO VERIFY).
+PACKAGE_DRAFT_USD = 0.5
+#: Its review, package.py's REVIEW_USD (vfx.REVIEW_USD, the cap one review
+#: may spend). package reads this module, so the figure is written out here
+#: and test_run_wiring pins the two equal.
+PACKAGE_REVIEW_USD = 2.0
 #: One scoring sample of a QA pass, assumed until a scorecard measures it. A
 #: pass asks qa.QA_SAMPLES of them (AUTO-107); qa imports this module, so
 #: the default below is that product written out, and test_qa_samples pins it.
@@ -215,7 +226,7 @@ QA_SAMPLE_USD = 0.5
 DEFAULT_USD = {"research": 5.0, "styles": 2.0, "script": 3.0, "props": 0.0,
                "keyframe": 5.0, "voice": 2.0, "retime": 0.5, "vfx": VFX_PASS_USD,
                "sound": 0.5, "build": 0.1, "render": 0.0, "gate": 0.1,
-               "qa": 3 * QA_SAMPLE_USD}
+               "qa": 3 * QA_SAMPLE_USD, "package": PACKAGE_DRAFT_USD + PACKAGE_REVIEW_USD}
 
 #: What the side-by-side comparison adds to a QA pass (AUTO-108), assumed
 #: until a scorecard measures it: one inspection reading every sampled
