@@ -6,16 +6,20 @@ Each replacement is one finding in the manifest (build.json), naming the
 field, the cue or the film, and the value used.
 """
 
+import copy
+import io
 import json
 import re
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
+from unittest import mock
 from xml.etree import ElementTree
 
 from tests.test_build_audio import _idea, _sections, _wav
 from tests.test_keyframe import STYLES
-from ytstudio import build, design, sound
+from ytstudio import build, cli, design, sound
 
 #: A treatment whose palette is words only: what a plain `yt styles` writes.
 HEXLESS = {"styles": [{"name": "x", "palette": "warm earth tones"}]}
@@ -348,3 +352,41 @@ class CreditErrors(_Project):
         _, manifest = self.build(_edit(), cues=[cue],
                                  dossier=self.downloads("CC0 1.0", ""))
         self.assertEqual(manifest["credit_errors"], [])
+
+
+class CreditErrorsDoNotStopTheBuild(unittest.TestCase):
+    """A credit error is a publication problem, as a placeholder or the
+    fallback palette is (AUTO-147): `yt build` still writes scene.xml and
+    build.json, and the refusal is build.json `publishable`, QA and doctor.
+    Stopping the write would hide the very `credit_errors` that say what to
+    fix, and stop `yt run` before it reaches them."""
+
+    def setUp(self):
+        from tests import test_build_joins as joins
+        self.joins = joins
+        case = joins._Run("run_build")
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        self.root = case.root
+        dossier = copy.deepcopy(joins.DOSSIER)
+        dossier["assets"][0].update(licence="CC BY 4.0", credit_line="")
+        (self.root / "dossier.json").write_text(json.dumps(dossier))
+        rows = json.loads((self.root / "raw" / "08-downloads.json").read_text())
+        rows[0]["licence"] = "CC BY 4.0"
+        (self.root / "raw" / "08-downloads.json").write_text(json.dumps(rows))
+
+    def test_a_cc_by_picture_with_no_credit_is_written_but_not_publishable(self):
+        args = cli.build_parser().parse_args(
+            ["build", "--project", str(self.root), "--no-audio", "--quiet", "--hard-cuts"])
+        err = io.StringIO()
+        with mock.patch.object(build, "Harness", self.joins.Scripted), \
+                mock.patch("sys.stdout", new=io.StringIO()), redirect_stderr(err):
+            code = build.run(args)
+        self.assertEqual(code, 0, err.getvalue())
+        self.assertTrue((self.root / "scene.xml").is_file())
+        manifest = json.loads((self.root / "build.json").read_text())
+        self.assertFalse(manifest["publishable"])
+        self.assertEqual(len(manifest["credit_errors"]), 1, manifest["credit_errors"])
+        self.assertIn("downloads/01-photo.png", manifest["credit_errors"][0])
+        self.assertNotIn("engine will refuse", err.getvalue())
+        self.assertIn("credit", err.getvalue())

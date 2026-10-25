@@ -4084,9 +4084,12 @@ def run(args) -> int:
 
     print_build(manifest)
     # The screenplay's own errors ride along for qa; they are fixed in `yt
-    # script`, so they do not stop the scene being written.
+    # script`, so they do not stop the scene being written. A credit error
+    # (AUTO-147) is a publication problem, like a placeholder card: the scene
+    # renders, build.json says publishable false and names it in
+    # credit_errors, and qa and doctor refuse the film on it.
     errors = [f for f in manifest["findings"] if f.startswith("error")
-              and not f.startswith("error: script: ")]
+              and not f.startswith(("error: script: ", "error: credit: "))]
     if errors and not args.force:
         print(f"\nerror: {len(errors)} check error(s); the scene was not "
               "written. Fix them, or pass --force to write it anyway.",
@@ -4105,4 +4108,9 @@ def run(args) -> int:
     if errors:
         print(f"warning: written with {len(errors)} check error(s); the engine "
               "will refuse it", file=sys.stderr)
+    owed = manifest.get("credit_errors") or []
+    if owed:
+        print(f"warning: {len(owed)} credit error(s); build.json is not publishable "
+              "until each credit is recorded at its source (see credit_errors)",
+              file=sys.stderr)
     return 0
