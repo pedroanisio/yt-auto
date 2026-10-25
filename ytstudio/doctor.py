@@ -1049,8 +1049,10 @@ def _package_rows(project: workspace.Project) -> list[tuple[str, str]]:
     `yt package` wrote package/package.json for the scene.xml and video.mp4
     now on disk and judged it ready (its own check read build.json's
     `publishable`), else the one thing to fix. The digests are compared as
-    the gate's are: a recorded one, against a file that exists."""
-    fix = f"yt package --title {project.root.name}"
+    the gate's are: a recorded one, against a file that exists. The fix
+    names the project by --project, as every sibling delivery row does, so
+    it resolves under a non-default --work too."""
+    fix = _cmd("package", project)
     path = project.path("package")
     pkg = read_json(path, warn=False) if path.exists() else None
     if not isinstance(pkg, dict):

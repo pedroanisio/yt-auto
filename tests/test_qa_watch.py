@@ -96,7 +96,7 @@ class CutProblems(unittest.TestCase):
             ("no QA pass has scored this render", f"yt qa --project {project.root}"),
             # and the upload set's row since AUTO-147 (doctor._package_rows)
             ("no upload set: package/package.json has not been written for this render",
-             f"yt package --title {project.root.name}")])
+             f"yt package --project {project.root}")])
         self.assertEqual(doctor.cut_problems(project, None), [
             ("the render covers 0-10s of a 16.5s programme", final),
             ("video.mp4 predates scene.xml: the scene was rebuilt after the render, so "

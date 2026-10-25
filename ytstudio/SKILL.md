@@ -960,7 +960,7 @@ blocking editorial note. It is not a delivery verdict. The order is:
    `--video` another file reads as judging a different video), or a video
    older than `scene.xml`, or no current upload set (`package/package.json`
    missing, its `video_sha256` or `scene_sha256` not the files now on disk,
-   or its verdict not `ready`; the fix `yt package --title <slug>`,
+   or its verdict not `ready`; the fix `yt package --project <root>`,
    AUTO-147). Only with none of them does doctor
    print `delivery: READY TO PUBLISH`.
 

@@ -129,7 +129,7 @@ class Package(SceneEvidence):
         fails = self.delivery("fail")
         self.assertEqual(len(fails), 1, [f.message for f in fails])
         self.assertIn("package/package.json", fails[0].message)
-        self.assertEqual(fails[0].fix, "yt package --title a-film")
+        self.assertEqual(fails[0].fix, f"yt package --project {self.root}")
         self.never_ready()
         self.packaged()
         self.assertEqual(self.delivery("fail"), [])
@@ -140,7 +140,7 @@ class Package(SceneEvidence):
         fails = self.package_fails()
         self.assertEqual(len(fails), 1)
         self.assertIn("scene.xml", fails[0].message)
-        self.assertEqual(fails[0].fix, "yt package --title a-film")
+        self.assertEqual(fails[0].fix, f"yt package --project {self.root}")
         self.never_ready()
 
     def test_a_package_of_another_video_is_one_row(self):
