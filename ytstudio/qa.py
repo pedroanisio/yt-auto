@@ -2843,7 +2843,7 @@ def next_pass(root: Path) -> Path:
 
 def verdict_of(scores: dict, overall: float, *, blocking: list,
                unheard: dict | None = None,
-               accuracy: dict | None = None) -> tuple[str, list[str]]:
+               accuracy: dict | None = None, gate_problem: str = "") -> tuple[str, list[str]]:
     """The bar of §2, applied mechanically to whatever the reviewer scored.
     A category recorded not evidenced (None) is not under the bar: READY
     cannot be judged for it, and the reason says so (AUTO-105). Where
@@ -2853,7 +2853,11 @@ def verdict_of(scores: dict, overall: float, *, blocking: list,
     so nobody loops on a gap no stage can close. `accuracy`, the on-screen
     accuracy check (AUTO-150, the scorecard's `accuracy.final`), adds one
     reason when its bar is set: a dossier film whose check could not be
-    made is not READY, and the reason names the command that makes it."""
+    made is not READY, and the reason names the command that makes it.
+    `gate_problem` is doctor.gate_problem's reason the delivery gate does
+    not hold for the bytes judged (AUTO-148): READY is filed only over a
+    deliverable gate on the same video and scene, so a film with none is
+    NOT READY and says why."""
     reasons = []
     if overall < OVERALL_BAR:
         reasons.append(f"overall {overall:.1f} is under {OVERALL_BAR}")
@@ -2880,6 +2884,8 @@ def verdict_of(scores: dict, overall: float, *, blocking: list,
     if isinstance(accuracy, dict) and accuracy.get("bar"):
         reasons.append(f"on-screen accuracy is not evidenced: {accuracy.get('why')}; READY "
                        f"cannot be judged until `{accuracy.get('command')}`")
+    if gate_problem:
+        reasons.append(f"delivery gate: {gate_problem}")
     return (READY if not reasons else NOT_READY), reasons
 
 
@@ -2930,6 +2936,17 @@ def mechanical_blockers(build: dict, *, gate: dict | None, voice: dict | None = 
     out += fact_lines(script)
     out += scratch_blockers(voice, where)
     return out
+
+
+def script_blockers(script: dict | None) -> list[str]:
+    """What script.json holds against publication: the story review's
+    reject or not_evidenced (doctor.story_problem, the rule doctor's
+    delivery rows read, AUTO-148), then each fact-check blocker standing
+    (`fact_lines`, AUTO-133). A film whose story its own reviewer rejected,
+    or never judged, is not READY whatever the frames score."""
+    from .doctor import story_problem
+    story = story_problem(script)
+    return ([f"script: {story}"] if story else []) + fact_lines(script)
 
 
 def fact_lines(script: dict | None) -> list[str]:
@@ -5641,10 +5658,18 @@ def run(args) -> int:
     # prompt of every stub or espeak film and ask its cached pass again. A
     # standing fact-check blocker (AUTO-133) is not briefed either, for the
     # same reason, and so the reviewer is not cued to file it again as its
-    # own finding beside the fact-check row improve routes.
+    # own finding beside the fact-check row improve routes; nor is a story
+    # review's reject or not_evidenced (script_blockers, AUTO-148).
     blockers = (mechanical_blockers(build, gate=gate)
                 + vfx_blockers(vfx_doc) + problems)
-    unbriefed = scratch_blockers(voice, where) + fact_lines(script)
+    unbriefed = scratch_blockers(voice, where) + script_blockers(script)
+    # The delivery gate on these bytes (AUTO-148): doctor's own rule, over
+    # the gate.json read above and the video and scene beside it. Standalone
+    # QA with no video.mp4 beside the scene skips the video's check.
+    from .doctor import gate_problem
+    gate_file = Path(src("gate") or home / "gate.json")
+    gate_evidence = gate_problem(gate, gate_file=gate_file, video=home / "video.mp4",
+                                 scene=Path(scene))
     previous = chosen
     for earlier in [] if named else reversed(_passes(home)):
         if earlier != pass_dir:
@@ -5868,7 +5893,7 @@ def run(args) -> int:
         verdict, reasons = verdict_of(card.get("scores", {}), float(card.get("overall", 0)),
                                       blocking=all_blocking,
                                       unheard=card.get("audio_not_evidenced"),
-                                      accuracy=final)
+                                      accuracy=final, gate_problem=gate_evidence)
     else:
         verdict, reasons = NOT_EVIDENCED, [
             f"fewer than two of the {card['scoring']['asked']} scoring samples were valid "
@@ -5888,7 +5913,7 @@ def run(args) -> int:
               f"{verdict!r} ({'; '.join(reasons)})", file=sys.stderr)
     seen = scene_digest(Path(scene).read_bytes())
     card = dict(card) | {"pass": pass_dir.name, "verdict": verdict, "bar": reasons,
-                         "scene_sha256": seen,
+                         "scene_sha256": seen, "gate_evidence": gate_evidence,
                          "blocking": all_blocking, "frames": sorted(have),
                          "samples": samples, "mechanical": mechanical, "capped": capped,
                          "rhythm": rhythm_block,
@@ -5944,7 +5969,8 @@ def run(args) -> int:
         "overall": card.get("overall"), "scores": card.get("scores"),
         "spread": card.get("spread"),
         "scoring": {k: card["scoring"][k] for k in ("asked", "valid")},
-        "scene_sha256": seen, "blocking": len(all_blocking), "findings": len(card.get("findings", [])),
+        "scene_sha256": seen, "gate_evidence": gate_evidence,
+        "blocking": len(all_blocking), "findings": len(card.get("findings", [])),
         "low_confidence": len(card.get("low_confidence") or []),
         "mechanical": len(mechanical), "capped": capped,
         "audio_not_evidenced": card.get("audio_not_evidenced") or {},

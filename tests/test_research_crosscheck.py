@@ -803,7 +803,8 @@ class Run(unittest.TestCase):
         code, said = self.walk("--model", "opus", "--skip", "keyframe,vfx,script,build,styles")
         self.assertEqual(code, 2, said)
         self.assertIn("different model", said)
-        code, _ = self.walk("--model", "opus", "--skip",
+        # the delivery tail's judges (AUTO-148) are left out with --no-deliver
+        code, _ = self.walk("--model", "opus", "--no-deliver", "--skip",
                             "keyframe,vfx,script,build,styles,research")
         self.assertIsNone(code)
         code, _ = self.walk("--model", "opus", "--quick", "--skip", "keyframe,vfx")

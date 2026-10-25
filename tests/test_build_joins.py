@@ -743,9 +743,11 @@ class YtRun(unittest.TestCase):
         self.assertEqual(code, 2, said)
         self.assertIn("does not grade its own work", said)
         # AUTO-146's swap test on styles and AUTO-134's cross-check on research
-        # are refused the same way, so skip them too.
+        # are refused the same way, so skip them too, and the delivery tail's
+        # judges (AUTO-148) with --no-deliver.
         code, _ = self.walk("--model", "opus", "--skip",
-                            "keyframe,vfx,script,build,styles,research", "--dry-run")
+                            "keyframe,vfx,script,build,styles,research", "--dry-run",
+                            "--no-deliver")
         self.assertIsNone(code)
 
     def test_quick_hands_build_hard_cuts_and_is_not_refused(self):

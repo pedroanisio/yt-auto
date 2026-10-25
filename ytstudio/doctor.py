@@ -995,6 +995,64 @@ def fact_evidence(project: workspace.Project) -> list[tuple[str, str]]:
     return rows
 
 
+def gate_problem(gate: dict | None, *, gate_file: Path, video: Path, scene: Path) -> str:
+    """Why `gate` (gate.json as read, or None) does not hold for the
+    video.mp4 and scene.xml now on disk, or "" when it does: the one rule
+    doctor's delivery rows and QA's verdict both read (AUTO-148), so the two
+    cannot disagree about a gate. A recorded digest is compared with the
+    file's bytes, hashed only then; a gate.json without digests is judged by
+    its mtime against theirs. A path that does not exist skips its check
+    (standalone QA beside a scene with no video, say)."""
+    rendered_at = _mtime(video) if video.exists() else 0.0
+    scene_at = _mtime(scene) if scene.exists() else 0.0
+    if not gate:
+        return "no delivery gate has run on this render"
+    if gate.get("mode") == "frames":
+        return ("the last gate checked decoded frames only; delivery needs "
+                "the technical gate")
+    if gate.get("video_sha256") and rendered_at and gate["video_sha256"] != scene_digest(video):
+        return "the gate judged a different video.mp4 than the one now rendered"
+    if gate.get("scene_sha256") and scene_at and gate["scene_sha256"] != scene_digest(scene):
+        return "the gate judged a different scene.xml than the one now built"
+    if _mtime(gate_file) < max(0.0 if gate.get("video_sha256") else rendered_at,
+                               0.0 if gate.get("scene_sha256") else scene_at):
+        # a file whose digest the gate recorded is judged by it, not by its time
+        return "the gate predates the render it should judge"
+    if gate.get("exit") != 0 or (gate.get("triage") or {}).get("verdict") != "deliverable":
+        blocking = len((gate.get("triage") or {}).get("blocking") or [])
+        return f"the gate found it not deliverable ({blocking} blocking)"
+    return ""
+
+
+def story_problem(script: dict | None) -> str:
+    """Why the screenplay's story review keeps it from delivery, or "": a
+    reject, or a review that could not judge it (not_evidenced: fewer than
+    two valid samples), as `yt script --gate` treats them (story_gate). A
+    film whose story was never judged is not proven ready. A consider, a
+    recommend or no review (a script made without --review) is ""
+    (AUTO-148; QA's script_blockers and delivery_evidence read it)."""
+    review = script.get("review") if isinstance(script, dict) else None
+    verdict = review.get("verdict") if isinstance(review, dict) else None
+    if verdict == "reject":
+        first = next((str(u.get("problem")) for u in review.get("unresolved") or []
+                      if isinstance(u, dict) and u.get("problem")), "")
+        weak = ", ".join(f"{k} {v}" for k, v in (review.get("grades") or {}).items()
+                         if v in ("Poor", "Fair"))
+        return f"story review rejected the screenplay ({first or weak or 'see script.md'})"
+    if verdict == "not_evidenced":
+        return ("story review could not judge the screenplay (not_evidenced: fewer than "
+                "two valid samples)")
+    return ""
+
+
+def _story_fix(project: workspace.Project) -> str:
+    """What clears a story review's reject: the plan read again, with the
+    notes the review asks for. Lines are not where a reject is fixed."""
+    return (_cmd("script", project, "--fresh", "--review", "--notes",
+                 '"<what the Story review in script.md asks>"')
+            + " (the verdict stops voice only under --gate)")
+
+
 def delivery_evidence(project: workspace.Project, build: dict | None
                       ) -> list[tuple[str, str]]:
     """What stands between the rendered video and publication, as
@@ -1005,10 +1063,12 @@ def delivery_evidence(project: workspace.Project, build: dict | None
     the whole programme with nothing the engine warned about (what
     `--strict` guarantees, read from the report rather than from a flag), a
     technical gate that found it deliverable and a QA pass at the bar, both
-    judged after that render, and no fact-check blocker standing on the
-    narration (fact_evidence, AUTO-133). For a film with a dossier, that QA
-    pass also carries a current on-screen accuracy check with no blocking
-    finding (accuracy_evidence, AUTO-150).
+    judged after that render (gate_problem), no fact-check blocker standing
+    on the narration (fact_evidence, AUTO-133), and a story review that
+    neither rejected the screenplay nor failed to judge it (story_problem,
+    AUTO-148). For a film with a dossier, that QA pass also carries a current
+    on-screen accuracy check with no blocking finding (accuracy_evidence,
+    AUTO-150).
     """
     missing: list[tuple[str, str]] = []
     final = _cmd("render", project, "--quality", "final", "--strict")
@@ -1046,6 +1106,10 @@ def delivery_evidence(project: workspace.Project, build: dict | None
     if palette:
         missing.append(palette)
     missing += fact_evidence(project)
+    spath = project.source("script")
+    story = story_problem(read_json(spath, warn=False) if spath else None)
+    if story:
+        missing.append((story, _story_fix(project)))
 
     video = project.path("video")
     rendered_at = _mtime(video) if video.exists() else 0.0
@@ -1057,26 +1121,8 @@ def delivery_evidence(project: workspace.Project, build: dict | None
     missing += _stale_video(project)
     gate_file = project.root / "gate.json"
     gate = read_json(gate_file, warn=False) if gate_file.exists() else None
-    if not gate:
-        missing.append(("no delivery gate has run on this render", _cmd("gate", project)))
-    elif gate.get("mode") == "frames":
-        missing.append(("the last gate checked decoded frames only; delivery needs "
-                        "the technical gate", _cmd("gate", project)))
-    elif gate.get("video_sha256") and rendered_at \
-            and gate["video_sha256"] != scene_digest(video):
-        missing.append(("the gate judged a different video.mp4 than the one now rendered",
-                        _cmd("gate", project)))
-    elif gate.get("scene_sha256") and scene_at and gate["scene_sha256"] != scene_digest(scene):
-        missing.append(("the gate judged a different scene.xml than the one now built",
-                        _cmd("gate", project)))
-    elif _mtime(gate_file) < max(0.0 if gate.get("video_sha256") else rendered_at,
-                                 0.0 if gate.get("scene_sha256") else scene_at):
-        # a file whose digest the gate recorded is judged by it, not by its time
-        missing.append(("the gate predates the render it should judge", _cmd("gate", project)))
-    elif gate.get("exit") != 0 or (gate.get("triage") or {}).get("verdict") != "deliverable":
-        blocking = len((gate.get("triage") or {}).get("blocking") or [])
-        missing.append((f"the gate found it not deliverable ({blocking} blocking)",
-                        _cmd("gate", project)))
+    if said := gate_problem(gate, gate_file=gate_file, video=video, scene=scene):
+        missing.append((said, _cmd("gate", project)))
 
     qa_file = project.root / "qa.json"
     qa = read_json(qa_file, warn=False) if qa_file.exists() else None
@@ -1500,10 +1546,7 @@ def check_project(project: workspace.Project, work: Path | None = None) -> Repor
             if level == "error" and text.startswith("story review:"):
                 # AUTO-93: the story review rejected the script. Lines are
                 # not where a reject is fixed: the plan is, read again.
-                report.add("fail", "script", _clip(text),
-                           _cmd("script", project, "--fresh", "--review", "--notes",
-                                '"<what the Story review in script.md asks>"')
-                           + " (the verdict stops voice only under --gate)")
+                report.add("fail", "script", _clip(text), _story_fix(project))
             elif level == "error":
                 report.add("fail", "script", _clip(text),
                            _cmd("script", project, "--notes",

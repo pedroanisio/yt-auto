@@ -1740,7 +1740,8 @@ class Accounting(unittest.TestCase):
 
     def test_without_disagreements_the_prompts_are_todays(self):
         # sha256 of [name, prompt, schema] for verify, revise-1, verify-1 as
-        # asked before AUTO-134: the cached decisions still replay
+        # asked before AUTO-134 (re-taken on AUTO-150's branch, whose verify
+        # lists the supers): the cached decisions still replay
         import hashlib
         import json
         for kw in ({}, {"disagreements": ()}):
@@ -1760,7 +1761,7 @@ class Accounting(unittest.TestCase):
             self.assertEqual([s[0] for s in seen], ["verify", "revise-1", "verify-1"])
             self.assertEqual(
                 hashlib.sha256(json.dumps(seen, sort_keys=True).encode()).hexdigest(),
-                "5207db7881746024cd3806cfa843f2eb4e6e24b848d3e3e47b5f5ef7d44dc047")
+                "8723025d0599e4b8e1535d2dc290cfddb199b6d7fa6952c13fa26c32580787c9")
             self.assertNotIn("crosscheck_clear", check)
             self.assertIs(seen[0][2], script.CHECK_SCHEMA)
 

@@ -117,6 +117,10 @@ never passed.
   `resolved` by hand)
 - for a film with a dossier: an on-screen accuracy check by another
   model family, with no blocking finding
+- a deliverable technical gate on the same video and scene QA judged
+  (`doctor.gate_problem`; qa.json's `gate_evidence` names what is missing)
+- a story review that neither rejected the screenplay nor failed to judge it
+  (`not_evidenced`)
 
 A 9 is not "nothing is broken". A 9 is work that would not look out of place
 on a channel people subscribe to. Score 8 for competent and unremarkable, 6
@@ -524,6 +528,16 @@ yt gate   --title <slug>                       # loudness, scopes, captions; on 
 yt review --title <slug> --engine rs           # the PDF sheet, read by the model
 yt qa     --title <slug>                       # this brief, as a pass: qa/pass-NN
 ```
+
+`yt run` runs the render, the gate and QA of these itself (AUTO-148; not the
+pilot or the review sheet): the render at `--quality final`, `yt gate` unless a deliverable gate already
+holds for those bytes, `yt qa`, `yt improve` while QA is not READY, then
+`yt doctor`'s delivery verdict as its last word (exit 0 only when delivery is
+ready, 4 when it is not). Gate's triage and QA are scored by
+`--reviewer-model` (a claude or codex model, else opus), never the author's
+family, and as improve reruns stages reviewed by opus, an opus `--model` is
+refused before any stage whatever `--reviewer-model` says; `--no-deliver` or
+`--quick` stops the run at the render instead.
 
 `yt gate` needs ffprobe and the engine, so it runs on a render host
 (`--host`, or the one an encode would go to; `--local` runs it here) in a

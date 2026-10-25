@@ -12,6 +12,7 @@ is judged by mtime, as before.
 from __future__ import annotations
 
 import hashlib
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -19,6 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.test_delivery import DeliveryCase  # noqa: E402
+from ytstudio import doctor  # noqa: E402
 
 SCENE_1, SCENE_2 = b"<scene v=1/>", b"<scene v=2/>"
 VIDEO = b"\x00" * 1024                 # what DeliveryCase.rendered writes
@@ -28,7 +30,9 @@ def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-class GateDigests(DeliveryCase):
+class Sealed(DeliveryCase):
+    """A built scene and a gate that recorded the digests it judged."""
+
     def built(self, data: bytes = SCENE_1) -> None:
         self.write("scene.xml", data)
         self.stamp("scene.xml")
@@ -40,6 +44,8 @@ class GateDigests(DeliveryCase):
                                  "video_sha256": digest(video), "scene_sha256": digest(scene)})
         self.stamp("gate.json")
 
+
+class GateDigests(Sealed):
     def gate_fails(self):
         return [f for f in self.delivery("fail") if "gate" in f.message]
 
@@ -77,6 +83,105 @@ class GateDigests(DeliveryCase):
         fails = self.gate_fails()
         self.assertEqual([f.message for f in fails],
                          ["the gate predates the render it should judge"])
+
+
+class GateProblem(Sealed):
+    """AUTO-148: doctor's gate rows are one function, doctor.gate_problem,
+    which QA reads too; its strings are doctor's own, case by case."""
+
+    def problem(self, gate):
+        return doctor.gate_problem(gate, gate_file=self.root / "gate.json",
+                                   video=self.root / "video.mp4",
+                                   scene=self.root / "scene.xml")
+
+    def gate(self, **over):
+        data = {"mode": "technical", "exit": 0,
+                "triage": {"verdict": "deliverable", "blocking": []},
+                "video_sha256": digest(VIDEO), "scene_sha256": digest(SCENE_1)} | over
+        data = {k: v for k, v in data.items() if v is not None}
+        self.write("gate.json", data)
+        self.stamp("gate.json")
+        return data
+
+    def test_each_case_is_doctors_own_string(self):
+        self.built(); self.rendered()
+        self.assertEqual(self.problem(None), "no delivery gate has run on this render")
+        self.assertEqual(self.problem(self.gate(mode="frames")),
+                         "the last gate checked decoded frames only; delivery needs "
+                         "the technical gate")
+        self.assertEqual(self.problem(self.gate(video_sha256=digest(b"another"))),
+                         "the gate judged a different video.mp4 than the one now rendered")
+        self.assertEqual(self.problem(self.gate(scene_sha256=digest(SCENE_2))),
+                         "the gate judged a different scene.xml than the one now built")
+        self.assertEqual(self.problem(self.gate(exit=1, triage={
+            "verdict": "not deliverable", "blocking": [{"what": "x"}]})),
+            "the gate found it not deliverable (1 blocking)")
+        self.assertEqual(self.problem(self.gate(triage={"verdict": "not deliverable",
+                                                        "blocking": []})),
+                         "the gate found it not deliverable (0 blocking)")
+        self.assertEqual(self.problem(self.gate()), "")
+
+    def test_a_gate_without_digests_older_than_the_video_predates_it(self):
+        self.built(); self.rendered()
+        old = self.gate(video_sha256=None, scene_sha256=None)
+        self.assertEqual(self.problem(old), "")
+        self.stamp("video.mp4")
+        self.assertEqual(self.problem(old), "the gate predates the render it should judge")
+
+    def test_a_scene_digest_with_no_video_file_holds(self):
+        # standalone QA beside a scene with no video.mp4: the video check
+        # is skipped, the scene digest is still read
+        self.built()
+        self.assertEqual(self.problem(self.gate()), "")
+        self.assertEqual(self.problem(self.gate(scene_sha256=digest(SCENE_2))),
+                         "the gate judged a different scene.xml than the one now built")
+
+
+class StoryProblem(Sealed):
+    """AUTO-148: a screenplay its story reviewer rejected, or could not
+    judge, is not delivered: delivery_evidence lists it."""
+
+    def scripted(self, review):
+        self.write("script.json", {"sections": [], **({"review": review} if review else {})})
+
+    def story_rows(self):
+        return [m for m in self.report().metrics["delivery"]["missing"]
+                if "story review" in m]
+
+    def test_a_reject_quotes_the_first_unresolved_problem(self):
+        self.built(); self.rendered(); self.sealed(); self.scored()
+        self.scripted({"verdict": "reject", "grades": {"train": "Poor"},
+                       "unresolved": [{"problem": "the train never leaves"}]})
+        rows = self.story_rows()
+        self.assertEqual(rows, ["story review rejected the screenplay (the train never "
+                                "leaves)"])
+        self.assertFalse(self.report().metrics["delivery"]["ready"])
+        fails = [f for f in self.delivery("fail") if "story review" in f.message]
+        self.assertIn("yt script", fails[0].fix)
+        self.assertIn("--fresh --review", fails[0].fix)
+
+    def test_a_reject_without_unresolved_names_the_weak_grades(self):
+        self.scripted({"verdict": "reject", "grades": {"train": "Poor", "hook": "Fair",
+                                                       "voice": "Good"}})
+        self.assertEqual(doctor.story_problem(json.loads(
+            (self.root / "script.json").read_text())),
+            "story review rejected the screenplay (train Poor, hook Fair)")
+        self.assertEqual(doctor.story_problem({"review": {"verdict": "reject"}}),
+                         "story review rejected the screenplay (see script.md)")
+
+    def test_not_evidenced_is_listed(self):
+        self.built(); self.rendered(); self.sealed(); self.scored()
+        self.scripted({"verdict": "not_evidenced"})
+        self.assertEqual(self.story_rows(), [
+            "story review could not judge the screenplay (not_evidenced: fewer than "
+            "two valid samples)"])
+
+    def test_a_passing_or_absent_review_lists_nothing(self):
+        self.built(); self.rendered(); self.sealed(); self.scored()
+        for review in ({"verdict": "consider"}, {"verdict": "recommend"}, None):
+            self.scripted(review)
+            self.assertEqual(self.story_rows(), [], review)
+        self.assertTrue(self.report().metrics["delivery"]["ready"])
 
 
 class UnreviewedSections(DeliveryCase):

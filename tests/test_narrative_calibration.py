@@ -615,6 +615,143 @@ class BadMetaphor(unittest.TestCase):
                 self.assertIn("devices", said["grades"])
 
 
+# --------------------------------------------------------------------------- #
+# when --gate may be turned on (AUTO-148)
+# --------------------------------------------------------------------------- #
+
+class GateReady(unittest.TestCase):
+    """narrative.gate_ready: calibration.json read as data. True only for a
+    passing calibration over every shipped case with today's rubric, by the
+    reviewer's family, and GATE_LABELLED labelled rows that reviewer wrote."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.work = Path(self._tmp.name) / "work"
+        (self.work / "calibration").mkdir(parents=True)
+        self.names = [c["name"] for c in narrative.calibration_cases(FIXTURES)]
+
+    def calibrated(self, **over):
+        report = {"directory": str(FIXTURES), "model": "sonnet", "reviewer_model": "opus",
+                  "cases": [{"name": n, "ran": True, "passed": True} for n in self.names],
+                  "passed": True, "labelled": 20,
+                  "rubric_sha256": narrative.rubric_digest()} | over
+        report = {k: v for k, v in report.items() if v is not None}
+        (self.work / "calibration" / "calibration.json").write_text(json.dumps(report))
+
+    def logged(self, rows):
+        with open(self.work / script.REVIEW_LOG, "w", encoding="utf-8") as f:
+            for model, label in rows:
+                f.write(json.dumps({"verdict": "recommend", "model": model,
+                                    "label": label}) + "\n")
+
+    def ready(self, reviewer="opus"):
+        return narrative.gate_ready(self.work, reviewer)
+
+    def test_true_once_everything_holds(self):
+        self.calibrated()
+        self.logged([("claude-opus-5-5", "recommend")] * 20)
+        self.assertEqual(self.ready(), (True, ""))
+
+    def test_no_calibration(self):
+        ok, why = self.ready()
+        self.assertFalse(ok)
+        self.assertIn("calibration.json", why)
+        self.assertIn("python -m ytstudio.narrative calibrate", why)
+
+    def test_a_calibration_that_did_not_pass(self):
+        self.calibrated(passed=False)
+        self.logged([("opus", "recommend")] * 20)
+        self.assertEqual(self.ready(), (False, "the reviewer did not pass this calibration"))
+
+    def test_a_calibration_of_one_case(self):
+        self.calibrated(cases=[{"name": "good", "ran": True, "passed": True}])
+        self.logged([("opus", "recommend")] * 20)
+        ok, why = self.ready()
+        self.assertFalse(ok)
+        self.assertIn("not every shipped case", why)
+        self.assertIn("and-chain", why)
+
+    def test_a_case_that_did_not_run(self):
+        cases = [{"name": n, "ran": n != "jargon", "passed": n != "jargon"}
+                 for n in self.names]
+        self.calibrated(cases=cases)
+        self.logged([("opus", "recommend")] * 20)
+        ok, why = self.ready()
+        self.assertFalse(ok)
+        self.assertIn("jargon", why)
+
+    def test_another_directory(self):
+        self.calibrated(directory=str(self.work / "my-cases"))
+        self.logged([("opus", "recommend")] * 20)
+        ok, why = self.ready()
+        self.assertFalse(ok)
+        self.assertIn("not the shipped tests/fixtures/narrative", why)
+
+    def test_the_fixtures_missing(self):
+        self.calibrated()
+        self.logged([("opus", "recommend")] * 20)
+        with mock.patch.object(narrative, "FIXTURES", self.work / "nowhere"):
+            self.assertEqual(self.ready(), (False, "the narrative fixtures are not here"))
+
+    def test_a_missing_or_other_rubric(self):
+        self.logged([("opus", "recommend")] * 20)
+        for digest in (None, "0" * 64):
+            self.calibrated(rubric_sha256=digest)
+            ok, why = self.ready()
+            self.assertFalse(ok, digest)
+            self.assertIn("rubric", why)
+
+    def test_another_reviewer_family(self):
+        self.calibrated(reviewer_model="sonnet")
+        self.logged([("opus", "recommend")] * 20)
+        ok, why = self.ready()
+        self.assertFalse(ok)
+        self.assertIn("calibrated sonnet", why)
+
+    def test_a_pool_reviewer_needs_its_record(self):
+        self.calibrated(reviewer_model="zai/glm-5.3")
+        self.logged([("zai/glm-5.3", "recommend")] * 20)
+        self.assertEqual(self.ready("sdk:zai/glm-5.3"),
+                         (False, "pool reviewer not calibrated"))
+        self.calibrated(reviewer_model="zai/glm-5.3", reviewer={"model": "zai/glm-5.3"})
+        self.assertEqual(self.ready("sdk:zai/glm-5.3"), (True, ""))
+
+    def test_nineteen_labels(self):
+        self.calibrated()
+        self.logged([("opus", "recommend")] * 19 + [("opus", None)])
+        self.assertEqual(self.ready(), (False, "19 labelled verdicts by opus in "
+                                        f"{self.work / script.REVIEW_LOG}, 20 needed"))
+
+    def test_labels_count_for_the_reviewer_that_wrote_them(self):
+        self.calibrated()
+        self.logged([("opus", "recommend")] * 19 + [("gpt-5", "reject")])
+        ok, why = self.ready()
+        self.assertFalse(ok)
+        self.assertIn("19 labelled verdicts by opus", why)
+
+    def test_an_unreadable_label_does_not_count(self):
+        self.calibrated()
+        self.logged([("opus", "recommend")] * 19 + [("opus", "great!")])
+        self.assertFalse(self.ready()[0])
+
+    def test_the_digest_is_of_the_rubric(self):
+        import dataclasses
+        import hashlib
+        want = hashlib.sha256(json.dumps([dataclasses.asdict(c) for c in narrative.RUBRIC],
+                                         sort_keys=True).encode()).hexdigest()
+        self.assertEqual(narrative.rubric_digest(), want)
+        self.assertEqual(narrative.FIXTURES.resolve(), FIXTURES.resolve())
+
+
+class CalibrateRecordsTheRubric(Hermetic):
+    def test_calibration_json_carries_the_rubric_digest(self):
+        report, _ = self.calibrate()
+        self.assertEqual(report["rubric_sha256"], narrative.rubric_digest())
+        kept = json.loads((self.work / "calibration" / "calibration.json").read_text())
+        self.assertEqual(kept["rubric_sha256"], narrative.rubric_digest())
+
+
 class LengthAudit(unittest.TestCase):
     def test_the_good_pair_at_the_ceiling_carries_voice_excellent(self):
         good = load(FIXTURES / "good" / "expected.json")["review"]
@@ -978,7 +1115,7 @@ class Entry(Hermetic):
         report = json.loads(path.read_text())
         self.assertEqual(set(report), {"directory", "model", "reviewer_model", "cases",
                                        "audit", "passed", "verdicts", "labelled", "agreed",
-                                       "cost_usd"})
+                                       "rubric_sha256", "cost_usd"})      # AUTO-148
         self.assertEqual(set(report["audit"]), {"pairs", "longer", "shorter", "ties",
                                                 "ceiling", "passed"})
         base = {"name", "criterion", "story", "expected", "got", "plan_review",
