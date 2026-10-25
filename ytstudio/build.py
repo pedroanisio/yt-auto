@@ -833,7 +833,10 @@ def shots_from_scene(document: bytes) -> list[dict]:
 #: than the maximum is split over consecutive cards.
 CREDITS_MIN_SECONDS = 4.0
 CREDITS_MAX_SECONDS = 12.0
-#: Each card fades in over this long and out over this long.
+#: Each card fades in over this long and out over this long. Between the
+#: fades the card holds still: whether the render's frozen-frame check or a
+#: qa burst landing mid-card reports that hold is TO VERIFY on a render.
+#: (qa never samples it today: its stills fall inside build.json's shots.)
 CREDITS_FADE_SECONDS = 0.5
 #: The id prefix of a card's text asset; `yt package` reads the card's text
 #: by it. Its layer is `credits-layer-N` and its marker `credits-N`, since
