@@ -9,6 +9,10 @@ Two things that fit together:
 - **`claude_engine.py`** — use **Claude Code as the AI engine of a Python
   program**: reasoning, schema-enforced structured output, and real tool-using
   agentic work, driven from your own code.
+- **`ig`** — manage several Instagram professional accounts from one shell
+  through Meta's official API: publish images, reels, stories and carousels,
+  schedule them, read insights, answer comments, and write captions with the
+  model. See [`docs/instagram.md`](docs/instagram.md).
 - **`yt`** — a gen-AI production pipeline built on it that **creates and
   composes top-tier YouTube videos** on scene-render and the sr-core SDK:
   visually intense explainers with voice-over and motion graphics, in motion
